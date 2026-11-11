@@ -1,0 +1,60 @@
+# Manyworlds policy file. Every number here is a starting value, not a constant:
+# the Brain may propose changes, and changes beyond `limits` need a human.
+# Each decision and cost entry records the hash of the policy it ran under.
+
+budgets:
+  daily_usd: 25.0              # hard cap on total spend per day
+  per_creator_daily_usd: 3.0
+  mvp_week_usd: 100.0
+
+# Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).
+# The router prefers the cheapest pool that can run the job kind.
+gpu_pools:
+  salad_batch_4090:  {provider: salad,  gpu: rtx4090, usd_per_hour: 0.16, interruptible: true}
+  salad_batch_5090:  {provider: salad,  gpu: rtx5090, usd_per_hour: 0.25, interruptible: true}
+  salad_batch_3090:  {provider: salad,  gpu: rtx3090, usd_per_hour: 0.09, interruptible: true}
+  salad_batch_a5000: {provider: salad,  gpu: rtxa5000, usd_per_hour: 0.09, interruptible: true}
+  salad_batch_3060:  {provider: salad,  gpu: rtx3060, usd_per_hour: 0.04, interruptible: true}
+  salad_low_4090:    {provider: salad,  gpu: rtx4090, usd_per_hour: 0.253, interruptible: true}
+  salad_low_5090:    {provider: salad,  gpu: rtx5090, usd_per_hour: 0.367, interruptible: true}
+  salad_medium_4090: {provider: salad,  gpu: rtx4090, usd_per_hour: 0.347, interruptible: true}
+  salad_medium_5090: {provider: salad,  gpu: rtx5090, usd_per_hour: 0.483, interruptible: true}
+  salad_high_4090:   {provider: salad,  gpu: rtx4090, usd_per_hour: 0.44, interruptible: true}
+  salad_high_5090:   {provider: salad,  gpu: rtx5090, usd_per_hour: 0.60, interruptible: true}
+  vast_4090:         {provider: vast,   gpu: rtx4090, usd_per_hour: 0.25, interruptible: true}
+  vast_5090:         {provider: vast,   gpu: rtx5090, usd_per_hour: 0.35, interruptible: true}
+  runpod_comm_4090:  {provider: runpod, gpu: rtx4090, usd_per_hour: 0.34, interruptible: false}
+  runpod_comm_5090:  {provider: runpod, gpu: rtx5090, usd_per_hour: 0.69, interruptible: false}
+  runpod_sls_4090:   {provider: runpod, gpu: rtx4090, usd_per_hour: 1.34, interruptible: false}
+  local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
+
+# Job kinds and the pools allowed to run them, cheapest first.
+job_kinds:
+  image.zimage:    {pools: [salad_batch_3090, salad_batch_a5000, salad_batch_4090, vast_4090, runpod_comm_4090, runpod_sls_4090], outputs_per_job: 4}
+  video.wan_i2v:   {pools: [salad_batch_5090, vast_5090, runpod_comm_5090], outputs_per_job: 1}
+  tts.kokoro:      {pools: [salad_batch_3060, salad_batch_4090, vast_4090, runpod_comm_4090], outputs_per_job: 1}
+  fake.image:      {pools: [local], outputs_per_job: 4}
+  fake.video:      {pools: [local], outputs_per_job: 1}
+  fake.tts:        {pools: [local], outputs_per_job: 1}
+
+generation:
+  candidates_per_post: {photo: 15, story_clip: 3, talking_head: 2, narrated_edit: 1}
+  image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
+  video: {width: 480, height: 832, frames: 81, steps: 4, guidance: 1.0, fps: 16}
+
+queue:
+  lease_seconds: 120           # a worker that stops heartbeating loses its job after this
+  max_attempts: 3              # per job, then it is marked dead and reported
+
+review:
+  identity_min: 0.60           # placeholder until calibrated on hand labels
+  identity_review_band: [0.45, 0.60]
+  max_repairs_per_post: 4
+
+autonomy:
+  publish: human_approval      # human_approval | sampled | autonomous
+  comment_replies: disabled
+
+limits:                        # bounds the Brain may not cross without a human
+  daily_usd_max: 100.0
+  max_attempts_max: 5

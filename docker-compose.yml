@@ -1,0 +1,62 @@
+# Local stack: Postgres (control plane), MinIO (stands in for Cloudflare R2),
+# the `mw` tool, and a CPU-only fake worker that exercises the full job loop.
+#   docker compose up -d db minio
+#   docker compose run --rm mw migrate
+#   docker compose run --rm mw init-storage
+#   docker compose run --rm mw bench fake.image --jobs 20
+#   docker compose run --rm mw worker --kinds fake.image --idle-exit 5
+#   docker compose run --rm mw report <batch>
+#   docker compose run --rm --entrypoint pytest mw -q
+
+x-env: &env
+  DATABASE_URL: postgresql://mw:mw@db:5432/manyworlds
+  STORAGE_URL: s3://manyworlds
+  S3_ENDPOINT_URL: http://minio:9090
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin
+  AWS_REGION: us-east-1
+  MW_POLICY: policy/default.yaml
+  MW_POOL: local
+  MW_WORKER_KINDS: fake.image,fake.video,fake.tts
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: mw
+      POSTGRES_PASSWORD: mw
+      POSTGRES_DB: manyworlds
+    ports: ["5433:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mw -d manyworlds"]
+      interval: 2s
+      retries: 30
+
+  # MinIO no longer publishes images on Docker Hub; Adobe's S3Mock stands in for R2.
+  minio:
+    image: adobe/s3mock:latest
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: manyworlds
+      initialBuckets: manyworlds
+    ports: ["9000:9090"]
+
+  mw:
+    build: .
+    environment: *env
+    depends_on:
+      db: {condition: service_healthy}
+      minio: {condition: service_started}
+
+  fake-worker:
+    build: .
+    environment: *env
+    command: ["worker"]
+    depends_on:
+      db: {condition: service_healthy}
+      minio: {condition: service_started}
+    deploy:
+      replicas: 2
+
+volumes:
+  pgdata:
