@@ -83,6 +83,8 @@ llm:
 queue:
   lease_seconds: 120           # a worker that stops heartbeating loses its job after this
   max_attempts: 3              # per job, then it is marked dead and reported
+  worker_max_consecutive_faults: 3   # GPU faults in a row before a worker exits for a restart
+  job_max_worker_faults: 6           # a job that faults this many machines fails (it's the cause)
 
 review:
   identity_min: 0.60           # placeholder until calibrated on hand labels

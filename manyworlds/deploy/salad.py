@@ -76,7 +76,10 @@ def gpu_slug(gpu: str) -> str:
 
 
 def group_name(family: str, gpu: str) -> str:
-    return f"mw-{family}-{gpu_slug(gpu)}"
+    # SaladCloud keeps a deleted group's name reserved for a while, so each run can carry
+    # its own suffix (MW_SALAD_RUN), e.g. mw-image-4090-r2.
+    run = os.environ.get("MW_SALAD_RUN", "").strip()
+    return f"mw-{family}-{gpu_slug(gpu)}" + (f"-{run}" if run else "")
 
 
 def up(family: str, gpu: str, replicas: int, priority: str, tag: str) -> None:

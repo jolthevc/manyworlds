@@ -74,6 +74,46 @@ def test_queue_adapter_round_trip(conn, database_url, store, policy):
     assert len(result.asset_ids) == 2 and result.usd is not None
 
 
+def test_gpu_faults_keep_attempts_and_trip_the_circuit_breaker(conn, database_url, store, policy):
+    """The real SaladCloud failure: an out-of-memory node burned every job's retries in
+    seconds. Machine faults must hand jobs back untouched and stop the worker."""
+    import pytest
+
+    from manyworlds.worker.runner import WorkerUnhealthy
+
+    bad = [queue.enqueue(conn, "fake.image", {"fail": "gpu"}, max_attempts=3) for _ in range(5)]
+    worker = make_worker(database_url, store, policy)
+    with pytest.raises(WorkerUnhealthy):
+        worker.run(poll_seconds=0.01)
+    rows = conn.execute("SELECT status, attempts FROM jobs WHERE id = ANY(%s)", (bad,)).fetchall()
+    assert all(r["status"] == "queued" and r["attempts"] == 0 for r in rows)
+    faults = conn.execute("SELECT count(*) n FROM attempts WHERE outcome = 'worker_fault'").fetchone()["n"]
+    assert faults == 3  # stopped after the third fault in a row, not after burning all 15 attempts
+
+
+def test_a_success_resets_the_fault_count(conn, database_url, store, policy):
+    worker = make_worker(database_url, store, policy)
+    queue.enqueue(conn, "fake.image", {"fail": "gpu"})
+    worker.run(max_jobs=2, poll_seconds=0.01)        # same released job faults twice
+    assert worker.consecutive_faults == 2
+    queue.enqueue(conn, "fake.image", {}, priority=9)  # a healthy job jumps the queue
+    worker.run(max_jobs=1, poll_seconds=0.01)
+    assert worker.consecutive_faults == 0
+
+
+def test_job_that_faults_every_machine_eventually_fails(conn, database_url, store, policy):
+    job = queue.enqueue(conn, "fake.image", {"fail": "gpu"})
+    import pytest
+
+    from manyworlds.worker.runner import WorkerUnhealthy
+
+    for _ in range(2):  # two fresh workers, three faults each = six machine faults
+        with pytest.raises(WorkerUnhealthy):
+            make_worker(database_url, store, policy).run(poll_seconds=0.01)
+    row = conn.execute("SELECT status, worker_faults, attempts FROM jobs WHERE id = %s", (job,)).fetchone()
+    assert row["status"] == "failed" and row["worker_faults"] == 6 and row["attempts"] == 0
+
+
 def test_router_prefers_cheapest_per_accepted_output():
     reg = Registry()
     reg.register(Capability("cheap-but-bad", "ImageGen", config={"est_usd_per_call": 0.0001}),

@@ -30,6 +30,8 @@ def _maybe_fail(payload: dict) -> None:
         raise RuntimeError("fake handler asked to fail")
     if payload.get("fail") == "fatal":
         raise NonRetryable("fake handler asked to fail permanently")
+    if payload.get("fail") == "gpu":
+        raise RuntimeError("CUDA error: out of memory (simulated)")
     time.sleep(float(payload.get("sleep", 0)))
 
 

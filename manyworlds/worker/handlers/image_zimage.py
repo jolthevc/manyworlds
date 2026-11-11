@@ -10,14 +10,21 @@ The 4-bit Nunchaku variant is a follow-up once the BF16 baseline is measured.
 
 from __future__ import annotations
 
+import logging
 import os
 import random
+import time
 from typing import Any
 
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 
 MODEL_ID = os.environ.get("MW_IMAGE_MODEL", "Tongyi-MAI/Z-Image-Turbo")
-_state: dict[str, Any] = {"pipe": None, "lora_uri": None}
+# Consumer cards on SaladCloud run Windows/WSL: the desktop holds VRAM, and when a model
+# doesn't fit, WSL spills to shared system memory and runs ~10x slower instead of failing.
+# Below this much free VRAM we let diffusers move components on and off the GPU.
+OFFLOAD_BELOW_GB = float(os.environ.get("MW_OFFLOAD_BELOW_GB", "26"))
+_state: dict[str, Any] = {"pipe": None, "lora_uri": None, "offload": None}
+log = logging.getLogger("manyworlds.image")
 
 
 def _pipe():
@@ -25,9 +32,17 @@ def _pipe():
         import torch
         from diffusers import DiffusionPipeline
 
+        free, total = torch.cuda.mem_get_info()
+        offload = free / 1e9 < OFFLOAD_BELOW_GB
+        log.info("GPU %s: %.1f GB free of %.1f GB; cpu offload=%s",
+                 torch.cuda.get_device_name(0), free / 1e9, total / 1e9, offload)
         pipe = DiffusionPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
-        pipe.to("cuda")
-        _state["pipe"] = pipe
+        if offload:
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to("cuda")
+        _state.update(pipe=pipe, offload=offload, free_gb=round(free / 1e9, 1),
+                      gpu=torch.cuda.get_device_name(0))
     return _state["pipe"]
 
 
@@ -62,19 +77,23 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
 
     pipe = _pipe()
     _set_lora(pipe, ctx, payload.get("lora_uri"), float(payload.get("lora_scale", 1.0)))
-    generators = [torch.Generator("cuda").manual_seed(seed + i) for i in range(n)]
-    images = pipe(prompt=prompt, height=height, width=width, num_inference_steps=steps,
-                  guidance_scale=guidance, num_images_per_prompt=n, generator=generators).images
-
-    outs = []
-    for i, img in enumerate(images):
+    # One image at a time: batching multiplies activation memory, which is exactly what
+    # 24 GB consumer cards don't have to spare. Seeds stay seed+i, so outputs are unchanged.
+    outs, timings = [], []
+    for i in range(n):
+        t0 = time.monotonic()
+        img = pipe(prompt=prompt, height=height, width=width, num_inference_steps=steps,
+                   guidance_scale=guidance, generator=torch.Generator("cuda").manual_seed(seed + i)).images[0]
+        timings.append(round(time.monotonic() - t0, 2))
         path = ctx.workdir / f"img_{i}.png"
         img.save(path)
         outs.append(OutputFile(path, "image", {"width": width, "height": height, "seed": seed + i}))
     recipe = {"model": MODEL_ID, "prompt": prompt, "seed": seed, "steps": steps, "guidance": guidance,
               "width": width, "height": height, "lora_uri": payload.get("lora_uri"),
               "lora_scale": payload.get("lora_scale", 1.0)}
-    return HandlerResult(outs, recipe=recipe, meta={"images": len(outs)})
+    return HandlerResult(outs, recipe=recipe, meta={
+        "images": len(outs), "sec_per_image": timings, "cpu_offload": _state["offload"],
+        "gpu": _state.get("gpu"), "free_gb_at_load": _state.get("free_gb")})
 
 
 HANDLERS = {"image.zimage": generate}

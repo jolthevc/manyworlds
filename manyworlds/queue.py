@@ -119,6 +119,25 @@ def fail(conn, job_id, worker_id: str, error: str, *, retryable: bool = True) ->
     return row["status"] if row else None
 
 
+def release(conn, job_id, worker_id: str, error: str, *, max_faults: int = 6) -> str | None:
+    """Give a job back without charging it an attempt: the *worker* failed (GPU out of
+    memory, broken CUDA context), not the job. A job that has faulted `max_faults` times
+    across machines is probably the cause itself, so it fails instead of bouncing forever.
+    Returns the job's new status."""
+    row = conn.execute(
+        """
+        UPDATE jobs SET worker_faults = worker_faults + 1,
+                        status = CASE WHEN worker_faults + 1 >= %(max)s THEN 'failed' ELSE 'queued' END,
+                        attempts = greatest(attempts - 1, 0), worker_id = NULL,
+                        lease_until = NULL, error = %(error)s, updated_at = now()
+        WHERE id = %(id)s AND worker_id = %(worker)s AND status = 'running'
+        RETURNING status
+        """,
+        {"max": max_faults, "error": error[:4000], "id": job_id, "worker": worker_id},
+    ).fetchone()
+    return row["status"] if row else None
+
+
 def reap(conn) -> int:
     """Mark jobs dead whose lease expired with no attempts left (e.g. repeated preemption)."""
     rows = conn.execute(

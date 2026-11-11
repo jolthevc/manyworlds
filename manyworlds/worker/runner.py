@@ -66,6 +66,23 @@ class NonRetryable(Exception):
     """Raise from a handler when retrying cannot help (bad payload, policy violation)."""
 
 
+class WorkerUnhealthy(RuntimeError):
+    """The worker hit too many consecutive machine faults and is exiting so the platform
+    can restart it (often on a different node)."""
+
+
+# Errors that mean the machine is broken, not the job: the job goes back to the queue
+# without losing an attempt, and the worker counts toward its circuit breaker.
+WORKER_FAULT_MARKERS = ("CUDA error", "out of memory", "CUDA out of memory", "cuDNN error",
+                        "CUBLAS_STATUS", "NCCL error", "device-side assert", "no CUDA GPUs")
+
+
+def is_worker_fault(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return any(m.lower() in text.lower() for m in WORKER_FAULT_MARKERS) or type(exc).__name__ in (
+        "OutOfMemoryError", "AcceleratorError")
+
+
 class Worker:
     def __init__(
         self,
@@ -85,6 +102,8 @@ class Worker:
         self.pool_info = policy.pool(pool)
         self.usd_per_second = policy.usd_per_gpu_second(pool)
         self.lease = int(policy.get("queue", "lease_seconds", default=120))
+        self.max_consecutive_faults = int(policy.get("queue", "worker_max_consecutive_faults", default=3))
+        self.consecutive_faults = 0
         self.database_url = database_url
         self.worker_id = worker_id or f"{pool}:{socket.gethostname()}:{uuid.uuid4().hex[:6]}"
         self._connect = connect
@@ -111,6 +130,9 @@ class Worker:
             self._run_one(job)
             handled += 1
             idle_since = time.monotonic()
+            if self.consecutive_faults >= self.max_consecutive_faults:
+                raise WorkerUnhealthy(
+                    f"{self.consecutive_faults} consecutive machine faults on {self.worker_id}; exiting")
         return handled
 
     def _heartbeat(self, job_id, done: threading.Event, lost: threading.Event):
@@ -147,15 +169,23 @@ class Worker:
                            {"asset_ids": [str(a) for a in asset_ids], "gpu_seconds": round(gpu_seconds, 3),
                             "pool": self.pool, **result.meta})
             outcome = "done"
+            self.consecutive_faults = 0
         except NonRetryable as e:
             error = f"{type(e).__name__}: {e}"
             self._charge(job, attempt_id, time.monotonic() - t0)
             queue.fail(self.conn, job.id, self.worker_id, error, retryable=False)
         except Exception as e:  # noqa: BLE001 - any handler error is recorded and retried
             error = f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=5)}"
-            log.warning("job %s failed: %s", job.id, e)
             self._charge(job, attempt_id, time.monotonic() - t0)
-            queue.fail(self.conn, job.id, self.worker_id, error, retryable=True)
+            if is_worker_fault(e):
+                outcome = "worker_fault"
+                self.consecutive_faults += 1
+                log.error("machine fault on job %s (%d in a row): %s", job.id, self.consecutive_faults, e)
+                queue.release(self.conn, job.id, self.worker_id, error,
+                              max_faults=int(self.policy.get("queue", "job_max_worker_faults", default=6)))
+            else:
+                log.warning("job %s failed: %s", job.id, e)
+                queue.fail(self.conn, job.id, self.worker_id, error, retryable=True)
         finally:
             done.set()
             hb.join(timeout=5)
