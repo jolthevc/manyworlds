@@ -31,6 +31,7 @@ FAMILIES = {
     "image": ("mw-worker-image", "image.zimage", "salad", 4, 24576, 60),
     "tts": ("mw-worker-tts", "tts.kokoro", "salad", 2, 8192, 30),
     "video": ("mw-worker-video", "video.wan_i2v", "salad", 8, 49152, 120),
+    "train": ("mw-worker-train", "train.lora", "salad", 8, 32768, 100),
 }
 PASS_THROUGH = ["DATABASE_URL", "STORAGE_URL", "S3_ENDPOINT_URL", "AWS_ACCESS_KEY_ID",
                 "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "HF_TOKEN", "MW_IMAGE_MODEL",

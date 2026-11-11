@@ -40,6 +40,16 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("report", help="benchmark / cost report for a batch")
     r.add_argument("batch")
 
+    sub.add_parser("discover", help="Brain: plan research, pull it via Apify, propose creator theses")
+    sub.add_parser("choose", help="Brain: choose the next thesis to launch")
+    lc = sub.add_parser("launch-creator", help="Creator Lab: bible + creator + reference pack + voice sample")
+    lc.add_argument("--thesis", help="thesis id (default: the chosen one)")
+    an = sub.add_parser("anchors", help="pick the reference images for a creator")
+    an.add_argument("creator")
+    tl = sub.add_parser("train-lora", help="queue identity LoRA training for a creator")
+    tl.add_argument("creator")
+    cr = sub.add_parser("creator", help="show a creator's bible, anchors and jobs")
+    cr.add_argument("creator")
     sub.add_parser("status", help="job counts and spend")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
@@ -84,6 +94,57 @@ def main(argv: list[str] | None = None) -> int:
                 "cost_per_output": ledger.cost_per_output(conn)})
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
+    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator"):
+        return _brain(args, conn, pol)
+    return 0
+
+
+def _creator_id(conn, ref: str):
+    row = conn.execute("SELECT id FROM creators WHERE id::text = %s OR handle = %s", (ref, ref)).fetchone()
+    if not row:
+        raise SystemExit(f"no creator {ref!r}")
+    return row["id"]
+
+
+def _brain(args, conn, pol) -> int:
+    import tempfile
+
+    from .brain import discover as disc
+    from .creator import lab
+    from .llm import Claude
+    from .research.apify import ApifySource
+
+    if args.cmd == "creator":
+        cid = _creator_id(conn, args.creator)
+        c = conn.execute("SELECT handle, status, bible, anchors FROM creators WHERE id = %s", (cid,)).fetchone()
+        _print({**c, "jobs": conn.execute("SELECT kind, status, count(*) n FROM jobs WHERE creator_id = %s "
+                                           "GROUP BY kind, status", (cid,)).fetchall()})
+        return 0
+    llm = Claude(conn, pol)
+    if args.cmd == "discover":
+        result = disc.discover(conn, pol, llm, ApifySource(conn, pol))
+        _print({**result, "llm_usd": llm.spent})
+    elif args.cmd == "choose":
+        _print({**disc.choose_thesis(conn, pol, llm), "llm_usd": llm.spent})
+    elif args.cmd == "launch-creator":
+        if args.thesis:
+            t = conn.execute("SELECT id, body FROM theses WHERE id::text = %s", (args.thesis,)).fetchone()
+        else:
+            t = conn.execute("SELECT id, body FROM theses WHERE status = 'chosen' ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not t:
+            raise SystemExit("no chosen thesis; run `mw choose` first")
+        bible = lab.write_bible(conn, pol, llm, {"id": t["id"], **t["body"]})
+        row = lab.create_creator(conn, bible, t["id"])
+        batch = lab.enqueue_reference_pack(conn, pol, row["id"])
+        voice_job = lab.enqueue_voice_sample(conn, row["id"])
+        _print({"creator": row, "reference_batch": batch, "voice_job": voice_job,
+                "bible": bible.model_dump(), "llm_usd": llm.spent})
+    elif args.cmd == "anchors":
+        cid = _creator_id(conn, args.creator)
+        with tempfile.TemporaryDirectory() as tmp:
+            _print({**lab.select_anchors(conn, pol, llm, storage.from_url(), cid, tmp), "llm_usd": llm.spent})
+    elif args.cmd == "train-lora":
+        _print({"job": lab.enqueue_lora_training(conn, pol, _creator_id(conn, args.creator))})
     return 0
 
 

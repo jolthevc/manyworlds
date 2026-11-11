@@ -33,6 +33,7 @@ job_kinds:
   image.zimage:    {pools: [salad_batch_3090, salad_batch_a5000, salad_batch_4090, vast_4090, runpod_comm_4090, runpod_sls_4090], outputs_per_job: 4}
   video.wan_i2v:   {pools: [salad_batch_5090, vast_5090, runpod_comm_5090], outputs_per_job: 1}
   tts.kokoro:      {pools: [salad_batch_3060, salad_batch_4090, vast_4090, runpod_comm_4090], outputs_per_job: 1}
+  train.lora:      {pools: [salad_batch_3090, salad_batch_4090, runpod_comm_4090], outputs_per_job: 1}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
@@ -41,6 +42,43 @@ generation:
   candidates_per_post: {photo: 15, story_clip: 3, talking_head: 2, narrated_edit: 1}
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
   video: {width: 480, height: 832, frames: 81, steps: 4, guidance: 1.0, fps: 16}
+
+# What the Brain may explore. It picks creators and niches inside this scope itself.
+scope:
+  niche: "lifestyle, wide net: daily life, style, food, home, travel, fitness-as-lifestyle, humor"
+  platforms: [instagram, tiktok]
+  excluded_topics: [politics, news, health advice, medical claims, financial advice,
+                    crypto, gambling, sexualized content, minors, real brands without rights]
+  creator_min_age: 21
+  disclosure_line: "AI-generated character"
+
+research:
+  hashtags_per_platform: 6
+  items_per_hashtag: 30
+  max_items_per_run: 400
+  theses_per_run: 5
+  apify_actors:
+    instagram: apify~instagram-hashtag-scraper
+    tiktok: clockworks~tiktok-scraper
+  usd_per_1k_items: {instagram: 2.70, tiktok: 1.70}   # for the ledger; check the Apify invoice
+
+creator_lab:
+  reference_prompts: 12          # angles/scenes in the reference pack
+  candidates_per_reference: 4
+  lora: {steps: 2000, rank: 16, learning_rate: 0.0001, resolution: 1024}
+
+# Claude models by role. Low-volume judgement work runs on Opus; bulk roles
+# (captions, first-pass judging) come in later days and can point elsewhere.
+llm:
+  roles:
+    brain: claude-opus-5-5
+    research: claude-opus-5-5
+    creator: claude-opus-5-5
+    judge: claude-opus-5-5
+  usd_per_mtok:                  # input, output, cache_read, cache_write
+    claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
+    claude-sonnet-5-5: [2.00, 10.00, 0.10, 2.50]
+    claude-haiku-5-5:  [0.10, 0.50, 0.01, 0.125]
 
 queue:
   lease_seconds: 120           # a worker that stops heartbeating loses its job after this

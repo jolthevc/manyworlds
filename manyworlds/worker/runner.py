@@ -203,6 +203,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import video_wan as mod
         elif family == "tts":
             from .handlers import tts_kokoro as mod
+        elif family == "train":
+            from .handlers import train_lora as mod
         else:
             raise ValueError(f"no handler family for {kind!r}")
         found[kind] = mod.HANDLERS[kind]
