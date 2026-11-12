@@ -20,7 +20,8 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 ## Rules that matter
 
 - **No magic numbers in code.** Budgets, prices, thresholds, models, candidate counts go in the policy file. Cost entries and decisions record the policy version they ran under.
-- **Everything that costs money writes to the ledger** — including failed attempts. Cost per *accepted* output is the headline metric.
+- **Everything that costs money writes to the ledger** — including failed attempts. Cost per *accepted* output is the headline metric. `gpu` entries attribute job time to outputs; `gpu_billed` is what the provider charges (idle included). The bill is every category except `gpu`.
+- **No GPU group without a deadline and spend cap.** Launch only through `manyworlds.deploy.salad up` (it registers both first). The cloud-side enforcer (`.github/workflows/gpu-enforcer.yml`) is the safety net; never rely on a local process to stop paid resources. SaladCloud replaces exited containers, so only stopping the group stops billing.
 - **Handlers must be idempotent.** Interruptible nodes vanish mid-job; the queue reruns the job elsewhere.
 - **Every external capability sits behind an adapter/handler**, so models and vendors can be swapped by config.
 - **Disclosure is non-negotiable.** Every creator carries the policy `disclosure_line`; posts set platform AI flags; never imply real first-hand experience in sponsored content.
