@@ -1,13 +1,14 @@
-# Cloud-side GPU spend enforcer: stops SaladCloud groups that are past their deadline,
-# over their spend cap, idle, or over the day's GPU budget, and meters billed time.
-# Runs on GitHub's servers, so it keeps working when no laptop is awake.
+# Cloud-side GPU backstop: stops machines on SaladCloud, Vast.ai and RunPod that are past
+# their deadline, over their spend cap, idle, over the day's GPU budget, or unregistered,
+# and meters billed time. It never starts anything (the autoscaler does that).
 #
-# Required repository secrets (Settings > Secrets and variables > Actions):
-#   DATABASE_URL, SALAD_API_KEY, SALAD_ORG, SALAD_PROJECT
+# GitHub's schedule alone proved unreliable (no scheduled run fired in its first hours),
+# so each run checks every few minutes for a while and then starts the next run itself.
+# The schedule is only there to restart the chain if it ever breaks.
 #
-# GitHub may delay scheduled runs by several minutes under load, and pauses schedules
-# in repositories with no activity for 60 days; the per-group deadline is the backstop
-# for the first, and any push re-enables the second.
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   DATABASE_URL, SALAD_API_KEY, SALAD_ORG, SALAD_PROJECT, VAST_API_KEY, RUNPOD_API_KEY
+# A provider whose key is missing is skipped.
 name: gpu-enforcer
 
 on:
@@ -21,22 +22,34 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write          # to start the next run of this workflow
 
 jobs:
   enforce:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install --quiet .
-      - name: Enforce GPU limits
+      - name: Enforce GPU limits every 3 minutes for 30 minutes
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SALAD_API_KEY: ${{ secrets.SALAD_API_KEY }}
           SALAD_ORG: ${{ secrets.SALAD_ORG }}
           SALAD_PROJECT: ${{ secrets.SALAD_PROJECT }}
+          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           MW_POLICY: policy/default.yaml
-        run: python -m manyworlds.deploy.enforce
+        run: |
+          for i in $(seq 1 10); do
+            python -m manyworlds.deploy.autoscale --once --no-launch || echo "tick failed"
+            [ "$i" -lt 10 ] && sleep 180
+          done
+      - name: Start the next run
+        if: always() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run gpu-enforcer.yml --ref main --repo "${{ github.repository }}"

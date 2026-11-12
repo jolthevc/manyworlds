@@ -37,25 +37,28 @@ def enqueue(
     creator_id=None,
     parent_job_id=None,
     batch: str | None = None,
+    pools: list[str] | None = None,
 ):
-    """Add a job. With an idempotency key, re-enqueueing returns the existing job's id."""
+    """Add a job. With an idempotency key, re-enqueueing returns the existing job's id.
+    `pools` pins the job to those GPU pools (e.g. benchmarking one provider)."""
     row = conn.execute(
         """
         INSERT INTO jobs (kind, payload, priority, max_attempts, idempotency_key,
-                          creator_id, parent_job_id, batch)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                          creator_id, parent_job_id, batch, pools)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
         """,
-        (kind, Jsonb(payload), priority, max_attempts, idempotency_key, creator_id, parent_job_id, batch),
+        (kind, Jsonb(payload), priority, max_attempts, idempotency_key, creator_id, parent_job_id, batch, pools),
     ).fetchone()
     if row:
         return row["id"]
     return conn.execute("SELECT id FROM jobs WHERE idempotency_key = %s", (idempotency_key,)).fetchone()["id"]
 
 
-def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int) -> Job | None:
-    """Atomically take the next runnable job of the given kinds, or None."""
+def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str | None = None) -> Job | None:
+    """Atomically take the next runnable job of the given kinds, or None. Jobs pinned to
+    other pools are left for workers in those pools."""
     row = conn.execute(
         """
         UPDATE jobs SET status = 'running',
@@ -67,6 +70,7 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int) -> Job | N
             SELECT id FROM jobs
             WHERE kind = ANY(%(kinds)s)
               AND attempts < max_attempts
+              AND (pools IS NULL OR %(pool)s::text = ANY(pools))
               AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
             ORDER BY priority DESC, created_at
             FOR UPDATE SKIP LOCKED
@@ -74,7 +78,7 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int) -> Job | N
         )
         RETURNING id, kind, payload, attempts, max_attempts, creator_id, batch
         """,
-        {"worker": worker_id, "lease": lease_seconds, "kinds": kinds},
+        {"worker": worker_id, "lease": lease_seconds, "kinds": kinds, "pool": pool},
     ).fetchone()
     return Job(**row) if row else None
 

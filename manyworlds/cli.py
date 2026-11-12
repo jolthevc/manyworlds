@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("kind")
     b.add_argument("--jobs", type=int, default=20)
     b.add_argument("--extra", default="{}", help="JSON merged into each payload")
+    b.add_argument("--pools", help="comma-separated GPU pools to pin the batch to, e.g. vast_4090")
 
     r = sub.add_parser("report", help="benchmark / cost report for a batch")
     r.add_argument("batch")
@@ -53,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="job counts and spend")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
+    sc = sub.add_parser("autoscale", help="start/stop GPU machines to follow the queue (loops; --once for one tick)")
+    sc.add_argument("--once", action="store_true")
+    sc.add_argument("--no-launch", action="store_true")
 
     args = p.parse_args(argv)
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -67,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
         n = worker.run(max_jobs=args.max_jobs, idle_exit_seconds=args.idle_exit)
         print(f"worker {worker.worker_id} handled {n} jobs")
         return 0
+
+    if args.cmd == "autoscale":
+        from .deploy import autoscale
+        return autoscale.main((["--once"] if args.once else []) + (["--no-launch"] if args.no_launch else []))
 
     if args.cmd == "init-storage":
         store = storage.from_url()
@@ -85,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         ids = [queue.enqueue(conn, args.kind, payload, batch=args.batch) for _ in range(args.n)]
         _print({"enqueued": ids})
     elif args.cmd == "bench":
-        batch = bench.enqueue(conn, pol, args.kind, args.jobs, extra=json.loads(args.extra))
+        batch = bench.enqueue(conn, pol, args.kind, args.jobs, extra=json.loads(args.extra),
+                              pools=args.pools.split(",") if args.pools else None)
         print(batch)
     elif args.cmd == "report":
         _print(bench.report(conn, pol, args.batch))

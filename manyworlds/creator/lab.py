@@ -181,10 +181,16 @@ def enqueue_lora_training(conn, policy: Policy, creator_id) -> object:
     trigger = f"mw_{c['handle']}"
     caption = f"photo of {trigger}, {appearance_prompt(c['bible'])}"
     cfg = policy.get("creator_lab", "lora", default={})
-    return queue.enqueue(conn, "train.lora", {
-        "creator_id": str(creator_id), "trigger": trigger,
-        "images": [{"uri": r["uri"], "caption": caption} for r in refs], **cfg},
-        creator_id=creator_id, idempotency_key=f"{creator_id}:lora:v1", max_attempts=2)
+    payload = {"creator_id": str(creator_id), "trigger": trigger,
+               "images": [{"uri": r["uri"], "caption": caption} for r in refs], **cfg}
+    job = queue.enqueue(conn, "train.lora", payload, creator_id=creator_id,
+                        idempotency_key=f"{creator_id}:lora:v1", max_attempts=2)
+    # Asking again after a failure retries it (with the current settings); a finished
+    # or in-progress training is left alone.
+    conn.execute("""UPDATE jobs SET status = 'queued', attempts = 0, worker_faults = 0, worker_id = NULL,
+                        lease_until = NULL, error = NULL, payload = %s, updated_at = now()
+                    WHERE id = %s AND status IN ('failed', 'dead')""", (Jsonb(payload), job))
+    return job
 
 
 def enqueue_voice_sample(conn, creator_id) -> object:

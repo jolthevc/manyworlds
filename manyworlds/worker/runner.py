@@ -94,6 +94,8 @@ class Worker:
         database_url: str | None = None,
         worker_id: str | None = None,
         connect: Callable = db.connect,
+        group: str | None = None,
+        self_destroy: Callable[[], str | None] | None = None,
     ):
         self.handlers = handlers
         self.store = store
@@ -109,16 +111,68 @@ class Worker:
         self._connect = connect
         self.conn = connect(database_url)
         self._stop = threading.Event()
+        # Self-stop: a worker on a rented machine destroys that machine when it has been
+        # idle too long, is past its deadline, or the autoscaler already marked it stopped.
+        # One of three independent layers; see manyworlds.deploy.autoscale.
+        self.group = group if group is not None else os.environ.get("MW_GROUP")
+        self._self_destroy = self_destroy
+        self._busy = False
+        self._idle_since = time.monotonic()
 
     def stop(self, *_):
         log.info("stop requested; finishing current job")
         self._stop.set()
+
+    def self_stop_reason(self, conn=None, now=None) -> str | None:
+        """Why this worker's machine should go away now, or None."""
+        from datetime import datetime, timezone
+
+        if not self.group:
+            return None
+        now = now or datetime.now(timezone.utc)
+        g = (conn or self.conn).execute("SELECT deadline, stopped_at FROM gpu_groups WHERE name = %s",
+                              (self.group,)).fetchone()
+        if g is None:
+            return None
+        if g["stopped_at"] is not None:
+            return "stopped_by_autoscaler"
+        if now >= g["deadline"]:
+            return "deadline"
+        idle_min = float(self.policy.get("gpu_runs", "idle_stop_minutes", default=20))
+        if not self._busy and time.monotonic() - self._idle_since > idle_min * 60:
+            return "idle"
+        return None
+
+    def _watchdog(self):
+        from ..deploy.providers import self_destroy
+
+        destroy = self._self_destroy or self_destroy
+        every = float(self.policy.get("autoscale", "tick_seconds", default=60))
+        conn = self._connect(self.database_url)
+        try:
+            while not self._stop.wait(every):
+                try:
+                    reason = self.self_stop_reason(conn)
+                    if reason:
+                        provider = destroy()
+                        if provider is None:
+                            log.info("self-stop (%s) not possible on this provider; autoscaler will stop it", reason)
+                            return
+                        log.warning("destroyed own %s machine: %s", provider, reason)
+                        self._stop.set()
+                        return
+                except Exception as e:  # noqa: BLE001 - try again next round
+                    log.warning("watchdog check failed: %s", e)
+        finally:
+            conn.close()
 
     def run(self, *, max_jobs: int | None = None, idle_exit_seconds: float | None = None,
             poll_seconds: float = 1.0) -> int:
         """Process jobs until stopped. Returns the number of jobs handled."""
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, self.stop)
+        if self.group and self.policy.get("autoscale", "worker_self_stop", default=True):
+            threading.Thread(target=self._watchdog, daemon=True, name="self-stop").start()
         handled, idle_since = 0, time.monotonic()
         while not self._stop.is_set() and (max_jobs is None or handled < max_jobs):
             job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease)
@@ -127,7 +181,12 @@ class Worker:
                     break
                 time.sleep(poll_seconds)
                 continue
-            self._run_one(job)
+            self._busy = True
+            try:
+                self._run_one(job)
+            finally:
+                self._busy = False
+                self._idle_since = time.monotonic()
             handled += 1
             idle_since = time.monotonic()
             if self.consecutive_faults >= self.max_consecutive_faults:

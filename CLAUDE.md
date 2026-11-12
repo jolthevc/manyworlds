@@ -13,7 +13,10 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/research/` — Apify data source, signal aggregation
 - `manyworlds/llm.py` — the only place Claude is called; structured outputs, cost recorded per call
 - `manyworlds/ledger.py` — cost entries (GPU seconds, tokens, data items)
-- `manyworlds/deploy/salad.py` — SaladCloud container-group launcher
+- `manyworlds/deploy/autoscale.py` — starts GPU machines when jobs wait, stops them when the queue drains; runs always-on
+- `manyworlds/deploy/providers.py` — SaladCloud, Vast.ai, RunPod adapters (launch, list, destroy, self-destroy)
+- `manyworlds/deploy/enforce.py` — deadline / spend cap / idle / daily-budget checks (autoscaler and GitHub backstop)
+- `manyworlds/deploy/salad.py` — manual SaladCloud launcher for one-offs
 - `manyworlds/migrations/` — forward-only SQL; add a new numbered file, never edit an applied one
 - `policy/default.yaml` — every tunable number (budgets, GPU pools/prices, models, scope, limits)
 
@@ -21,7 +24,8 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 
 - **No magic numbers in code.** Budgets, prices, thresholds, models, candidate counts go in the policy file. Cost entries and decisions record the policy version they ran under.
 - **Everything that costs money writes to the ledger** — including failed attempts. Cost per *accepted* output is the headline metric. `gpu` entries attribute job time to outputs; `gpu_billed` is what the provider charges (idle included). The bill is every category except `gpu`.
-- **No GPU group without a deadline and spend cap.** Launch only through `manyworlds.deploy.salad up` (it registers both first). The cloud-side enforcer (`.github/workflows/gpu-enforcer.yml`) is the safety net; never rely on a local process to stop paid resources. SaladCloud replaces exited containers, so only stopping the group stops billing.
+- **No GPU machine without a deadline and spend cap, and nothing manual.** The autoscaler starts machines when jobs are queued (pin a benchmark to one pool with `mw bench ... --pools`) and registers deadline and cap before creating anything. Three independent layers stop machines: the autoscaler, the GitHub backstop (`.github/workflows/gpu-enforcer.yml`, self-chaining because GitHub's cron proved unreliable), and workers on Vast/RunPod destroying their own machine when idle or past deadline. Never rely on one process to stop paid resources. SaladCloud replaces exited containers, so only deleting the group stops billing.
+- **Choose providers by measured cost per accepted output**, not hourly price: SaladCloud's consumer Windows nodes have less usable VRAM and RAM than advertised.
 - **Handlers must be idempotent.** Interruptible nodes vanish mid-job; the queue reruns the job elsewhere.
 - **Every external capability sits behind an adapter/handler**, so models and vendors can be swapped by config.
 - **Disclosure is non-negotiable.** Every creator carries the policy `disclosure_line`; posts set platform AI flags; never imply real first-hand experience in sponsored content.
@@ -42,7 +46,8 @@ docker compose run --rm mw migrate
 Against real services (Neon, R2, Claude, Apify, SaladCloud), run the `mw` image with `--env-file .env`:
 `mw migrate`, `mw discover`, `mw choose`, `mw launch-creator`, `mw anchors <handle>`,
 `mw train-lora <handle>`, `mw bench <kind> --jobs N`, `mw report <batch>`, `mw status`.
-GPU groups: `python -m manyworlds.deploy.salad up|status|down <family> --gpu "RTX 4090"`.
+GPU machines: `mw autoscale` (loop) or `mw autoscale --once`; always-on: `docker compose --profile live up -d autoscaler`.
+One-off SaladCloud groups: `python -m manyworlds.deploy.salad up|status|down <family> --gpu "RTX 4090"`.
 
 ## Status
 

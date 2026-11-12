@@ -30,7 +30,7 @@ SPEECH_LINES = [
 
 
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
-            extra: dict[str, Any] | None = None) -> str:
+            extra: dict[str, Any] | None = None, pools: list[str] | None = None) -> str:
     batch = batch or f"bench-{kind}-{uuid.uuid4().hex[:6]}"
     gen = policy.get("generation", default={})
     for i in range(jobs):
@@ -50,7 +50,7 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
         else:
             payload = {"text": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": "af_heart"}
         payload.update(extra or {})
-        queue.enqueue(conn, kind, payload, batch=batch, max_attempts=int(policy.get("queue", "max_attempts", default=3)))
+        queue.enqueue(conn, kind, payload, batch=batch, pools=pools, max_attempts=int(policy.get("queue", "max_attempts", default=3)))
     return batch
 
 

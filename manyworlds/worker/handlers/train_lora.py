@@ -67,15 +67,43 @@ def train(payload: dict, ctx: JobContext) -> HandlerResult:
     }]}}
     cfg_path = ctx.workdir / "train.yaml"
     cfg_path.write_text(yaml.safe_dump(config), encoding="utf-8")
-    proc = subprocess.run(["python", "run.py", str(cfg_path)], cwd=TOOLKIT, capture_output=True, text=True)
+    returncode = _run_logged(["python", "run.py", str(cfg_path)], ctx,
+                             float(payload.get("log_upload_seconds", 120)))
     weights = sorted(out_dir.rglob("*.safetensors"))
-    if proc.returncode != 0 or not weights:
-        raise RuntimeError(f"ai-toolkit exited {proc.returncode}: {proc.stderr[-3000:]}")
+    if returncode != 0 or not weights:
+        tail = (ctx.workdir / "train.log").read_text(encoding="utf-8", errors="replace")[-3000:]
+        raise RuntimeError(f"ai-toolkit exited {returncode}: {tail}")
     final = weights[-1]
     return HandlerResult([OutputFile(final, "lora", {"trigger": payload["trigger"], "rank": rank})],
                          recipe={"trainer": "ostris/ai-toolkit", "model": model_block, "steps": payload.get("steps"),
                                  "images": len(images), "trigger": payload["trigger"]},
                          meta={"trigger": payload["trigger"]})
+
+
+def _run_logged(cmd: list[str], ctx: JobContext, upload_every: float) -> int:
+    """Run the trainer with its output going to train.log, and copy that log to storage
+    (logs/<job id>/train.log) every `upload_every` seconds and at the end. If the machine
+    dies mid-run, the last copy says how far it got and what it was doing."""
+    log_path = ctx.workdir / "train.log"
+    key = f"logs/{ctx.job.id}/train.log"
+
+    def upload():
+        try:
+            ctx.store.put_file(log_path, key)
+        except Exception:  # noqa: BLE001 - a log upload must never fail the training
+            pass
+
+    with open(log_path, "w", encoding="utf-8") as fh:
+        proc = subprocess.Popen(cmd, cwd=TOOLKIT, stdout=fh, stderr=subprocess.STDOUT, text=True)
+        while True:
+            try:
+                proc.wait(timeout=upload_every)
+                break
+            except subprocess.TimeoutExpired:
+                fh.flush()
+                upload()
+    upload()
+    return proc.returncode
 
 
 HANDLERS = {"train.lora": train}

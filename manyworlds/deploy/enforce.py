@@ -73,14 +73,10 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
     groups = conn.execute("SELECT * FROM gpu_groups WHERE stopped_at IS NULL ORDER BY started_at").fetchall()
     registered = {g["name"] for g in groups}
 
-    # Meter every live registered group first, so the daily check sees current spend.
+    # Meter every registered group first, so the daily check sees current spend. A group
+    # that has disappeared (a worker destroyed its own machine, or the provider reclaimed
+    # it) is billed up to now, which over-counts by at most one tick, then closed.
     for g in groups:
-        if g["name"] not in live:
-            if not dry_run:
-                conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = 'gone' WHERE name = %s",
-                             (now, g["name"]))
-            actions.append({"group": g["name"], "action": "marked gone"})
-            continue
         seconds = max((now - g["billed_until"]).total_seconds(), 0)
         usd = seconds / 3600 * float(g["usd_per_hour"]) * int(g["replicas"])
         if seconds and not dry_run:
@@ -89,6 +85,11 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             conn.execute("UPDATE gpu_groups SET billed_until = %s, billed_usd = billed_usd + %s WHERE name = %s",
                          (now, usd, g["name"]))
         g["billed_usd"] = float(g["billed_usd"]) + usd
+        if g["name"] not in live:
+            if not dry_run:
+                conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = 'gone' WHERE name = %s",
+                             (now, g["name"]))
+            actions.append({"group": g["name"], "action": "marked gone", "billed_usd": round(g["billed_usd"], 4)})
 
     spent_today = billed_today(conn) if not dry_run else None
 
@@ -111,7 +112,12 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             reason = "idle"
         if reason:
             if not dry_run:
-                api.stop_delete(g["name"])
+                try:
+                    api.stop_delete(g["name"])
+                except Exception as e:  # noqa: BLE001 - keep enforcing the others; retry next tick
+                    actions.append({"group": g["name"], "action": "stop_failed", "reason": reason,
+                                    "error": str(e)[:300]})
+                    continue
                 conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = %s WHERE name = %s",
                              (now, reason, g["name"]))
             actions.append({"group": g["name"], "action": "stopped", "reason": reason,
@@ -124,7 +130,12 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
     for name in sorted(live - registered):
         if name.startswith("mw-"):
             if not dry_run:
-                api.stop_delete(name)
+                try:
+                    api.stop_delete(name)
+                except Exception as e:  # noqa: BLE001
+                    actions.append({"group": name, "action": "stop_failed", "reason": "unregistered",
+                                    "error": str(e)[:300]})
+                    continue
             actions.append({"group": name, "action": "stopped", "reason": "unregistered"})
     return actions
 
@@ -133,9 +144,13 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="enforce")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
+    from .autoscale import MultiAPI
+    from .providers import all_providers
+
     conn = db.connect()
     db.migrate(conn)
-    actions = tick(conn, policy_mod.load(), SaladGroups(), dry_run=a.dry_run)
+    pol = policy_mod.load()
+    actions = tick(conn, pol, MultiAPI(conn, all_providers(pol)), dry_run=a.dry_run)
     # Group names, states and amounts only: these logs are public on a public repo.
     print(json.dumps(actions, indent=2, default=str))
     return 0

@@ -58,5 +58,15 @@ services:
     deploy:
       replicas: 2
 
+  # Autoscaler against the REAL services in .env (Neon, R2, GPU providers): starts GPU
+  # machines when jobs wait, stops them when the queue drains. Meant to run on an
+  # always-on host; locally: docker compose --profile live up -d autoscaler
+  autoscaler:
+    build: .
+    profiles: [live]
+    env_file: .env
+    command: ["autoscale"]
+    restart: unless-stopped
+
 volumes:
   pgdata:
