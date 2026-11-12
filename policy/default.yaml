@@ -77,7 +77,7 @@ research:
 creator_lab:
   reference_prompts: 12          # angles/scenes in the reference pack
   candidates_per_reference: 4
-  lora: {steps: 2000, rank: 16, learning_rate: 0.0001, resolution: 1024}
+  lora: {steps: 1200, rank: 16, learning_rate: 0.0001, resolution: 1024}
 
 # Claude models by role. Low-volume judgement work runs on Opus; bulk roles
 # (captions, first-pass judging) come in later days and can point elsewhere.

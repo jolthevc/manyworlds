@@ -5,7 +5,9 @@ FROM ${BASE}
 ARG AI_TOOLKIT_REF=main
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HF_HOME=/models/hf \
     MW_AI_TOOLKIT=/ai-toolkit MW_WORKER_KINDS=train.lora
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+# libgl1/libglib2.0-0: OpenCV (imported by ai-toolkit via diffusers' watermarker) needs them.
+RUN apt-get update && apt-get install -y --no-install-recommends git libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch ${AI_TOOLKIT_REF} https://github.com/ostris/ai-toolkit.git /ai-toolkit \
  && pip install --no-cache-dir -r /ai-toolkit/requirements.txt
 WORKDIR /app
