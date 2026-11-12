@@ -82,7 +82,45 @@ def group_name(family: str, gpu: str) -> str:
     return f"mw-{family}-{gpu_slug(gpu)}" + (f"-{run}" if run else "")
 
 
-def up(family: str, gpu: str, replicas: int, priority: str, tag: str) -> None:
+def register(family: str, gpu: str, replicas: int, priority: str, max_hours: float | None,
+             max_usd: float | None) -> dict:
+    """Record the group with a hard deadline and spend cap BEFORE creating it, so the
+    cloud-side enforcer can always stop it. Refuses runs longer than policy allows."""
+    from datetime import datetime, timedelta, timezone
+
+    from .. import db
+    from .. import policy as policy_mod
+
+    pol = policy_mod.load()
+    cfg = pol.get("gpu_runs", default={})
+    hours = float(max_hours if max_hours is not None else cfg.get("default_max_hours", 2))
+    limit = float(cfg.get("max_hours_limit", 12))
+    if not 0 < hours <= limit:
+        sys.exit(f"--max-hours must be between 0 and {limit} (policy gpu_runs.max_hours_limit)")
+    usd_cap = float(max_usd if max_usd is not None else cfg.get("default_max_usd", 1.0))
+    pool = f"salad_{priority}_{gpu_slug(gpu)}"
+    price = float(pol.pool(pool)["usd_per_hour"])
+    conn = db.connect()
+    db.migrate(conn)
+    now = datetime.now(timezone.utc)
+    row = {"name": group_name(family, gpu), "pool": pool, "usd_per_hour": price, "replicas": replicas,
+           "job_kinds": FAMILIES[family][1].split(","), "deadline": now + timedelta(hours=hours),
+           "max_usd": usd_cap}
+    conn.execute(
+        """
+        INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, replicas, job_kinds, deadline, max_usd)
+        VALUES (%(name)s, 'salad', %(pool)s, %(usd_per_hour)s, %(replicas)s, %(job_kinds)s, %(deadline)s, %(max_usd)s)
+        ON CONFLICT (name) DO UPDATE SET deadline = EXCLUDED.deadline, max_usd = EXCLUDED.max_usd,
+            started_at = now(), billed_until = now(), last_busy_at = now(), stopped_at = NULL, stop_reason = NULL
+        """, row)
+    return row
+
+
+def up(family: str, gpu: str, replicas: int, priority: str, tag: str,
+       max_hours: float | None = None, max_usd: float | None = None) -> None:
+    reg = register(family, gpu, replicas, priority, max_hours, max_usd)
+    print(f"registered {reg['name']}: deadline {reg['deadline']:%Y-%m-%d %H:%M} UTC, cap ${reg['max_usd']:.2f}, "
+          f"~${reg['usd_per_hour'] * replicas:.2f}/hour")
     image, kinds, _, cpu, mem, disk = FAMILIES[family]
     env = {k: os.environ[k] for k in PASS_THROUGH if os.environ.get(k)}
     env.update({"MW_WORKER_KINDS": kinds, "MW_POOL": f"salad_{priority}_{gpu_slug(gpu)}"})
@@ -112,10 +150,28 @@ def status(family: str, gpu: str) -> None:
 
 
 def down(family: str, gpu: str) -> None:
-    base = f"/organizations/{{org}}/projects/{{project}}/containers/{group_name(family, gpu)}"
+    name = group_name(family, gpu)
+    base = f"/organizations/{{org}}/projects/{{project}}/containers/{name}"
     _req("POST", f"{base}/stop")
     _req("DELETE", base)
-    print(f"stopped and deleted {group_name(family, gpu)}")
+    try:  # final meter + mark stopped, so the ledger holds the full billed time
+        from datetime import datetime, timezone
+
+        from .. import db, policy as policy_mod
+        conn = db.connect()
+        g = conn.execute("SELECT * FROM gpu_groups WHERE name = %s AND stopped_at IS NULL", (name,)).fetchone()
+        if g:
+            from .. import ledger
+            now = datetime.now(timezone.utc)
+            secs = max((now - g["billed_until"]).total_seconds(), 0)
+            usd = secs / 3600 * float(g["usd_per_hour"]) * int(g["replicas"])
+            ledger.record(conn, category="gpu_billed", provider=g["pool"], quantity=round(secs, 1),
+                          unit="instance_second", usd=usd, policy_version=policy_mod.load().version)
+            conn.execute("UPDATE gpu_groups SET billed_until = %s, billed_usd = billed_usd + %s, "
+                         "stopped_at = %s, stop_reason = 'manual' WHERE name = %s", (now, usd, now, name))
+    except Exception as e:  # noqa: BLE001 - stopping must never fail because of metering
+        print(f"warning: could not meter final time for {name}: {e}")
+    print(f"stopped and deleted {name}")
 
 
 def main(argv=None) -> None:
@@ -128,6 +184,8 @@ def main(argv=None) -> None:
     u.add_argument("--replicas", type=int, default=1)
     u.add_argument("--priority", default="batch", choices=["batch", "low", "medium", "high"])
     u.add_argument("--tag", default="day1")
+    u.add_argument("--max-hours", type=float, help="hard stop (default policy gpu_runs.default_max_hours)")
+    u.add_argument("--max-usd", type=float, help="spend cap (default policy gpu_runs.default_max_usd)")
     for name in ("status", "down"):
         s = sub.add_parser(name)
         s.add_argument("family", choices=FAMILIES)
@@ -137,7 +195,7 @@ def main(argv=None) -> None:
         for g in gpu_classes():
             print(json.dumps({k: g.get(k) for k in ("id", "name", "prices", "is_high_demand")}, default=str))
     elif a.cmd == "up":
-        up(a.family, a.gpu, a.replicas, a.priority, a.tag)
+        up(a.family, a.gpu, a.replicas, a.priority, a.tag, a.max_hours, a.max_usd)
     elif a.cmd == "status":
         status(a.family, a.gpu)
     else:

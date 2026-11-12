@@ -200,10 +200,14 @@ class Worker:
         for i, out in enumerate(result.outputs):
             key = f"assets/{creator}/{job.id}/{i:02d}{out.path.suffix}"
             stored = self.store.put_file(out.path, key)
+            # Same job + same key = same asset: a rerun after preemption overwrites, never duplicates.
             row = self.conn.execute(
                 """
                 INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta, recipe)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (job_id, uri) DO UPDATE SET sha256 = EXCLUDED.sha256, bytes = EXCLUDED.bytes,
+                    meta = EXCLUDED.meta, recipe = EXCLUDED.recipe, created_at = now()
+                RETURNING id
                 """,
                 (job.id, job.creator_id, out.kind, stored.uri, stored.sha256, stored.bytes,
                  Jsonb(out.meta), Jsonb(result.recipe)),

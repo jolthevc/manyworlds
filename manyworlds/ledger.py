@@ -34,12 +34,24 @@ def record(
     )
 
 
+# 'gpu' entries attribute GPU time to the jobs that used it (for cost per output);
+# 'gpu_billed' entries are the provider's actual instance time, idle included.
+# The real bill is everything except 'gpu', which would double count.
+ATTRIBUTION_ONLY = ("gpu",)
+
+
+def bill_total(conn) -> float:
+    row = conn.execute("SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE category <> ALL(%s)",
+                       (list(ATTRIBUTION_ONLY),)).fetchone()
+    return float(row["u"])
+
+
 def totals(conn, *, batch: str | None = None) -> list[dict[str, Any]]:
     """Spend grouped by category and provider, optionally for one batch of jobs."""
     return conn.execute(
         """
         SELECT c.category, c.provider, sum(c.quantity) AS quantity, min(c.unit) AS unit,
-               round(sum(c.usd)::numeric, 6) AS usd
+               round(sum(c.usd)::numeric, 6) AS usd, c.category <> 'gpu' AS on_bill
         FROM cost_entries c
         LEFT JOIN jobs j ON j.id = c.job_id
         WHERE %(batch)s::text IS NULL OR j.batch = %(batch)s

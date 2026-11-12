@@ -1,0 +1,145 @@
+"""Cloud-side GPU spend enforcer. Runs every 10 minutes on GitHub Actions (see
+.github/workflows/gpu-enforcer.yml) so no limit depends on a laptop staying awake.
+
+Each tick, for every registered group that is still up:
+  1. meter billed instance time since the last tick into the ledger ('gpu_billed');
+  2. stop it if it is past its deadline, over its own spend cap, idle (no open jobs
+     for its kinds) after its boot grace, or if all groups together are over the day's
+     GPU budget.
+Any provider group named mw-* that was never registered (so has no deadline) is
+stopped immediately. API or database failures exit non-zero so the run shows red.
+
+    python -m manyworlds.deploy.enforce            # one tick
+    python -m manyworlds.deploy.enforce --dry-run  # report only
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from typing import Protocol
+
+from .. import db, ledger
+from .. import policy as policy_mod
+from ..policy import Policy
+
+
+class GroupAPI(Protocol):
+    def list_names(self) -> list[str]: ...
+    def stop_delete(self, name: str) -> None: ...
+
+
+class SaladGroups:
+    def list_names(self) -> list[str]:
+        from .salad import _req
+
+        res = _req("GET", "/organizations/{org}/projects/{project}/containers") or {}
+        items = res.get("items", res) if isinstance(res, dict) else res
+        return [g["name"] for g in items]
+
+    def stop_delete(self, name: str) -> None:
+        from .salad import _req
+
+        base = f"/organizations/{{org}}/projects/{{project}}/containers/{name}"
+        _req("POST", f"{base}/stop")
+        _req("DELETE", base)
+
+
+def _open_jobs(conn, kinds: list[str]) -> int:
+    return conn.execute(
+        "SELECT count(*) AS n FROM jobs WHERE kind = ANY(%s) AND status IN ('queued', 'running')",
+        (kinds,)).fetchone()["n"]
+
+
+def billed_today(conn) -> float:
+    row = conn.execute(
+        "SELECT coalesce(sum(usd), 0) AS u FROM cost_entries "
+        "WHERE category = 'gpu_billed' AND created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'"
+    ).fetchone()
+    return float(row["u"])
+
+
+def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dry_run: bool = False) -> list[dict]:
+    now = now or datetime.now(timezone.utc)
+    cfg = policy.get("gpu_runs", default={})
+    idle_min = float(cfg.get("idle_stop_minutes", 20))
+    grace_min = float(cfg.get("boot_grace_minutes", 45))
+    daily_cap = float(cfg.get("daily_gpu_usd", 10))
+    actions: list[dict] = []
+
+    live = set(api.list_names())
+    groups = conn.execute("SELECT * FROM gpu_groups WHERE stopped_at IS NULL ORDER BY started_at").fetchall()
+    registered = {g["name"] for g in groups}
+
+    # Meter every live registered group first, so the daily check sees current spend.
+    for g in groups:
+        if g["name"] not in live:
+            if not dry_run:
+                conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = 'gone' WHERE name = %s",
+                             (now, g["name"]))
+            actions.append({"group": g["name"], "action": "marked gone"})
+            continue
+        seconds = max((now - g["billed_until"]).total_seconds(), 0)
+        usd = seconds / 3600 * float(g["usd_per_hour"]) * int(g["replicas"])
+        if seconds and not dry_run:
+            ledger.record(conn, category="gpu_billed", provider=g["pool"], quantity=round(seconds, 1),
+                          unit="instance_second", usd=usd, policy_version=policy.version)
+            conn.execute("UPDATE gpu_groups SET billed_until = %s, billed_usd = billed_usd + %s WHERE name = %s",
+                         (now, usd, g["name"]))
+        g["billed_usd"] = float(g["billed_usd"]) + usd
+
+    spent_today = billed_today(conn) if not dry_run else None
+
+    for g in groups:
+        if g["name"] not in live:
+            continue
+        busy = _open_jobs(conn, list(g["job_kinds"])) > 0
+        last_busy = now if busy else g["last_busy_at"]
+        if busy and not dry_run:
+            conn.execute("UPDATE gpu_groups SET last_busy_at = %s WHERE name = %s", (now, g["name"]))
+        reason = None
+        if now >= g["deadline"]:
+            reason = "deadline"
+        elif g["billed_usd"] >= float(g["max_usd"]):
+            reason = "max_usd"
+        elif spent_today is not None and spent_today >= daily_cap:
+            reason = "daily_gpu_budget"
+        elif (now - g["started_at"]).total_seconds() > grace_min * 60 and \
+                (now - last_busy).total_seconds() > idle_min * 60:
+            reason = "idle"
+        if reason:
+            if not dry_run:
+                api.stop_delete(g["name"])
+                conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = %s WHERE name = %s",
+                             (now, reason, g["name"]))
+            actions.append({"group": g["name"], "action": "stopped", "reason": reason,
+                            "billed_usd": round(g["billed_usd"], 4)})
+        else:
+            actions.append({"group": g["name"], "action": "ok", "busy": busy,
+                            "billed_usd": round(g["billed_usd"], 4), "deadline": g["deadline"].isoformat()})
+
+    # Anything of ours running without a registered deadline gets stopped on sight.
+    for name in sorted(live - registered):
+        if name.startswith("mw-"):
+            if not dry_run:
+                api.stop_delete(name)
+            actions.append({"group": name, "action": "stopped", "reason": "unregistered"})
+    return actions
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="enforce")
+    p.add_argument("--dry-run", action="store_true")
+    a = p.parse_args(argv)
+    conn = db.connect()
+    db.migrate(conn)
+    actions = tick(conn, policy_mod.load(), SaladGroups(), dry_run=a.dry_run)
+    # Group names, states and amounts only: these logs are public on a public repo.
+    print(json.dumps(actions, indent=2, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

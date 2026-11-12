@@ -1,0 +1,42 @@
+# Cloud-side GPU spend enforcer: stops SaladCloud groups that are past their deadline,
+# over their spend cap, idle, or over the day's GPU budget, and meters billed time.
+# Runs on GitHub's servers, so it keeps working when no laptop is awake.
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   DATABASE_URL, SALAD_API_KEY, SALAD_ORG, SALAD_PROJECT
+#
+# GitHub may delay scheduled runs by several minutes under load, and pauses schedules
+# in repositories with no activity for 60 days; the per-group deadline is the backstop
+# for the first, and any push re-enables the second.
+name: gpu-enforcer
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: gpu-enforcer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet .
+      - name: Enforce GPU limits
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SALAD_API_KEY: ${{ secrets.SALAD_API_KEY }}
+          SALAD_ORG: ${{ secrets.SALAD_ORG }}
+          SALAD_PROJECT: ${{ secrets.SALAD_PROJECT }}
+          MW_POLICY: policy/default.yaml
+        run: python -m manyworlds.deploy.enforce

@@ -42,7 +42,7 @@ def conn(database_url, policy):
     policy_mod.register(c, policy)
     c.execute(
         "TRUNCATE jobs, attempts, assets, cost_entries, reviews, posts, metric_snapshots, "
-        "plans, experiments, theses, creators, research_items, research_runs, decisions "
+        "plans, experiments, theses, creators, research_items, research_runs, decisions, gpu_groups "
         "RESTART IDENTITY CASCADE"
     )
     yield c

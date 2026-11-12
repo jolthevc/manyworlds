@@ -7,6 +7,18 @@ budgets:
   per_creator_daily_usd: 3.0
   mvp_week_usd: 100.0
 
+# Rented GPU groups. Every group launches with a deadline and a spend cap, and the
+# cloud-side enforcer (manyworlds.deploy.enforce, run by GitHub Actions every 10 min)
+# stops groups that pass either, sit idle, or push the day over the GPU budget.
+# Nothing here depends on a process running on a laptop.
+gpu_runs:
+  default_max_hours: 2
+  default_max_usd: 1.0
+  max_hours_limit: 12          # the launcher refuses anything longer
+  idle_stop_minutes: 20        # no open jobs for this long (after boot grace) -> stop
+  boot_grace_minutes: 45       # image download + model load can take this long
+  daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
+
 # Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).
 # The router prefers the cheapest pool that can run the job kind.
 gpu_pools:
