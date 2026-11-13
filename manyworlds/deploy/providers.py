@@ -260,6 +260,24 @@ def all_providers(policy) -> dict[str, Provider]:
 
 # --- Stopping our own machine from inside it ----------------------------------------
 
+def image_published(image: str) -> bool:
+    """True when `image` (registry/namespace/repo:tag) can be pulled. A machine started
+    on an unpublished tag bills while its pull fails, so the autoscaler checks first.
+    Only Docker Hub is checked; other registries are assumed published."""
+    ref, _, tag = image.rpartition(":")
+    parts = ref.split("/")
+    if parts[0] not in ("docker.io", "index.docker.io") or len(parts) != 3:
+        return True
+    url = f"https://hub.docker.com/v2/repositories/{parts[1]}/{parts[2]}/tags/{tag or 'latest'}"
+    try:
+        http("GET", url, {})
+        return True
+    except ProviderError as e:
+        if " -> 404" in str(e):
+            return False
+        raise
+
+
 def self_destroy() -> str | None:
     """Destroy the machine this process runs on, using the instance-scoped key the
     provider injects. Returns the provider name, or None when it isn't possible here

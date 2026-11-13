@@ -121,3 +121,11 @@ def test_router_prefers_cheapest_per_accepted_output():
     reg.register(Capability("pricier-but-good", "ImageGen", config={"est_usd_per_call": 0.001}),
                  stats={"reviewed": 100, "accepted": 60})
     assert reg.route("ImageGen").name == "pricier-but-good"
+
+
+def test_worker_runs_jobs_pinned_to_its_pool_and_leaves_others(conn, database_url, store, policy):
+    mine = queue.enqueue(conn, "fake.image", {}, pools=["vast_4090"])
+    other = queue.enqueue(conn, "fake.image", {}, pools=["runpod_comm_4090"])
+    assert make_worker(database_url, store, policy, pool="vast_4090").run(max_jobs=2, idle_exit_seconds=1) == 1
+    status = lambda j: conn.execute("SELECT status FROM jobs WHERE id = %s", (j,)).fetchone()["status"]
+    assert status(mine) == "done" and status(other) == "queued"

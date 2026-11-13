@@ -38,7 +38,7 @@ gpu_pools:
   # Vast is a marketplace: usd_per_hour is the most we'll pay; the machine's actual
   # price (from the offer) is what gets metered.
   vast_3090:         {provider: vast,   gpu: rtx3090, usd_per_hour: 0.20, interruptible: false}
-  vast_4090:         {provider: vast,   gpu: rtx4090, usd_per_hour: 0.35, interruptible: false}
+  vast_4090:         {provider: vast,   gpu: rtx4090, usd_per_hour: 0.40, interruptible: false}
   vast_5090:         {provider: vast,   gpu: rtx5090, usd_per_hour: 0.50, interruptible: false}
   runpod_comm_3090:  {provider: runpod, gpu: rtx3090, usd_per_hour: 0.22, interruptible: false}
   runpod_comm_4090:  {provider: runpod, gpu: rtx4090, usd_per_hour: 0.34, interruptible: false}
@@ -58,7 +58,7 @@ job_kinds:
 # One worker image per job family, and what each machine needs. RAM is system memory:
 # loading and quantising models happens there before anything reaches the GPU.
 worker_images:
-  image: {image: mw-worker-image, tag: v2, cpu: 4, ram_gb: 24, disk_gb: 60}
+  image: {image: mw-worker-image, tag: v3, cpu: 4, ram_gb: 24, disk_gb: 60}
   tts:   {image: mw-worker-tts,   tag: day1, cpu: 2, ram_gb: 8,  disk_gb: 30}
   video: {image: mw-worker-video, tag: day1, cpu: 8, ram_gb: 48, disk_gb: 120}
   train: {image: mw-worker-train, tag: v2, cpu: 8, ram_gb: 48, disk_gb: 100}
@@ -75,7 +75,8 @@ gpu_names:
 # drains. A provider is skipped when its API key isn't configured.
 autoscale:
   tick_seconds: 60
-  max_groups_per_kind: 1         # raise once benchmarks justify parallel machines
+  tick_lease_seconds: 600      # a crashed tick's lock expires after this
+  max_groups_per_kind: 2         # raise once benchmarks justify parallel machines
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
   vast: {min_reliability: 0.98, verified_only: true, offers_to_try: 3, min_inet_down_mbps: 200}
   worker_self_stop: true         # workers on Vast/RunPod destroy their own machine when idle or past deadline
@@ -130,6 +131,8 @@ queue:
   max_attempts: 3              # per job, then it is marked dead and reported
   worker_max_consecutive_faults: 3   # GPU faults in a row before a worker exits for a restart
   job_max_worker_faults: 6           # a job that faults this many machines fails (it's the cause)
+  connect_timeout_seconds: 20        # a rented host that can't reach the database fails fast
+  startup_connect_attempts: 3        # then the worker destroys its own machine (Vast/RunPod)
 
 review:
   identity_min: 0.60           # placeholder until calibrated on hand labels

@@ -10,7 +10,7 @@ Each tick:
 
 Three independent layers stop machines: this loop (run always-on), GitHub Actions running
 the same tick on a schedule, and workers on Vast/RunPod destroying their own machine when
-idle or past deadline. Concurrent ticks are serialised with a Postgres advisory lock.
+idle or past deadline. Concurrent ticks are serialised with a lease row (works through connection poolers).
 
     python -m manyworlds.deploy.autoscale --once      # one tick
     python -m manyworlds.deploy.autoscale             # loop every autoscale.tick_seconds
@@ -31,9 +31,10 @@ from .. import db
 from .. import policy as policy_mod
 from ..policy import Policy
 from . import enforce
-from .providers import LaunchSpec, NoCapacity, Provider, ProviderError, all_providers, redact
+from .providers import (LaunchSpec, NoCapacity, Provider, ProviderError, all_providers,
+                        image_published, redact)
 
-LOCK_ID = 7_461_100  # arbitrary constant naming the advisory lock, not a tunable
+LEASE = "autoscale.tick"  # name of the lease row, not a tunable
 PASS_THROUGH = ["DATABASE_URL", "STORAGE_URL", "S3_ENDPOINT_URL", "AWS_ACCESS_KEY_ID",
                 "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "HF_TOKEN", "MW_IMAGE_MODEL",
                 "MW_VIDEO_MODEL", "MW_VIDEO_DISTILL_LORA"]
@@ -118,6 +119,8 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
                       disk_gb=int(img["disk_gb"]), max_usd_per_hour=float(p["usd_per_hour"]), env=env,
                       interruptible=bool(p.get("interruptible", False)),
                       priority=pool.split("_")[1] if p["provider"] == "salad" else "batch")
+    if not image_published(spec.image):
+        raise ProviderError(f"worker image {spec.image} is not published; not renting a machine for it")
     # Registered first: if anything after this point dies, the enforcer still knows the
     # machine's deadline and cap and will stop it.
     conn.execute(
@@ -188,7 +191,14 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
 def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime | None = None,
          launch: bool = True, dry_run: bool = False) -> list[dict]:
     now = now or datetime.now(timezone.utc)
-    if not conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (LOCK_ID,)).fetchone()["ok"]:
+    holder = uuid.uuid4().hex
+    lease_s = float(policy.get("autoscale", "tick_lease_seconds", default=600))
+    got = conn.execute(
+        """INSERT INTO leases (name, holder, until) VALUES (%(n)s, %(h)s, now() + make_interval(secs => %(s)s))
+           ON CONFLICT (name) DO UPDATE SET holder = excluded.holder, until = excluded.until
+           WHERE leases.until < now()
+           RETURNING holder""", {"n": LEASE, "h": holder, "s": lease_s}).fetchone()
+    if not got:
         return [{"action": "skipped", "reason": "another tick is running"}]
     try:
         api = MultiAPI(conn, providers)
@@ -198,7 +208,7 @@ def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime 
             actions += scale_up(conn, policy, providers, now=now)
         return actions
     finally:
-        conn.execute("SELECT pg_advisory_unlock(%s)", (LOCK_ID,))
+        conn.execute("DELETE FROM leases WHERE name = %s AND holder = %s", (LEASE, holder))
 
 
 def main(argv=None) -> int:

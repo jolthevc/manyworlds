@@ -47,6 +47,7 @@ class FakeProvider:
 @pytest.fixture(autouse=True)
 def registry(monkeypatch):
     monkeypatch.setenv("MW_REGISTRY", "docker.io/example")
+    monkeypatch.setattr(autoscale, "image_published", lambda image: True)
 
 
 def providers(**kw):
@@ -110,7 +111,8 @@ def test_crashed_machine_triggers_cooldown_not_a_launch_loop(conn, policy):
     ps["vast"].live.clear()                                             # machine vanished
     actions = autoscale.tick(conn, policy, ps, now=T0 + timedelta(minutes=5))
     assert any(a.get("action") == "cooldown" for a in actions) and len(ps["vast"].launched) == 1
-    autoscale.tick(conn, policy, ps, now=T0 + timedelta(minutes=25))    # cooldown over
+    cool = policy.get("autoscale", "relaunch_cooldown_minutes")
+    autoscale.tick(conn, policy, ps, now=T0 + timedelta(minutes=5 + cool + 1))    # cooldown over
     assert len(ps["vast"].launched) == 2
 
 
@@ -175,3 +177,21 @@ def test_backstop_without_a_providers_key_does_not_mark_its_machines_gone(conn, 
     blind = providers(vast=FakeProvider("vast", configured=False))
     autoscale.tick(conn, policy, blind, now=T0 + timedelta(minutes=5), launch=False)
     assert conn.execute("SELECT count(*) n FROM gpu_groups WHERE stopped_at IS NULL").fetchone()["n"] == 1
+
+
+def test_tick_lease_blocks_concurrent_ticks_and_is_released(conn, policy):
+    conn.execute("INSERT INTO leases (name, holder, until) VALUES ('autoscale.tick', 'other', now() + interval '5 min')")
+    assert autoscale.tick(conn, policy, providers(), now=T0)[0]["reason"] == "another tick is running"
+    conn.execute("UPDATE leases SET until = now() - interval '1 s'")          # holder crashed; lease expired
+    assert all(a.get("action") != "skipped" for a in autoscale.tick(conn, policy, providers(), now=T0))
+    assert conn.execute("SELECT count(*) n FROM leases").fetchone()["n"] == 0
+
+
+def test_no_machine_is_rented_for_an_unpublished_image(conn, policy, monkeypatch):
+    monkeypatch.setattr(autoscale, "image_published", lambda image: False)
+    queue.enqueue(conn, "train.lora", {})
+    ps = providers()
+    actions = autoscale.tick(conn, policy, ps, now=T0)
+    assert all(not p.launched for p in ps.values())
+    assert conn.execute("SELECT count(*) n FROM gpu_groups").fetchone()["n"] == 0
+    assert any("not published" in str(a) for a in actions)

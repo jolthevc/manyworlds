@@ -175,7 +175,7 @@ class Worker:
             threading.Thread(target=self._watchdog, daemon=True, name="self-stop").start()
         handled, idle_since = 0, time.monotonic()
         while not self._stop.is_set() and (max_jobs is None or handled < max_jobs):
-            job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease)
+            job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease, self.pool)
             if job is None:
                 if idle_exit_seconds is not None and time.monotonic() - idle_since > idle_exit_seconds:
                     break
@@ -310,7 +310,21 @@ def main_from_env() -> None:
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     kinds = [k.strip() for k in os.environ["MW_WORKER_KINDS"].split(",") if k.strip()]
-    worker = Worker(handlers=handlers_for(kinds), store=storage.from_url(), policy=policy_mod.load(),
-                    pool=os.environ.get("MW_POOL", "local"))
+    pol = policy_mod.load()
+    handlers, store = handlers_for(kinds), storage.from_url()
+    timeout = float(pol.get("queue", "connect_timeout_seconds", default=20))
+    worker = None
+    for attempt in range(int(pol.get("queue", "startup_connect_attempts", default=3))):
+        try:
+            worker = Worker(handlers=handlers, store=store, policy=pol, pool=os.environ.get("MW_POOL", "local"),
+                            connect=lambda url=None: db.connect(url, timeout=timeout))
+            break
+        except Exception as e:  # noqa: BLE001 - some rented hosts block outbound database traffic
+            log.warning("database unreachable (attempt %d): %s", attempt + 1, type(e).__name__)
+    if worker is None:
+        # A machine that can't reach the queue can never do work: don't pay for it.
+        from ..deploy.providers import self_destroy
+        log.error("database unreachable from this host; destroyed own machine: %s", self_destroy())
+        raise SystemExit(2)
     log.info("worker %s serving %s", worker.worker_id, kinds)
     worker.run()

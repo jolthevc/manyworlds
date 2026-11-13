@@ -15,6 +15,6 @@ COPY pyproject.toml ./
 COPY manyworlds ./manyworlds
 RUN pip install --no-cache-dir ".[${EXTRA}]" "huggingface_hub[cli]"
 COPY policy ./policy
-RUN if [ -n "$PREFETCH" ]; then for m in $PREFETCH; do huggingface-cli download "$m"; done; fi
+RUN if [ -n "$PREFETCH" ]; then for m in $PREFETCH; do python -c "import sys; from huggingface_hub import snapshot_download; snapshot_download(sys.argv[1])" "$m"; done; fi
 ENTRYPOINT ["mw"]
 CMD ["worker"]

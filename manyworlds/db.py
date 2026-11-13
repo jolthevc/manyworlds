@@ -9,9 +9,10 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-def connect(url: str | None = None) -> psycopg.Connection:
+def connect(url: str | None = None, timeout: float | None = None) -> psycopg.Connection:
     url = url or os.environ["DATABASE_URL"]
-    return psycopg.connect(url, autocommit=True, row_factory=dict_row)
+    extra = {"connect_timeout": int(timeout)} if timeout else {}
+    return psycopg.connect(url, autocommit=True, row_factory=dict_row, **extra)
 
 
 def migrate(conn: psycopg.Connection) -> list[str]:
