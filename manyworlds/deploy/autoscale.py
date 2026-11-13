@@ -48,13 +48,17 @@ class MultiAPI:
         self.where: dict[str, tuple[Provider, str | None]] = {}
         self.errors: dict[str, str] = {}
         for pname, p in providers.items():
-            if not p.configured():
-                continue
             try:
+                if not p.configured():
+                    # No key here (e.g. a backstop without every provider's secret): we
+                    # can't see its machines, which is not the same as them being gone.
+                    # Marking them gone would tell their workers to self-destroy.
+                    raise ProviderError(f"{pname} not configured in this environment")
                 for name, ref in p.list_live().items():
                     self.where[name] = (p, ref)
             except ProviderError as e:
-                self.errors[pname] = str(e)[:300]
+                if p.configured():
+                    self.errors[pname] = str(e)[:300]
                 for g in conn.execute("SELECT name, provider_ref FROM gpu_groups "
                                       "WHERE provider = %s AND stopped_at IS NULL", (pname,)).fetchall():
                     self.where[g["name"]] = (p, g["provider_ref"])
@@ -64,6 +68,8 @@ class MultiAPI:
 
     def stop_delete(self, name: str) -> None:
         p, ref = self.where[name]
+        if not p.configured():
+            raise ProviderError(f"cannot stop {name}: {p.name} not configured in this environment")
         p.destroy(name, ref)
 
 

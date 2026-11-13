@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -140,6 +141,7 @@ class Salad:
 class Vast:
     name = "vast"
     API = "https://console.vast.ai/api/v0"
+    API_V1 = "https://console.vast.ai/api/v1"
 
     def __init__(self, min_reliability: float = 0.98, verified_only: bool = True, offers_to_try: int = 3,
                  min_inet_down_mbps: float = 0):
@@ -185,9 +187,18 @@ class Vast:
         raise NoCapacity(f"could not rent any of {len(offers)} Vast offers: {last}")
 
     def list_live(self) -> dict[str, str]:
-        res = self._req("GET", "/instances/") or {}
-        return {i["label"]: str(i["id"]) for i in res.get("instances", [])
-                if (i.get("label") or "").startswith("mw-")}
+        # Listing moved to v1 (v0 returns 410) and is paginated; rent/destroy remain on v0.
+        live, token = {}, None
+        for _ in range(50):
+            path = "/instances/" + (f"?next_token={urllib.parse.quote(token)}" if token else "")
+            res = http("GET", self.API_V1 + path,
+                       {"Authorization": f"Bearer {os.environ['VAST_API_KEY']}"}) or {}
+            live.update({i["label"]: str(i["id"]) for i in res.get("instances", [])
+                         if (i.get("label") or "").startswith("mw-")})
+            token = res.get("next_token")
+            if not token:
+                return live
+        raise ProviderError("Vast instance listing did not finish paginating")
 
     def destroy(self, name: str, ref: str | None) -> None:
         if not ref:

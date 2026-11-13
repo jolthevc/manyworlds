@@ -166,3 +166,12 @@ def test_worker_self_stop_reasons(conn, policy, store, database_url):
 def test_errors_never_carry_secrets(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgres://user:hunter2hunter2@db/x")
     assert "hunter2" not in redact("400: bad env {'DATABASE_URL': 'postgres://user:hunter2hunter2@db/x'}")
+
+
+def test_backstop_without_a_providers_key_does_not_mark_its_machines_gone(conn, policy):
+    queue.enqueue(conn, "train.lora", {})
+    autoscale.tick(conn, policy, providers(), now=T0)
+    # The GitHub backstop has no Vast key: it must keep the machine, not mark it gone.
+    blind = providers(vast=FakeProvider("vast", configured=False))
+    autoscale.tick(conn, policy, blind, now=T0 + timedelta(minutes=5), launch=False)
+    assert conn.execute("SELECT count(*) n FROM gpu_groups WHERE stopped_at IS NULL").fetchone()["n"] == 1
