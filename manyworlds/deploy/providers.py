@@ -70,6 +70,7 @@ class LaunchSpec:
     env: dict[str, str] = field(default_factory=dict)
     interruptible: bool = False
     priority: str = "batch"    # SaladCloud only
+    min_cuda: float | None = None  # the image's CUDA build; hosts with older drivers can't run it
 
 
 @dataclass
@@ -169,6 +170,8 @@ class Vast:
             q["inet_down"] = {"gte": self.min_inet_down}
         if self.exclude_countries:
             q["geolocation"] = {"notin": self.exclude_countries}
+        if spec.min_cuda:
+            q["cuda_max_good"] = {"gte": spec.min_cuda}
         return (self._req("POST", "/bundles/", q) or {}).get("offers", [])
 
     def launch(self, name: str, spec: LaunchSpec) -> Machine:
@@ -217,6 +220,9 @@ class RunPod:
     name = "runpod"
     API = "https://rest.runpod.io/v1"
 
+    def __init__(self, cuda_versions: list[str] | None = None):
+        self.cuda_versions = [str(v) for v in (cuda_versions or [])]
+
     def configured(self) -> bool:
         return bool(os.environ.get("RUNPOD_API_KEY"))
 
@@ -229,7 +235,7 @@ class RunPod:
                 "name": name, "imageName": spec.image, "gpuTypeIds": [spec.gpu_name], "gpuCount": 1,
                 "cloudType": "COMMUNITY", "interruptible": spec.interruptible,
                 "containerDiskInGb": spec.disk_gb, "volumeInGb": 0, "minRAMPerGPU": spec.ram_gb,
-                "ports": [], "env": spec.env})
+                "ports": [], "env": spec.env, **self._cuda(spec)})
         except ProviderError as e:
             if "no " in str(e).lower() and ("available" in str(e).lower() or "instances" in str(e).lower()):
                 raise NoCapacity(str(e)) from None
@@ -239,6 +245,13 @@ class RunPod:
             self.destroy(name, pod["id"])
             raise NoCapacity(f"RunPod charged ${price}/h for {spec.gpu_name}, over the ${spec.max_usd_per_hour} limit")
         return Machine(name, pod["id"], price)
+
+    def _cuda(self, spec: LaunchSpec) -> dict:
+        """Pods on hosts whose driver predates the image's CUDA fail with 'CUDA unknown error'."""
+        if not spec.min_cuda or not self.cuda_versions:
+            return {}
+        ok = [v for v in self.cuda_versions if float(v) >= spec.min_cuda]
+        return {"allowedCudaVersions": ok} if ok else {}
 
     def list_live(self) -> dict[str, str]:
         pods = self._req("GET", "/pods") or []
@@ -259,7 +272,7 @@ def all_providers(policy) -> dict[str, Provider]:
             "vast": Vast(float(v.get("min_reliability", 0.98)), bool(v.get("verified_only", True)),
                          int(v.get("offers_to_try", 3)), float(v.get("min_inet_down_mbps", 0)),
                          list(v.get("exclude_countries", []))),
-            "runpod": RunPod()}
+            "runpod": RunPod(policy.get("autoscale", "runpod_cuda_versions", default=[]))}
 
 
 # --- Stopping our own machine from inside it ----------------------------------------

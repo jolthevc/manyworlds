@@ -205,3 +205,20 @@ def test_vast_search_excludes_policy_countries(policy, monkeypatch):
     vast.offers(LaunchSpec(image="x", gpu_name="RTX 3090", cpu=4, ram_gb=24, disk_gb=60, max_usd_per_hour=0.2,
                            env={}, interruptible=False, priority="batch"))
     assert sent["geolocation"] == {"notin": ["CN"]}
+
+
+def test_hosts_must_support_the_images_cuda(policy, monkeypatch):
+    """RunPod hosts with older drivers ran our CUDA 12.8 image and failed every job."""
+    from manyworlds.deploy.providers import LaunchSpec, RunPod, Vast, all_providers
+    ps = all_providers(policy)
+    spec = LaunchSpec(image="x", gpu_name="g", cpu=4, ram_gb=24, disk_gb=60, max_usd_per_hour=0.4,
+                      min_cuda=float(policy.get("worker_images", "image", "min_cuda")))
+    sent = {}
+    monkeypatch.setattr(RunPod, "_req", lambda self, m, path, body=None: sent.update(body or {}) or
+                        {"id": "p1", "costPerHr": 0.3})
+    ps["runpod"].launch("mw-x", spec)
+    assert sent["allowedCudaVersions"] == ["12.8", "12.9", "13.0"]
+    sent.clear()
+    monkeypatch.setattr(Vast, "_req", lambda self, m, path, body=None: sent.update(body or {}) or {"offers": []})
+    ps["vast"].offers(spec)
+    assert sent["cuda_max_good"] == {"gte": 12.8}

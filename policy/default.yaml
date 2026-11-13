@@ -58,10 +58,10 @@ job_kinds:
 # One worker image per job family, and what each machine needs. RAM is system memory:
 # loading and quantising models happens there before anything reaches the GPU.
 worker_images:
-  image: {image: mw-worker-image, tag: v5, cpu: 4, ram_gb: 24, disk_gb: 60}
-  tts:   {image: mw-worker-tts,   tag: day1, cpu: 2, ram_gb: 8,  disk_gb: 30}
-  video: {image: mw-worker-video, tag: day1, cpu: 8, ram_gb: 48, disk_gb: 120}
-  train: {image: mw-worker-train, tag: v3, cpu: 8, ram_gb: 48, disk_gb: 100}
+  image: {image: mw-worker-image, tag: v5, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 60}
+  tts:   {image: mw-worker-tts,   tag: day1, min_cuda: 12.8, cpu: 2, ram_gb: 8,  disk_gb: 30}
+  video: {image: mw-worker-video, tag: day1, min_cuda: 13.0, cpu: 8, ram_gb: 48, disk_gb: 120}
+  train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100}
 
 # What each provider calls each GPU.
 gpu_names:
@@ -79,6 +79,7 @@ autoscale:
   max_groups_per_kind: 2         # raise once benchmarks justify parallel machines
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
   # CN: huggingface.co is unreachable there, so workers that fetch weights at start never begin.
+  runpod_cuda_versions: ["12.8", "12.9", "13.0"]   # versions RunPod accepts in allowedCudaVersions
   vast: {min_reliability: 0.98, verified_only: true, offers_to_try: 3, min_inet_down_mbps: 200, exclude_countries: [CN]}
   worker_self_stop: true         # workers on Vast/RunPod destroy their own machine when idle or past deadline
   fake.image:      {pools: [local], outputs_per_job: 4}
