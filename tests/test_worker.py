@@ -129,3 +129,31 @@ def test_worker_runs_jobs_pinned_to_its_pool_and_leaves_others(conn, database_ur
     assert make_worker(database_url, store, policy, pool="vast_4090").run(max_jobs=2, idle_exit_seconds=1) == 1
     status = lambda j: conn.execute("SELECT status FROM jobs WHERE id = %s", (j,)).fetchone()["status"]
     assert status(mine) == "done" and status(other) == "queued"
+
+
+def test_driver_level_cuda_errors_are_machine_faults():
+    """Seen on a RunPod 4090: the GPU was broken, so every job failed. That's the machine."""
+    from manyworlds.worker.runner import is_worker_fault
+    assert is_worker_fault(RuntimeError("CUDA unknown error - this may be due to an incorrectly set up environment"))
+    assert not is_worker_fault(ValueError("prompt too long"))
+
+
+def test_a_machine_that_keeps_faulting_retires_itself(conn, database_url, store, policy):
+    import pytest
+    from datetime import datetime, timedelta, timezone
+
+    from manyworlds.worker.runner import WorkerUnhealthy
+
+    conn.execute("""INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd)
+                    VALUES ('mw-image-4090-runpod-beef', 'runpod', 'runpod_comm_4090', 0.34, '{fake.image}', %s, 1)""",
+                 (datetime.now(timezone.utc) + timedelta(hours=2),))
+    for _ in range(4):
+        queue.enqueue(conn, "fake.image", {"fail": "gpu"})
+    destroyed = []
+    worker = Worker(handlers=handlers_for(["fake.image"]), store=store, policy=policy, pool="local",
+                    database_url=database_url, group="mw-image-4090-runpod-beef",
+                    self_destroy=lambda: destroyed.append(1) or "runpod")
+    with pytest.raises(WorkerUnhealthy):
+        worker.run(poll_seconds=0.01)
+    g = conn.execute("SELECT deadline FROM gpu_groups WHERE name = 'mw-image-4090-runpod-beef'").fetchone()
+    assert destroyed == [1] and g["deadline"] <= datetime.now(timezone.utc)

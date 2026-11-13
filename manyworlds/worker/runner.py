@@ -74,7 +74,9 @@ class WorkerUnhealthy(RuntimeError):
 # Errors that mean the machine is broken, not the job: the job goes back to the queue
 # without losing an attempt, and the worker counts toward its circuit breaker.
 WORKER_FAULT_MARKERS = ("CUDA error", "out of memory", "CUDA out of memory", "cuDNN error",
-                        "CUBLAS_STATUS", "NCCL error", "device-side assert", "no CUDA GPUs")
+                        "CUBLAS_STATUS", "NCCL error", "device-side assert", "no CUDA GPUs",
+                        "CUDA unknown error", "CUDA driver", "NVML", "no NVIDIA driver",
+                        "CUDA-capable device")
 
 
 def is_worker_fault(exc: BaseException) -> bool:
@@ -143,6 +145,19 @@ class Worker:
             return "idle"
         return None
 
+    def _retire_machine(self) -> None:
+        """A machine whose GPU keeps faulting is broken: give it up rather than restart on it.
+        Its deadline moves to now (so every enforcement layer stops it), then it destroys itself."""
+        if not self.group:
+            return
+        from ..deploy.providers import self_destroy
+        try:
+            self.conn.execute("UPDATE gpu_groups SET deadline = least(deadline, now()) WHERE name = %s",
+                              (self.group,))
+            log.warning("retiring faulty machine %s: %s", self.group, (self._self_destroy or self_destroy)())
+        except Exception as e:  # noqa: BLE001 - the autoscaler still stops it by deadline
+            log.warning("could not retire %s: %s", self.group, e)
+
     def _watchdog(self):
         from ..deploy.providers import self_destroy
 
@@ -190,6 +205,7 @@ class Worker:
             handled += 1
             idle_since = time.monotonic()
             if self.consecutive_faults >= self.max_consecutive_faults:
+                self._retire_machine()
                 raise WorkerUnhealthy(
                     f"{self.consecutive_faults} consecutive machine faults on {self.worker_id}; exiting")
         return handled
