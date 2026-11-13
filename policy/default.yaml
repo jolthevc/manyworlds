@@ -17,8 +17,11 @@ gpu_runs:
   max_hours_by_family: {train: 3}   # boot + model download + ~1h of training
   max_usd_by_family: {}
   max_hours_limit: 12          # the launcher refuses anything longer
-  idle_stop_minutes: 20        # no open jobs for this long (after boot grace) -> stop
-  boot_grace_minutes: 45       # image download + model load can take this long
+  idle_stop_minutes: 20        # no open jobs for this long -> stop (SaladCloud: nodes pull images slowly)
+  # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
+  # more than starting a fresh one when work returns.
+  idle_stop_minutes_by_provider: {vast: 5, runpod: 5}
+  boot_grace_minutes: 45       # until its first job, a machine may take this long (image pull + model download)
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
 
 # Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).

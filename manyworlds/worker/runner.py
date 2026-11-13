@@ -140,7 +140,9 @@ class Worker:
             return "stopped_by_autoscaler"
         if now >= g["deadline"]:
             return "deadline"
-        idle_min = float(self.policy.get("gpu_runs", "idle_stop_minutes", default=20))
+        from ..deploy.enforce import idle_stop_minutes
+
+        idle_min = idle_stop_minutes(self.policy, self.pool_info.get("provider"))
         if not self._busy and time.monotonic() - self._idle_since > idle_min * 60:
             return "idle"
         return None

@@ -89,3 +89,43 @@ def test_dry_run_changes_nothing(conn, policy):
     api = FakeAPI(["mw-image-4090-a"])
     tick(conn, policy, api, now=T0 + timedelta(hours=3), dry_run=True)
     assert api.stopped == [] and ledger.bill_total(conn) == 0
+
+
+def _vast(conn, name):
+    register(conn, name, hours=12, max_usd=100)
+    conn.execute("UPDATE gpu_groups SET provider = 'vast', pool = 'vast_3090' WHERE name = %s", (name,))
+
+
+def _worked(conn, name, kind="image.zimage", at=T0):
+    """The machine ran a job that is now finished."""
+    job = queue.enqueue(conn, kind, {})
+    conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (job,))
+    conn.execute("INSERT INTO attempts (job_id, worker_id, pool, outcome, gpu_group, started_at) "
+                 "VALUES (%s, 'w', 'vast_3090', 'done', %s, %s)", (job, name, at))
+
+
+def test_a_machine_that_finished_its_work_stops_without_waiting_out_boot_grace(conn, policy):
+    from manyworlds.deploy.enforce import idle_stop_minutes
+    _vast(conn, "mw-image-3090-vast-a")
+    _worked(conn, "mw-image-3090-vast-a", at=T0 + timedelta(minutes=5))
+    api = FakeAPI(["mw-image-3090-vast-a"])
+    idle = idle_stop_minutes(policy, "vast")
+    assert idle < float(policy.get("gpu_runs", "boot_grace_minutes"))
+    conn.execute("UPDATE gpu_groups SET last_busy_at = %s", (T0 + timedelta(minutes=10),))  # job ended at 10 min
+    tick(conn, policy, api, now=T0 + timedelta(minutes=10 + idle - 1))     # within the idle window
+    assert api.stopped == []
+    actions = tick(conn, policy, api, now=T0 + timedelta(minutes=10 + idle + 1))
+    assert api.stopped == ["mw-image-3090-vast-a"] and actions[0]["reason"] == "idle"
+
+
+def test_a_machine_still_booting_keeps_its_grace(conn, policy):
+    _vast(conn, "mw-image-3090-vast-b")                                    # no job started yet
+    api = FakeAPI(["mw-image-3090-vast-b"])
+    tick(conn, policy, api, now=T0 + timedelta(minutes=30))
+    assert api.stopped == []
+
+
+def test_slow_starting_providers_keep_the_longer_idle_window(conn, policy):
+    from manyworlds.deploy.enforce import idle_stop_minutes
+    assert idle_stop_minutes(policy, "salad") == float(policy.get("gpu_runs", "idle_stop_minutes"))
+    assert idle_stop_minutes(policy, "vast") < idle_stop_minutes(policy, "salad")

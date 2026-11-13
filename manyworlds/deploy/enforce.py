@@ -53,6 +53,14 @@ def _open_jobs(conn, kinds: list[str]) -> int:
         (kinds,)).fetchone()["n"]
 
 
+def idle_stop_minutes(policy: Policy, provider: str | None) -> float:
+    """How long a machine may sit with no work before it is stopped. Short where machines
+    start in minutes (idling costs more than restarting), longer where starting is slow."""
+    cfg = policy.get("gpu_runs", default={})
+    by = cfg.get("idle_stop_minutes_by_provider") or {}
+    return float(by.get(provider, cfg.get("idle_stop_minutes", 20)))
+
+
 def billed_today(conn) -> float:
     row = conn.execute(
         "SELECT coalesce(sum(usd), 0) AS u FROM cost_entries "
@@ -64,7 +72,6 @@ def billed_today(conn) -> float:
 def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dry_run: bool = False) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     cfg = policy.get("gpu_runs", default={})
-    idle_min = float(cfg.get("idle_stop_minutes", 20))
     grace_min = float(cfg.get("boot_grace_minutes", 45))
     daily_cap = float(cfg.get("daily_gpu_usd", 10))
     actions: list[dict] = []
@@ -100,6 +107,12 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
         last_busy = now if busy else g["last_busy_at"]
         if busy and not dry_run:
             conn.execute("UPDATE gpu_groups SET last_busy_at = %s WHERE name = %s", (now, g["name"]))
+        # Boot grace covers image pull and model download, until the machine starts its first
+        # job. After that, idle time is just idle time.
+        started_work = conn.execute("SELECT 1 FROM attempts WHERE gpu_group = %s LIMIT 1",
+                                    (g["name"],)).fetchone() is not None
+        booting = not started_work and (now - g["started_at"]).total_seconds() <= grace_min * 60
+        idle_min = idle_stop_minutes(policy, g["provider"])
         reason = None
         if now >= g["deadline"]:
             reason = "deadline"
@@ -107,8 +120,7 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             reason = "max_usd"
         elif spent_today is not None and spent_today >= daily_cap:
             reason = "daily_gpu_budget"
-        elif (now - g["started_at"]).total_seconds() > grace_min * 60 and \
-                (now - last_busy).total_seconds() > idle_min * 60:
+        elif not booting and (now - last_busy).total_seconds() > idle_min * 60:
             reason = "idle"
         if reason:
             if not dry_run:
