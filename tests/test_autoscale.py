@@ -195,3 +195,13 @@ def test_no_machine_is_rented_for_an_unpublished_image(conn, policy, monkeypatch
     assert all(not p.launched for p in ps.values())
     assert conn.execute("SELECT count(*) n FROM gpu_groups").fetchone()["n"] == 0
     assert any("not published" in str(a) for a in actions)
+
+
+def test_vast_search_excludes_policy_countries(policy, monkeypatch):
+    from manyworlds.deploy.providers import LaunchSpec, Vast, all_providers
+    sent = {}
+    monkeypatch.setattr(Vast, "_req", lambda self, m, path, body=None: sent.update(body or {}) or {"offers": []})
+    vast = all_providers(policy)["vast"]
+    vast.offers(LaunchSpec(image="x", gpu_name="RTX 3090", cpu=4, ram_gb=24, disk_gb=60, max_usd_per_hour=0.2,
+                           env={}, interruptible=False, priority="batch"))
+    assert sent["geolocation"] == {"notin": ["CN"]}

@@ -144,7 +144,8 @@ class Vast:
     API_V1 = "https://console.vast.ai/api/v1"
 
     def __init__(self, min_reliability: float = 0.98, verified_only: bool = True, offers_to_try: int = 3,
-                 min_inet_down_mbps: float = 0):
+                 min_inet_down_mbps: float = 0, exclude_countries: list[str] | None = None):
+        self.exclude_countries = list(exclude_countries or [])
         self.min_reliability = min_reliability
         self.verified_only = verified_only
         self.offers_to_try = offers_to_try
@@ -166,6 +167,8 @@ class Vast:
             q["verified"] = {"eq": True}
         if self.min_inet_down:
             q["inet_down"] = {"gte": self.min_inet_down}
+        if self.exclude_countries:
+            q["geolocation"] = {"notin": self.exclude_countries}
         return (self._req("POST", "/bundles/", q) or {}).get("offers", [])
 
     def launch(self, name: str, spec: LaunchSpec) -> Machine:
@@ -254,7 +257,8 @@ def all_providers(policy) -> dict[str, Provider]:
     v = policy.get("autoscale", "vast", default={})
     return {"salad": Salad(),
             "vast": Vast(float(v.get("min_reliability", 0.98)), bool(v.get("verified_only", True)),
-                         int(v.get("offers_to_try", 3)), float(v.get("min_inet_down_mbps", 0))),
+                         int(v.get("offers_to_try", 3)), float(v.get("min_inet_down_mbps", 0)),
+                         list(v.get("exclude_countries", []))),
             "runpod": RunPod()}
 
 

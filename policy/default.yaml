@@ -78,7 +78,8 @@ autoscale:
   tick_lease_seconds: 600      # a crashed tick's lock expires after this
   max_groups_per_kind: 2         # raise once benchmarks justify parallel machines
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
-  vast: {min_reliability: 0.98, verified_only: true, offers_to_try: 3, min_inet_down_mbps: 200}
+  # CN: huggingface.co is unreachable there, so workers that fetch weights at start never begin.
+  vast: {min_reliability: 0.98, verified_only: true, offers_to_try: 3, min_inet_down_mbps: 200, exclude_countries: [CN]}
   worker_self_stop: true         # workers on Vast/RunPod destroy their own machine when idle or past deadline
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
