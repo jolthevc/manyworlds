@@ -49,11 +49,13 @@ gpu_pools:
 # Job kinds and the pools allowed to run them, in the order the autoscaler tries them.
 # Benchmarks (cost per accepted output) decide this order; until then it is cheapest
 # first, except training, where a full-memory Linux machine matters more than cents.
+# RunPod community pools are out of the defaults: three 4090 pods in a row failed every job with
+# "CUDA unknown error" (2026-11-13), even with allowedCudaVersions set. Pin with --pools to retest.
 job_kinds:
-  image.zimage:    {pools: [salad_batch_3090, salad_batch_a5000, salad_batch_4090, vast_4090, runpod_comm_4090], outputs_per_job: 4}
-  video.wan_i2v:   {pools: [salad_batch_5090, vast_5090, runpod_comm_5090], outputs_per_job: 1}
-  tts.kokoro:      {pools: [salad_batch_3060, salad_batch_4090, vast_4090, runpod_comm_4090], outputs_per_job: 1}
-  train.lora:      {pools: [vast_3090, runpod_comm_3090, vast_4090, runpod_comm_4090, salad_batch_3090], outputs_per_job: 1}
+  image.zimage:    {pools: [salad_batch_3090, salad_batch_a5000, salad_batch_4090, vast_4090], outputs_per_job: 4}
+  video.wan_i2v:   {pools: [salad_batch_5090, vast_5090], outputs_per_job: 1}
+  tts.kokoro:      {pools: [salad_batch_3060, salad_batch_4090, vast_4090], outputs_per_job: 1}
+  train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
 
 # One worker image per job family, and what each machine needs. RAM is system memory:
 # loading and quantising models happens there before anything reaches the GPU.
