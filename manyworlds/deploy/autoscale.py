@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from .. import db
 from .. import policy as policy_mod
 from ..policy import Policy
-from . import enforce
+from . import enforce, scoring
 from .providers import (LaunchSpec, NoCapacity, Provider, ProviderError, all_providers,
                         image_published, redact)
 
@@ -48,6 +48,7 @@ class MultiAPI:
     def __init__(self, conn, providers: dict[str, Provider]):
         self.where: dict[str, tuple[Provider, str | None]] = {}
         self.errors: dict[str, str] = {}
+        self.prices: dict[str, float] = {}  # what a provider says a machine costs now
         for pname, p in providers.items():
             try:
                 if not p.configured():
@@ -57,6 +58,7 @@ class MultiAPI:
                     raise ProviderError(f"{pname} not configured in this environment")
                 for name, ref in p.list_live().items():
                     self.where[name] = (p, ref)
+                self.prices.update(getattr(p, "prices", None) or {})
             except ProviderError as e:
                 if p.configured():
                     self.errors[pname] = str(e)[:300]
@@ -112,6 +114,9 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     name = f"mw-{family}-{p['gpu'].removeprefix('rtx')}-{provider.name}-{uuid.uuid4().hex[:4]}"
     kinds = _family_kinds(policy, family)
     env = {k: os.environ[k] for k in PASS_THROUGH if os.environ.get(k)}
+    # Tunables workers read from the environment, per family then per pool (policy).
+    env.update({k: str(v) for k, v in (img.get("env") or {}).items()})
+    env.update({k: str(v) for k, v in (p.get("worker_env") or {}).items()})
     env.update({"MW_WORKER_KINDS": ",".join(kinds), "MW_POOL": pool, "MW_GROUP": name,
                 "MW_PROVIDER": provider.name})
     spec = LaunchSpec(image=f"{os.environ['MW_REGISTRY'].rstrip('/')}/{img['image']}:{img.get('tag', 'latest')}",
@@ -157,6 +162,7 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         kind = w["kind"]
         if _family(kind) == "fake":
             continue
+        pinned = bool(w["pools"])
         pools = list(w["pools"] or policy.get("job_kinds", kind, "pools", default=[]))
         open_groups = conn.execute(
             "SELECT name, pool FROM gpu_groups WHERE stopped_at IS NULL AND %s = ANY(job_kinds)", (kind,)).fetchall()
@@ -174,19 +180,43 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             actions.append({"action": "cooldown", "kind": kind, "after": recent["name"],
                             "reason": recent["stop_reason"]})
             continue
+        # Pinned work (benchmarks) runs where it was pinned; everything else goes to the
+        # pool with the lowest measured cost per accepted output, skipping paused pools.
+        order, scores = (pools, []) if pinned else scoring.launch_order(conn, policy, _family(kind), pools, now)
+        if not order:
+            actions.append({"action": "no_pool", "kind": kind, "reason": "every pool is paused",
+                            "scores": _brief(scores)})
+            continue
         tried = []
-        for pool in pools:
+        for pool in order:
             info = policy.get("gpu_pools", pool)
             if not info or info["provider"] not in providers or not providers[info["provider"]].configured():
                 continue
             try:
-                actions.append(launch_one(conn, policy, providers, kind, pool, now))
+                launched = launch_one(conn, policy, providers, kind, pool, now)
+                if scores:
+                    launched["scores"] = _brief(scores)
+                actions.append(launched)
                 break
             except (NoCapacity, ProviderError) as e:
                 tried.append({"pool": pool, "error": str(e)[:200]})
         else:
             actions.append({"action": "no_capacity", "kind": kind, "waiting": w["n"], "tried": tried})
     return actions
+
+
+def _brief(scores: list[dict]) -> list[dict]:
+    return [{"pool": s["pool"], "status": s["status"], "outputs": s["outputs"], "billed_usd": s["billed_usd"],
+             "usd_per_output": None if s["usd_per_output"] == float("inf") else round(s["usd_per_output"], 5)}
+            for s in scores]
+
+
+def update_prices(conn, prices: dict[str, float]) -> None:
+    """Meter at what the provider says it charges now (a Vast instance costs more than the
+    offer it was rented from: storage is added), not the price seen at launch."""
+    for name, usd in prices.items():
+        conn.execute("UPDATE gpu_groups SET usd_per_hour = %s WHERE name = %s AND stopped_at IS NULL "
+                     "AND usd_per_hour <> %s", (usd, name, usd))
 
 
 def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime | None = None,
@@ -204,6 +234,8 @@ def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime 
     try:
         api = MultiAPI(conn, providers)
         actions = [{"action": "provider_error", "provider": k, "error": v} for k, v in api.errors.items()]
+        if not dry_run:
+            update_prices(conn, api.prices)
         actions += enforce.tick(conn, policy, api, now=now, dry_run=dry_run)
         if launch and not dry_run:
             actions += scale_up(conn, policy, providers, now=now)

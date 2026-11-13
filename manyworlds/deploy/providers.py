@@ -151,6 +151,7 @@ class Vast:
         self.verified_only = verified_only
         self.offers_to_try = offers_to_try
         self.min_inet_down = min_inet_down_mbps
+        self.prices: dict[str, float] = {}  # label -> current $/hour, filled by list_live
 
     def configured(self) -> bool:
         return bool(os.environ.get("VAST_API_KEY"))
@@ -194,15 +195,19 @@ class Vast:
 
     def list_live(self) -> dict[str, str]:
         # Listing moved to v1 (v0 returns 410) and is paginated; rent/destroy remain on v0.
-        live, token = {}, None
+        live, prices, token = {}, {}, None
         for _ in range(50):
             path = "/instances/" + (f"?next_token={urllib.parse.quote(token)}" if token else "")
             res = http("GET", self.API_V1 + path,
                        {"Authorization": f"Bearer {os.environ['VAST_API_KEY']}"}) or {}
-            live.update({i["label"]: str(i["id"]) for i in res.get("instances", [])
-                         if (i.get("label") or "").startswith("mw-")})
+            for i in res.get("instances", []):
+                if (i.get("label") or "").startswith("mw-"):
+                    live[i["label"]] = str(i["id"])
+                    if i.get("dph_total"):
+                        prices[i["label"]] = float(i["dph_total"])
             token = res.get("next_token")
             if not token:
+                self.prices = prices
                 return live
         raise ProviderError("Vast instance listing did not finish paginating")
 

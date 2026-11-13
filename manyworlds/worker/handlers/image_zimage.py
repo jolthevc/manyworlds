@@ -19,11 +19,15 @@ from typing import Any
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 
 MODEL_ID = os.environ.get("MW_IMAGE_MODEL", "Tongyi-MAI/Z-Image-Turbo")
-# Consumer cards on SaladCloud run Windows/WSL: the desktop holds VRAM, and when a model
-# doesn't fit, WSL spills to shared system memory and runs ~10x slower instead of failing.
-# Below this much free VRAM we let diffusers move components on and off the GPU.
+# Below this much free VRAM, diffusers moves components on and off the GPU for every image
+# (slow: speed then depends on the host's memory bus, not the GPU). The autoscaler sets it
+# per pool from policy (worker_images.image.env, gpu_pools.<pool>.worker_env). SaladCloud's
+# Windows/WSL nodes need a high value: when a model doesn't fit there, WSL spills to shared
+# system memory and runs ~10x slower instead of failing. On Linux hosts an over-full GPU
+# raises out-of-memory instead, and the handler falls back to offload (see _fall_back).
+# The default only applies to workers started by hand; it is the safe setting.
 OFFLOAD_BELOW_GB = float(os.environ.get("MW_OFFLOAD_BELOW_GB", "26"))
-_state: dict[str, Any] = {"pipe": None, "lora_uri": None, "offload": None}
+_state: dict[str, Any] = {"pipe": None, "lora_uri": None, "offload": None, "fallback": False}
 log = logging.getLogger("manyworlds.image")
 
 
@@ -44,6 +48,17 @@ def _pipe():
         _state.update(pipe=pipe, offload=offload, free_gb=round(free / 1e9, 1),
                       gpu=torch.cuda.get_device_name(0))
     return _state["pipe"]
+
+
+def _fall_back(pipe) -> None:
+    """The whole model didn't fit: keep this machine useful by offloading from now on."""
+    import torch
+
+    log.warning("out of GPU memory with the full model loaded; switching to cpu offload")
+    pipe.to("cpu")
+    torch.cuda.empty_cache()
+    pipe.enable_model_cpu_offload()
+    _state.update(offload=True, fallback=True)
 
 
 def _set_lora(pipe, ctx: JobContext, lora_uri: str | None, scale: float) -> None:
@@ -82,8 +97,17 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     outs, timings = [], []
     for i in range(n):
         t0 = time.monotonic()
-        img = pipe(prompt=prompt, height=height, width=width, num_inference_steps=steps,
-                   guidance_scale=guidance, generator=torch.Generator("cuda").manual_seed(seed + i)).images[0]
+        def render():
+            return pipe(prompt=prompt, height=height, width=width, num_inference_steps=steps,
+                        guidance_scale=guidance, generator=torch.Generator("cuda").manual_seed(seed + i)).images[0]
+        try:
+            img = render()
+        except torch.cuda.OutOfMemoryError:
+            if _state["offload"]:
+                raise
+            _fall_back(pipe)
+            t0 = time.monotonic()
+            img = render()
         timings.append(round(time.monotonic() - t0, 2))
         path = ctx.workdir / f"img_{i}.png"
         img.save(path)
@@ -93,6 +117,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
               "lora_scale": payload.get("lora_scale", 1.0)}
     return HandlerResult(outs, recipe=recipe, meta={
         "images": len(outs), "sec_per_image": timings, "cpu_offload": _state["offload"],
+        "offload_fallback": _state["fallback"],
         "gpu": _state.get("gpu"), "free_gb_at_load": _state.get("free_gb")})
 
 

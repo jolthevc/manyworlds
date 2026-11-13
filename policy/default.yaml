@@ -36,31 +36,38 @@ gpu_pools:
   salad_high_4090:   {provider: salad,  gpu: rtx4090, usd_per_hour: 0.44, interruptible: true}
   salad_high_5090:   {provider: salad,  gpu: rtx5090, usd_per_hour: 0.60, interruptible: true}
   # Vast is a marketplace: usd_per_hour is the most we'll pay; the machine's actual
-  # price (from the offer) is what gets metered.
-  vast_3090:         {provider: vast,   gpu: rtx3090, usd_per_hour: 0.20, interruptible: false}
-  vast_4090:         {provider: vast,   gpu: rtx4090, usd_per_hour: 0.40, interruptible: false}
-  vast_5090:         {provider: vast,   gpu: rtx5090, usd_per_hour: 0.50, interruptible: false}
-  runpod_comm_3090:  {provider: runpod, gpu: rtx3090, usd_per_hour: 0.22, interruptible: false}
-  runpod_comm_4090:  {provider: runpod, gpu: rtx4090, usd_per_hour: 0.34, interruptible: false}
-  runpod_comm_5090:  {provider: runpod, gpu: rtx5090, usd_per_hour: 0.69, interruptible: false}
+  # price (from Vast's instance listing, storage included) is what gets metered.
+  # worker_env: Linux hosts have the whole card free, so image workers load the full model
+  # (no CPU offload) when 22 GB is free; 24 GB cards report ~25 GB.
+  vast_3090:         {provider: vast,   gpu: rtx3090, usd_per_hour: 0.20, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
+  vast_4090:         {provider: vast,   gpu: rtx4090, usd_per_hour: 0.40, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
+  vast_5090:         {provider: vast,   gpu: rtx5090, usd_per_hour: 0.50, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
+  runpod_comm_3090:  {provider: runpod, gpu: rtx3090, usd_per_hour: 0.22, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
+  runpod_comm_4090:  {provider: runpod, gpu: rtx4090, usd_per_hour: 0.34, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
+  runpod_comm_5090:  {provider: runpod, gpu: rtx5090, usd_per_hour: 0.69, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
   runpod_sls_4090:   {provider: runpod_serverless, gpu: rtx4090, usd_per_hour: 1.34, interruptible: false}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
 
-# Job kinds and the pools allowed to run them, in the order the autoscaler tries them.
-# Benchmarks (cost per accepted output) decide this order; until then it is cheapest
-# first, except training, where a full-memory Linux machine matters more than cents.
+# Job kinds and the pools allowed to run them. The autoscaler orders them by measured cost
+# per accepted output (autoscale.scoring); this order only breaks ties and decides which
+# unmeasured pool is tried first.
 # RunPod community pools are out of the defaults: three 4090 pods in a row failed every job with
 # "CUDA unknown error" (2026-11-13), even with allowedCudaVersions set. Pin with --pools to retest.
 job_kinds:
-  image.zimage:    {pools: [salad_batch_3090, salad_batch_a5000, salad_batch_4090, vast_4090], outputs_per_job: 4}
+  image.zimage:    {pools: [salad_batch_3090, vast_3090, salad_batch_a5000, salad_batch_4090, vast_4090], outputs_per_job: 4}
   video.wan_i2v:   {pools: [salad_batch_5090, vast_5090], outputs_per_job: 1}
-  tts.kokoro:      {pools: [salad_batch_3060, salad_batch_4090, vast_4090], outputs_per_job: 1}
+  tts.kokoro:      {pools: [salad_batch_3060, vast_3090, salad_batch_4090, vast_4090], outputs_per_job: 1}
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
+  fake.image:      {pools: [local], outputs_per_job: 4}
+  fake.video:      {pools: [local], outputs_per_job: 1}
+  fake.tts:        {pools: [local], outputs_per_job: 1}
 
 # One worker image per job family, and what each machine needs. RAM is system memory:
 # loading and quantising models happens there before anything reaches the GPU.
 worker_images:
-  image: {image: mw-worker-image, tag: v5, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 60}
+  # env: passed to every worker of the family; a pool's worker_env overrides it.
+  image: {image: mw-worker-image, tag: v6, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 60,
+          env: {MW_OFFLOAD_BELOW_GB: 26}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   tts:   {image: mw-worker-tts,   tag: day1, min_cuda: 12.8, cpu: 2, ram_gb: 8,  disk_gb: 30}
   video: {image: mw-worker-video, tag: day1, min_cuda: 13.0, cpu: 8, ram_gb: 48, disk_gb: 120}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100}
@@ -84,9 +91,15 @@ autoscale:
   runpod_cuda_versions: ["12.8", "12.9", "13.0"]   # versions RunPod accepts in allowedCudaVersions
   vast: {min_reliability: 0.98, verified_only: true, offers_to_try: 3, min_inet_down_mbps: 200, exclude_countries: [CN]}
   worker_self_stop: true         # workers on Vast/RunPod destroy their own machine when idle or past deadline
-  fake.image:      {pools: [local], outputs_per_job: 4}
-  fake.video:      {pools: [local], outputs_per_job: 1}
-  fake.tts:        {pools: [local], outputs_per_job: 1}
+  # Pools are tried cheapest per accepted output first, from what machines actually billed
+  # (boot, idle and failures included) over the window. A number or {family: number, default: n}.
+  scoring:
+    enabled: true
+    window_days: 7
+    min_outputs: {default: 20, video: 5, train: 1}   # outputs before a pool is ranked
+    trial_usd: {default: 0.30, video: 0.60, train: 1.00}   # most spent measuring an unranked pool per window
+    pause_after_failed_machines: 3   # this many machines in a row with no output pauses the pool...
+    pause_hours: 24                  # ...for this long, then it gets a new trial
 
 generation:
   candidates_per_post: {photo: 15, story_clip: 3, talking_head: 2, narrated_edit: 1}

@@ -234,8 +234,9 @@ class Worker:
 
     def _run_one(self, job: queue.Job) -> None:
         attempt_id = self.conn.execute(
-            "INSERT INTO attempts (job_id, worker_id, pool, gpu_type) VALUES (%s, %s, %s, %s) RETURNING id",
-            (job.id, self.worker_id, self.pool, self.pool_info.get("gpu")),
+            "INSERT INTO attempts (job_id, worker_id, pool, gpu_type, gpu_group) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (job.id, self.worker_id, self.pool, self.pool_info.get("gpu"), self.group),
         ).fetchone()["id"]
         done, lost = threading.Event(), threading.Event()
         hb = threading.Thread(target=self._heartbeat, args=(job.id, done, lost), daemon=True)
