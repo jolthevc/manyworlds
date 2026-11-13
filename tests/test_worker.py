@@ -157,3 +157,21 @@ def test_a_machine_that_keeps_faulting_retires_itself(conn, database_url, store,
         worker.run(poll_seconds=0.01)
     g = conn.execute("SELECT deadline FROM gpu_groups WHERE name = 'mw-image-4090-runpod-beef'").fetchone()
     assert destroyed == [1] and g["deadline"] <= datetime.now(timezone.utc)
+
+
+def test_result_survives_the_database_dropping_the_idle_connection(conn, database_url, store, policy):
+    """Seen on Vast: 2.5 h of LoRA training, then Neon had closed the idle connection and
+    the finished LoRA was thrown away and trained again."""
+    job_id = queue.enqueue(conn, "fake.image", {"n": 1})
+    worker = make_worker(database_url, store, policy)
+    inner = worker.handlers["fake.image"]
+
+    def handler(payload, ctx):
+        out = inner(payload, ctx)
+        pid = worker.conn.execute("SELECT pg_backend_pid() p").fetchone()["p"]
+        conn.execute("SELECT pg_terminate_backend(%s)", (pid,))      # the drop, mid-job
+        return out
+
+    worker.handlers["fake.image"] = handler
+    assert worker.run(max_jobs=1) == 1
+    assert conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,)).fetchone()["status"] == "done"

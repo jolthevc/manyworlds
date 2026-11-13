@@ -210,6 +210,18 @@ class Worker:
                     f"{self.consecutive_faults} consecutive machine faults on {self.worker_id}; exiting")
         return handled
 
+    def _ensure_conn(self) -> None:
+        """Reconnect if the main connection was dropped while a job ran."""
+        try:
+            self.conn.execute("SELECT 1")
+        except Exception:  # noqa: BLE001 - any failure here means the connection is unusable
+            log.warning("database connection dropped during the job; reconnecting")
+            try:
+                self.conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.conn = self._connect(self.database_url)
+
     def _heartbeat(self, job_id, done: threading.Event, lost: threading.Event):
         conn = self._connect(self.database_url)
         try:
@@ -234,6 +246,9 @@ class Worker:
             with tempfile.TemporaryDirectory(prefix="mw-") as tmp:
                 ctx = JobContext(job=job, workdir=Path(tmp), store=self.store)
                 result = self.handlers[job.kind](job.payload, ctx)
+                # A long job (hours of LoRA training) leaves this connection idle; poolers and
+                # Neon drop idle connections, and losing it here would throw away the result.
+                self._ensure_conn()
                 if lost.is_set():
                     raise RuntimeError("lease lost to another worker; discarding outputs")
                 asset_ids = self._store_outputs(job, result)
@@ -264,6 +279,7 @@ class Worker:
         finally:
             done.set()
             hb.join(timeout=5)
+            self._ensure_conn()
             self.conn.execute(
                 "UPDATE attempts SET finished_at = now(), gpu_seconds = %s, outcome = %s, error = %s WHERE id = %s",
                 (round(time.monotonic() - t0, 3), outcome, error, attempt_id),
