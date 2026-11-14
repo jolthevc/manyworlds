@@ -112,7 +112,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                          **{g: True for g in GATES}, "identity_score": None, "realism_score": None, "defects": []}
                for a in assets}
 
-    remaining = list(assets)
+    remaining, rows = list(assets), []
     for stage_role, effort, stage in stages:
         if not remaining:
             break
@@ -125,10 +125,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                 verdict, details = decide(r, cfg), r.model_dump()
                 scores = {"identity": r.identity, "realism": r.realism}
             details.update(model=model, stage=stage)
-            if write:
-                for g in GATES:
-                    conn.execute("INSERT INTO reviews (asset_id, gate, passed, score, details) VALUES (%s, %s, %s, %s, %s)",
-                                 (a["id"], g, verdict[g], scores.get(g), Jsonb(details)))
+            rows += [(a["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in GATES]
             res = results[a["id"]]
             res["stages"].append({"stage": stage, "model": model, **scores, "passed": all(verdict.values())})
             res.update({g: res[g] and verdict[g] for g in GATES}, identity_score=scores.get("identity"),
@@ -141,6 +138,13 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         top = int(cfg.get("confirm_top_per_job", 0)) or len(still)
         still.sort(key=lambda a: -((results[a["id"]]["identity_score"] or 0) + (results[a["id"]]["realism_score"] or 0)))
         remaining = still[:top]
+    # All of a job's rows land together once every stage is done: anyone reading reviews
+    # (production picking images) must never see the screen without its confirm.
+    if write and rows:
+        with conn.transaction():
+            for row in rows:
+                conn.execute("INSERT INTO reviews (asset_id, gate, passed, score, details) "
+                             "VALUES (%s, %s, %s, %s, %s)", row)
     for r in results.values():
         r["confirmed"] = r["accepted"] and len(r["stages"]) == len(stages)
     return [results[a["id"]] for a in assets]

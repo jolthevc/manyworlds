@@ -168,3 +168,25 @@ def test_photo_prompt_carries_the_full_appearance():
     from manyworlds.creator.lab import photo_prompt
     p = photo_prompt(BIBLE, "at a bus stop", trigger="mw_x")
     assert p.startswith("mw_x, ") and "thin gold wire glasses" in p and "bus stop" in p
+
+
+def test_a_jobs_reviews_appear_all_at_once_when_both_stages_are_done(conn, database_url, policy, store, tmp_path):
+    # 2026-11-14: production read a job's screen rows while the confirm call was still running,
+    # saw every image reviewed and none confirmed, called the scene rejected and paid for a
+    # needless repair; the post then went out with the weaker image.
+    from manyworlds import db
+    _, job = creator_with_job(conn, store, tmp_path)
+    other = db.connect(database_url)
+    seen = []
+
+    class Watching(JudgeStub):
+        def structured(self, role, **kw):
+            seen.append(other.execute("SELECT count(*) n FROM reviews r JOIN assets a ON a.id = r.asset_id "
+                                      "WHERE a.job_id = %s", (job,)).fetchone()["n"])
+            return super().structured(role, **kw)
+
+    gates.review_job(conn, policy, Watching([ok(), ok(), ok(), ok()]), store, job, tmp_path)
+    assert seen == [0, 0]                                  # nothing visible mid-review
+    assert other.execute("SELECT count(*) n FROM reviews r JOIN assets a ON a.id = r.asset_id "
+                         "WHERE a.job_id = %s", (job,)).fetchone()["n"] > 0
+    other.close()
