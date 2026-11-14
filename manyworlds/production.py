@@ -89,7 +89,8 @@ def _best_confirmed(conn, job_ids: list[str]) -> dict | None:
 
 
 def _scene_state(conn, job_ids: list[str]) -> str:
-    """'waiting' (still generating or being reviewed), 'chosen' or 'failed'."""
+    """'waiting' (still generating or being reviewed), 'chosen', 'rejected' (every image was
+    reviewed and none passed) or 'failed' (the job itself failed: infrastructure, not taste)."""
     if _best_confirmed(conn, job_ids):
         return "chosen"
     last = conn.execute("SELECT status FROM jobs WHERE id = %s", (job_ids[-1],)).fetchone()["status"]
@@ -102,34 +103,75 @@ def _scene_state(conn, job_ids: list[str]) -> str:
         # The reviewer runs both stages in one pass, so reviewed means decided.
         if unreviewed:
             return "waiting"
+        return "rejected"
     return "failed"
+
+
+def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int):
+    """The narrated edit for a post whose photos are chosen: their voice reads the script."""
+    anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
+    voice = (anchors.get("voice") or {}).get("voice", "af_heart")
+    cfg = _cfg(policy).get("edit", {}) or {}
+    payload = {"images": [a["uri"] for a in chosen], "script": body.get("script", ""), "voice": voice,
+               "on_screen_text": body.get("on_screen_text", ""), **cfg}
+    return queue.enqueue(conn, "edit.narrated", payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
+                         post_id=post["id"], idempotency_key=f"post:{post['id']}:edit:{attempt}")
 
 
 def advance_post(conn, policy: Policy, post: dict) -> str:
     body = dict(post["body"])
     max_repairs = int(policy.get("review", "max_repairs_per_post", default=4))
+    max_failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
     chosen, waiting = [], False
     for i, jobs in enumerate(body["scene_jobs"]):
         state = _scene_state(conn, jobs)
         if state == "chosen":
             chosen.append(_best_confirmed(conn, jobs))
-        elif state == "waiting":
+            continue
+        if state == "waiting":
             waiting = True
-        elif body.get("repairs", 0) >= max_repairs:
-            body["drop_reason"] = f"scene {i}: no image passed review after {body['repairs']} repairs"
+            continue
+        # Rejected images use a creative repair; failed jobs (machines, downloads) are counted
+        # apart, so an infrastructure outage can't use up a post's repairs.
+        key, limit = ("repairs", max_repairs) if state == "rejected" else ("job_failures", max_failures)
+        if body.get(key, 0) >= limit:
+            body["drop_reason"] = (f"scene {i}: no image passed review after {body[key]} repairs" if key == "repairs"
+                                   else f"scene {i}: its job failed {body[key]} times")
             _set(conn, post["id"], "dropped", body, qa_status="failed")
             return "dropped"
-        else:
-            c = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
-            lora = ensure_lora(conn, policy, post["creator_id"])
-            jobs.append(str(_scene_job(conn, policy, post, c["bible"], lora, i, len(jobs))))
-            body["repairs"] = body.get("repairs", 0) + 1
-            waiting = True
+        c = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
+        lora = ensure_lora(conn, policy, post["creator_id"])
+        jobs.append(str(_scene_job(conn, policy, post, c["bible"], lora, i, len(jobs))))
+        body[key] = body.get(key, 0) + 1
+        waiting = True
     if waiting:
         _set(conn, post["id"], "producing", body)
         return "producing"
     body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
-    _set(conn, post["id"], "ready", body, qa_status="passed", asset_ids=[a["id"] for a in chosen])
+    asset_ids = [a["id"] for a in chosen]
+    if post["format"] == "narrated_edit":
+        edits = body.setdefault("edit_jobs", [])
+        if not edits:
+            edits.append(str(_edit_job(conn, policy, post, body, chosen, 0)))
+            _set(conn, post["id"], "producing", body)
+            return "producing"
+        job = conn.execute("SELECT status FROM jobs WHERE id = %s", (edits[-1],)).fetchone()
+        if job["status"] in ("queued", "running"):
+            _set(conn, post["id"], "producing", body)
+            return "producing"
+        video = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'video' LIMIT 1",
+                             (edits[-1],)).fetchone()
+        if not video:
+            if len(edits) > max_failures:
+                body["drop_reason"] = f"the edit failed {len(edits)} times"
+                _set(conn, post["id"], "dropped", body, qa_status="failed")
+                return "dropped"
+            edits.append(str(_edit_job(conn, policy, post, body, chosen, len(edits))))
+            _set(conn, post["id"], "producing", body)
+            return "producing"
+        body["video"] = {"asset_id": str(video["id"]), "uri": video["uri"]}
+        asset_ids = [video["id"], *asset_ids]
+    _set(conn, post["id"], "ready", body, qa_status="passed", asset_ids=asset_ids)
     return "ready"
 
 

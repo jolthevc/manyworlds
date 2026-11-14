@@ -84,5 +84,16 @@ services:
     command: ["produce", "--loop"]
     restart: unless-stopped
 
+  # Narrated edits on CPU (Kokoro voice + ffmpeg). Pool "local": the autoscaler never rents for it.
+  editor:
+    build: {context: ., dockerfile: docker/worker-edit.Dockerfile}
+    profiles: [live]
+    env_file: .env
+    environment: {MW_WORKER_KINDS: edit.narrated, MW_POOL: local}
+    command: ["worker"]
+    volumes: [edit-models:/models]
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  edit-models:

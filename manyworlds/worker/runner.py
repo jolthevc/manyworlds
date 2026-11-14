@@ -333,6 +333,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import tts_kokoro as mod
         elif family == "train":
             from .handlers import train_lora as mod
+        elif family == "edit":
+            from .handlers import edit_narrated as mod
         else:
             raise ValueError(f"no handler family for {kind!r}")
         found[kind] = mod.HANDLERS[kind]

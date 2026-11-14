@@ -69,6 +69,7 @@ job_kinds:
   video.wan_i2v:   {pools: [salad_batch_5090, vast_5090], outputs_per_job: 1}
   tts.kokoro:      {pools: [salad_batch_3060, vast_3090, salad_batch_4090, vast_4090], outputs_per_job: 1}
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
+  edit.narrated:   {pools: [local], outputs_per_job: 1}   # CPU (Kokoro + ffmpeg): the `editor` service, no GPU
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
@@ -198,6 +199,12 @@ planner:
   auto_statuses: [draft, active]   # creators the producer plans for (needs a profile and reference images)
   formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1]}
   video_formats: [narrated_edit, story_clip]
+  # What each format can show; the planner writes to these limits.
+  format_notes:
+    photo: "one candid photo"
+    carousel: "2-4 photos of the same moment, evening or day, in order"
+    narrated_edit: "3-6 photos in sequence with the creator's own voice reading `script` (15-30 s of natural speech, said the way they talk) and burned-in captions; routine montages belong here"
+    story_clip: "ONE 5-second shot animated from ONE photo, with one simple motion (steam rising, rain running down glass, a hand lifting a mug); `script` says only what moves. Never a montage or several actions"
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity
 
@@ -215,10 +222,12 @@ captions:
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
-  formats: [photo, carousel]    # formats production makes now; video formats wait in 'planned' until added
+  formats: [photo, carousel, narrated_edit]   # formats production makes now; others wait in 'planned' until added
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120
+  max_job_failures_per_post: 6   # failed jobs (machines, downloads) per post; apart from review repairs
+  edit: {speed: 0.95, width: 1080, height: 1920, fps: 30}   # narrated edits (edit.narrated)
 
 # Claude models by role. Low-volume judgement work runs on Opus; bulk roles
 # (captions, first-pass judging) come in later days and can point elsewhere.

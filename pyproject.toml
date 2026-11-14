@@ -19,6 +19,7 @@ test = ["pytest>=8"]
 image = ["torch>=2.7", "brotli>=1.2", "diffusers>=0.36", "transformers>=4.51", "accelerate>=1.6", "peft>=0.15", "safetensors", "pillow"]
 video = ["torch>=2.7", "brotli>=1.2", "diffusers>=0.36", "transformers>=4.51", "accelerate>=1.6", "peft>=0.15", "safetensors", "pillow", "imageio[ffmpeg]", "ftfy"]
 tts = ["torch>=2.7", "brotli>=1.2", "kokoro>=0.9", "soundfile", "numpy"]
+edit = ["brotli>=1.2", "kokoro>=0.9", "soundfile", "numpy"]   # CPU: torch comes from the CPU wheel index
 
 [project.scripts]
 mw = "manyworlds.cli:main"

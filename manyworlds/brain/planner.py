@@ -158,10 +158,13 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
         f"What this creator is testing: {json.dumps(_thesis(conn, creator_id), default=str)}\n"
         f"Recent posts, newest first (keep continuity; don't repeat scenes, jokes or captions):\n"
         f"{json.dumps(_recent(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}\n\n"
+        f"Days: { {i: (start + timedelta(days=i)).strftime('%A %d %B') for i in range(days)} } "
+        f"(weekly rituals happen on their weekday). "
         f"Plan exactly {counts['total']} posts over {days} days (day 0 to {days - 1}), spread evenly: "
         f"{counts['per_platform']} per platform. {counts['videos']} of them are videos "
         f"({cfg.get('video_formats')}), each in one of the creator's video series; the rest are photo posts. "
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
+        f"What each format is: {json.dumps(cfg.get('format_notes', {}))}. "
         + (f"Tone mix across the period: {tone_counts}. " if tone_counts else "")
         + f"Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
