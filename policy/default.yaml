@@ -217,6 +217,9 @@ brain:
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0}
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
+  # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
+  # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
+  evaluation: {samples: 3, check_rate: 0.1, prompt_version: "eval-v1", max_spread: 2}
   # What the Brain may change on its own (manyworlds.brain.overrides), with inclusive bounds; `*` is one
   # path segment. Anything else, and always `limits.*` and `budget.master*`, waits for owner approval.
   authority:
@@ -274,6 +277,8 @@ llm:
     research: claude-opus-5-5
     creator: claude-opus-5-5
     judge: claude-opus-5-5
+    evaluator: claude-sonnet-5-5     # creative scoring at volume (manyworlds.brain.evaluation)
+    evaluator_check: claude-opus-5-5 # scores a sample of the same items, to measure agreement
     review: claude-haiku-5-5     # first-pass image screen (manyworlds.review); every image
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
