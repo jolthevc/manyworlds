@@ -43,15 +43,16 @@ def test_a_mirror_without_its_manifest_is_never_used(store, tmp_path, monkeypatc
 
 
 def test_the_producer_queues_one_mirror_job_and_gives_up_after_the_limit(conn, policy, store):
-    repo = policy.get("models", "mirror")[0]["repo"]
-    assert [m["action"] for m in models.ensure_mirrored(conn, policy, store)] == ["queued"]
+    repos = policy.get("models", "mirror")
+    repo = repos[0]["repo"]
+    assert [m["action"] for m in models.ensure_mirrored(conn, policy, store)] == ["queued"] * len(repos)
     assert models.ensure_mirrored(conn, policy, store) == []         # one is already open
     limit = policy.get("models", "max_mirror_jobs")
     for _ in range(limit - 1):
         conn.execute("UPDATE jobs SET status = 'dead' WHERE kind = 'image.mirror'")
         models.ensure_mirrored(conn, policy, store)
     conn.execute("UPDATE jobs SET status = 'dead' WHERE kind = 'image.mirror'")
-    assert models.ensure_mirrored(conn, policy, store)[0]["action"] == "gave_up"
+    assert {m["repo"]: m["action"] for m in models.ensure_mirrored(conn, policy, store)}[repo] == "gave_up"
     assert conn.execute("SELECT count(*) n FROM jobs WHERE payload->>'repo' = %s", (repo,)).fetchone()["n"] == limit
 
 
