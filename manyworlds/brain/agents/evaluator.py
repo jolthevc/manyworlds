@@ -32,20 +32,21 @@ def creator_summary(conn, creator_id) -> tuple[int | None, str]:
     return c["profile_version"], f"THE CREATOR (@{c['handle']}): {json.dumps(facts, ensure_ascii=False)}"
 
 
-def _store(ctx, rubric_name: str, item_kind: str, content: list, *, creator_id, fmt, idea_id=None,
-           asset_id=None, item_key) -> list[str]:
-    cfg = ctx.policy.get("brain", "evaluation", default={}) or {}
+def score_and_store(conn, policy, llm, rubric_name: str, item_kind: str, content: list, *, creator_id, fmt,
+                    idea_id=None, asset_id=None, item_key) -> list[str]:
+    """Score an item with the evaluator (and the strong model when sampled) and store the rows."""
+    cfg = policy.get("brain", "evaluation", default={}) or {}
     r = rubrics.load(rubric_name)
-    rubrics.register(ctx.conn, r)
+    rubrics.register(conn, r)
     roles = ["evaluator"] + (["evaluator_check"] if evaluation.checked(item_key, float(cfg.get("check_rate", 0)))
                              else [])
-    scored = [evaluation.score(ctx.llm, ctx.policy, r, content, role=role, samples=int(cfg.get("samples", 3)),
+    scored = [evaluation.score(llm, policy, r, content, role=role, samples=int(cfg.get("samples", 3)),
                                creator_id=creator_id) for role in roles]
-    profile_version, _ = creator_summary(ctx.conn, creator_id)
+    profile_version, _ = creator_summary(conn, creator_id)
     ids = []
-    with ctx.conn.transaction():
+    with conn.transaction():
         for s in scored:
-            ids.append(str(ctx.conn.execute(
+            ids.append(str(conn.execute(
                 """INSERT INTO evaluations (item_kind, idea_id, asset_id, creator_id, rubric, rubric_version,
                        evaluator_model, prompt_version, scores, spreads, rationale, samples, profile_version, format)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
@@ -55,18 +56,23 @@ def _store(ctx, rubric_name: str, item_kind: str, content: list, *, creator_id, 
     return ids
 
 
+def idea_content(conn, idea_id) -> tuple:
+    """(creator_id, format, content) for scoring an idea: the creator summary and the plan, never
+    the planner's reasoning."""
+    idea = conn.execute("SELECT creator_id, concept, format, body FROM ideas WHERE id = %s", (idea_id,)).fetchone()
+    plan = {k: v for k, v in (idea["body"] or {}).items() if k != "reasoning"}
+    _, who = creator_summary(conn, idea["creator_id"])
+    text = f"THE IDEA ({idea['format']}): {idea['concept']}\nPLAN: {json.dumps(plan, ensure_ascii=False)}"
+    return idea["creator_id"], idea["format"], [who, text]
+
+
 def evaluate_idea(ctx: AgentContext, idea_id) -> uuid.UUID:
     def compute() -> dict:
-        idea = ctx.conn.execute("SELECT creator_id, concept, format, body FROM ideas WHERE id = %s",
-                                (idea_id,)).fetchone()
-        plan = {k: v for k, v in (idea["body"] or {}).items() if k != "reasoning"}   # never the planner's reasons
-        _, who = creator_summary(ctx.conn, idea["creator_id"])
-        content = [who, f"THE IDEA ({idea['format']}): {idea['concept']}\nPLAN: {json.dumps(plan, ensure_ascii=False)}"]
-        ids = _store(ctx, "idea", "idea", content, creator_id=idea["creator_id"], fmt=idea["format"],
-                     idea_id=idea_id, item_key=idea_id)
+        creator_id, fmt, content = idea_content(ctx.conn, idea_id)
+        ids = score_and_store(ctx.conn, ctx.policy, ctx.llm, "idea", "idea", content, creator_id=creator_id,
+                              fmt=fmt, idea_id=idea_id, item_key=idea_id)
         return {"kind": "evaluation", "inputs": {"idea_id": str(idea_id)}, "output": {"evaluation_ids": ids},
-                "rationale": f"scored idea on the idea rubric ({len(ids)} evaluator(s))",
-                "creator_id": idea["creator_id"]}
+                "rationale": f"scored idea on the idea rubric ({len(ids)} evaluator(s))", "creator_id": creator_id}
     return uuid.UUID(remember(ctx, f"evaluate:idea:{idea_id}", compute)["evaluation_ids"][0])
 
 
@@ -84,8 +90,8 @@ def evaluate_asset(ctx: AgentContext, asset_id, *, store=None) -> uuid.UUID:
         scenes = (a["body"] or {}).get("scenes") or []
         content = [who, f"PLANNED SCENE: {' | '.join(scenes) or '(none recorded)'}", "THE IMAGE:",
                    image_block(data, media), f"CAPTION: {a['caption'] or '(none)'}"]
-        ids = _store(ctx, "execution", "asset", content, creator_id=a["creator_id"], fmt=a["format"],
-                     asset_id=asset_id, item_key=asset_id)
+        ids = score_and_store(ctx.conn, ctx.policy, ctx.llm, "execution", "asset", content,
+                              creator_id=a["creator_id"], fmt=a["format"], asset_id=asset_id, item_key=asset_id)
         return {"kind": "evaluation", "inputs": {"asset_id": str(asset_id)}, "output": {"evaluation_ids": ids},
                 "rationale": f"scored image on the execution rubric ({len(ids)} evaluator(s))",
                 "creator_id": a["creator_id"]}

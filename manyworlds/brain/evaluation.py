@@ -97,3 +97,66 @@ def latest(conn, *, idea_id=None, asset_id=None, model: str | None = None) -> di
            WHERE (%(idea)s::uuid IS NULL OR idea_id = %(idea)s) AND (%(asset)s::uuid IS NULL OR asset_id = %(asset)s)
              AND (%(model)s::text IS NULL OR evaluator_model = %(model)s)
            ORDER BY created_at DESC LIMIT 1""", {"idea": idea_id, "asset": asset_id, "model": model}).fetchone()
+
+
+def reference_items(rubric_name: str) -> list[dict]:
+    """The fixed reference set for a rubric (policy/rubrics/reference/<rubric>.yaml)."""
+    import yaml
+
+    from .rubrics import ROOT
+    body = yaml.safe_load((ROOT / "reference" / f"{rubric_name}.yaml").read_text(encoding="utf-8"))
+    return [{**item, "creator": body.get("creator", "")} for item in body["items"]]
+
+
+def score_reference(conn, policy: Policy, llm, rubric_name: str) -> dict[str, dict[str, float | None]]:
+    """Score the reference set under the current rubric and evaluator model, and store the result on
+    the rubric version, so the next version or model can be compared item by item."""
+    from psycopg.types.json import Jsonb
+
+    from . import rubrics
+    r = rubrics.load(rubric_name)
+    rubrics.register(conn, r)
+    samples = int(policy.get("brain", "evaluation", "samples", default=3))
+    scores = {}
+    for item in reference_items(rubric_name):
+        s = score(llm, policy, r, [f"THE CREATOR: {item['creator']}", f"THE IDEA: {item['idea']}"],
+                  role="evaluator", samples=samples)
+        scores[item["id"]] = s.medians
+    conn.execute("UPDATE rubric_versions SET reference = %s WHERE rubric = %s AND version = %s",
+                 (Jsonb({"model": llm.model_for("evaluator"), "samples": samples, "scores": scores}),
+                  r.rubric, r.version))
+    return scores
+
+
+def drift(before: dict, after: dict) -> dict[str, float]:
+    """Mean absolute shift per dimension over the reference items both runs scored."""
+    shifts: dict[str, list[float]] = {}
+    for item in set(before) & set(after):
+        for dim, b in before[item].items():
+            a = after[item].get(dim)
+            if a is not None and b is not None:
+                shifts.setdefault(dim, []).append(abs(a - b))
+    return {d: round(statistics.mean(v), 3) for d, v in shifts.items()}
+
+
+def calibrate(conn, policy: Policy, llm, creator_id, *, posts: int) -> dict:
+    """Score a creator's latest planned/produced posts as ideas and report how noisy each dimension is:
+    the median spread across samples, and the share of items within `brain.evaluation.max_spread`."""
+    from . import ideas
+    from .agents import evaluator
+    max_spread = float(policy.get("brain", "evaluation", "max_spread", default=2))
+    rows = conn.execute("SELECT id FROM posts WHERE creator_id = %s AND status <> 'dropped' "
+                        "ORDER BY coalesce(scheduled_for, created_at) DESC LIMIT %s", (creator_id, posts)).fetchall()
+    spreads: dict[str, list[int]] = {}
+    for row in rows:
+        idea_id = ideas.from_post(conn, row["id"])
+        cid, fmt, content = evaluator.idea_content(conn, idea_id)
+        [eid, *_] = evaluator.score_and_store(conn, policy, llm, "idea", "idea", content, creator_id=cid, fmt=fmt,
+                                             idea_id=idea_id, item_key=idea_id)
+        for dim, sp in conn.execute("SELECT spreads FROM evaluations WHERE id = %s", (eid,)).fetchone()["spreads"].items():
+            if sp is not None:
+                spreads.setdefault(dim, []).append(sp)
+    dims = {d: {"median_spread": statistics.median(v), "within_max_spread": round(sum(x <= max_spread for x in v) / len(v), 3)}
+            for d, v in spreads.items()}
+    return {"items": len(rows), "max_spread": max_spread, "dimensions": dims,
+            "passing_dimensions": sum(1 for d in dims.values() if d["median_spread"] <= max_spread)}
