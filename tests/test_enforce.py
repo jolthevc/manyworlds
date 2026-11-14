@@ -177,3 +177,19 @@ def test_a_machine_that_never_starts_while_work_waits_is_stopped_after_boot_grac
     assert api.stopped == []
     actions = tick(conn, policy, api, now=T0 + timedelta(minutes=grace + 1))
     assert api.stopped == ["mw-image-4090-a"] and actions[0]["reason"] == "never_started"
+
+
+def test_fast_booting_providers_get_a_shorter_boot_grace(conn, policy):
+    # Measured 2026-11-14: RunPod machines that worked started their first job within 8 minutes;
+    # the one that took longer never started and billed 100 minutes.
+    from manyworlds.deploy.enforce import boot_grace_minutes
+    grace = boot_grace_minutes(policy, "runpod")
+    assert grace < boot_grace_minutes(policy, "salad") == float(policy.get("gpu_runs", "boot_grace_minutes"))
+    register(conn, "mw-image-3090-runpod-a", hours=12, max_usd=100)
+    conn.execute("UPDATE gpu_groups SET provider = 'runpod' WHERE name = 'mw-image-3090-runpod-a'")
+    queue.enqueue(conn, "image.zimage", {})
+    api = FakeAPI(["mw-image-3090-runpod-a"])
+    tick(conn, policy, api, now=T0 + timedelta(minutes=grace - 1))
+    assert api.stopped == []
+    actions = tick(conn, policy, api, now=T0 + timedelta(minutes=grace + 1))
+    assert api.stopped == ["mw-image-3090-runpod-a"] and actions[0]["reason"] == "never_started"

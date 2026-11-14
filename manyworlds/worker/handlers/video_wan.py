@@ -10,7 +10,9 @@ Backends, chosen with MW_VIDEO_BACKEND:
 * `lightx2v`: LightX2V's distilled Wan 2.2 14B as a subprocess (MW_LIGHTX2V_CMD template).
   Kept for a later quality/speed comparison; not verified.
 
-Payload: image_uri, prompt, width, height, frames, seed, params{steps, guidance, fps}.
+Payload: image_uri, prompt, width, height, frames, seed, params{steps, guidance, fps}, keyframes.
+Besides the clip, `keyframes` evenly spaced frames are stored as JPEG `keyframe` assets: the
+video review gate (manyworlds.review.video) judges identity drift and motion from them.
 Kind video.mirror copies the model into the bucket (see models.mirror).
 """
 
@@ -76,6 +78,31 @@ def _run_diffusers(ctx, image_path, out_path, prompt, w, h, frames, steps, guida
     export_to_video(frames_out, str(out_path), fps=fps)
 
 
+def keyframe_indices(frames: int, n: int) -> list[int]:
+    """n frames spread over the clip, ending on the last (where drift is worst); frame 0 is the
+    approved start photo itself, so it is left out."""
+    n = max(1, min(n, frames - 1))
+    return sorted({round((i + 1) * (frames - 1) / n) for i in range(n)})
+
+
+def extract_keyframes(video_path, workdir, n: int) -> list[OutputFile]:
+    import imageio.v2 as iio
+    from PIL import Image
+
+    # The reader's length is unknown (inf) until counted: list(reader) raises MemoryError.
+    reader = iio.get_reader(str(video_path), "ffmpeg")
+    total = reader.count_frames()
+    wanted = keyframe_indices(total, n)
+    outs = []
+    for idx, frame in enumerate(reader.iter_data()):
+        if idx in wanted:
+            p = workdir / f"keyframe_{len(outs)}.jpg"
+            Image.fromarray(frame).convert("RGB").save(p, quality=90)
+            outs.append(OutputFile(p, "keyframe", {"index": len(outs), "frame": idx, "of_frames": total}))
+    reader.close()
+    return outs
+
+
 def _run_lightx2v(image_path, out_path, prompt, seed):
     cmd = LIGHTX2V_CMD.format(
         model_path=shlex.quote(os.environ.get("MW_LIGHTX2V_MODEL_PATH", "/models/LightWan2.2-A14B")),
@@ -110,11 +137,12 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         raise NonRetryable(f"unknown MW_VIDEO_BACKEND {BACKEND!r}")
     render_s = round(time.monotonic() - t0, 1)
 
+    keyframes = extract_keyframes(out_path, ctx.workdir, int(payload.get("keyframes", 4)))
     seconds = round(frames / fps, 2)
     recipe = {"backend": BACKEND, "model": MODEL_ID if BACKEND == "diffusers" else "LightWan2.2-A14B",
               "prompt": payload["prompt"], "image_uri": payload["image_uri"], "seed": seed, "width": w, "height": h,
               "frames": frames, "steps": steps, "guidance": guidance, "fps": fps}
-    return HandlerResult([OutputFile(out_path, "video", {"seconds": seconds, "width": w, "height": h})],
+    return HandlerResult([OutputFile(out_path, "video", {"seconds": seconds, "width": w, "height": h}), *keyframes],
                          recipe=recipe, meta={"output_seconds": seconds, "render_seconds": render_s,
                                               "cpu_offload": _state.get("offload"), "gpu": _state.get("gpu")})
 

@@ -22,6 +22,7 @@ gpu_runs:
   # more than starting a fresh one when work returns.
   idle_stop_minutes_by_provider: {vast: 5, runpod: 5}
   boot_grace_minutes: 45       # until its first job, a machine may take this long (image pull + model download)
+  boot_grace_minutes_by_provider: {runpod: 20, vast: 30}   # working machines started within 8 / 21 min (2026-11-14)
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
@@ -68,7 +69,8 @@ job_kinds:
   image.zimage:    {pools: [vast_3090, vast_4090, salad_batch_3090, salad_batch_4090, runpod_comm_3090], outputs_per_job: 4}
   image.mirror:    {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 0}   # copies model weights into R2 once
   image.narrated:  {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # CPU edit (voice + ffmpeg) on image machines
-  video.wan_i2v:   {pools: [vast_4090, vast_5090], outputs_per_job: 1}   # Wan 2.2 TI2V-5B; not yet in production.formats
+  # Wan 2.2 TI2V-5B. RunPod 3090 measured 2026-11-14: 720p x 5 s in 859 s (cpu offload + tiled VAE), ~$0.05.
+  video.wan_i2v:   {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 1}
   video.mirror:    {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 0}
   tts.kokoro:      {pools: [salad_batch_3060, vast_3090, salad_batch_4090, vast_4090], outputs_per_job: 1}
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
@@ -82,11 +84,11 @@ worker_images:
   # env: passed to every worker of the family; a pool's worker_env overrides it.
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
-  image: {image: mw-worker-image, tag: v16, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
+  image: {image: mw-worker-image, tag: v17, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   tts:   {image: mw-worker-tts,   tag: day1, min_cuda: 12.8, cpu: 2, ram_gb: 8,  disk_gb: 30}
   # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v16, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
+  video: {image: mw-worker-image, tag: v17, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {MW_VIDEO_BACKEND: diffusers, MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
@@ -113,6 +115,12 @@ autoscale:
     drain_target_minutes: {default: 30, train: 180}
     history_days: 7
     default_job_seconds: {default: 120, image: 60, video: 300, train: 7200}
+  # Production work (made lead_hours ahead) waits to share one machine: each machine bills a boot,
+  # model load and idle tail (~7-10 min) however few jobs it runs. Lab work and benchmarks start at once.
+  batch:
+    min_work_minutes: {default: 10, video: 25, train: 0}   # start once this much work waits (median job times)...
+    max_wait_minutes: {default: 180}                       # ...or once the oldest job has waited this long
+    urgent_priority: 1                                     # jobs at this priority or above never wait
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
   # CN: huggingface.co is unreachable there, so workers that fetch weights at start never begin.
   runpod_cuda_versions: ["12.8", "12.9", "13.0"]   # versions RunPod accepts in allowedCudaVersions
@@ -145,11 +153,27 @@ review:
     reference_images: 3        # creator reference photos shown with every review
     max_jobs_per_run: 50
     loop_seconds: 120          # how often the reviewer looks for new images
+  # Story clips (manyworlds.review.video), judged from keyframes the video worker stores.
+  # 2026-11-14 benchmarks: the 480p clip drifted to another face by 4 s (must fail identity); the
+  # 720p clip held her face, hands steady (should pass).
+  video:
+    role: review               # screen every clip...
+    effort: low
+    confirm_role: judge        # ...confirm the ones it passed
+    confirm_effort: low
+    keyframes: 4               # spread over the clip, ending on the last frame
+    min_identity: 7            # in the worst keyframe
+    min_motion: 6
+    min_realism: 6
+    min_scene: 5
+    reference_images: 3
+    max_jobs_per_run: 10
+    max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
   max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
-  video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; to benchmark
+  video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; measured 2026-11-14
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:
@@ -229,7 +253,8 @@ captions:
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
-  formats: [photo, carousel, narrated_edit]   # formats production makes now; others wait in 'planned' until added
+  formats: [photo, carousel, narrated_edit, story_clip]   # formats production makes now; others wait in 'planned' until added
+  video_kind: video.wan_i2v
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120

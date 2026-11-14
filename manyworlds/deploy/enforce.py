@@ -67,6 +67,14 @@ def idle_stop_minutes(policy: Policy, provider: str | None) -> float:
     return float(by.get(provider, cfg.get("idle_stop_minutes", 20)))
 
 
+def boot_grace_minutes(policy: Policy, provider: str | None) -> float:
+    """How long a machine may take to start its first job. Measured 2026-11-14: working RunPod
+    machines started within 8 min and Vast within 21; the ones that took longer never started."""
+    cfg = policy.get("gpu_runs", default={})
+    by = cfg.get("boot_grace_minutes_by_provider") or {}
+    return float(by.get(provider, cfg.get("boot_grace_minutes", 45)))
+
+
 def billed_today(conn) -> float:
     row = conn.execute(
         "SELECT coalesce(sum(usd), 0) AS u FROM cost_entries "
@@ -78,7 +86,6 @@ def billed_today(conn) -> float:
 def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dry_run: bool = False) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     cfg = policy.get("gpu_runs", default={})
-    grace_min = float(cfg.get("boot_grace_minutes", 45))
     daily_cap = float(cfg.get("daily_gpu_usd", 10))
     stuck_min = float(cfg.get("stuck_minutes", 10))
     actions: list[dict] = []
@@ -130,7 +137,8 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             for a in conn.execute("SELECT a.started_at, j.kind FROM attempts a JOIN jobs j ON j.id = a.job_id "
                                   "WHERE a.gpu_group = %s AND a.finished_at IS NULL AND a.outcome IS NULL",
                                   (g["name"],)).fetchall())
-        booting = not started_work and (now - g["started_at"]).total_seconds() <= grace_min * 60
+        booting = (not started_work and
+                   (now - g["started_at"]).total_seconds() <= boot_grace_minutes(policy, g["provider"]) * 60)
         idle_min = idle_stop_minutes(policy, g["provider"])
         reason = None
         if now >= g["deadline"]:

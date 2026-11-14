@@ -93,6 +93,14 @@ def photo_prompt(bible: dict, scene: str, *, trigger: str | None = None) -> str:
     return f"{head}candid smartphone photo of a {appearance_prompt(bible)}. Scene: {scene}. Natural skin texture, realistic."
 
 
+def clip_prompt(bible: dict, scene: str, motion: str) -> str:
+    """The prompt for a story clip made from an approved photo of the scene: who, where, what moves.
+    Image-to-video keeps the look from the start photo; the full appearance helps it keep the face."""
+    move = f" Movement: {motion}." if motion else ""
+    return (f"Handheld smartphone video of a {appearance_prompt(bible)}. Scene: {scene}.{move} "
+            "Small natural movements, steady face, realistic.")
+
+
 def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> CreatorBible:
     scope = policy.get("scope", default={})
     n = int(policy.get("creator_lab", "reference_prompts", default=12))

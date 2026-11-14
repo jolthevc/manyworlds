@@ -238,3 +238,35 @@ def test_an_account_out_of_credit_is_reported_and_skipped(conn, policy):
     assert {"action": "provider_unfunded", "provider": "vast"} in actions
     assert ps["vast"].attempts == 1                                # one try, not one per Vast pool
     assert [a["pool"] for a in actions if a["action"] == "launched"] == ["runpod_comm_3090"]
+
+
+def _launched(actions):
+    return [a for a in actions if a.get("action") == "launched"]
+
+
+def test_a_little_production_work_waits_to_share_one_machine(conn, policy):
+    # 2026-11-14: machines that each ran one job billed 2-6x their job time (boot, model load,
+    # idle tail). Production work is made two days ahead, so a few minutes of it can wait.
+    now = datetime.now(timezone.utc)
+    queue.enqueue(conn, "image.zimage", {}, batch="post-a")
+    actions = autoscale.tick(conn, policy, providers(), now=now)
+    held = [a for a in actions if a.get("action") == "batching"]
+    assert not _launched(actions) and held and held[0]["work_minutes"] < held[0]["need_minutes"]
+    # Once it has waited max_wait_minutes it starts anyway.
+    wait = policy.get("autoscale", "batch", "max_wait_minutes", "default")
+    assert _launched(autoscale.tick(conn, policy, providers(), now=now + timedelta(minutes=wait + 1)))
+
+
+def test_enough_production_work_starts_a_machine_at_once(conn, policy):
+    need = policy.get("autoscale", "batch", "min_work_minutes", "default")
+    secs = policy.get("autoscale", "scale", "default_job_seconds", "image")
+    for i in range(int(need * 60 / secs) + 1):
+        queue.enqueue(conn, "image.zimage", {}, batch=f"post-{i}")
+    assert _launched(autoscale.tick(conn, policy, providers(), now=datetime.now(timezone.utc)))
+
+
+def test_lab_work_never_waits_and_takes_waiting_production_work_along(conn, policy):
+    now = datetime.now(timezone.utc)
+    queue.enqueue(conn, "image.zimage", {}, batch="post-a")
+    queue.enqueue(conn, "image.zimage", {}, batch="refpack-maren")      # someone is waiting on this
+    assert len(_launched(autoscale.tick(conn, policy, providers(), now=now))) == 1

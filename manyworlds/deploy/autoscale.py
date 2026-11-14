@@ -89,7 +89,8 @@ def waiting_work(conn) -> list[dict]:
     """Job kinds (and pinned pools) that have runnable jobs no worker holds."""
     return conn.execute(
         """
-        SELECT kind, pools, count(*) AS n FROM jobs
+        SELECT kind, pools, count(*) AS n, min(created_at) AS oldest, max(priority) AS top_priority,
+               bool_and(coalesce(batch, '') LIKE 'post-%%') AS production FROM jobs
         WHERE attempts < max_attempts
           AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
         GROUP BY kind, pools ORDER BY kind
@@ -113,6 +114,34 @@ def seconds_per_job(conn, policy: Policy, kind: str) -> float:
     if row and row["s"]:
         return float(row["s"])
     return float(_per_family(cfg, "default_job_seconds", _family(kind), 300))
+
+
+def batch_wait(conn, policy: Policy, family: str, work: list[dict], now: datetime) -> dict | None:
+    """Why a family's waiting work should wait for more, or None to start a machine now.
+
+    Every machine bills a boot, a model load and an idle tail (~7-10 min on RunPod) however many
+    jobs it runs, and production makes posts lead_hours ahead, so a few minutes of work can wait
+    to share a machine with more. Measured 2026-11-14: machines that ran one job each billed
+    2-6x their job time. Work starts when min_work_minutes of it waits, when the oldest job has
+    waited max_wait_minutes, or at once when anything other than production work waits (creator lab,
+    benchmarks: someone is waiting on those) or a job has urgent_priority."""
+    cfg = policy.get("autoscale", "batch", default={})
+    if not cfg:
+        return None
+    rows = [w for w in work if _family(w["kind"]) == family and not w["pools"]]
+    if not rows:
+        return None
+    if not all(w["production"] for w in rows) or \
+            max(int(w["top_priority"] or 0) for w in rows) >= int(cfg.get("urgent_priority", 1)):
+        return None
+    minutes = sum(int(w["n"]) * seconds_per_job(conn, policy, w["kind"]) for w in rows) / 60
+    waited = (now - min(w["oldest"] for w in rows)).total_seconds() / 60
+    need = float(_per_family(cfg, "min_work_minutes", family, 0))
+    max_wait = float(_per_family(cfg, "max_wait_minutes", family, 0))
+    if minutes >= need or waited >= max_wait:
+        return None
+    return {"work_minutes": round(minutes, 1), "need_minutes": need, "waited_minutes": round(waited),
+            "max_wait_minutes": max_wait}
 
 
 def machines_wanted(conn, policy: Policy, kind: str, waiting: int) -> int:
@@ -186,7 +215,8 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             actions.append({"action": "not_launching", "reason": "daily_gpu_budget",
                             "waiting": {w["kind"]: w["n"] for w in work}})
         return actions
-    for w in waiting_work(conn):
+    work = waiting_work(conn)
+    for w in work:
         kind = w["kind"]
         if _family(kind) == "fake":
             continue
@@ -203,6 +233,11 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         # Machines follow the backlog: one per drain-target's worth of work, one more per
         # tick at most, so a burst of jobs ramps up instead of renting a fleet at once.
         if serving and len(serving) >= machines_wanted(conn, policy, kind, int(w["n"])):
+            continue
+        # No machine up for this work yet: wait until there is enough to be worth a boot.
+        held = None if (pinned or open_groups) else batch_wait(conn, policy, _family(kind), work, now)
+        if held:
+            actions.append({"action": "batching", "kind": kind, **held})
             continue
         # A machine for this work stopped for a reason other than finishing (crashed,
         # vanished, hit its cap): wait before paying for another, so a broken image or

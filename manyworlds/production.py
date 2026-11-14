@@ -9,6 +9,9 @@ Each tick (`advance`):
   producing -> dropped    when a scene used up review.max_repairs_per_post regenerations
 
 A scene whose job failed, or whose images were all rejected, gets a new job with new seeds.
+Narrated edits and story clips are made from the chosen photos once all are chosen; a story clip
+must also pass the video review gate (manyworlds.review.video), with review.video.max_repairs_per_post
+new seeds before the post is dropped.
 `ready` posts wait for approval (policy autonomy.publish) before anything is published.
 Only formats listed in production.formats are made; video posts wait as 'planned' until their
 format is added there.
@@ -21,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from psycopg.types.json import Jsonb
 
 from . import queue
-from .creator.lab import photo_prompt
+from .creator.lab import clip_prompt, photo_prompt
 from .policy import Policy
 
 
@@ -119,6 +122,75 @@ def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                          post_id=post["id"], idempotency_key=f"post:{post['id']}:edit:{attempt}")
 
 
+def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int):
+    """A story clip from the post's approved first photo: the scene, moving as the planner wrote."""
+    bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
+    vid, scene, motion = policy.get("generation", "video", default={}), body["scenes"][0], body.get("script", "")
+    payload = {"image_uri": chosen[0]["uri"], "prompt": clip_prompt(bible, scene, motion),
+               "scene": f"{scene} Movement: {motion}" if motion else scene,   # the video judge scores against it
+               "width": vid.get("width", 704), "height": vid.get("height", 1280), "frames": vid.get("frames", 121),
+               "keyframes": int(policy.get("review", "video", "keyframes", default=4)),
+               "seed": int(str(post["id"]).replace("-", "")[:7], 16) + 500 + attempt * 10,
+               "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
+    return queue.enqueue(conn, _cfg(policy).get("video_kind", "video.wan_i2v"), payload, creator_id=post["creator_id"],
+                         batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
+
+
+def _clip_state(conn, job_id: str) -> tuple[str, dict | None]:
+    """Like _scene_state, for a clip: chosen (passed every video gate, confirmed), waiting,
+    rejected or failed. A clip without keyframes can't be reviewed, so it counts as failed."""
+    job = conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,)).fetchone()
+    if job["status"] in ("queued", "running"):
+        return "waiting", None
+    video = conn.execute(
+        """SELECT a.id, a.uri, count(r.id) AS n, bool_and(r.passed) AS passed,
+                  bool_or(r.details->>'stage' = 'confirm') AS confirmed
+           FROM assets a LEFT JOIN reviews r ON r.asset_id = a.id
+           WHERE a.job_id = %s AND a.kind = 'video' GROUP BY a.id, a.uri LIMIT 1""", (job_id,)).fetchone()
+    keyframes = conn.execute("SELECT count(*) n FROM assets WHERE job_id = %s AND kind = 'keyframe'",
+                             (job_id,)).fetchone()["n"]
+    if job["status"] != "done" or not video or not keyframes:
+        return "failed", None
+    if not video["n"]:
+        return "waiting", None
+    return ("chosen", video) if video["passed"] and video["confirmed"] else ("rejected", None)
+
+
+def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]) -> tuple[str, dict | None]:
+    """The job made from a post's chosen photos (narrated edit or story clip). Returns
+    ('done', video asset), ('waiting', None) or ('dropped', None); retries as it goes."""
+    max_failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
+    if post["format"] == "narrated_edit":
+        jobs, make = body.setdefault("edit_jobs", []), _edit_job
+    else:
+        jobs, make = body.setdefault("clip_jobs", []), _clip_job
+    if not jobs:
+        jobs.append(str(make(conn, policy, post, body, chosen, 0)))
+        return "waiting", None
+    if post["format"] == "narrated_edit":
+        status = conn.execute("SELECT status FROM jobs WHERE id = %s", (jobs[-1],)).fetchone()["status"]
+        video = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'video' LIMIT 1",
+                             (jobs[-1],)).fetchone()
+        state = "waiting" if status in ("queued", "running") else ("chosen" if video else "failed")
+    else:
+        state, video = _clip_state(conn, jobs[-1])
+    if state == "chosen":
+        return "done", video
+    if state == "waiting":
+        return "waiting", None
+    # A rejected clip gets a new seed, a few times (each costs a render); failures are counted apart.
+    key, limit = (("clip_repairs", int(policy.get("review", "video", "max_repairs_per_post", default=2)))
+                  if state == "rejected" else ("follow_up_failures", max_failures))
+    if body.get(key, 0) >= limit:
+        what = "edit" if post["format"] == "narrated_edit" else "clip"
+        body["drop_reason"] = (f"no {what} passed review after {body[key]} repairs" if key == "clip_repairs"
+                               else f"the {what} failed {body[key] + 1} times")
+        return "dropped", None
+    body[key] = body.get(key, 0) + 1
+    jobs.append(str(make(conn, policy, post, body, chosen, len(jobs))))
+    return "waiting", None
+
+
 def advance_post(conn, policy: Policy, post: dict) -> str:
     body = dict(post["body"])
     max_repairs = int(policy.get("review", "max_repairs_per_post", default=4))
@@ -150,24 +222,12 @@ def advance_post(conn, policy: Policy, post: dict) -> str:
         return "producing"
     body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
     asset_ids = [a["id"] for a in chosen]
-    if post["format"] == "narrated_edit":
-        edits = body.setdefault("edit_jobs", [])
-        if not edits:
-            edits.append(str(_edit_job(conn, policy, post, body, chosen, 0)))
-            _set(conn, post["id"], "producing", body)
-            return "producing"
-        job = conn.execute("SELECT status FROM jobs WHERE id = %s", (edits[-1],)).fetchone()
-        if job["status"] in ("queued", "running"):
-            _set(conn, post["id"], "producing", body)
-            return "producing"
-        video = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'video' LIMIT 1",
-                             (edits[-1],)).fetchone()
-        if not video:
-            if len(edits) > max_failures:
-                body["drop_reason"] = f"the edit failed {len(edits)} times"
-                _set(conn, post["id"], "dropped", body, qa_status="failed")
-                return "dropped"
-            edits.append(str(_edit_job(conn, policy, post, body, chosen, len(edits))))
+    if post["format"] in ("narrated_edit", "story_clip"):
+        state, video = _follow_up(conn, policy, post, body, chosen)
+        if state == "dropped":
+            _set(conn, post["id"], "dropped", body, qa_status="failed")
+            return "dropped"
+        if state == "waiting":
             _set(conn, post["id"], "producing", body)
             return "producing"
         body["video"] = {"asset_id": str(video["id"]), "uri": video["uri"]}

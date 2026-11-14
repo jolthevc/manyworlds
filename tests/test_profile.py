@@ -50,6 +50,13 @@ class DraftStub:
         return self.d
 
 
+def without_clips(policy):
+    """Production as it was before story clips were made, for the tests of unmade formats."""
+    import dataclasses
+    prod = {**policy.body["production"], "formats": [f for f in policy.body["production"]["formats"] if f != "story_clip"]}
+    return dataclasses.replace(policy, body={**policy.body, "production": prod})
+
+
 def built(conn, policy, **dials):
     cid = creator(conn)
     profile.build(conn, policy, DraftStub(draft(**dials)), cid)
@@ -121,6 +128,7 @@ def test_the_producer_keeps_creators_planned_ahead(conn, policy):
 
 
 def test_video_posts_wait_until_production_makes_their_format(conn, policy):
+    policy = without_clips(policy)
     from psycopg.types.json import Jsonb
     cid = built(conn, policy)
     conn.execute("INSERT INTO posts (creator_id, format, status, body, scheduled_for) VALUES (%s, 'story_clip', "
@@ -129,6 +137,7 @@ def test_video_posts_wait_until_production_makes_their_format(conn, policy):
 
 
 def test_the_planner_only_offers_formats_production_can_make(conn, policy):
+    policy = without_clips(policy)
     cid = built(conn, policy)
     llm = PlanStub([post(0), post(1, "story_clip", ["x"], series="kettle ratings")])
     out = planner.plan_period(conn, policy, llm, cid, start=START)
@@ -138,6 +147,7 @@ def test_the_planner_only_offers_formats_production_can_make(conn, policy):
 
 
 def test_a_planned_post_in_an_unmade_format_expires_after_its_time(conn, policy):
+    policy = without_clips(policy)
     from psycopg.types.json import Jsonb
     cid = built(conn, policy)
     conn.execute("INSERT INTO posts (creator_id, format, status, body, scheduled_for) VALUES (%s, 'story_clip', "

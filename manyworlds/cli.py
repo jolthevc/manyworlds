@@ -138,6 +138,7 @@ def _review(args, conn, pol, llm) -> int:
     from pathlib import Path
 
     from .review import gates
+    from .review import video as video_review
 
     store = storage.from_url()
     while True:
@@ -148,12 +149,18 @@ def _review(args, conn, pol, llm) -> int:
                     d = Path(tmp) / str(job)
                     d.mkdir()
                     out += gates.review_job(conn, pol, llm, store, job, d, role=args.role, write=False)
+                for job in video_review.pending_jobs(conn, pol, batch=args.batch):
+                    d = Path(tmp) / f"video-{job}"
+                    d.mkdir()
+                    out += video_review.review_job(conn, pol, llm, store, job, d, write=False)
                 _print({"reviews": out, "accepted": sum(r["accepted"] for r in out), "of": len(out),
                         "model": llm.model_for(args.role or pol.get("review", "image", "role")),
                         "llm_usd": llm.spent})
             else:
                 result = gates.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch)
-                if result["accepted"] or result["rejected"] or result["errors"] or not args.loop:
+                result.update(video_review.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch))
+                if any(result[k] for k in ("accepted", "rejected", "errors", "clips_accepted", "clips_rejected",
+                                           "clip_errors")) or not args.loop:
                     _print({**result, "llm_usd": llm.spent})
         if not args.loop:
             return 0

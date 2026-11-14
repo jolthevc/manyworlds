@@ -52,7 +52,12 @@ def fake_video(payload: dict, ctx: JobContext) -> HandlerResult:
     _maybe_fail(payload)
     p = ctx.workdir / "clip.mp4"
     p.write_bytes(b"fake-video:" + str(payload.get("prompt")).encode())
-    return HandlerResult([OutputFile(p, "video", {"frames": payload.get("frames", 81)})],
+    keyframes = []
+    for k in range(int(payload.get("keyframes", 0))):   # like video.wan_i2v, for the video review gate
+        kp = ctx.workdir / f"keyframe_{k}.png"
+        _png(kp, 8, 8, (40 * k % 256, 90, 140))
+        keyframes.append(OutputFile(kp, "keyframe", {"index": k}))
+    return HandlerResult([OutputFile(p, "video", {"frames": payload.get("frames", 81)}), *keyframes],
                          recipe={"model": "fake", "prompt": payload.get("prompt")})
 
 
