@@ -65,6 +65,17 @@ def metrics(conn, post_id, *, mode: Mode) -> list[dict]:
 def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: str, creator_id=None, cluster_id=None,
                    market_id=None, effect=None, interval: tuple | None = None, n: int | None = None,
                    sources=()) -> uuid.UUID:
+    """A finding about a sandbox creator, or drawn from one or from simulated metrics, can only be
+    recorded as simulated: the label is checked here, not trusted, so nothing simulated can reach
+    a real-mode read when the creator later goes live."""
+    if evidence != "simulated":
+        if creator_id and mode_for(conn, creator_id) == "sandbox":
+            raise ValueError(f"creator {creator_id} is in the sandbox: its findings must be evidence='simulated'")
+        for s in sources:
+            if isinstance(s, dict) and s.get("table") == "simulated_metrics":
+                raise ValueError("a finding drawn from simulated_metrics must be evidence='simulated'")
+            if isinstance(s, dict) and s.get("creator_id") and mode_for(conn, s["creator_id"]) == "sandbox":
+                raise ValueError(f"source creator {s['creator_id']} is in the sandbox: evidence must be 'simulated'")
     low, high = interval if interval else (None, None)
     return conn.execute(
         """INSERT INTO findings (scope, creator_id, cluster_id, market_id, statement, evidence, grade, effect,

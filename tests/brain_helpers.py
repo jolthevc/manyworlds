@@ -30,15 +30,17 @@ class StubLLM:
         return f"stub-{role}"
 
     @contextlib.contextmanager
-    def tagged(self, agent, job_id):
-        before, self._tag = self._tag, {"agent": agent, "job_id": job_id}
+    def tagged(self, agent, job_id, before_call=None):
+        before, self._tag = self._tag, {"agent": agent, "job_id": job_id, "before_call": before_call}
         try:
             yield
         finally:
             self._tag = before
 
     def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
-        self.calls.append({"role": role, "content": content, **self._tag})
+        if self._tag.get("before_call"):
+            self._tag["before_call"]()
+        self.calls.append({"role": role, "content": content, "agent": self._tag.get("agent")})
         if self.conn is not None:
             ledger.record(self.conn, category="llm", provider=self.model_for(role), quantity=1, unit="token",
                           usd=self.cost, agent=self._tag.get("agent"), job_id=self._tag.get("job_id"))

@@ -78,6 +78,22 @@ def record_decision(ctx: AgentContext, kind: str, *, step: str, inputs: dict, ou
                             (ctx.job.id, step)).fetchone()["id"]
 
 
+def remember(ctx: AgentContext, step: str, compute) -> dict:
+    """Run one step of an agent once per job. If this job already recorded `step` (a rerun after a
+    crash), return what it decided then, without asking the LLM again, so what the agent acts on
+    is always what the decision log says. `compute()` returns {kind, inputs, output, rationale}
+    and optionally creator_id and model."""
+    row = ctx.conn.execute("SELECT output FROM decisions WHERE job_id = %s AND step = %s",
+                           (ctx.job.id, step)).fetchone()
+    if row:
+        return row["output"]
+    d = compute()
+    record_decision(ctx, d["kind"], step=step, inputs=d.get("inputs", {}), output=d["output"],
+                    rationale=d.get("rationale", ""), creator_id=d.get("creator_id"), model=d.get("model"))
+    return ctx.conn.execute("SELECT output FROM decisions WHERE job_id = %s AND step = %s",
+                            (ctx.job.id, step)).fetchone()["output"]
+
+
 def commission(ctx: AgentContext, target: str, payload: dict, *, reason: str, key: str) -> uuid.UUID:
     """Ask another agent for work. The same request from the same job is enqueued once."""
     return queue.enqueue(ctx.conn, f"brain.{target}", {**payload, "reason": reason, "requested_by": ctx.agent},

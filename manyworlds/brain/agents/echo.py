@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from ..agent import AgentContext, record_decision, register
+from ..agent import AgentContext, register, remember
 
 
 class _Ack(BaseModel):
@@ -15,10 +15,10 @@ class Echo:
     name = "echo"
 
     def run(self, ctx: AgentContext) -> dict:
-        ctx.llm.structured("brain", system="Acknowledge.", content="ping", schema=_Ack, effort="low")
-        payload = dict(ctx.job.payload or {})
-        record_decision(ctx, "echo", step="echo", inputs={}, output=payload, rationale="echo test")
-        return payload
+        def step() -> dict:
+            ctx.llm.structured("brain", system="Acknowledge.", content="ping", schema=_Ack, effort="low")
+            return {"kind": "echo", "inputs": {}, "output": dict(ctx.job.payload or {}), "rationale": "echo test"}
+        return remember(ctx, "echo", step)
 
 
 register(Echo())

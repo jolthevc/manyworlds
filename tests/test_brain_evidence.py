@@ -32,7 +32,7 @@ def test_a_creator_that_left_the_sandbox_keeps_its_simulated_history_out_of_real
 
 
 def test_sandbox_reads_label_simulated_rows(conn):
-    cid = creator(conn)
+    cid = creator(conn, publish_mode="instagram")   # a real creator's history read in sandbox mode
     evidence.record_finding(conn, scope="post", creator_id=cid, statement="s", evidence="simulated",
                             grade="speculative")
     evidence.record_finding(conn, scope="post", creator_id=cid, statement="r", evidence="observational",
@@ -42,7 +42,7 @@ def test_sandbox_reads_label_simulated_rows(conn):
 
 
 def test_findings_filter_by_scope_and_grade(conn):
-    cid = creator(conn)
+    cid = creator(conn, publish_mode="instagram")
     evidence.record_finding(conn, scope="creator", creator_id=cid, statement="a", evidence="experimental",
                             grade="proven", effect=0.3, interval=(0.1, 0.5), n=40)
     evidence.record_finding(conn, scope="post", creator_id=cid, statement="b", evidence="observational",
@@ -67,3 +67,24 @@ def test_only_the_evidence_module_reads_findings_and_metrics(conn):
     offenders = [str(p.relative_to(BRAIN)) for p in BRAIN.rglob("*.py")
                  if p.name != "evidence.py" and pattern.search(p.read_text(encoding="utf-8"))]
     assert offenders == []
+
+
+def test_a_sandbox_creators_findings_can_only_be_recorded_as_simulated(conn):
+    import pytest
+    cid = creator(conn, publish_mode="simulated")
+    with pytest.raises(ValueError, match="sandbox"):
+        evidence.record_finding(conn, scope="creator", creator_id=cid, statement="x", evidence="observational",
+                                grade="tentative")
+
+
+def test_findings_drawn_from_sandbox_creators_or_simulated_metrics_must_be_simulated(conn):
+    import pytest
+    sandbox, real = creator(conn), creator(conn, publish_mode="instagram")
+    with pytest.raises(ValueError, match="sandbox"):
+        evidence.record_finding(conn, scope="portfolio", statement="x", evidence="observational", grade="tentative",
+                                sources=[{"creator_id": str(real)}, {"creator_id": str(sandbox)}])
+    with pytest.raises(ValueError, match="simulated_metrics"):
+        evidence.record_finding(conn, scope="portfolio", statement="x", evidence="observational", grade="tentative",
+                                sources=[{"table": "simulated_metrics"}])
+    evidence.record_finding(conn, scope="portfolio", statement="ok", evidence="observational", grade="tentative",
+                            sources=[{"creator_id": str(real)}])

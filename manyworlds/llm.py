@@ -77,9 +77,11 @@ class Claude:
         return u
 
     @contextlib.contextmanager
-    def tagged(self, agent: str, job_id):
-        """Charge every call inside the block to this agent and job (per-agent budgets, traces)."""
-        before, self._tag = self._tag, {"agent": agent, "job_id": job_id}
+    def tagged(self, agent: str, job_id, before_call=None):
+        """Charge every call inside the block to this agent and job (per-agent budgets, traces).
+        `before_call` runs before each call, e.g. the Brain runtime's budget check, so an agent
+        that keeps calling is stopped mid-job, not only before it starts."""
+        before, self._tag = self._tag, {"agent": agent, "job_id": job_id, "before_call": before_call}
         try:
             yield
         finally:
@@ -87,6 +89,8 @@ class Claude:
 
     def structured(self, role: str, *, system: str, content: Any, schema: type[T],
                    effort: str = "high", creator_id=None) -> T:
+        if self._tag.get("before_call"):
+            self._tag["before_call"]()
         model = self.model_for(role)
         # Server-side refusal fallback exists only for some models (not Haiku); policy lists them.
         fallback = {}
