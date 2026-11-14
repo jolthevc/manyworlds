@@ -1,4 +1,5 @@
-"""Production: turn planned posts into finished, reviewed images. No Claude calls here.
+"""Production: turn planned posts into finished, reviewed images. No Claude calls here
+(the producer loop also runs brain.planner.ensure_plans, which does).
 
 Each tick (`advance`):
   planned   -> producing  when the post is due within production.lead_hours: one image job
@@ -9,6 +10,8 @@ Each tick (`advance`):
 
 A scene whose job failed, or whose images were all rejected, gets a new job with new seeds.
 `ready` posts wait for approval (policy autonomy.publish) before anything is published.
+Only formats listed in production.formats are made; video posts wait as 'planned' until their
+format is added there.
 """
 
 from __future__ import annotations
@@ -133,13 +136,17 @@ def advance_post(conn, policy: Policy, post: dict) -> str:
 def advance(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     lead = timedelta(hours=float(_cfg(policy).get("lead_hours", 48)))
+    # Jobs that used their last attempt and lost the lease are dead, so their scene gets repaired
+    # instead of waiting forever.
+    out_reaped = queue.reap(conn)
     out = {"started": 0, "producing": 0, "ready": 0, "dropped": 0}
+    out["reaped"] = out_reaped
     for post in conn.execute(
             # Only creators with reference images: the reviewer judges identity against them.
             "SELECT p.* FROM posts p JOIN creators c ON c.id = p.creator_id WHERE p.status = 'planned' "
-            "AND coalesce(p.scheduled_for, now()) <= %s "
+            "AND coalesce(p.scheduled_for, now()) <= %s AND p.format = ANY(%s) "
             "AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0 "
-            "ORDER BY p.scheduled_for", (now + lead,)).fetchall():
+            "ORDER BY p.scheduled_for", (now + lead, list(_cfg(policy).get("formats", ["photo", "carousel"])))).fetchall():
         start(conn, policy, post)
         out["started"] += 1
     for post in conn.execute("SELECT * FROM posts WHERE status = 'producing' ORDER BY scheduled_for").fetchall():

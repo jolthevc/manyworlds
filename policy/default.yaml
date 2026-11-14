@@ -164,23 +164,44 @@ creator_lab:
   lora: {steps: 1200, rank: 16, learning_rate: 0.0001, resolution: 1024, log_upload_seconds: 120}
   lora_scale: 1.0               # 1.3 did no better on Maren (2026-11-14)
 
-# Content planner (manyworlds.brain.planner): one Brain call per creator per period.
-# formats: images per post [min, max]. Video formats join once video.wan_i2v is verified on a GPU.
+# Creator profiles (manyworlds.creator.profile). Dials are set per creator by the Brain (or a
+# human) within dials_limits; these defaults seed new profiles.
+creators:
+  profile_role: creator
+  dials_default:
+    posts_per_day: {tiktok: 3, instagram: 2}
+    images_per_video: 3          # early on: three photo posts per video post
+    hashtags_max: {instagram: 1, tiktok: 2}   # Instagram says hashtags barely affect reach; TikTok reads caption words
+  dials_limits: {posts_per_day_max: 6, images_per_video_min: 1, images_per_video_max: 6, hashtags_max: 3}
+
+# Content planner (manyworlds.brain.planner): one Brain call per creator per period, rolling.
+# formats: images per post [min, max]. Video posts belong to one of the creator's video series.
 planner:
   role: brain
   effort: medium
-  days: 7
-  posts_per_period: 7
-  formats: {photo: [1, 1], carousel: [2, 4]}
-  post_hours_utc: [17, 22]     # nth post of a day goes out at the nth hour
-  recent_posts: 21             # shown back to the planner for continuity
-  max_hashtags: 5
+  days: 3                      # short periods: each plan sees the latest posts and settings
+  plan_ahead_days: 2           # the producer plans the next period when less than this is planned
+  auto_statuses: [draft, active]   # creators the producer plans for (needs a profile and reference images)
+  formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1]}
+  video_formats: [narrated_edit, story_clip]
+  post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
+  recent_posts: 30             # shown back to the planner for continuity
+
+# Captions that read as written by an AI are dropped (manyworlds.brain.planner.caption_issues).
+captions:
+  max_emoji: 2
+  banned_phrases: [embrace, "little things in life", romanticiz, "core memory", "living my best", obsessed,
+                   "game changer", "game-changer", journey, self-care, "self care", "main character", "vibes",
+                   "let's dive", "here's to", "cozy season", "soul", "magic of", "the simple joys",
+                   "nothing beats", "who else", "drop a", "comment below", "link in bio"]
+  no_em_dash: true
 
 # Production (manyworlds.production): planned posts -> image jobs -> reviewed images.
 # On Maren with the full appearance prompt, 12 of 12 images passed review, so 4 candidates
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
+  formats: [photo, carousel]    # formats production makes now; video formats wait in 'planned' until added
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120

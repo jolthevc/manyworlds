@@ -60,7 +60,7 @@ def test_plan_stores_valid_posts_scheduled_with_the_ai_label(conn, policy):
     assert [r["scheduled_for"].hour for r in rows[:2]] == hours[:2]          # two posts on day 0
     assert rows[2]["scheduled_for"].date() == START + timedelta(days=days - 1)  # day 9 clamped to the last day
     assert all(r["body"]["platform_ai_label"] for r in rows)
-    assert rows[0]["body"]["hashtags"] == ["morning", "coffee"]
+    assert rows[0]["body"]["hashtags"] == ["morning"]          # instagram allows one by default
     assert planner.plan_period(conn, policy, llm, cid, start=START)["existing"] and len(llm.calls) == 1
 
 
@@ -176,3 +176,15 @@ def test_groups_without_job_kinds_take_their_family_from_the_name(conn):
                  "VALUES ('mw-image-4090-r2', 'salad', 'salad_batch_4090', 0.1, now(), 1)")
     conn.execute((Path(manyworlds.__file__).parent / "migrations" / "009_group_family_from_name.sql").read_text())
     assert conn.execute("SELECT family FROM gpu_groups WHERE name = 'mw-image-4090-r2'").fetchone()["family"] == "image"
+
+
+def test_a_job_that_lost_its_last_attempt_is_reaped_and_repaired(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    pid = planned(conn, policy, cid)
+    production.advance(conn, policy, now=NOW)
+    conn.execute("UPDATE jobs SET status = 'running', attempts = max_attempts, worker_id = 'w', "
+                 "lease_until = now() - interval '1 minute' WHERE post_id = %s", (pid,))
+    out = production.advance(conn, policy, now=NOW)
+    assert out["reaped"] == 1
+    assert conn.execute("SELECT count(*) n FROM jobs WHERE post_id = %s AND status = 'queued'", (pid,)).fetchone()["n"] == 1

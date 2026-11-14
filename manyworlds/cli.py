@@ -65,6 +65,12 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--force", action="store_true", help="plan again even if the period has a plan")
     pr = sub.add_parser("produce", help="turn due planned posts into reviewed images (--loop to keep going)")
     pr.add_argument("--loop", action="store_true")
+    pf = sub.add_parser("profile", help="show, build or change a creator's profile")
+    pf.add_argument("creator")
+    pf.add_argument("--build", action="store_true", help="write version 1 from the bible (Brain)")
+    pf.add_argument("--set", action="append", default=[], metavar="PATH=JSON",
+                    help="e.g. look.hair='a short bob' or dials.posts_per_day.tiktok=4 (repeatable)")
+    pf.add_argument("--reason", default="")
     po = sub.add_parser("posts", help="list a creator's posts")
     po.add_argument("creator")
     sc = sub.add_parser("autoscale", help="start/stop GPU machines to follow the queue (loops; --once for one tick)")
@@ -114,8 +120,6 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "status":
         _print({"jobs": queue.counts(conn), "spend": ledger.totals(conn),
                 "cost_per_output": ledger.cost_per_output(conn)})
-    elif args.cmd == "produce":
-        return _produce(args, conn, pol)
     elif args.cmd == "posts":
         cid = _creator_id(conn, args.creator)
         _print(conn.execute("SELECT id, status, format, platform, scheduled_for, caption, qa_status, "
@@ -123,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
                             "FROM posts WHERE creator_id = %s ORDER BY scheduled_for", (cid,)).fetchall())
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
-    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan"):
+    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce"):
         return _brain(args, conn, pol)
     return 0
 
@@ -157,13 +161,14 @@ def _review(args, conn, pol, llm) -> int:
         pol = policy_mod.load()
 
 
-def _produce(args, conn, pol) -> int:
+def _produce(args, conn, pol, llm) -> int:
     import time
 
     from . import production
+    from .brain import planner
 
     while True:
-        result = production.advance(conn, pol)
+        result = {"planned": planner.ensure_plans(conn, pol, llm), **production.advance(conn, pol)}
         if any(result.values()) or not args.loop:
             _print(result)
         if not args.loop:
@@ -196,6 +201,23 @@ def _brain(args, conn, pol) -> int:
     llm = Claude(conn, pol)
     if args.cmd == "review":
         return _review(args, conn, pol, llm)
+    if args.cmd == "produce":
+        return _produce(args, conn, pol, llm)
+    if args.cmd == "profile":
+        from .creator import profile as prof
+        cid = _creator_id(conn, args.creator)
+        if args.build:
+            prof.build(conn, pol, llm, cid)
+        for item in args.set:
+            path, _, raw = item.partition("=")
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                value = raw
+            prof.set_path(conn, pol, cid, path, value, author="human", reason=args.reason)
+        cur = prof.current(conn, cid)
+        _print({"version": cur[0], "profile": cur[1], "llm_usd": llm.spent} if cur else {"profile": None})
+        return 0
     if args.cmd == "discover":
         result = disc.discover(conn, pol, llm, ApifySource(conn, pol))
         _print({**result, "llm_usd": llm.spent})

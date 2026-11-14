@@ -76,7 +76,7 @@ services:
     command: ["review", "--loop"]
     restart: unless-stopped
 
-  # Production: turns due planned posts into image jobs and picks reviewed images (no GPU, no Claude).
+  # Production: plans each creator a few days ahead (Brain), turns due posts into image jobs, picks reviewed images.
   producer:
     build: .
     profiles: [live]
