@@ -63,6 +63,7 @@ job_kinds:
   video.mirror:    {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 0}
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
+  brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
