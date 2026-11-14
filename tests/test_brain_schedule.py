@@ -84,3 +84,72 @@ def test_one_showrunner_job_per_creator_and_period(conn, policy):
 def test_creators_without_references_get_no_batch(conn, policy):
     _creator(conn, refs=False)
     assert showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc)) == []
+
+
+# --- final review fixes -------------------------------------------------------------------------
+
+def _period_job(conn, cid, status, n=1):
+    from manyworlds import queue
+    j = queue.enqueue(conn, "brain.showrunner", {"creator_id": str(cid), "start": "2026-11-20"}, creator_id=cid,
+                      idempotency_key=f"showrunner:{cid}:2026-11-20" + ("" if n == 1 else f":{n}"))
+    conn.execute("UPDATE jobs SET status = %s WHERE id = %s", (status, j))
+    return j
+
+
+def test_a_failed_period_is_asked_for_again(conn, policy):
+    cid = _creator(conn)
+    _period_job(conn, cid, "failed")
+    out = showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc))
+    assert len(out) == 1 and conn.execute("SELECT count(*) n FROM jobs WHERE kind = 'brain.showrunner'").fetchone()["n"] == 2
+
+
+def test_a_period_whose_ideas_were_all_dropped_is_asked_for_again(conn, policy):
+    cid = _creator(conn)
+    _period_job(conn, cid, "done")
+    iid = _idea(conn, cid, 0, evaluated=False)
+    conn.execute("UPDATE ideas SET status = 'dropped' WHERE id = %s", (iid,))
+    assert len(showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc))) == 1
+
+
+def test_a_period_still_being_evaluated_is_not_asked_for_again(conn, policy):
+    cid = _creator(conn)
+    _period_job(conn, cid, "done")
+    _idea(conn, cid, 0, evaluated=False)
+    assert showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc)) == []
+
+
+def test_a_period_that_keeps_failing_stops_after_its_attempts_and_says_so(conn, policy):
+    cid = _creator(conn)
+    limit = int(policy.get("brain", "showrunner", "max_period_attempts"))
+    for n in range(1, limit + 1):
+        _period_job(conn, cid, "failed", n)
+    out = showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc))
+    assert out == [{"creator": conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"],
+                    "start": "2026-11-20", "gave_up": True}]
+    assert conn.execute("SELECT count(*) n FROM jobs WHERE kind = 'brain.showrunner'").fetchone()["n"] == limit
+
+
+def test_a_concurrent_scheduler_cannot_double_post_a_batch(conn, policy, monkeypatch):
+    cid = _creator(conn)
+    _idea(conn, cid, 0)
+    real = planner.slot_times
+    nested = []
+
+    def racing(*a, **k):        # another producer schedules the same batch mid-way
+        if not nested:
+            nested.append("racing")
+            ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
+        return real(*a, **k)
+    monkeypatch.setattr(planner, "slot_times", racing)
+    ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
+    assert conn.execute("SELECT count(*) n FROM posts").fetchone()["n"] == 1
+
+
+def test_a_keyed_canon_replaces_the_old_fact(conn, policy):
+    cid = _creator(conn)
+    memory.add(conn, cid, "place", "lives in Copenhagen", key="home")
+    iid = _idea(conn, cid, 0, canon="she moved to Lisbon")
+    conn.execute("UPDATE ideas SET body = body || '{\"canon_key\": \"home\"}' WHERE id = %s", (iid,))
+    ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
+    texts = [f["text"] for f in memory.facts(conn, cid, limit=10)]
+    assert "she moved to Lisbon" in texts and "lives in Copenhagen" not in texts

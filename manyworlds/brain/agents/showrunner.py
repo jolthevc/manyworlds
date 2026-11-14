@@ -12,7 +12,7 @@ shown to the evaluator. Every idea is sent to the evaluator; only evaluated idea
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -36,6 +36,8 @@ class PlannedIdea(planner.PlannedPost):
                                        description="setting, outfit, activity, mood, trend (yes/no): plain words")
     reasoning: str = Field(default="", description="why this post now, in one or two sentences")
     exploratory: bool = Field(default=False, description="true if this tries something the creator hasn't done")
+    canon_key: str = Field(default="", description="if `canon` replaces a single fact (home, partner, job, pet), "
+                                                   "that fact's name; otherwise empty")
 
 
 class IdeaBatch(BaseModel):
@@ -57,7 +59,10 @@ def _recent_with_scores(conn, creator_id, n: int) -> list[dict]:
 def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str, dict]:
     conn, policy = ctx.conn, ctx.policy
     cfg = policy.get("brain", "showrunner", default={}) or {}
+    memory.seed_from_profile(conn, creator_id)   # idempotent: new creators and new profile versions reach memory
     c = conn.execute("SELECT handle, bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    known = [f"{m['kind']}: {m['text']}" for m in memory.facts(conn, creator_id, limit=int(cfg.get("memory_facts", 60)))]
+    day_names = {i: (start + timedelta(days=i)).strftime("%A %d %B") for i in range(days)}
     cur = profile_mod.current(conn, creator_id)
     version, prof = cur if cur else (None, None)
     dials = (prof or {}).get("dials") or policy.get("creators", "dials_default", default={})
@@ -75,12 +80,12 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     prompt = (
         f"The creator:\n{json.dumps(who, default=str)}\n"
         f"What we know about their life (keep it consistent):\n"
-        f"{json.dumps([f'{m['kind']}: {m['text']}' for m in memory.facts(conn, creator_id, limit=int(cfg.get('memory_facts', 60)))])}\n"
+        f"{json.dumps(known)}\n"
         f"Recent posts, newest first, with how their ideas scored (1-10) where scored (don't repeat scenes, jokes "
         f"or captions):\n{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}\n"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n\n"
-        f"Days: { {i: str(date.fromordinal(start.toordinal() + i)) for i in range(days)} }. "
+        f"Days: {day_names} (weekly rituals happen on their weekday). "
         f"Plan about {counts['total']} posts and Stories over {days} days (day 0 to {days - 1}): "
         f"{counts['per_platform']} per platform; about {counts['videos']} videos "
         f"({planner._video_formats(policy)}), each in one of the creator's video series. "
@@ -117,14 +122,23 @@ class Showrunner:
             q, why = planner.validate(ctx.policy, item, platforms=meta["platforms"], days=days, prof=meta["prof"],
                                       hashtags_max=meta["hashtags_max"])
             (kept.append(q) if q else dropped.append({"caption": item.caption[:80], "why": why}))
+        if not kept:
+            raise NonRetryable(f"the showrunner returned no usable ideas: {dropped[:5]}")
         batch = f"{creator_id}:{start}"
         with ctx.conn.transaction():   # the batch, its evaluation requests and the decision land together
+            # Serialise runs of this job: if another worker (after a lost lease) already wrote the
+            # batch during our LLM call, return its result and write nothing.
+            ctx.conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"showrunner:{ctx.job.id}",))
+            done = ctx.conn.execute("SELECT output FROM decisions WHERE job_id = %s AND step = 'plan'",
+                                    (ctx.job.id,)).fetchone()
+            if done:
+                return done["output"]
             ids = []
             for q in kept:
                 body = {"scenes": q.scenes, "script": q.script, "on_screen_text": q.on_screen_text,
                         "hashtags": q.hashtags, "canon": q.canon, "pillar": q.pillar, "tone": q.tone,
                         "series": q.series, "caption": q.caption, "day": q.day, "platform": q.platform,
-                        "exploratory": q.exploratory, "reasoning": q.reasoning}
+                        "exploratory": q.exploratory, "reasoning": q.reasoning, "canon_key": q.canon_key}
                 concept = " | ".join(q.scenes) + (f" | script: {q.script}" if q.script else "") + f" | caption: {q.caption}"
                 iid = ctx.conn.execute(
                     "INSERT INTO ideas (creator_id, batch, concept, format, body, attributes, status) "

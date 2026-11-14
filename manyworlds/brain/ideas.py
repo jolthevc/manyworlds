@@ -72,10 +72,19 @@ def schedule_ready(conn, policy, *, now) -> dict:
             for r in rows:
                 if not r["evaluated"]:
                     conn.execute("UPDATE ideas SET status = 'dropped', updated_at = now(), "
-                                 "body = body || '{\"drop_reason\": \"not evaluated in time\"}' WHERE id = %s", (r["id"],))
+                                 "body = body || '{\"drop_reason\": \"not evaluated in time\"}' "
+                                 "WHERE id = %s AND status = 'proposed'", (r["id"],))
                     out["dropped"] += 1
             times = planner.slot_times(policy, start, [int(r["body"].get("day", 0)) for r in ready])
-            for r, when in zip(ready, times):
+            # Claim the ideas: a concurrent scheduler (another producer) that got here first has
+            # already taken them, and they must not become posts twice.
+            claimed = {c["id"] for c in conn.execute(
+                "UPDATE ideas SET status = 'scheduling', updated_at = now() WHERE id = ANY(%s) AND status = 'proposed' "
+                "RETURNING id", ([r["id"] for r in ready],)).fetchall()}
+            pairs = [(r, when) for r, when in zip(ready, times) if r["id"] in claimed]
+            if not pairs:
+                continue
+            for r, when in pairs:
                 body = {k: r["body"].get(k) for k in _POST_FIELDS}
                 body.update(platform_ai_label=True, idea_id=str(r["id"]))   # disclosure: every post sets the AI flag
                 post = conn.execute(
@@ -86,7 +95,8 @@ def schedule_ready(conn, policy, *, now) -> dict:
                 conn.execute("UPDATE ideas SET status = 'scheduled', post_id = %s, updated_at = now() WHERE id = %s",
                              (post, r["id"]))
                 if r["body"].get("canon"):
-                    memory.add(conn, b["creator_id"], "canon", r["body"]["canon"], source_post=post)
+                    memory.add(conn, b["creator_id"], "canon", r["body"]["canon"], source_post=post,
+                               key=r["body"].get("canon_key") or None)
                 out["scheduled"] += 1
             conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output, policy_version) "
                          "VALUES ('batch_scheduled', %s, %s, %s, %s)",

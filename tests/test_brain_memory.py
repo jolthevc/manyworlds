@@ -45,3 +45,15 @@ def test_facts_are_open_ones_newest_first(conn):
     for t in ("a", "b", "c"):
         memory.add(conn, cid, "canon", t)
     assert [f["text"] for f in memory.facts(conn, cid, limit=2)] == ["c", "b"]
+
+
+def test_core_facts_are_never_crowded_out_by_canon(conn):
+    cid = creator(conn)
+    memory.add(conn, cid, "place", "a top-floor flat above a bakery")
+    memory.add(conn, cid, "signature", "moss-green cardigan", key="signature")
+    for i in range(70):
+        memory.add(conn, cid, "canon", f"canon {i}")
+    got = memory.facts(conn, cid, limit=60)
+    texts = [f["text"] for f in got]
+    assert "a top-floor flat above a bakery" in texts and "moss-green cardigan" in texts
+    assert sum(f["kind"] == "canon" for f in got) == 60 and "canon 69" in texts and "canon 0" not in texts

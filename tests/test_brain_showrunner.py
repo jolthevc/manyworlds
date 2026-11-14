@@ -90,3 +90,55 @@ def test_a_rerun_does_not_write_the_batch_twice(conn, policy):
     again = showrunner.Showrunner().run(ctx)
     assert first == again and len(llm.calls) == 1
     assert conn.execute("SELECT count(*) n FROM ideas").fetchone()["n"] == 2
+
+
+# --- final review fixes -------------------------------------------------------------------------
+
+def test_a_creator_without_memory_is_seeded_before_planning(conn, policy):
+    cid = creator(conn)
+    conn.execute("UPDATE creators SET bible = %s WHERE id = %s",
+                 (Jsonb({"home_and_places": ["a houseboat on the Amstel"]}), cid))
+    llm = PlanLLM([idea(0)], conn=conn)
+    _run(conn, policy, cid, llm)
+    assert [f["text"] for f in memory.facts(conn, cid, limit=10)] == ["a houseboat on the Amstel"]
+
+
+def test_days_are_named_by_weekday(conn, policy):
+    cid = _maren(conn)
+    llm = PlanLLM([idea(0)], conn=conn)
+    _run(conn, policy, cid, llm)
+    assert all(d in str(llm.calls[0]["content"]) for d in ("Friday", "Saturday", "Sunday"))   # START is a Friday
+
+
+def test_a_run_that_finds_its_batch_already_written_writes_nothing(conn, policy):
+    # Another worker finished this job while our LLM call was running (lost lease): don't write a second batch.
+    cid = _maren(conn)
+    job = queue.enqueue(conn, "brain.showrunner", {"creator_id": str(cid), "start": START}, creator_id=cid)
+    ctx = make_ctx(conn, policy, job)
+
+    class Racing(PlanLLM):
+        def structured(self, *a, **k):
+            out = super().structured(*a, **k)
+            conn.execute("INSERT INTO decisions (kind, job_id, step, output) VALUES ('content_batch', %s, 'plan', %s)",
+                         (job, Jsonb({"batch": "other", "ideas": 0})))
+            return out
+    ctx.llm = Racing([idea(0), idea(1)], conn=conn)
+    assert showrunner.Showrunner().run(ctx) == {"batch": "other", "ideas": 0}
+    assert conn.execute("SELECT count(*) n FROM ideas").fetchone()["n"] == 0
+
+
+def test_an_all_invalid_batch_fails_visibly(conn, policy):
+    import pytest
+    from manyworlds.worker.runner import NonRetryable
+    cid = _maren(conn)
+    with pytest.raises(NonRetryable, match="no usable ideas"):
+        _run(conn, policy, cid, PlanLLM([idea(0, "talking_head")], conn=conn))
+
+
+def test_the_evaluator_is_not_told_which_ideas_are_exploratory(conn, policy):
+    from manyworlds.brain.agents import evaluator
+    cid = _maren(conn)
+    _run(conn, policy, cid, PlanLLM([idea(0, exploratory=True)], conn=conn))
+    iid = conn.execute("SELECT id FROM ideas").fetchone()["id"]
+    _, _, content = evaluator.idea_content(conn, iid)
+    assert "exploratory" not in str(content) and "reasoning" not in str(content)

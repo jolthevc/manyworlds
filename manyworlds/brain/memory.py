@@ -55,5 +55,10 @@ def seed_from_profile(conn, creator_id) -> int:
 
 
 def facts(conn, creator_id, *, limit: int) -> list[dict]:
-    return conn.execute("SELECT kind, text FROM creator_memory WHERE creator_id = %s AND valid_until IS NULL "
-                        "ORDER BY created_at DESC, id DESC LIMIT %s", (creator_id, limit)).fetchall()
+    """Every open core fact (places, routines, tastes, opinions, people, signature), then the newest
+    `limit` canon facts: canon accumulates with every post and must never crowd out who they are."""
+    core = conn.execute("SELECT kind, text FROM creator_memory WHERE creator_id = %s AND valid_until IS NULL "
+                        "AND kind <> 'canon' ORDER BY created_at DESC, id DESC", (creator_id,)).fetchall()
+    canon = conn.execute("SELECT kind, text FROM creator_memory WHERE creator_id = %s AND valid_until IS NULL "
+                         "AND kind = 'canon' ORDER BY created_at DESC, id DESC LIMIT %s", (creator_id, limit)).fetchall()
+    return core + canon
