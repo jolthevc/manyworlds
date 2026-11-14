@@ -43,7 +43,12 @@ class SaladGroups:
         from .salad import _req
 
         base = f"/organizations/{{org}}/projects/{{project}}/containers/{name}"
-        _req("POST", f"{base}/stop")
+        # Stop is refused while a group is Pending (still being placed); delete is what ends
+        # billing and works in any state, so a failed stop must never skip it.
+        try:
+            _req("POST", f"{base}/stop")
+        except Exception:  # noqa: BLE001
+            pass
         _req("DELETE", base)
 
 

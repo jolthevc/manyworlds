@@ -76,5 +76,13 @@ services:
     command: ["review", "--loop"]
     restart: unless-stopped
 
+  # Production: turns due planned posts into image jobs and picks reviewed images (no GPU, no Claude).
+  producer:
+    build: .
+    profiles: [live]
+    env_file: .env
+    command: ["produce", "--loop"]
+    restart: unless-stopped
+
 volumes:
   pgdata:

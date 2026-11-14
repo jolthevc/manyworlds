@@ -105,11 +105,12 @@ def register(family: str, gpu: str, replicas: int, priority: str, max_hours: flo
     now = datetime.now(timezone.utc)
     row = {"name": group_name(family, gpu), "pool": pool, "usd_per_hour": price, "replicas": replicas,
            "job_kinds": FAMILIES[family][1].split(","), "deadline": now + timedelta(hours=hours),
-           "max_usd": usd_cap}
+           "max_usd": usd_cap, "family": family}
     conn.execute(
         """
-        INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, replicas, job_kinds, deadline, max_usd)
-        VALUES (%(name)s, 'salad', %(pool)s, %(usd_per_hour)s, %(replicas)s, %(job_kinds)s, %(deadline)s, %(max_usd)s)
+        INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, replicas, job_kinds, deadline, max_usd, family)
+        VALUES (%(name)s, 'salad', %(pool)s, %(usd_per_hour)s, %(replicas)s, %(job_kinds)s, %(deadline)s, %(max_usd)s,
+                %(family)s)
         ON CONFLICT (name) DO UPDATE SET deadline = EXCLUDED.deadline, max_usd = EXCLUDED.max_usd,
             started_at = now(), billed_until = now(), last_busy_at = now(), stopped_at = NULL, stop_reason = NULL
         """, row)

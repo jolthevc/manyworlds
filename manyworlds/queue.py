@@ -38,18 +38,19 @@ def enqueue(
     parent_job_id=None,
     batch: str | None = None,
     pools: list[str] | None = None,
+    post_id=None,
 ):
     """Add a job. With an idempotency key, re-enqueueing returns the existing job's id.
     `pools` pins the job to those GPU pools (e.g. benchmarking one provider)."""
     row = conn.execute(
         """
         INSERT INTO jobs (kind, payload, priority, max_attempts, idempotency_key,
-                          creator_id, parent_job_id, batch, pools)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          creator_id, parent_job_id, batch, pools, post_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
         """,
-        (kind, Jsonb(payload), priority, max_attempts, idempotency_key, creator_id, parent_job_id, batch, pools),
+        (kind, Jsonb(payload), priority, max_attempts, idempotency_key, creator_id, parent_job_id, batch, pools, post_id),
     ).fetchone()
     if row:
         return row["id"]

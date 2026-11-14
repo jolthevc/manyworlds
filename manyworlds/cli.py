@@ -59,6 +59,14 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--loop", action="store_true")
     rv.add_argument("--role", help="LLM role to judge with, for comparing models (with --dry-run)")
     rv.add_argument("--dry-run", action="store_true", help="print verdicts, write no reviews")
+    pl = sub.add_parser("plan", help="Brain: plan a creator's posts for the coming period")
+    pl.add_argument("creator")
+    pl.add_argument("--start", help="first day, YYYY-MM-DD (default tomorrow, UTC)")
+    pl.add_argument("--force", action="store_true", help="plan again even if the period has a plan")
+    pr = sub.add_parser("produce", help="turn due planned posts into reviewed images (--loop to keep going)")
+    pr.add_argument("--loop", action="store_true")
+    po = sub.add_parser("posts", help="list a creator's posts")
+    po.add_argument("creator")
     sc = sub.add_parser("autoscale", help="start/stop GPU machines to follow the queue (loops; --once for one tick)")
     sc.add_argument("--once", action="store_true")
     sc.add_argument("--no-launch", action="store_true")
@@ -106,9 +114,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "status":
         _print({"jobs": queue.counts(conn), "spend": ledger.totals(conn),
                 "cost_per_output": ledger.cost_per_output(conn)})
+    elif args.cmd == "produce":
+        return _produce(args, conn, pol)
+    elif args.cmd == "posts":
+        cid = _creator_id(conn, args.creator)
+        _print(conn.execute("SELECT id, status, format, platform, scheduled_for, caption, qa_status, "
+                            "body->'scenes' AS scenes, body->'images' AS images, body->>'drop_reason' AS drop_reason "
+                            "FROM posts WHERE creator_id = %s ORDER BY scheduled_for", (cid,)).fetchall())
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
-    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review"):
+    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan"):
         return _brain(args, conn, pol)
     return 0
 
@@ -139,6 +154,21 @@ def _review(args, conn, pol, llm) -> int:
         if not args.loop:
             return 0
         time.sleep(float(pol.get("review", "image", "loop_seconds", default=120)))
+        pol = policy_mod.load()
+
+
+def _produce(args, conn, pol) -> int:
+    import time
+
+    from . import production
+
+    while True:
+        result = production.advance(conn, pol)
+        if any(result.values()) or not args.loop:
+            _print(result)
+        if not args.loop:
+            return 0
+        time.sleep(float(pol.get("production", "loop_seconds", default=120)))
         pol = policy_mod.load()
 
 
@@ -188,6 +218,13 @@ def _brain(args, conn, pol) -> int:
         cid = _creator_id(conn, args.creator)
         with tempfile.TemporaryDirectory() as tmp:
             _print({**lab.select_anchors(conn, pol, llm, storage.from_url(), cid, tmp), "llm_usd": llm.spent})
+    elif args.cmd == "plan":
+        from datetime import date
+
+        from .brain import planner
+        start = date.fromisoformat(args.start) if args.start else None
+        _print({**planner.plan_period(conn, pol, llm, _creator_id(conn, args.creator), start=start, force=args.force),
+                "llm_usd": llm.spent})
     elif args.cmd == "train-lora":
         _print({"job": lab.enqueue_lora_training(conn, pol, _creator_id(conn, args.creator))})
     return 0
