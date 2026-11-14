@@ -55,6 +55,9 @@ def _diffusers_pipe(ctx: JobContext):
         pipe = WanImageToVideoPipeline.from_pretrained(source, vae=vae, torch_dtype=torch.bfloat16)
         if offload:
             pipe.enable_model_cpu_offload()
+            # 2026-11-14: 704x1280x121 on a 24 GB 3090 denoised fine, then ran out of memory in
+            # the float32 VAE decode. Tiled decoding keeps it within the card.
+            pipe.vae.enable_tiling()
         else:
             pipe.to("cuda")
         _state.update(pipe=pipe, offload=offload, gpu=torch.cuda.get_device_name(0), free_gb=round(free / 1e9, 1))
