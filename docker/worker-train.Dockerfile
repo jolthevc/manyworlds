@@ -13,7 +13,7 @@ RUN git clone --depth 1 --branch ${AI_TOOLKIT_REF} https://github.com/ostris/ai-
 WORKDIR /app
 COPY pyproject.toml ./
 COPY manyworlds ./manyworlds
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . "brotli>=1.2"
 COPY policy ./policy
 ENTRYPOINT ["mw"]
 CMD ["worker"]

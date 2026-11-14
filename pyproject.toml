@@ -14,9 +14,11 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8"]
 # GPU worker extras. Each worker image installs exactly one of these.
-image = ["torch>=2.7", "diffusers>=0.36", "transformers>=4.51", "accelerate>=1.6", "peft>=0.15", "safetensors", "pillow"]
-video = ["torch>=2.7", "diffusers>=0.36", "transformers>=4.51", "accelerate>=1.6", "peft>=0.15", "safetensors", "pillow", "imageio[ffmpeg]", "ftfy"]
-tts = ["torch>=2.7", "kokoro>=0.9", "soundfile", "numpy"]
+# brotli>=1.2: huggingface_hub's HTTP client passes output_buffer_limit to the Brotli decoder;
+# with 1.1 every compressed response fails ("process() takes no keyword arguments").
+image = ["torch>=2.7", "brotli>=1.2", "diffusers>=0.36", "transformers>=4.51", "accelerate>=1.6", "peft>=0.15", "safetensors", "pillow"]
+video = ["torch>=2.7", "brotli>=1.2", "diffusers>=0.36", "transformers>=4.51", "accelerate>=1.6", "peft>=0.15", "safetensors", "pillow", "imageio[ffmpeg]", "ftfy"]
+tts = ["torch>=2.7", "brotli>=1.2", "kokoro>=0.9", "soundfile", "numpy"]
 
 [project.scripts]
 mw = "manyworlds.cli:main"
