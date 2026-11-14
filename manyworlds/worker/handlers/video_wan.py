@@ -1,14 +1,10 @@
 """Story clips: Wan 2.2 image-to-video from one approved creator photo.
 
-Backends, chosen with MW_VIDEO_BACKEND:
-
-* `diffusers` (default): diffusers' WanImageToVideoPipeline with MW_VIDEO_MODEL, by default
-  Wan-AI/Wan2.2-TI2V-5B-Diffusers (Apache 2.0): 5B parameters, runs on one 24 GB card, 24 fps.
-  Weights load from our bucket once mirrored (manyworlds.worker.models). The whole pipeline
-  stays on the GPU when MW_VIDEO_OFFLOAD_BELOW_GB of memory is free, otherwise components are
-  offloaded to CPU (slower, but fits 24 GB cards).
-* `lightx2v`: LightX2V's distilled Wan 2.2 14B as a subprocess (MW_LIGHTX2V_CMD template).
-  Kept for a later quality/speed comparison; not verified.
+Diffusers' WanImageToVideoPipeline with MW_VIDEO_MODEL, by default Wan-AI/Wan2.2-TI2V-5B-Diffusers
+(Apache 2.0): 5B parameters, runs on one 24 GB card, 24 fps. Weights load from our bucket once
+mirrored (manyworlds.worker.models). The whole pipeline stays on the GPU when
+MW_VIDEO_OFFLOAD_BELOW_GB of memory is free, otherwise components are offloaded to CPU (slower,
+but fits 24 GB cards).
 
 Payload: image_uri, prompt, width, height, frames, seed, params{steps, guidance, fps}, keyframes.
 Besides the clip, `keyframes` evenly spaced frames are stored as JPEG `keyframe` assets: the
@@ -21,23 +17,14 @@ from __future__ import annotations
 import logging
 import os
 import random
-import shlex
-import subprocess
 import time
 from typing import Any
 
 from .. import models
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 
-BACKEND = os.environ.get("MW_VIDEO_BACKEND", "diffusers")
 MODEL_ID = os.environ.get("MW_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 OFFLOAD_BELOW_GB = float(os.environ.get("MW_VIDEO_OFFLOAD_BELOW_GB", "40"))
-LIGHTX2V_CMD = os.environ.get(
-    "MW_LIGHTX2V_CMD",
-    "python -m lightx2v.infer --model_cls wan2.2_moe_distill --task i2v "
-    "--model_path {model_path} --config_json {config_json} --prompt {prompt} "
-    "--image_path {image} --save_result_path {output} --seed {seed}",
-)
 _state: dict[str, Any] = {"pipe": None}
 log = logging.getLogger("manyworlds.video")
 
@@ -103,18 +90,6 @@ def extract_keyframes(video_path, workdir, n: int) -> list[OutputFile]:
     return outs
 
 
-def _run_lightx2v(image_path, out_path, prompt, seed):
-    cmd = LIGHTX2V_CMD.format(
-        model_path=shlex.quote(os.environ.get("MW_LIGHTX2V_MODEL_PATH", "/models/LightWan2.2-A14B")),
-        config_json=shlex.quote(os.environ.get("MW_LIGHTX2V_CONFIG", "/configs/wan22_i2v_nvfp4_4step.json")),
-        prompt=shlex.quote(prompt), image=shlex.quote(str(image_path)),
-        output=shlex.quote(str(out_path)), seed=seed,
-    )
-    proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True)
-    if proc.returncode != 0 or not out_path.exists():
-        raise RuntimeError(f"lightx2v exited {proc.returncode}: {proc.stderr[-2000:]}")
-
-
 def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     if not payload.get("image_uri") or not payload.get("prompt"):
         raise NonRetryable("payload needs image_uri and prompt")
@@ -129,17 +104,12 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     image_path = ctx.fetch(payload["image_uri"], "start_frame.png")
     out_path = ctx.workdir / "clip.mp4"
     t0 = time.monotonic()
-    if BACKEND == "diffusers":
-        _run_diffusers(ctx, image_path, out_path, payload["prompt"], w, h, frames, steps, guidance, fps, seed)
-    elif BACKEND == "lightx2v":
-        _run_lightx2v(image_path, out_path, payload["prompt"], seed)
-    else:
-        raise NonRetryable(f"unknown MW_VIDEO_BACKEND {BACKEND!r}")
+    _run_diffusers(ctx, image_path, out_path, payload["prompt"], w, h, frames, steps, guidance, fps, seed)
     render_s = round(time.monotonic() - t0, 1)
 
     keyframes = extract_keyframes(out_path, ctx.workdir, int(payload.get("keyframes", 4)))
     seconds = round(frames / fps, 2)
-    recipe = {"backend": BACKEND, "model": MODEL_ID if BACKEND == "diffusers" else "LightWan2.2-A14B",
+    recipe = {"model": MODEL_ID,
               "prompt": payload["prompt"], "image_uri": payload["image_uri"], "seed": seed, "width": w, "height": h,
               "frames": frames, "steps": steps, "guidance": guidance, "fps": fps}
     return HandlerResult([OutputFile(out_path, "video", {"seconds": seconds, "width": w, "height": h}), *keyframes],

@@ -1,23 +1,29 @@
 # Manyworlds
 
 Autonomous research and production engine for openly AI-generated creators.
-Design and rationale: the "Manyworlds — Architecture & Build Proposal" doc.
+Design and rationale: the "Manyworlds — Architecture & Build Proposal" doc. Working rules for
+anyone (or any agent) changing the code: `CLAUDE.md`.
 
-## Day 1 status: the factory floor
+## What runs where
 
-| Piece | File | State |
+- **Control services** (`docker compose --profile live up -d`): the autoscaler (starts and stops
+  GPU machines), the producer (plans posts, turns due ones into jobs, picks reviewed outputs) and
+  the reviewer (judges every image and clip). They run on one always-on host.
+- **GPU workers** on rented machines (Vast.ai, RunPod, SaladCloud), started by the autoscaler
+  with a deadline and a spend cap. One image, `mw-worker-image`, serves photos, voice lines,
+  narrated edits and story clips; `mw-worker-train` trains creator LoRAs.
+- **Shared state**: Postgres (Neon) for the queue, ledger and posts; R2 for files and model weights.
+
+## Pipeline
+
+| Stage | Code | State |
 | --- | --- | --- |
-| Schema (creators, jobs, attempts, assets, reviews, posts, metrics, cost ledger, playbook) | `manyworlds/migrations/001_init.sql` | Done, tested |
-| Versioned policy (budgets, GPU pools and prices, candidate counts, limits) | `policy/default.yaml`, `manyworlds/policy.py` | Done, tested |
-| Job queue for interruptible GPUs (leases, heartbeats, reclaim after preemption, retries, dead jobs) | `manyworlds/queue.py` | Done, tested |
-| Worker loop (claim → run → upload → assets with provenance → GPU cost → complete) | `manyworlds/worker/runner.py` | Done, tested with fake handlers |
-| Cost ledger (every GPU-second, failed attempts included) | `manyworlds/ledger.py` | Done, tested |
-| Object storage (R2 / MinIO / local) | `manyworlds/storage.py` | Done |
-| Adapter interfaces and router | `manyworlds/adapters/` | Done, tested |
-| Photo worker: Z-Image Turbo + creator LoRA | `manyworlds/worker/handlers/image_zimage.py` | Written, **needs a GPU run** |
-| Video worker: LightWan2.2 (NVFP4, 4-step) or diffusers Wan 2.2 | `manyworlds/worker/handlers/video_wan.py` | Written, **needs a GPU run**; LightX2V command must be confirmed against its image |
-| Voice worker: Kokoro | `manyworlds/worker/handlers/tts_kokoro.py` | Written, **needs a GPU run** |
-| Benchmark: measured seconds per output → $ per 1k on every pool | `manyworlds/bench.py`, `mw bench` / `mw report` | Done, tested with fake handlers |
+| Research (public, logged-out signals) → theses | `research/`, `brain/discover.py` | Working |
+| Creator lab: bible, reference photos, LoRA, voice | `creator/lab.py`, `creator/profile.py` | Working (one creator, Maren) |
+| Planner: a week of posts in the creator's voice | `brain/planner.py` | Working |
+| Production: photo, carousel, narrated edit, story clip | `production.py` | Working; story clips new (2026-11-14) |
+| Review gates: images (identity, realism, safety, scene), clips from keyframes | `review/` | Working |
+| Approval console, publishing, learning loop | — | Not built |
 
 ## Run locally (no GPU needed)
 
@@ -31,33 +37,22 @@ docker compose up -d fake-worker                           # 2 CPU workers drain
 docker compose run --rm mw report <batch id>
 ```
 
-## Run the real GPU benchmark
+## Against real services
 
-1. **Database reachable from the internet.** Remote workers need it: create a hosted
-   Postgres (Neon or Supabase free tier is enough) and set `DATABASE_URL`; run `mw migrate`.
-2. **Storage.** Create a Cloudflare R2 bucket and API token; set `STORAGE_URL=s3://<bucket>`,
-   `S3_ENDPOINT_URL=https://<account>.r2.cloudflarestorage.com`, and the key pair.
-3. **Build and push worker images** to a registry the GPU clouds can pull from:
+Keys go in `.env` (copy `.env.example`); never commit it. Run the `mw` image with `--env-file .env`:
 
-   ```bash
-   docker build -f docker/worker.Dockerfile --build-arg EXTRA=image --build-arg PREFETCH="Tongyi-MAI/Z-Image-Turbo" -t <registry>/mw-worker-image .
-   docker build -f docker/worker.Dockerfile --build-arg EXTRA=tts --build-arg PREFETCH="hexgrad/Kokoro-82M" -t <registry>/mw-worker-tts .
-   docker build -f docker/worker-video-lightx2v.Dockerfile -t <registry>/mw-worker-video .
-   ```
+- `mw status`: job counts, spend, cost per output, and where GPU money went over 72 h
+- `mw machines --hours 72`: every GPU machine, billed against the work it finished
+- `mw posts <creator>`, `mw creator <creator>`, `mw bench <kind> --jobs N [--pools p]`, `mw report <batch>`
 
-4. **Start workers** with the same env plus `MW_POOL` (e.g. `salad_batch_4090`) and
-   `MW_WORKER_KINDS` (`image.zimage`, `video.wan_i2v` or `tts.kokoro`):
-   one SaladCloud container group per image, or a Vast.ai / RunPod instance running the image.
-5. **Benchmark:** `mw bench image.zimage --jobs 50`, `mw bench tts.kokoro --jobs 30`,
-   and for video a start frame first: `mw bench video.wan_i2v --jobs 20 --extra '{"image_uri": "s3://<bucket>/<still>.png"}'`.
-   Then `mw report <batch>` gives median and p90 seconds per output and projected $ per 1,000
-   outputs for every pool with that GPU.
+## Worker images
 
-## What day 1 still needs from you
+```bash
+MW_REGISTRY=docker.io/<you> scripts/build-worker.sh image v18
+```
 
-- A **SaladCloud** (or Vast.ai) account and API key, plus RunPod as backup, with ~$100 credit.
-- A **hosted Postgres** URL and a **Cloudflare R2** bucket (both have free tiers).
-- A **container registry** login (Docker Hub or GitHub Container Registry).
-- A **Hugging Face token** if a model is gated.
-
-Keys go in `.env` (copy `.env.example`); never commit it.
+builds the image, runs `python -m manyworlds.worker.smoke image` inside it (imports every
+handler's libraries and runs the CPU parts: ffmpeg, clip export, keyframes) and pushes only if
+that passes. Then set `worker_images.<family>.tag` in `policy/default.yaml`; the autoscaler
+won't rent a machine for an image that isn't published. Images are public: the Dockerfiles copy
+only code and policy, and `.dockerignore` drops `.env`.

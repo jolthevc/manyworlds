@@ -34,16 +34,7 @@ gpu_runs:
 # The router prefers the cheapest pool that can run the job kind.
 gpu_pools:
   salad_batch_4090:  {provider: salad,  gpu: rtx4090, usd_per_hour: 0.16, interruptible: true}
-  salad_batch_5090:  {provider: salad,  gpu: rtx5090, usd_per_hour: 0.25, interruptible: true}
   salad_batch_3090:  {provider: salad,  gpu: rtx3090, usd_per_hour: 0.09, interruptible: true}
-  salad_batch_a5000: {provider: salad,  gpu: rtxa5000, usd_per_hour: 0.09, interruptible: true}
-  salad_batch_3060:  {provider: salad,  gpu: rtx3060, usd_per_hour: 0.04, interruptible: true}
-  salad_low_4090:    {provider: salad,  gpu: rtx4090, usd_per_hour: 0.253, interruptible: true}
-  salad_low_5090:    {provider: salad,  gpu: rtx5090, usd_per_hour: 0.367, interruptible: true}
-  salad_medium_4090: {provider: salad,  gpu: rtx4090, usd_per_hour: 0.347, interruptible: true}
-  salad_medium_5090: {provider: salad,  gpu: rtx5090, usd_per_hour: 0.483, interruptible: true}
-  salad_high_4090:   {provider: salad,  gpu: rtx4090, usd_per_hour: 0.44, interruptible: true}
-  salad_high_5090:   {provider: salad,  gpu: rtx5090, usd_per_hour: 0.60, interruptible: true}
   # Vast is a marketplace: usd_per_hour is the most we'll pay; the machine's actual
   # price (from Vast's instance listing, storage included) is what gets metered.
   # worker_env: Linux hosts have the whole card free, so image workers load the full model
@@ -53,8 +44,6 @@ gpu_pools:
   vast_5090:         {provider: vast,   gpu: rtx5090, usd_per_hour: 0.50, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
   runpod_comm_3090:  {provider: runpod, gpu: rtx3090, usd_per_hour: 0.22, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
   runpod_comm_4090:  {provider: runpod, gpu: rtx4090, usd_per_hour: 0.34, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
-  runpod_comm_5090:  {provider: runpod, gpu: rtx5090, usd_per_hour: 0.69, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
-  runpod_sls_4090:   {provider: runpod_serverless, gpu: rtx4090, usd_per_hour: 1.34, interruptible: false}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
 
 # Job kinds and the pools allowed to run them. The autoscaler orders them by measured cost
@@ -63,7 +52,7 @@ gpu_pools:
 # RunPod community 4090s are out of the defaults: three pods in a row failed every job with "CUDA
 # unknown error" (2026-11-13). runpod_comm_3090 is the last-resort pool (Vast ran out of credit on
 # 2026-11-14): it gets a bounded trial and pauses itself if its machines fail too.
-# salad_batch_a5000 is out of the image defaults too: SaladCloud's 3090 and 4090 cost $0.023-0.025 per
+# SaladCloud A5000s were dropped too (2026-11-13): SaladCloud's 3090 and 4090 cost $0.023-0.025 per
 # accepted image against Vast 3090's $0.0027 (same Windows consumer nodes), so its trial isn't worth it.
 job_kinds:
   image.zimage:    {pools: [vast_3090, vast_4090, salad_batch_3090, salad_batch_4090, runpod_comm_3090], outputs_per_job: 4}
@@ -72,7 +61,7 @@ job_kinds:
   # Wan 2.2 TI2V-5B. RunPod 3090 measured 2026-11-14: 720p x 5 s in 859 s (cpu offload + tiled VAE), ~$0.05.
   video.wan_i2v:   {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 1}
   video.mirror:    {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 0}
-  tts.kokoro:      {pools: [salad_batch_3060, vast_3090, salad_batch_4090, vast_4090], outputs_per_job: 1}
+  image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
@@ -84,12 +73,11 @@ worker_images:
   # env: passed to every worker of the family; a pool's worker_env overrides it.
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
-  image: {image: mw-worker-image, tag: v17, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
+  image: {image: mw-worker-image, tag: v18, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
-  tts:   {image: mw-worker-tts,   tag: day1, min_cuda: 12.8, cpu: 2, ram_gb: 8,  disk_gb: 30}
   # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v17, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
-          env: {MW_VIDEO_BACKEND: diffusers, MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
+  video: {image: mw-worker-image, tag: v18, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
+          env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {HF_HUB_DISABLE_XET: 1}}

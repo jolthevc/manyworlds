@@ -51,7 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     tl.add_argument("creator")
     cr = sub.add_parser("creator", help="show a creator's bible, anchors and jobs")
     cr.add_argument("creator")
-    sub.add_parser("status", help="job counts and spend")
+    sub.add_parser("status", help="job counts, spend and where GPU money went (72 h)")
+    mc = sub.add_parser("machines", help="each GPU machine: billed vs finished work")
+    mc.add_argument("--hours", type=float, default=72)
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
@@ -118,8 +120,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "report":
         _print(bench.report(conn, pol, args.batch))
     elif args.cmd == "status":
+        from .deploy import report
         _print({"jobs": queue.counts(conn), "spend": ledger.totals(conn),
-                "cost_per_output": ledger.cost_per_output(conn)})
+                "cost_per_output": ledger.cost_per_output(conn), "machines_72h": report.summary(report.machines(conn))})
+    elif args.cmd == "machines":
+        from .deploy import report
+        rows = report.machines(conn, hours=args.hours)
+        _print({"summary": report.summary(rows), "machines": rows})
     elif args.cmd == "posts":
         cid = _creator_id(conn, args.creator)
         _print(conn.execute("SELECT id, status, format, platform, scheduled_for, caption, qa_status, "
@@ -157,10 +164,9 @@ def _review(args, conn, pol, llm) -> int:
                         "model": llm.model_for(args.role or pol.get("review", "image", "role")),
                         "llm_usd": llm.spent})
             else:
-                result = gates.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch)
-                result.update(video_review.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch))
-                if any(result[k] for k in ("accepted", "rejected", "errors", "clips_accepted", "clips_rejected",
-                                           "clip_errors")) or not args.loop:
+                result = {"images": gates.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch),
+                          "clips": video_review.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch)}
+                if any(v for r in result.values() for v in r.values()) or not args.loop:
                     _print({**result, "llm_usd": llm.spent})
         if not args.loop:
             return 0

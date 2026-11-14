@@ -19,7 +19,9 @@ format is added there.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
 
 from psycopg.types.json import Jsonb
 
@@ -92,23 +94,91 @@ def _best_confirmed(conn, job_ids: list[str]) -> dict | None:
            ORDER BY score DESC NULLS LAST, a.uri LIMIT 1""", (job_ids,)).fetchone()
 
 
-def _scene_state(conn, job_ids: list[str]) -> str:
-    """'waiting' (still generating or being reviewed), 'chosen', 'rejected' (every image was
-    reviewed and none passed) or 'failed' (the job itself failed: infrastructure, not taste)."""
-    if _best_confirmed(conn, job_ids):
-        return "chosen"
-    last = conn.execute("SELECT status FROM jobs WHERE id = %s", (job_ids[-1],)).fetchone()["status"]
+# Every piece of a post (each scene's image, then the edit or clip made from them) is a Step:
+# the job ids tried so far, kept in the post body, and how to read and retry the latest one.
+# A state is (waiting | chosen | rejected | failed, result): rejected output gets a creative
+# repair; failed jobs (machines, downloads) are counted apart, so an infrastructure outage
+# can't use up a post's repairs.
+
+
+@dataclass
+class Step:
+    jobs: list[str]                                    # job ids in the post body, oldest first
+    state: Callable[[list[str]], tuple[str, Any]]
+    make: Callable[[int], Any]                         # attempt number -> new job id
+    repairs: tuple[str, int]                           # body counter and limit for rejected output
+    failures: tuple[str, int]                          # body counter and limit for failed jobs
+    thing: str                                         # "image", "edit", "clip": for the drop reason
+    label: str = ""                                    # e.g. "scene 1: "
+
+
+def advance_step(body: dict, step: Step) -> tuple[str, Any]:
+    """('chosen', result), ('waiting', None) or ('dropped', None), starting a retry when needed."""
+    if not step.jobs:
+        step.jobs.append(str(step.make(0)))
+        return "waiting", None
+    state, result = step.state(step.jobs)
+    if state in ("chosen", "waiting"):
+        return state, result
+    key, limit = step.repairs if state == "rejected" else step.failures
+    if body.get(key, 0) >= limit:
+        body["drop_reason"] = (f"{step.label}no {step.thing} passed review after {body[key]} repairs"
+                               if state == "rejected" else f"{step.label}the {step.thing} job failed {body[key] + 1} times")
+        return "dropped", None
+    body[key] = body.get(key, 0) + 1
+    step.jobs.append(str(step.make(len(step.jobs))))
+    return "waiting", None
+
+
+def _status(conn, job_id) -> str:
+    return conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,)).fetchone()["status"]
+
+
+def _scene_state(conn, job_ids: list[str]) -> tuple[str, Any]:
+    """chosen (an image passed both review stages), waiting (generating or being reviewed),
+    rejected (every image reviewed, none passed) or failed (the job itself failed)."""
+    best = _best_confirmed(conn, job_ids)
+    if best:
+        return "chosen", best
+    last = _status(conn, job_ids[-1])
     if last in ("queued", "running"):
-        return "waiting"
-    if last == "done":
-        unreviewed = conn.execute(
-            "SELECT count(*) n FROM assets a WHERE a.job_id = %s AND a.kind = 'image' "
-            "AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = a.id)", (job_ids[-1],)).fetchone()["n"]
-        # The reviewer runs both stages in one pass, so reviewed means decided.
-        if unreviewed:
-            return "waiting"
-        return "rejected"
-    return "failed"
+        return "waiting", None
+    if last != "done":
+        return "failed", None
+    # The reviewer writes both stages at once, so reviewed means decided.
+    unreviewed = conn.execute(
+        "SELECT count(*) n FROM assets a WHERE a.job_id = %s AND a.kind = 'image' "
+        "AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = a.id)", (job_ids[-1],)).fetchone()["n"]
+    return ("waiting", None) if unreviewed else ("rejected", None)
+
+
+def _edit_state(conn, job_ids: list[str]) -> tuple[str, Any]:
+    """An edit is not reviewed (its photos and script were): done with a video is chosen."""
+    if _status(conn, job_ids[-1]) in ("queued", "running"):
+        return "waiting", None
+    video = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'video' LIMIT 1",
+                         (job_ids[-1],)).fetchone()
+    return ("chosen", video) if video else ("failed", None)
+
+
+def _clip_state(conn, job_ids: list[str]) -> tuple[str, Any]:
+    """Like _scene_state, judged by the video gate. A clip without keyframes can't be reviewed,
+    so it counts as failed."""
+    status = _status(conn, job_ids[-1])
+    if status in ("queued", "running"):
+        return "waiting", None
+    video = conn.execute(
+        """SELECT a.id, a.uri, count(r.id) AS n, bool_and(r.passed) AS passed,
+                  bool_or(r.details->>'stage' = 'confirm') AS confirmed
+           FROM assets a LEFT JOIN reviews r ON r.asset_id = a.id
+           WHERE a.job_id = %s AND a.kind = 'video' GROUP BY a.id, a.uri LIMIT 1""", (job_ids[-1],)).fetchone()
+    keyframes = conn.execute("SELECT count(*) n FROM assets WHERE job_id = %s AND kind = 'keyframe'",
+                             (job_ids[-1],)).fetchone()["n"]
+    if status != "done" or not video or not keyframes:
+        return "failed", None
+    if not video["n"]:
+        return "waiting", None
+    return ("chosen", video) if video["passed"] and video["confirmed"] else ("rejected", None)
 
 
 def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int):
@@ -136,100 +206,55 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
 
 
-def _clip_state(conn, job_id: str) -> tuple[str, dict | None]:
-    """Like _scene_state, for a clip: chosen (passed every video gate, confirmed), waiting,
-    rejected or failed. A clip without keyframes can't be reviewed, so it counts as failed."""
-    job = conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,)).fetchone()
-    if job["status"] in ("queued", "running"):
-        return "waiting", None
-    video = conn.execute(
-        """SELECT a.id, a.uri, count(r.id) AS n, bool_and(r.passed) AS passed,
-                  bool_or(r.details->>'stage' = 'confirm') AS confirmed
-           FROM assets a LEFT JOIN reviews r ON r.asset_id = a.id
-           WHERE a.job_id = %s AND a.kind = 'video' GROUP BY a.id, a.uri LIMIT 1""", (job_id,)).fetchone()
-    keyframes = conn.execute("SELECT count(*) n FROM assets WHERE job_id = %s AND kind = 'keyframe'",
-                             (job_id,)).fetchone()["n"]
-    if job["status"] != "done" or not video or not keyframes:
-        return "failed", None
-    if not video["n"]:
-        return "waiting", None
-    return ("chosen", video) if video["passed"] and video["confirmed"] else ("rejected", None)
+
+# Formats made from the post's chosen photos: body key for their jobs, job maker, state, name.
+FOLLOW_UPS = {"narrated_edit": ("edit_jobs", _edit_job, _edit_state, "edit"),
+              "story_clip": ("clip_jobs", _clip_job, _clip_state, "clip")}
 
 
-def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]) -> tuple[str, dict | None]:
-    """The job made from a post's chosen photos (narrated edit or story clip). Returns
-    ('done', video asset), ('waiting', None) or ('dropped', None); retries as it goes."""
+def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:
     max_failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
-    if post["format"] == "narrated_edit":
-        jobs, make = body.setdefault("edit_jobs", []), _edit_job
-    else:
-        jobs, make = body.setdefault("clip_jobs", []), _clip_job
-    if not jobs:
-        jobs.append(str(make(conn, policy, post, body, chosen, 0)))
-        return "waiting", None
-    if post["format"] == "narrated_edit":
-        status = conn.execute("SELECT status FROM jobs WHERE id = %s", (jobs[-1],)).fetchone()["status"]
-        video = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'video' LIMIT 1",
-                             (jobs[-1],)).fetchone()
-        state = "waiting" if status in ("queued", "running") else ("chosen" if video else "failed")
-    else:
-        state, video = _clip_state(conn, jobs[-1])
-    if state == "chosen":
-        return "done", video
-    if state == "waiting":
-        return "waiting", None
-    # A rejected clip gets a new seed, a few times (each costs a render); failures are counted apart.
-    key, limit = (("clip_repairs", int(policy.get("review", "video", "max_repairs_per_post", default=2)))
-                  if state == "rejected" else ("follow_up_failures", max_failures))
-    if body.get(key, 0) >= limit:
-        what = "edit" if post["format"] == "narrated_edit" else "clip"
-        body["drop_reason"] = (f"no {what} passed review after {body[key]} repairs" if key == "clip_repairs"
-                               else f"the {what} failed {body[key] + 1} times")
-        return "dropped", None
-    body[key] = body.get(key, 0) + 1
-    jobs.append(str(make(conn, policy, post, body, chosen, len(jobs))))
-    return "waiting", None
+    repairs = ("repairs", int(policy.get("review", "max_repairs_per_post", default=4)))
+
+    def remake(i):
+        def make(attempt):
+            bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
+            return _scene_job(conn, policy, post, bible, ensure_lora(conn, policy, post["creator_id"]), i, attempt)
+        return make
+
+    return [Step(jobs, lambda j: _scene_state(conn, j), remake(i), repairs, ("job_failures", max_failures),
+                 "image", f"scene {i}: ") for i, jobs in enumerate(body["scene_jobs"])]
+
+
+def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]) -> Step:
+    key, make, state, thing = FOLLOW_UPS[post["format"]]
+    return Step(body.setdefault(key, []), lambda j: state(conn, j),
+                lambda attempt: make(conn, policy, post, body, chosen, attempt),
+                ("clip_repairs", int(policy.get("review", "video", "max_repairs_per_post", default=2))),
+                ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))), thing)
 
 
 def advance_post(conn, policy: Policy, post: dict) -> str:
     body = dict(post["body"])
-    max_repairs = int(policy.get("review", "max_repairs_per_post", default=4))
-    max_failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
-    chosen, waiting = [], False
-    for i, jobs in enumerate(body["scene_jobs"]):
-        state = _scene_state(conn, jobs)
-        if state == "chosen":
-            chosen.append(_best_confirmed(conn, jobs))
-            continue
-        if state == "waiting":
-            waiting = True
-            continue
-        # Rejected images use a creative repair; failed jobs (machines, downloads) are counted
-        # apart, so an infrastructure outage can't use up a post's repairs.
-        key, limit = ("repairs", max_repairs) if state == "rejected" else ("job_failures", max_failures)
-        if body.get(key, 0) >= limit:
-            body["drop_reason"] = (f"scene {i}: no image passed review after {body[key]} repairs" if key == "repairs"
-                                   else f"scene {i}: its job failed {body[key]} times")
-            _set(conn, post["id"], "dropped", body, qa_status="failed")
-            return "dropped"
-        c = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
-        lora = ensure_lora(conn, policy, post["creator_id"])
-        jobs.append(str(_scene_job(conn, policy, post, c["bible"], lora, i, len(jobs))))
-        body[key] = body.get(key, 0) + 1
-        waiting = True
-    if waiting:
+    results = []
+    for step in _scene_steps(conn, policy, post, body):
+        results.append(advance_step(body, step))
+        if results[-1][0] == "dropped":
+            break   # no more repairs for a post that is being dropped
+    states, chosen, video = {state for state, _ in results}, [r for _, r in results], None
+    if states == {"chosen"}:
+        body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
+        if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
+            state, video = advance_step(body, _follow_up(conn, policy, post, body, chosen))
+            states = {state}
+    if "dropped" in states:
+        _set(conn, post["id"], "dropped", body, qa_status="failed")
+        return "dropped"
+    if "waiting" in states:
         _set(conn, post["id"], "producing", body)
         return "producing"
-    body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
     asset_ids = [a["id"] for a in chosen]
-    if post["format"] in ("narrated_edit", "story_clip"):
-        state, video = _follow_up(conn, policy, post, body, chosen)
-        if state == "dropped":
-            _set(conn, post["id"], "dropped", body, qa_status="failed")
-            return "dropped"
-        if state == "waiting":
-            _set(conn, post["id"], "producing", body)
-            return "producing"
+    if video:
         body["video"] = {"asset_id": str(video["id"]), "uri": video["uri"]}
         asset_ids = [video["id"], *asset_ids]
     _set(conn, post["id"], "ready", body, qa_status="passed", asset_ids=asset_ids)

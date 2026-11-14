@@ -212,5 +212,5 @@ def enqueue_lora_training(conn, policy: Policy, creator_id) -> object:
 def enqueue_voice_sample(conn, creator_id) -> object:
     c = conn.execute("SELECT bible, anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()
     line = f"Hi, I'm {c['bible']['display_name']}. {c['bible']['one_line']}"
-    return queue.enqueue(conn, "tts.kokoro", {"text": line, "voice": c["anchors"]["voice"]["voice"]},
+    return queue.enqueue(conn, "image.voice", {"text": line, "voice": c["anchors"]["voice"]["voice"]},
                          creator_id=creator_id, idempotency_key=f"{creator_id}:voice:sample")

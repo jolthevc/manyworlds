@@ -1,7 +1,9 @@
-"""Bulk voice: Kokoro-82M (Apache 2.0), far faster than real time on any GPU.
-Cloned creator voices (Chatterbox) come later as a separate `tts.chatterbox` kind.
-Payload: text, voice (e.g. af_heart), speed, lang (a = American English).
-Not yet verified on a GPU."""
+"""Voice lines: Kokoro-82M (Apache 2.0), far faster than real time on any GPU.
+
+Kind image.voice rides along on image machines (their image has Kokoro for narrated edits), so a
+creator's voice sample never needs a machine of its own. A separate TTS worker image ran 31
+benchmark jobs (2026-11-12) and was retired: one more image to build for seconds of work.
+Payload: text, voice (e.g. af_heart), speed, lang (a = American English)."""
 
 from __future__ import annotations
 
@@ -36,4 +38,4 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
                          meta={"output_seconds": seconds})
 
 
-HANDLERS = {"tts.kokoro": speak}
+HANDLERS = {"image.voice": speak}

@@ -30,6 +30,7 @@ from ..creator.lab import appearance_prompt
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
 from ..storage import ObjectStore
+from . import common
 
 SYSTEM = """You are the quality gate for an AI creator studio whose creators are openly labeled as AI.
 You review short image-to-video clips of one fictional person from keyframes, strictly. A clip is only
@@ -102,9 +103,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                *, write: bool = True) -> list[dict]:
     """Review the clip of one finished video job. Returns one dict per video asset (normally one)."""
     cfg = policy.get("review", "video", default={})
-    stages = [(cfg.get("role", "judge"), cfg.get("effort", "low"), "screen")]
-    if cfg.get("confirm_role"):
-        stages.append((cfg["confirm_role"], cfg.get("confirm_effort", "low"), "confirm"))
+    stages = common.stages(cfg)
     job = conn.execute("SELECT creator_id, payload FROM jobs WHERE id = %s", (job_id,)).fetchone()
     payload = job["payload"] or {}
     scene = payload.get("scene")
@@ -117,10 +116,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     if not videos or not keys:
         return []
     workdir = Path(workdir)
-    refs = [store.get_file(r["uri"], workdir / f"ref_{i}.png").read_bytes()
-            for i, r in enumerate((creator["anchors"] or {}).get("reference_images", [])[:int(cfg.get("reference_images", 3))])]
-    if not refs:
-        raise ValueError(f"creator {creator['id']} has no reference images to review against")
+    refs = common.reference_images(creator, store, workdir, int(cfg.get("reference_images", 3)))
     start = (store.get_file(payload["image_uri"], workdir / "start.png").read_bytes()
              if payload.get("image_uri") else None)
     frames = [(store.get_file(k["uri"], workdir / f"key_{i}{Path(k['uri']).suffix}").read_bytes(), _media_type(k["uri"]))
@@ -143,11 +139,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                 break   # rejects stay cheap: no confirm for a clip the screen failed
         res["confirmed"] = res["accepted"] and len(res["stages"]) == len(stages)
         out.append(res)
-    if write and rows:
-        with conn.transaction():   # production must never see the screen without its confirm
-            for row in rows:
-                conn.execute("INSERT INTO reviews (asset_id, gate, passed, score, details) "
-                             "VALUES (%s, %s, %s, %s, %s)", row)
+    if write:
+        common.write_rows(conn, rows)
     return out
 
 
@@ -167,15 +160,5 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
 
 def run_pending(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, workdir: Path,
                 *, batch: str | None = None) -> dict:
-    accepted = rejected = 0
-    errors = []
-    for job_id in pending_jobs(conn, policy, batch=batch):
-        jd = Path(workdir) / f"video-{job_id}"
-        jd.mkdir(parents=True, exist_ok=True)
-        try:
-            for r in review_job(conn, policy, llm, store, job_id, jd):
-                accepted += r["accepted"]
-                rejected += not r["accepted"]
-        except Exception as e:  # noqa: BLE001 - one bad job must not stop the others
-            errors.append({"job": str(job_id), "error": str(e)[:300]})
-    return {"clips_accepted": accepted, "clips_rejected": rejected, "clip_errors": errors}
+    return common.run_jobs(pending_jobs(conn, policy, batch=batch),
+                           lambda job, d: review_job(conn, policy, llm, store, job, d), workdir, prefix="video-")

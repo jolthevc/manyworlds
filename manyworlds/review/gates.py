@@ -25,6 +25,7 @@ from ..creator.lab import appearance_prompt
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
 from ..storage import ObjectStore
+from . import common
 
 SYSTEM = """You are the quality gate for an AI creator studio whose creators are openly labeled as AI.
 You compare generated photos against reference photos of one fictional person and judge each candidate
@@ -52,11 +53,6 @@ class CandidateReview(BaseModel):
 
 class ImageReviews(BaseModel):
     reviews: list[CandidateReview]
-
-
-def _reference_images(creator: dict, store: ObjectStore, workdir: Path, n: int) -> list[bytes]:
-    refs = (creator["anchors"] or {}).get("reference_images", [])[:n]
-    return [store.get_file(r["uri"], workdir / f"ref_{i}.png").read_bytes() for i, r in enumerate(refs)]
 
 
 def gates_for(scene: str | None) -> tuple[str, ...]:
@@ -108,9 +104,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     anything accepted has passed both. Each stage writes its own rows per gate, so an
     asset is accepted only when no row failed."""
     cfg = policy.get("review", "image", default={})
-    stages = [(role or cfg.get("role", "judge"), cfg.get("effort", "low"), "screen")]
-    if cfg.get("confirm_role") and not role:
-        stages.append((cfg["confirm_role"], cfg.get("confirm_effort", "low"), "confirm"))
+    stages = common.stages(cfg, role)
     job = conn.execute("SELECT creator_id, payload->>'scene' AS scene FROM jobs WHERE id = %s", (job_id,)).fetchone()
     scene, gates = job["scene"], gates_for(job["scene"])
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
@@ -119,9 +113,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     if not assets:
         return []
     workdir = Path(workdir)
-    refs = _reference_images(creator, store, workdir, int(cfg.get("reference_images", 3)))
-    if not refs:
-        raise ValueError(f"creator {creator['id']} has no reference images to review against")
+    refs = common.reference_images(creator, store, workdir, int(cfg.get("reference_images", 3)))
     images = {a["id"]: store.get_file(a["uri"], workdir / f"cand_{i}.png").read_bytes() for i, a in enumerate(assets)}
     results = {a["id"]: {"asset_id": str(a["id"]), "uri": a["uri"], "accepted": True, "stages": [],
                          **{g: True for g in gates}, "identity_score": None, "realism_score": None, "scene_score": None,
@@ -155,13 +147,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         top = int(cfg.get("confirm_top_per_job", 0)) or len(still)
         still.sort(key=lambda a: -sum(results[a["id"]][f"{k}_score"] or 0 for k in ("identity", "realism", "scene")))
         remaining = still[:top]
-    # All of a job's rows land together once every stage is done: anyone reading reviews
-    # (production picking images) must never see the screen without its confirm.
-    if write and rows:
-        with conn.transaction():
-            for row in rows:
-                conn.execute("INSERT INTO reviews (asset_id, gate, passed, score, details) "
-                             "VALUES (%s, %s, %s, %s, %s)", row)
+    if write:
+        common.write_rows(conn, rows)
     for r in results.values():
         r["confirmed"] = r["accepted"] and len(r["stages"]) == len(stages)
     return [results[a["id"]] for a in assets]
@@ -185,15 +172,5 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
 
 def run_pending(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, workdir: Path,
                 *, batch: str | None = None) -> dict:
-    accepted = rejected = 0
-    errors = []
-    for job_id in pending_jobs(conn, policy, batch=batch):
-        jd = Path(workdir) / str(job_id)
-        jd.mkdir(parents=True, exist_ok=True)
-        try:
-            for r in review_job(conn, policy, llm, store, job_id, jd):
-                accepted += r["accepted"]
-                rejected += not r["accepted"]
-        except Exception as e:  # noqa: BLE001 - one bad job must not stop the others
-            errors.append({"job": str(job_id), "error": str(e)[:300]})
-    return {"accepted": accepted, "rejected": rejected, "errors": errors}
+    return common.run_jobs(pending_jobs(conn, policy, batch=batch),
+                           lambda job, d: review_job(conn, policy, llm, store, job, d), workdir)

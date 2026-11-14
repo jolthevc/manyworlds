@@ -193,3 +193,18 @@ def test_fast_booting_providers_get_a_shorter_boot_grace(conn, policy):
     assert api.stopped == []
     actions = tick(conn, policy, api, now=T0 + timedelta(minutes=grace + 1))
     assert api.stopped == ["mw-image-3090-runpod-a"] and actions[0]["reason"] == "never_started"
+
+
+def test_the_machine_report_separates_machines_that_made_nothing(conn, policy):
+    from manyworlds.deploy import report
+    now = datetime.now(timezone.utc)
+    for name, minutes in (("mw-image-3090-vast-w", 30), ("mw-image-3090-vast-x", 20)):
+        register(conn, name, started=now - timedelta(minutes=minutes))
+        conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = %s, billed_usd = %s WHERE name = %s",
+                     (now, "idle" if name.endswith("w") else "never_started", minutes / 100, name))
+    _worked(conn, "mw-image-3090-vast-w", at=now - timedelta(minutes=25))
+    conn.execute("UPDATE attempts SET finished_at = started_at + interval '15 minutes'")
+    rows = report.machines(conn, hours=1, now=now)
+    s = report.summary(rows)
+    assert s["machines"] == 2 and s["no_output_usd"] == 0.2 and s["no_output_by_stop_reason"] == {"never_started": 0.2}
+    assert s["busy_share_of_working_machines"] == 0.5            # 15 of 30 billed minutes

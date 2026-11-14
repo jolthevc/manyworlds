@@ -344,12 +344,12 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import fake as mod
         elif kind == "image.narrated":   # CPU edit that rides along on image machines
             from .handlers import edit_narrated as mod
+        elif kind == "image.voice":      # Kokoro voice line, also on image machines
+            from .handlers import tts_kokoro as mod
         elif family == "image":
             from .handlers import image_zimage as mod
         elif family == "video":
             from .handlers import video_wan as mod
-        elif family == "tts":
-            from .handlers import tts_kokoro as mod
         elif family == "train":
             from .handlers import train_lora as mod
         else:

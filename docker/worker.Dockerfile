@@ -1,6 +1,5 @@
-# GPU worker image, one per job family:
-#   docker build -f docker/worker.Dockerfile --build-arg EXTRA=image -t mw-worker-image .
-#   docker build -f docker/worker.Dockerfile --build-arg EXTRA=tts   -t mw-worker-tts .
+# GPU worker image for images, voice, narrated edits and story clips. Build, smoke-test and push
+# with scripts/build-worker.sh image <tag>.
 # CUDA 12.8+ is required for RTX 5090 (Blackwell); it also runs on 4090s.
 # Bake weights in with PREFETCH so interruptible nodes don't re-download ~10-60 GB on
 # every cold start (SaladCloud nodes start from the image).

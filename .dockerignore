@@ -1,0 +1,5 @@
+# Worker images are public: secrets and scratch output never enter a build context.
+.env
+.git
+out
+**/__pycache__

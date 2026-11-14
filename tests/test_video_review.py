@@ -105,7 +105,7 @@ def test_only_finished_clips_with_keyframes_await_review(conn, policy, store, tm
     rendered(conn, store, tmp_path, mirror)
     assert video.pending_jobs(conn, policy) == [ready]
     out = video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
-    assert out["clips_accepted"] == 1 and video.pending_jobs(conn, policy) == []
+    assert out["accepted"] == 1 and video.pending_jobs(conn, policy) == []
 
 
 def _story_post(conn, policy, store, tmp_path):

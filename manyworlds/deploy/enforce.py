@@ -32,27 +32,6 @@ class GroupAPI(Protocol):
     def stop_delete(self, name: str) -> None: ...
 
 
-class SaladGroups:
-    def list_names(self) -> list[str]:
-        from .salad import _req
-
-        res = _req("GET", "/organizations/{org}/projects/{project}/containers") or {}
-        items = res.get("items", res) if isinstance(res, dict) else res
-        return [g["name"] for g in items]
-
-    def stop_delete(self, name: str) -> None:
-        from .salad import _req
-
-        base = f"/organizations/{{org}}/projects/{{project}}/containers/{name}"
-        # Stop is refused while a group is Pending (still being placed); delete is what ends
-        # billing and works in any state, so a failed stop must never skip it.
-        try:
-            _req("POST", f"{base}/stop")
-        except Exception:  # noqa: BLE001
-            pass
-        _req("DELETE", base)
-
-
 def _open_jobs(conn, kinds: list[str]) -> int:
     return conn.execute(
         "SELECT count(*) AS n FROM jobs WHERE kind = ANY(%s) AND status IN ('queued', 'running')",
