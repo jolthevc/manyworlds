@@ -10,6 +10,7 @@ agrees with it.
 from __future__ import annotations
 
 import hashlib
+import json
 import statistics
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,7 +68,8 @@ def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: 
     why: dict[str, list[str]] = {d.key: [] for d in r.dimensions}
     notes: list[str] = []
     for _ in range(samples):
-        out = llm.structured(role, system=SYSTEM, content=prompt, schema=schema, effort="low", creator_id=creator_id)
+        out = llm.structured(role, system=SYSTEM, content=prompt, schema=schema, effort=effort(policy),
+                             creator_id=creator_id)
         for d in r.dimensions:
             s = getattr(out, d.key, None)
             if s is None or s.score is None:
@@ -81,6 +83,26 @@ def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: 
                   rationale=why, model=llm.model_for(role), samples=samples, notes=notes)
 
 
+# How items are laid out for the evaluator. Part of the prompt version: change them and the
+# version changes, so scores from different prompts are never silently compared.
+IDEA_TEMPLATE = "THE IDEA ({format}): {concept}\nPLAN: {plan}"
+CREATOR_TEMPLATE = "THE CREATOR (@{handle}): {facts}"
+ASSET_TEMPLATES = ("REFERENCE PHOTOS OF THE CREATOR (judge identity against these):", "PLANNED SCENE: {scenes}",
+                   "THE IMAGE:", "CAPTION: {caption}")
+
+
+def effort(policy: Policy) -> str:
+    return str(policy.get("brain", "evaluation", "effort", default="low"))
+
+
+def prompt_version(policy: Policy) -> str:
+    """The policy label plus a hash of everything that shapes what the evaluator reads and how hard it
+    thinks: the system prompt, the templates and the effort."""
+    label = policy.get("brain", "evaluation", "prompt_version", default="eval")
+    material = "\n".join([SYSTEM, IDEA_TEMPLATE, CREATOR_TEMPLATE, *ASSET_TEMPLATES, effort(policy)])
+    return f"{label}-{hashlib.sha256(material.encode()).hexdigest()[:8]}"
+
+
 def checked(item_id, rate: float) -> bool:
     """Whether this item also gets a strong-model score: the same answer for the same item every time."""
     if rate <= 0:
@@ -90,13 +112,14 @@ def checked(item_id, rate: float) -> bool:
     return int(hashlib.sha256(str(item_id).encode()).hexdigest()[:8], 16) / 2**32 < rate
 
 
-def latest(conn, *, idea_id=None, asset_id=None, model: str | None = None) -> dict | None:
-    """The most recent evaluation of an idea or asset (optionally by one evaluator model)."""
+def latest(conn, *, idea_id=None, asset_id=None, role: str = "evaluator") -> dict | None:
+    """The most recent evaluation of an idea or asset by one evaluator role (the volume evaluator by
+    default), so a time series never mixes the volume model with the strong-model checks."""
     return conn.execute(
         """SELECT * FROM evaluations
            WHERE (%(idea)s::uuid IS NULL OR idea_id = %(idea)s) AND (%(asset)s::uuid IS NULL OR asset_id = %(asset)s)
-             AND (%(model)s::text IS NULL OR evaluator_model = %(model)s)
-           ORDER BY created_at DESC LIMIT 1""", {"idea": idea_id, "asset": asset_id, "model": model}).fetchone()
+             AND role = %(role)s
+           ORDER BY created_at DESC LIMIT 1""", {"idea": idea_id, "asset": asset_id, "role": role}).fetchone()
 
 
 def reference_items(rubric_name: str) -> list[dict]:
@@ -108,23 +131,37 @@ def reference_items(rubric_name: str) -> list[dict]:
     return [{**item, "creator": body.get("creator", "")} for item in body["items"]]
 
 
+def reference_content(item: dict) -> list[str]:
+    """A reference idea laid out exactly as live ideas are (same templates), so drift measures the
+    prompt live scoring actually uses."""
+    fmt, _, rest = item["idea"].partition(":")
+    creator = CREATOR_TEMPLATE.format(handle="reference", facts=json.dumps({"one_line": item["creator"]}))
+    return [creator, IDEA_TEMPLATE.format(format=fmt.strip(), concept=rest.strip(), plan="{}")]
+
+
 def score_reference(conn, policy: Policy, llm, rubric_name: str) -> dict[str, dict[str, float | None]]:
-    """Score the reference set under the current rubric and evaluator model, and store the result on
-    the rubric version, so the next version or model can be compared item by item."""
+    """Score the reference set under the current rubric, evaluator model and prompt version. Each
+    (model, prompt version) keeps its own baseline on the rubric version, and the drift from the
+    previous run is stored with it, so comparisons across models or prompts are always measured."""
     from psycopg.types.json import Jsonb
 
     from . import rubrics
     r = rubrics.load(rubric_name)
     rubrics.register(conn, r)
     samples = int(policy.get("brain", "evaluation", "samples", default=3))
-    scores = {}
-    for item in reference_items(rubric_name):
-        s = score(llm, policy, r, [f"THE CREATOR: {item['creator']}", f"THE IDEA: {item['idea']}"],
-                  role="evaluator", samples=samples)
-        scores[item["id"]] = s.medians
+    scores = {item["id"]: score(llm, policy, r, reference_content(item), role="evaluator", samples=samples).medians
+              for item in reference_items(rubric_name)}
+    key = f"{llm.model_for('evaluator')}|{prompt_version(policy)}"
+    ref = conn.execute("SELECT reference FROM rubric_versions WHERE rubric = %s AND version = %s",
+                       (r.rubric, r.version)).fetchone()["reference"] or {}
+    runs, drifts = dict(ref.get("runs") or {}), list(ref.get("drift") or [])
+    if runs:
+        previous = max(runs, key=lambda k: runs[k]["at"])
+        drifts.append({"before": previous, "after": key, "drift": drift(runs[previous]["scores"], scores)})
+    runs[key] = {"model": llm.model_for("evaluator"), "prompt_version": prompt_version(policy), "samples": samples,
+                 "scores": scores, "at": conn.execute("SELECT now()::text AS t").fetchone()["t"]}
     conn.execute("UPDATE rubric_versions SET reference = %s WHERE rubric = %s AND version = %s",
-                 (Jsonb({"model": llm.model_for("evaluator"), "samples": samples, "scores": scores}),
-                  r.rubric, r.version))
+                 (Jsonb({"runs": runs, "drift": drifts}), r.rubric, r.version))
     return scores
 
 

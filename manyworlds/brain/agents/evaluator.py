@@ -18,40 +18,54 @@ from psycopg.types.json import Jsonb
 
 from ... import storage
 from ...llm import image_block
+from ...creator import profile
+from ...review import common as review_common
 from .. import evaluation, rubrics
 from ..agent import AgentContext, register, remember
 
-# Creator facts the evaluator may see (from the rendered bible).
-_CREATOR_FIELDS = ("display_name", "one_line", "niche", "caption_voice", "voice_notes", "pillars", "audience")
+# What the evaluator may know about the creator: who they are, who follows them and why, what they
+# post about. From the current profile (versioned); the bible only for creators without one.
+_BIBLE_FIELDS = ("display_name", "one_line", "caption_voice", "voice_notes", "personality", "interests", "never")
 
 
 def creator_summary(conn, creator_id) -> tuple[int | None, str]:
-    c = conn.execute("SELECT handle, bible, profile_version FROM creators WHERE id = %s", (creator_id,)).fetchone()
-    bible = c["bible"] or {}
-    facts = {k: bible[k] for k in _CREATOR_FIELDS if bible.get(k)}
-    return c["profile_version"], f"THE CREATOR (@{c['handle']}): {json.dumps(facts, ensure_ascii=False)}"
+    c = conn.execute("SELECT handle, bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    current = profile.current(conn, creator_id)
+    if current:
+        version, body = current
+        content = body.get("content") or {}
+        facts = {"persona": body.get("persona"), "audience": body.get("audience"),
+                 "pillars": content.get("pillars"), "video_series": content.get("video_series")}
+    else:
+        version, bible = None, c["bible"] or {}
+        facts = {k: bible[k] for k in _BIBLE_FIELDS if bible.get(k)}
+    facts = {k: v for k, v in facts.items() if v}
+    return version, evaluation.CREATOR_TEMPLATE.format(handle=c["handle"], facts=json.dumps(facts, ensure_ascii=False))
 
 
 def score_and_store(conn, policy, llm, rubric_name: str, item_kind: str, content: list, *, creator_id, fmt,
-                    idea_id=None, asset_id=None, item_key) -> list[str]:
+                    idea_id=None, asset_id=None, item_key, null_dimensions=()) -> list[str]:
     """Score an item with the evaluator (and the strong model when sampled) and store the rows."""
     cfg = policy.get("brain", "evaluation", default={}) or {}
     r = rubrics.load(rubric_name)
     rubrics.register(conn, r)
     roles = ["evaluator"] + (["evaluator_check"] if evaluation.checked(item_key, float(cfg.get("check_rate", 0)))
                              else [])
-    scored = [evaluation.score(llm, policy, r, content, role=role, samples=int(cfg.get("samples", 3)),
-                               creator_id=creator_id) for role in roles]
+    scored = [(role, evaluation.score(llm, policy, r, content, role=role, samples=int(cfg.get("samples", 3)),
+                                      creator_id=creator_id)) for role in roles]
+    for _, s in scored:   # dimensions the evaluator had no basis for are null, never a guess
+        for d in null_dimensions:
+            s.medians[d], s.spreads[d] = None, None
     profile_version, _ = creator_summary(conn, creator_id)
     ids = []
     with conn.transaction():
-        for s in scored:
+        for role, s in scored:
             ids.append(str(conn.execute(
-                """INSERT INTO evaluations (item_kind, idea_id, asset_id, creator_id, rubric, rubric_version,
+                """INSERT INTO evaluations (item_kind, idea_id, asset_id, creator_id, rubric, rubric_version, role,
                        evaluator_model, prompt_version, scores, spreads, rationale, samples, profile_version, format)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (item_kind, idea_id, asset_id, creator_id, r.rubric, r.version, s.model,
-                 cfg.get("prompt_version", "eval-v1"), Jsonb(s.medians), Jsonb(s.spreads),
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (item_kind, idea_id, asset_id, creator_id, r.rubric, r.version, role, s.model,
+                 evaluation.prompt_version(policy), Jsonb(s.medians), Jsonb(s.spreads),
                  Jsonb({**s.rationale, "_notes": s.notes}), s.samples, profile_version, fmt)).fetchone()["id"]))
     return ids
 
@@ -62,7 +76,8 @@ def idea_content(conn, idea_id) -> tuple:
     idea = conn.execute("SELECT creator_id, concept, format, body FROM ideas WHERE id = %s", (idea_id,)).fetchone()
     plan = {k: v for k, v in (idea["body"] or {}).items() if k != "reasoning"}
     _, who = creator_summary(conn, idea["creator_id"])
-    text = f"THE IDEA ({idea['format']}): {idea['concept']}\nPLAN: {json.dumps(plan, ensure_ascii=False)}"
+    text = evaluation.IDEA_TEMPLATE.format(format=idea["format"], concept=idea["concept"],
+                                           plan=json.dumps(plan, ensure_ascii=False))
     return idea["creator_id"], idea["format"], [who, text]
 
 
@@ -83,15 +98,26 @@ def evaluate_asset(ctx: AgentContext, asset_id, *, store=None) -> uuid.UUID:
                FROM assets a JOIN jobs j ON j.id = a.job_id LEFT JOIN posts p ON p.id = j.post_id
                WHERE a.id = %s""", (asset_id,)).fetchone()
         st = store or storage.from_url()
+        creator = ctx.conn.execute("SELECT id, anchors FROM creators WHERE id = %s", (a["creator_id"],)).fetchone()
+        n_refs = int(ctx.policy.get("brain", "evaluation", "reference_images", default=2))
         with tempfile.TemporaryDirectory() as tmp:
             data = st.get_file(a["uri"], Path(tmp) / f"asset{Path(a['uri']).suffix or '.png'}").read_bytes()
+            try:
+                refs = review_common.reference_images(creator, st, Path(tmp), n_refs)
+            except ValueError:   # no reference photos: identity can't be judged
+                refs = []
         media = "image/jpeg" if a["uri"].lower().endswith((".jpg", ".jpeg")) else "image/png"
         _, who = creator_summary(ctx.conn, a["creator_id"])
         scenes = (a["body"] or {}).get("scenes") or []
-        content = [who, f"PLANNED SCENE: {' | '.join(scenes) or '(none recorded)'}", "THE IMAGE:",
-                   image_block(data, media), f"CAPTION: {a['caption'] or '(none)'}"]
+        ref_text, scene_text, image_text, caption_text = evaluation.ASSET_TEMPLATES
+        content = [who]
+        if refs:
+            content += [ref_text, *[image_block(b) for b in refs]]
+        content += [scene_text.format(scenes=" | ".join(scenes) or "(none recorded)"), image_text,
+                    image_block(data, media), caption_text.format(caption=a["caption"] or "(none)")]
         ids = score_and_store(ctx.conn, ctx.policy, ctx.llm, "execution", "asset", content,
-                              creator_id=a["creator_id"], fmt=a["format"], asset_id=asset_id, item_key=asset_id)
+                              creator_id=a["creator_id"], fmt=a["format"], asset_id=asset_id, item_key=asset_id,
+                              null_dimensions=() if refs else ("identity",))
         return {"kind": "evaluation", "inputs": {"asset_id": str(asset_id)}, "output": {"evaluation_ids": ids},
                 "rationale": f"scored image on the execution rubric ({len(ids)} evaluator(s))",
                 "creator_id": a["creator_id"]}

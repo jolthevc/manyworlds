@@ -188,12 +188,11 @@ def _brain_ops(args, conn, pol) -> int:
                 return 0
             r = rubrics.load(args.rubric)
             rubrics.register(conn, r)
-            prev = conn.execute("SELECT version, reference FROM rubric_versions WHERE rubric = %s AND reference <> '{}' "
-                                "ORDER BY version DESC LIMIT 1", (r.rubric,)).fetchone()
-            after = evaluation.score_reference(conn, pol, llm, args.rubric)
-            _print({"rubric": r.rubric, "version": r.version, "compared_with": prev and prev["version"],
-                    "drift": evaluation.drift(prev["reference"]["scores"], after) if prev else None,
-                    "scores": after, "llm_usd": llm.spent})
+            after = evaluation.score_reference(conn, pol, llm, args.rubric)   # stores the run and its drift
+            ref = conn.execute("SELECT reference FROM rubric_versions WHERE rubric = %s AND version = %s",
+                               (r.rubric, r.version)).fetchone()["reference"]
+            _print({"rubric": r.rubric, "version": r.version, "prompt_version": evaluation.prompt_version(pol),
+                    "drift": (ref.get("drift") or [None])[-1], "scores": after, "llm_usd": llm.spent})
             return 0
     worker_id = f"brain-{socket.gethostname()}-{os.getpid()}"
     if args.brain_cmd == "run":

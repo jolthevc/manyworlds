@@ -220,7 +220,7 @@ brain:
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
-  evaluation: {samples: 3, check_rate: 0.1, prompt_version: "eval-v1", max_spread: 2}
+  evaluation: {samples: 3, check_rate: 0.1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
   # What the Brain may change on its own (manyworlds.brain.overrides), with inclusive bounds; `*` is one
   # path segment. Anything else, and always `limits.*` and `budget.master*`, waits for owner approval.
   authority:
