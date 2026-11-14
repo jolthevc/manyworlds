@@ -37,6 +37,12 @@ class ObjectStore:
     def get_file(self, uri: str, local: Path) -> Path:
         raise NotImplementedError
 
+    def uri_for(self, key: str) -> str:
+        raise NotImplementedError
+
+    def exists(self, key: str) -> bool:
+        raise NotImplementedError
+
 
 class LocalStore(ObjectStore):
     def __init__(self, root: Path):
@@ -54,6 +60,12 @@ class LocalStore(ObjectStore):
         local.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, local)
         return local
+
+    def uri_for(self, key: str) -> str:
+        return (self.root / key).resolve().as_uri()
+
+    def exists(self, key: str) -> bool:
+        return (self.root / key).exists()
 
 
 class S3Store(ObjectStore):
@@ -82,6 +94,16 @@ class S3Store(ObjectStore):
         local.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(parsed.netloc, parsed.path.lstrip("/"), str(local))
         return local
+
+    def uri_for(self, key: str) -> str:
+        return f"s3://{self.bucket}/{key}"
+
+    def exists(self, key: str) -> bool:
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except Exception:  # noqa: BLE001 - 404 or no access: treat as missing
+            return False
 
 
 def from_url(url: str | None = None) -> ObjectStore:

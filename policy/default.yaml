@@ -26,6 +26,7 @@ gpu_runs:
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
   max_attempt_minutes_by_family: {default: 20, video: 45, train: 240}
+  max_attempt_minutes_by_kind: {image.mirror: 60}   # one-time copy of the model into our bucket
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
 
 # Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).
@@ -64,6 +65,7 @@ gpu_pools:
 # accepted image against Vast 3090's $0.0027 (same Windows consumer nodes), so its trial isn't worth it.
 job_kinds:
   image.zimage:    {pools: [vast_3090, vast_4090, salad_batch_3090, salad_batch_4090], outputs_per_job: 4}
+  image.mirror:    {pools: [vast_3090, vast_4090], outputs_per_job: 0}   # copies model weights into R2 once
   video.wan_i2v:   {pools: [salad_batch_5090, vast_5090], outputs_per_job: 1}
   tts.kokoro:      {pools: [salad_batch_3060, vast_3090, salad_batch_4090, vast_4090], outputs_per_job: 1}
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
@@ -75,7 +77,7 @@ job_kinds:
 # loading and quantising models happens there before anything reaches the GPU.
 worker_images:
   # env: passed to every worker of the family; a pool's worker_env overrides it.
-  image: {image: mw-worker-image, tag: v6, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 60,
+  image: {image: mw-worker-image, tag: v7, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
           env: {MW_OFFLOAD_BELOW_GB: 26}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   tts:   {image: mw-worker-tts,   tag: day1, min_cuda: 12.8, cpu: 2, ram_gb: 8,  disk_gb: 30}
   video: {image: mw-worker-video, tag: day1, min_cuda: 13.0, cpu: 8, ram_gb: 48, disk_gb: 120}
@@ -163,6 +165,15 @@ creator_lab:
   candidates_per_reference: 4
   lora: {steps: 1200, rank: 16, learning_rate: 0.0001, resolution: 1024, log_upload_seconds: 120}
   lora_scale: 1.0               # 1.3 did no better on Maren (2026-11-14)
+
+# Model weights served from our bucket (manyworlds.worker.models): rented machines load them
+# from R2 (free egress, no rate limits) instead of Hugging Face. The producer queues one
+# mirror job per repo that isn't in the bucket yet.
+models:
+  mirror:
+    - {repo: Tongyi-MAI/Z-Image-Turbo, kind: image.mirror}
+  max_mirror_jobs: 3
+  priority: 10
 
 # Creator profiles (manyworlds.creator.profile). Dials are set per creator by the Brain (or a
 # human) within dials_limits; these defaults seed new profiles.

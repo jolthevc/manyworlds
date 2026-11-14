@@ -43,11 +43,18 @@ def machine_stats(conn, family: str, pools: list[str], since: datetime) -> list[
                (SELECT count(*) FROM assets s
                   JOIN attempts a ON a.job_id = s.job_id AND a.outcome = 'done' AND a.gpu_group = g.name
                  WHERE NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = s.id AND NOT r.passed)
-               ) AS outputs
+               ) AS outputs,
+               (SELECT count(*) FROM attempts a WHERE a.gpu_group = g.name AND a.outcome = 'done') AS done_attempts
         FROM gpu_groups g
         WHERE g.family = %s AND g.pool = ANY(%s) AND g.started_at >= %s
         ORDER BY g.started_at DESC
         """, (family, pools, since)).fetchall()
+
+
+def _worked(m: dict) -> bool:
+    """A machine worked if it produced outputs or finished any job (some jobs, like mirroring
+    model weights, produce no outputs of their own)."""
+    return m["outputs"] > 0 or m.get("done_attempts", 0) > 0
 
 
 def score_pools(conn, policy: Policy, family: str, pools: list[str], now: datetime) -> list[dict]:
@@ -68,7 +75,7 @@ def score_pools(conn, policy: Policy, family: str, pools: list[str], now: dateti
         outputs = sum(m["outputs"] for m in ms)
         stopped = [m for m in ms if m["stopped_at"] is not None]
         recent = stopped[:fail_streak]
-        paused = (fail_streak > 0 and len(recent) == fail_streak and all(m["outputs"] == 0 for m in recent)
+        paused = (fail_streak > 0 and len(recent) == fail_streak and all(not _worked(m) for m in recent)
                   and recent[0]["stopped_at"] > now - pause)
         per_output = billed / outputs if outputs else math.inf
         if paused:
@@ -81,7 +88,7 @@ def score_pools(conn, policy: Policy, family: str, pools: list[str], now: dateti
             status = "exhausted"
         rows.append({"pool": pool, "status": status, "machines": len(ms), "billed_usd": round(billed, 4),
                      "outputs": outputs, "usd_per_output": per_output, "policy_order": order,
-                     "failed_machines": sum(1 for m in stopped if m["outputs"] == 0)})
+                     "failed_machines": sum(1 for m in stopped if not _worked(m))})
     rank = {"trial": 0, "ranked": 1, "exhausted": 2, "paused": 3}
     rows.sort(key=lambda r: (rank[r["status"]],
                              r["policy_order"] if r["status"] == "trial" else r["usd_per_output"],

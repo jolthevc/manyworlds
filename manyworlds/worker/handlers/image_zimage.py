@@ -16,6 +16,7 @@ import random
 import time
 from typing import Any
 
+from .. import models
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 
 MODEL_ID = os.environ.get("MW_IMAGE_MODEL", "Tongyi-MAI/Z-Image-Turbo")
@@ -31,7 +32,7 @@ _state: dict[str, Any] = {"pipe": None, "lora_uri": None, "offload": None, "fall
 log = logging.getLogger("manyworlds.image")
 
 
-def _pipe():
+def _pipe(ctx: JobContext):
     if _state["pipe"] is None:
         import torch
         from diffusers import DiffusionPipeline
@@ -40,7 +41,9 @@ def _pipe():
         offload = free / 1e9 < OFFLOAD_BELOW_GB
         log.info("GPU %s: %.1f GB free of %.1f GB; cpu offload=%s",
                  torch.cuda.get_device_name(0), free / 1e9, total / 1e9, offload)
-        pipe = DiffusionPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
+        # Our bucket's copy when it exists (manyworlds.worker.models), else Hugging Face.
+        source = models.ensure(MODEL_ID, ctx.store, ctx.workdir)
+        pipe = DiffusionPipeline.from_pretrained(source, torch_dtype=torch.bfloat16)
         if offload:
             pipe.enable_model_cpu_offload()
         else:
@@ -90,7 +93,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else random.randrange(1 << 31)
 
-    pipe = _pipe()
+    pipe = _pipe(ctx)
     _set_lora(pipe, ctx, payload.get("lora_uri"), float(payload.get("lora_scale", 1.0)))
     # One image at a time: batching multiplies activation memory, which is exactly what
     # 24 GB consumer cards don't have to spare. Seeds stay seed+i, so outputs are unchanged.
@@ -121,4 +124,10 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         "gpu": _state.get("gpu"), "free_gb_at_load": _state.get("free_gb")})
 
 
-HANDLERS = {"image.zimage": generate}
+def mirror_model(payload: dict, ctx: JobContext) -> HandlerResult:
+    """Copy a model repo (default: this handler's model) into our bucket, once."""
+    info = models.mirror(payload.get("repo") or MODEL_ID, ctx.store, ctx.workdir)
+    return HandlerResult([], recipe={"mirror": info["repo"]}, meta=info)
+
+
+HANDLERS = {"image.zimage": generate, "image.mirror": mirror_model}

@@ -168,7 +168,9 @@ def _produce(args, conn, pol, llm) -> int:
     from .brain import planner
 
     while True:
-        result = {"planned": planner.ensure_plans(conn, pol, llm), **production.advance(conn, pol)}
+        from .worker import models
+        result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
+                  "planned": planner.ensure_plans(conn, pol, llm), **production.advance(conn, pol)}
         if any(result.values()) or not args.loop:
             _print(result)
         if not args.loop:
