@@ -146,3 +146,19 @@ def test_a_machine_whose_worker_went_silent_is_stopped_so_work_can_move(conn, po
     assert api.stopped == []                                  # heartbeat recent enough
     actions = tick(conn, policy, api, now=T0 + timedelta(minutes=8 + stuck + 1))
     assert api.stopped == ["mw-image-4090-a"] and actions[0]["reason"] == "stuck"
+
+
+def test_a_machine_alive_but_never_finishing_its_job_is_stopped(conn, policy):
+    # 2026-11-14: a Vast worker heartbeated for 25 min while its model download stalled.
+    register(conn, "mw-image-4090-a", hours=12, max_usd=100)
+    conn.execute("UPDATE gpu_groups SET family = 'image' WHERE name = 'mw-image-4090-a'")
+    job = queue.enqueue(conn, "image.zimage", {})
+    limit = float(policy.get("gpu_runs", "max_attempt_minutes_by_family")["default"])
+    conn.execute("INSERT INTO attempts (job_id, worker_id, pool, started_at, gpu_group) "
+                 "VALUES (%s, 'w1', 'salad_batch_4090', %s, 'mw-image-4090-a')", (job, T0))
+    api = FakeAPI(["mw-image-4090-a"])
+    for m in (limit - 1, limit + 1):    # heartbeating the whole time
+        conn.execute("UPDATE jobs SET status = 'running', worker_id = 'w1', updated_at = %s WHERE id = %s",
+                     (T0 + timedelta(minutes=m), job))
+        actions = tick(conn, policy, api, now=T0 + timedelta(minutes=m))
+    assert api.stopped == ["mw-image-4090-a"] and actions[0]["reason"] == "attempt_timeout"

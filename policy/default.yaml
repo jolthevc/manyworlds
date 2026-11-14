@@ -23,6 +23,9 @@ gpu_runs:
   idle_stop_minutes_by_provider: {vast: 5, runpod: 5}
   boot_grace_minutes: 45       # until its first job, a machine may take this long (image pull + model download)
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
+  # One attempt running longer than this stops its machine (a stalled model download heartbeats
+  # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240}
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
 
 # Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).

@@ -122,6 +122,11 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
                                    CASE WHEN j.status = 'running' AND j.worker_id = a.worker_id THEN j.updated_at END)) AS t
                FROM attempts a JOIN jobs j ON j.id = a.job_id WHERE a.gpu_group = %s""", (g["name"],)).fetchone()["t"]
         started_work = last_seen is not None
+        running_since = conn.execute(
+            "SELECT min(started_at) AS t FROM attempts WHERE gpu_group = %s AND finished_at IS NULL AND outcome IS NULL",
+            (g["name"],)).fetchone()["t"]
+        by_family = cfg.get("max_attempt_minutes_by_family") or {}
+        max_attempt_min = float(by_family.get(g.get("family"), by_family.get("default", 20)))
         booting = not started_work and (now - g["started_at"]).total_seconds() <= grace_min * 60
         idle_min = idle_stop_minutes(policy, g["provider"])
         reason = None
@@ -137,6 +142,10 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             # Work is waiting but this machine has gone silent (worker hung or died): it would
             # otherwise count as busy until its deadline and block a replacement.
             reason = "stuck"
+        elif running_since is not None and (now - running_since).total_seconds() > max_attempt_min * 60:
+            # Alive but not finishing (e.g. a model download that stalled): the job's lease is
+            # released when the machine goes, and another machine retries it.
+            reason = "attempt_timeout"
         if reason:
             if not dry_run:
                 try:
