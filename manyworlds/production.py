@@ -183,6 +183,13 @@ def advance(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     out_reaped = queue.reap(conn)
     out = {"started": 0, "producing": 0, "ready": 0, "dropped": 0}
     out["reaped"] = out_reaped
+    # A planned post in a format production doesn't make, whose time has passed, won't happen.
+    made = list(_cfg(policy).get("formats", ["photo", "carousel"]))
+    out["expired"] = len(conn.execute(
+        """UPDATE posts SET status = 'dropped', updated_at = now(),
+                  body = body || jsonb_build_object('drop_reason', 'format ' || format || ' not produced yet')
+           WHERE status = 'planned' AND scheduled_for < %s AND NOT (format = ANY(%s)) RETURNING id""",
+        (now, made)).fetchall())
     for post in conn.execute(
             # Only creators with reference images: the reviewer judges identity against them.
             "SELECT p.* FROM posts p JOIN creators c ON c.id = p.creator_id WHERE p.status = 'planned' "

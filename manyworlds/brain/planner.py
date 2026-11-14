@@ -65,6 +65,18 @@ def _cfg(policy: Policy) -> dict:
     return policy.get("planner", default={})
 
 
+def _formats(policy: Policy) -> dict:
+    """Formats the planner may use: its own list, limited to what production makes now, so no
+    post waits for a capability that doesn't exist yet (story clips until video is verified)."""
+    planned = _cfg(policy).get("formats", {"photo": [1, 1]})
+    made = policy.get("production", "formats", default=None)
+    return {f: v for f, v in planned.items() if made is None or f in made}
+
+
+def _video_formats(policy: Policy) -> list[str]:
+    return [f for f in _cfg(policy).get("video_formats", []) if f in _formats(policy)]
+
+
 def caption_issues(policy: Policy, text: str) -> list[str]:
     """Why a caption (or script) reads as AI-written, per policy `captions`; empty if fine."""
     cfg = policy.get("captions", default={})
@@ -95,13 +107,13 @@ def _counts(policy: Policy, dials: dict, days: int) -> dict:
     """Posts per platform over the period, and how many of them are videos."""
     per = {p: int(round(float(n) * days)) for p, n in (dials.get("posts_per_day") or {}).items()}
     total = sum(per.values())
-    videos = int(math.floor(total / (float(dials.get("images_per_video", 3)) + 1)))
+    videos = int(math.floor(total / (float(dials.get("images_per_video", 3)) + 1))) if _video_formats(policy) else 0
     return {"per_platform": per, "total": total, "videos": videos}
 
 
 def _clean(policy: Policy, p: PlannedPost, cfg: dict, platforms: list[str], days: int, prof: dict | None,
            hashtags_max: dict) -> tuple[PlannedPost | None, str]:
-    formats = cfg.get("formats", {"photo": [1, 1]})
+    formats = _formats(policy)
     if p.format not in formats:
         return None, f"format {p.format}"
     if p.platform not in platforms:
@@ -113,7 +125,7 @@ def _clean(policy: Policy, p: PlannedPost, cfg: dict, platforms: list[str], days
     p.scenes = p.scenes[:hi]
     if prof:
         series = {s["name"] for s in prof["content"]["video_series"]}
-        if p.format in cfg.get("video_formats", []) and p.series not in series:
+        if p.format in _video_formats(policy) and p.series not in series:
             return None, f"video outside the creator's series ({p.series!r})"
     issues = caption_issues(policy, f"{p.caption} {p.script} {p.on_screen_text}")
     if issues:
@@ -139,7 +151,7 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
     c = conn.execute("SELECT handle, bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
     scope = policy.get("scope", default={})
     platforms = list(scope.get("platforms") or ["instagram"])
-    formats = cfg.get("formats", {"photo": [1, 1]})
+    formats = _formats(policy)
     cur = profile_mod.current(conn, creator_id)
     version, prof = cur if cur else (None, None)
     dials = (prof or {}).get("dials") or policy.get("creators", "dials_default", default={})
@@ -162,9 +174,9 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
         f"(weekly rituals happen on their weekday). "
         f"Plan exactly {counts['total']} posts over {days} days (day 0 to {days - 1}), spread evenly: "
         f"{counts['per_platform']} per platform. {counts['videos']} of them are videos "
-        f"({cfg.get('video_formats')}), each in one of the creator's video series; the rest are photo posts. "
+        f"({_video_formats(policy)}), each in one of the creator's video series; the rest are photo posts. "
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
-        f"What each format is: {json.dumps(cfg.get('format_notes', {}))}. "
+        f"What each format is: {json.dumps({f: n for f, n in cfg.get('format_notes', {}).items() if f in formats})}. "
         + (f"Tone mix across the period: {tone_counts}. " if tone_counts else "")
         + f"Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "

@@ -121,7 +121,26 @@ def test_the_producer_keeps_creators_planned_ahead(conn, policy):
 
 
 def test_video_posts_wait_until_production_makes_their_format(conn, policy):
+    from psycopg.types.json import Jsonb
     cid = built(conn, policy)
-    planner.plan_period(conn, policy, PlanStub([post(0, "story_clip", ["x"], series="kettle ratings")]), cid,
-                        start=START)
+    conn.execute("INSERT INTO posts (creator_id, format, status, body, scheduled_for) VALUES (%s, 'story_clip', "
+                 "'planned', %s, %s)", (cid, Jsonb({"scenes": ["x"]}), datetime(2026, 11, 15, 12, tzinfo=timezone.utc)))
     assert production.advance(conn, policy, now=datetime(2026, 11, 15, tzinfo=timezone.utc))["started"] == 0
+
+
+def test_the_planner_only_offers_formats_production_can_make(conn, policy):
+    cid = built(conn, policy)
+    llm = PlanStub([post(0), post(1, "story_clip", ["x"], series="kettle ratings")])
+    out = planner.plan_period(conn, policy, llm, cid, start=START)
+    made = policy.get("production", "formats")
+    assert "story_clip" not in made and out["posts"] == 1                  # the story clip was dropped
+    assert "story_clip" not in llm.calls[0].split("What each format is:")[1].split("}")[0]
+
+
+def test_a_planned_post_in_an_unmade_format_expires_after_its_time(conn, policy):
+    from psycopg.types.json import Jsonb
+    cid = built(conn, policy)
+    conn.execute("INSERT INTO posts (creator_id, format, status, body, scheduled_for) VALUES (%s, 'story_clip', "
+                 "'planned', %s, %s)", (cid, Jsonb({"scenes": ["x"]}), datetime(2026, 11, 15, 12, tzinfo=timezone.utc)))
+    assert production.advance(conn, policy, now=datetime(2026, 11, 15, 11, tzinfo=timezone.utc))["expired"] == 0
+    assert production.advance(conn, policy, now=datetime(2026, 11, 15, 13, tzinfo=timezone.utc))["expired"] == 1
