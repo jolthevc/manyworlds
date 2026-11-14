@@ -65,6 +65,7 @@ job_kinds:
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
+  brain.showrunner: {pools: [local], outputs_per_job: 0}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
@@ -163,6 +164,7 @@ review:
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
+  image_by_format: {story: {width: 720, height: 1280}}   # 9:16 Stories; other formats use image (4:5)
   video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; measured 2026-11-14
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
@@ -221,6 +223,8 @@ brain:
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
   evaluation: {samples: 3, check_rate: 0.1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
+  # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
+  showrunner: {enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, effort: medium}
   # What the Brain may change on its own (manyworlds.brain.overrides), with inclusive bounds; `*` is one
   # path segment. Anything else, and always `limits.*` and `budget.master*`, waits for owner approval.
   authority:
@@ -237,7 +241,7 @@ planner:
   days: 3                      # short periods: each plan sees the latest posts and settings
   plan_ahead_days: 2           # the producer plans the next period when less than this is planned
   auto_statuses: [draft, active]   # creators the producer plans for (needs a profile and reference images)
-  formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1]}
+  formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1], story: [1, 1]}
   video_formats: [narrated_edit, story_clip]
   # What each format can show; the planner writes to these limits.
   format_notes:
@@ -245,6 +249,7 @@ planner:
     carousel: "2-4 photos of the same moment, evening or day, in order"
     narrated_edit: "3-6 photos in sequence with the creator's own voice reading `script` (15-30 s of natural speech, said the way they talk) and burned-in captions; routine montages belong here"
     story_clip: "ONE 5-second shot animated from ONE photo, with one simple motion (steam rising, rain running down glass, a hand lifting a mug); `script` says only what moves. Never a montage or several actions"
+    story: "ONE vertical throwaway Story photo: a quick in-the-moment glimpse (the view, the coffee, the mess, a mood); casual, unposed, 0-6 words of caption; not a grid post"
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity
 
@@ -262,7 +267,7 @@ captions:
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
-  formats: [photo, carousel, narrated_edit, story_clip]   # formats production makes now; others wait in 'planned' until added
+  formats: [photo, carousel, narrated_edit, story_clip, story]   # formats production makes now; others wait in 'planned' until added
   video_kind: video.wan_i2v
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled

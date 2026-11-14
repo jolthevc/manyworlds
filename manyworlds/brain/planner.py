@@ -113,6 +113,13 @@ def _counts(policy: Policy, dials: dict, days: int) -> dict:
 
 def _clean(policy: Policy, p: PlannedPost, cfg: dict, platforms: list[str], days: int, prof: dict | None,
            hashtags_max: dict) -> tuple[PlannedPost | None, str]:
+    return validate(policy, p, platforms=platforms, days=days, prof=prof, hashtags_max=hashtags_max)
+
+
+def validate(policy: Policy, p, *, platforms: list[str], days: int, prof: dict | None,
+             hashtags_max: dict) -> tuple:
+    """Keep a planned post or idea only if production can make it and it reads like the creator:
+    (the cleaned item, "") or (None, why it was dropped). Shared by the planner and the showrunner."""
     formats = _formats(policy)
     if p.format not in formats:
         return None, f"format {p.format}"
@@ -196,13 +203,9 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
                         (creator_id, start, Jsonb({"rationale": out.rationale, "requested": counts, "kept": len(kept),
                                                    "dropped": dropped, "days": days, "profile_version": version,
                                                    "policy_version": policy.version}))).fetchone()
-    hours = [int(h) for h in cfg.get("post_hours_utc", [17])]
-    per_day: dict[int, int] = {}
     ids = []
-    for p in sorted(kept, key=lambda p: p.day):
-        k = per_day.get(p.day, 0)
-        per_day[p.day] = k + 1
-        when = datetime.combine(start + timedelta(days=p.day), time(hours[k % len(hours)]), tzinfo=timezone.utc)
+    kept = sorted(kept, key=lambda p: p.day)
+    for p, when in zip(kept, slot_times(policy, start, [p.day for p in kept])):
         body = {"scenes": p.scenes, "hashtags": p.hashtags, "canon": p.canon, "pillar": p.pillar, "tone": p.tone,
                 "series": p.series, "script": p.script, "on_screen_text": p.on_screen_text,
                 "platform_ai_label": True}   # disclosure: every post sets the platform's AI flag
@@ -218,6 +221,19 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
          getattr(llm, "model_for", lambda r: "?")(role), policy.version))
     return {"plan_id": plan["id"], "existing": False, "posts": len(ids), "dropped_by_validation": len(dropped),
             "dropped": dropped}
+
+
+def slot_times(policy: Policy, start: date, days: list[int]) -> list[datetime]:
+    """Publish times for items on these day offsets (in order): each day's items take the policy
+    hours in turn. Shared by the planner and the showrunner."""
+    hours = [int(h) for h in _cfg(policy).get("post_hours_utc", [17])]
+    per_day: dict[int, int] = {}
+    out = []
+    for d in days:
+        k = per_day.get(d, 0)
+        per_day[d] = k + 1
+        out.append(datetime.combine(start + timedelta(days=d), time(hours[k % len(hours)]), tzinfo=timezone.utc))
+    return out
 
 
 def next_start(conn, creator_id, today: date) -> date:

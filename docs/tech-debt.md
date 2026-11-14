@@ -47,3 +47,15 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 | Rubric filename version not cross-checked with the file's `version:`; a stray `idea-vdraft.yaml` crashes; schema cache keyed without file hash; `register` race | — | `brain/rubrics.py`, `brain/evaluation.py` |
 | Rubrics always load from the repo/`/app` path, not from `MW_POLICY`'s directory | — | `brain/rubrics.py` |
 | Reference set and drift exist for the idea rubric only; execution and feed have none yet | M7 (feed QA) | `policy/rubrics/reference/` |
+
+## Memory and showrunner (Brain M3), deferred minors
+
+| Item | Before | Where |
+|---|---|---|
+| Canon enters memory when a post is scheduled; a post later dropped leaves its canon in memory | M4/M5 (move to publication time) | `brain/ideas.py` `schedule_ready` |
+| Ideas dropped after max_wait leave their evaluator jobs queued (they still spend evaluator budget) | — | `brain/ideas.py` |
+| Low-scoring ideas are scheduled anyway (by design: no dimension is a target); revisit once scores are shown to predict performance | M6 | — |
+| Switching `brain.showrunner.enabled` off while a batch is proposed lets the planner plan the same period | — | `cli._produce` |
+| A post linked to two ideas (from `from_post` and a scheduled idea) appears twice in the showrunner's recent posts | — | `brain/agents/showrunner.py` |
+| Scheduled posts record the creator's profile version at scheduling time, not the version the batch was planned under | M6 | `brain/ideas.py` |
+| Only `signature` (and keyed canon) close older facts; seeded places/people have no keys, so a moved home relies on the showrunner setting `canon_key` | — | `brain/memory.py` |
