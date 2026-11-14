@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -95,6 +96,33 @@ def waiting_work(conn) -> list[dict]:
         """).fetchall()
 
 
+def _per_family(cfg: dict, key: str, family: str, default):
+    v = cfg.get(key, default)
+    return v.get(family, v.get("default", default)) if isinstance(v, dict) else v
+
+
+def seconds_per_job(conn, policy: Policy, kind: str) -> float:
+    """Typical wall time of one job of this kind, from recent finished attempts."""
+    cfg = policy.get("autoscale", "scale", default={})
+    row = conn.execute(
+        """SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY a.gpu_seconds) AS s FROM attempts a
+           JOIN jobs j ON j.id = a.job_id
+           WHERE j.kind = %s AND a.outcome = 'done' AND a.gpu_seconds IS NOT NULL
+             AND a.started_at > now() - make_interval(days => %s)""",
+        (kind, int(cfg.get("history_days", 7)))).fetchone()
+    if row and row["s"]:
+        return float(row["s"])
+    return float(_per_family(cfg, "default_job_seconds", _family(kind), 300))
+
+
+def machines_wanted(conn, policy: Policy, kind: str, waiting: int) -> int:
+    """Enough machines to clear the backlog within the drain target. Each machine pays a
+    boot (minutes) once, so small backlogs stay on one machine."""
+    cfg = policy.get("autoscale", "scale", default={})
+    drain_s = float(_per_family(cfg, "drain_target_minutes", _family(kind), 30)) * 60
+    return max(1, math.ceil(waiting * seconds_per_job(conn, policy, kind) / drain_s))
+
+
 def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, pool: str,
                now: datetime) -> dict:
     """Register then create one worker machine for `kind` in `pool`. Raises NoCapacity."""
@@ -148,7 +176,6 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
 
 def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime) -> list[dict]:
     cfg = policy.get("autoscale", default={})
-    max_groups = int(cfg.get("max_groups_per_kind", 1))
     cooldown = timedelta(minutes=float(cfg.get("relaunch_cooldown_minutes", 15)))
     daily_cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
     actions: list[dict] = []
@@ -164,9 +191,17 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             continue
         pinned = bool(w["pools"])
         pools = list(w["pools"] or policy.get("job_kinds", kind, "pools", default=[]))
+        if all(policy.get("gpu_pools", p, "provider") == "local" for p in pools):
+            continue  # runs on the control host (e.g. reviews), not on rented GPUs
+        max_groups = int(_per_family(cfg, "max_groups_per_kind", _family(kind), 1))
         open_groups = conn.execute(
             "SELECT name, pool FROM gpu_groups WHERE stopped_at IS NULL AND %s = ANY(job_kinds)", (kind,)).fetchall()
-        if any(g["pool"] in pools for g in open_groups) or len(open_groups) >= max_groups:
+        serving = [g for g in open_groups if g["pool"] in pools]
+        if len(open_groups) >= max_groups:
+            continue
+        # Machines follow the backlog: one per drain-target's worth of work, one more per
+        # tick at most, so a burst of jobs ramps up instead of renting a fleet at once.
+        if serving and len(serving) >= machines_wanted(conn, policy, kind, int(w["n"])):
             continue
         # A machine for this work stopped for a reason other than finishing (crashed,
         # vanished, hit its cap): wait before paying for another, so a broken image or

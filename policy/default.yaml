@@ -88,7 +88,14 @@ gpu_names:
 autoscale:
   tick_seconds: 60
   tick_lease_seconds: 600      # a crashed tick's lock expires after this
-  max_groups_per_kind: 2         # raise once benchmarks justify parallel machines
+  max_groups_per_kind: {default: 2, image: 6}   # most machines at once per job kind
+  # How many machines a backlog gets: enough to finish it within drain_target_minutes,
+  # from the median job time of the last history_days (default_job_seconds before any data).
+  # Each extra machine costs one boot (~4-5 min on Vast), so small backlogs stay on one.
+  scale:
+    drain_target_minutes: {default: 30, train: 180}
+    history_days: 7
+    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200}
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
   # CN: huggingface.co is unreachable there, so workers that fetch weights at start never begin.
   runpod_cuda_versions: ["12.8", "12.9", "13.0"]   # versions RunPod accepts in allowedCudaVersions
