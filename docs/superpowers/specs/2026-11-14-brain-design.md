@@ -83,7 +83,25 @@ Added by the owner on approval (2026-11-14, second round):
     to trends, breakout posts, research discoveries, QA problems, sudden performance changes and new
     market opportunities. Agents can commission work, challenge assumptions and request research.
 15. **Video choice is the Brain's.** It picks production approaches per creator and format; the
-    automated video gate decides what ships.
+    automated video gate decides what ships (video ships only when it meets the creative and
+    technical bar).
+
+Added on approval of the plan (2026-11-14, third round):
+
+16. **Many creators at once.** Phases A/B/C are engineering validation, not a launch strategy. Once
+    production and orchestration are reliable, the Brain launches and runs many creators
+    concurrently, including large differentiated cohorts in attractive markets (e.g. 25-50 distinct
+    fitness creators, illustrative). Audiences are not zero-sum; no arbitrary creator counts or
+    conservative concentration rules. Real constraints: budget, infrastructure, production quality,
+    genuine differentiation, platform rules.
+17. **Monetization is optionality.** Record markets' commercial attractiveness (brand partnerships,
+    sponsorships, advertising, products); let creators have natural tastes and interests; no forced
+    placement or selling. Activate monetization after meaningful traction (partnerships first).
+18. **Network effects later.** Accounts grow on their own content; no artificial cross-account
+    engagement. The architecture should allow future authentic collaborations, shared partnerships
+    and category-level initiatives without building cross-promotion now.
+19. **Retirement is relative expected value**, not proof that a concept is bad. Initial budget
+    settings (/month, 15% reserve, current safeguards) are starting values, not assumptions.
 
 ### Non-goals (for this design)
 
@@ -336,15 +354,24 @@ low conviction" and be managed accordingly.
 
 **Continue/stop is an expected-value decision.** For each creator and the next evidence window:
 expected growth value + value of information (how much the window could change the allocation,
-from the width of the conviction interval) − incremental cost (ledger-based forecast). Retirement
-additionally requires: minimum windows met, the policy number of strategy adjustments tried, and a
-diagnosis attributing weakness to the concept rather than execution or distribution. Every decision
-records the inputs, the numbers and the reasoning.
+from the width of the conviction interval) − incremental cost (ledger-based forecast), compared with
+the best alternative use of the same money. Retirement happens when continuing is worth less than the
+alternatives, never on a demand to prove the concept bad; policy sets minimum windows and a minimum
+number of strategy adjustments before it is considered, and the diagnosis (concept vs execution vs
+distribution) feeds the estimate. High-conviction creators that have not broken out can receive more
+investment when there is a credible thesis and unexplored options remain. Every decision records the
+inputs, the numbers and the reasoning.
 
 Launches: the strategist decides when to launch a creator and what it should test (an
 under-explored identity attribute, a market thesis, a cluster gap), and asks the scouts/creator
 lab for a creator designed for that. Creator design follows principle 4 (appealing, distinctive,
-varied).
+varied). Launches are **cohorts**, not one at a time: the strategist sets cohort size, timing and
+investment from conviction, opportunity, budget and capacity, and many creators in one market can run
+at once (16).
+
+Creators get natural, recognisable interests, tastes, wardrobe and aesthetics because real
+influencers have them; these preserve later monetization optionality, but no trait, product
+placement or selling is chosen for commercial reasons now (17).
 
 ### 4.6a Market intelligence and clusters
 
@@ -359,12 +386,20 @@ varied).
   creator lab read their cluster's findings, so learnings transfer while identities stay distinct.
 - **Differentiation is measured, not hoped for:** each new creator in a cluster is checked against
   its siblings (identity, aesthetic, voice, content themes) with a policy similarity ceiling; feed
-  QA also checks cross-creator repetition. Concentration risk (share of budget and audience in one
-  cluster, correlated outcomes, audience overlap) is reported and bounded by policy.
+  QA also checks cross-creator repetition. The point of differentiation is breadth of experiments
+  (aspirational, funny, casual, educational, athletic, fashionable, lifestyle …), not avoiding
+  competition: audiences are not zero-sum, and there is **no default cap** on creators per market.
+  Concentration (budget share, correlated outcomes) is reported and is one input to the allocator
+  as uncertainty, never a hard limit unless the owner sets one in policy.
 - **Platform integrity:** clusters are separate, disclosed accounts with distinct identities;
   no coordinated engagement, no cross-promotion by automation, account creation paced per policy.
-  Meta treats coordinated networks of accounts as inauthentic behaviour, so cluster growth is
-  rate-limited and every account must stand on its own.
+  Meta treats coordinated networks of accounts as inauthentic behaviour, so account creation and
+  launch pacing follow platform rules and every account must stand on its own. Accounts are created
+  and authorised by the owner; the Brain queues account requests for each cohort.
+- **Future network value (not built now):** collaborations, shared brand partnerships,
+  category-level commercial initiatives and natural audience crossover once properties have their
+  own audiences. The data model keeps creators, clusters and markets linked so these can be added
+  later as authentic, platform-compliant features; nothing cross-promotes today.
 
 ### 4.6b Capital allocation
 
@@ -377,11 +412,13 @@ varied).
 - **Method:** each candidate use of money (continue creator X at tier T, launch in market M,
   expand cluster C, research question Q) is an option with expected growth value, information
   value and cost. The strategist proposes allocations; deterministic code checks them against
-  policy (authority limits, diversification bounds, minimum exploration share, reserve, pacing)
+  policy (authority limits, minimum exploration share, reserve, pacing, and any optional
+  concentration bounds the owner sets)
   and applies only what passes. A share is always held for exploration (new markets, high-conviction
   unproven creators), so winners never absorb everything.
 - **Authority:** policy `allocation.authority` sets what the Brain may change alone (e.g. moves
-  within a period's budget, tier changes up to a ceiling, launches up to a count per period) and
+  within a period's budget, tier changes up to a ceiling, launches within the budget and
+  infrastructure capacity) and
   what queues for approval (budget increases, new markets beyond N, anything over `limits`).
   Approvals are a pending state the owner clears with `mw` or a private page.
 - **Spend enforcement** stays in code: the autoscaler, per-day GPU caps and LLM budgets read the
