@@ -124,8 +124,9 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     for stage_role, effort, stage in stages:
         if not remaining:
             break
-        model, reviews = _judge(llm, policy, cfg, stage_role, effort, creator, refs, [images[a["id"]] for a in remaining],
-                                scene)
+        with common.charged_to(llm, job_id):   # review counts in this output's cost
+            model, reviews = _judge(llm, policy, cfg, stage_role, effort, creator, refs,
+                                    [images[a["id"]] for a in remaining], scene)
         still = []
         for a, r in zip(remaining, reviews):
             if r is None:  # the judge skipped it: fail closed, it can be re-reviewed

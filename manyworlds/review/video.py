@@ -126,7 +126,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     for v in videos:
         res = {"asset_id": str(v["id"]), "uri": v["uri"], "accepted": True, "stages": [], **{g: True for g in gates}}
         for role, effort, stage in stages:
-            r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene)
+            with common.charged_to(llm, job_id):   # review counts in this clip's cost
+                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene)
             verdict = decide(r, cfg, scene)
             scores = {"identity": r.identity, "motion": r.motion, "realism": r.realism, "scene": r.scene}
             details = {**r.model_dump(), "model": llm.model_for(role), "stage": stage}

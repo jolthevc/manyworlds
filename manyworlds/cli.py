@@ -136,7 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "status":
         from .deploy import report
         _print({"jobs": queue.counts(conn), "spend": ledger.totals(conn),
-                "cost_per_output": ledger.cost_per_output(conn), "machines_72h": report.summary(report.machines(conn))})
+                "cost_per_output": ledger.cost_per_output(conn), "brain_costs": ledger.brain_costs(conn),
+                "machines_72h": report.summary(report.machines(conn))})
     elif args.cmd == "machines":
         from .deploy import report
         rows = report.machines(conn, hours=args.hours)
