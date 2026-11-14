@@ -9,6 +9,7 @@ on a harmless lifestyle prompt is retried on another model inside the same call.
 from __future__ import annotations
 
 import base64
+import contextlib
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
@@ -53,6 +54,7 @@ class Claude:
         self.policy = policy
         self.client = client or anthropic.Anthropic()
         self.calls: list[Usage] = []
+        self._tag: dict = {}   # agent and job the current calls are charged to (Brain runtime)
 
     def model_for(self, role: str) -> str:
         model = self.policy.get("llm", "roles", role)
@@ -69,9 +71,19 @@ class Claude:
         u = Usage(model, usage.input_tokens, usage.output_tokens, cr, cw, usd)
         ledger.record(self.conn, category="llm", provider=model,
                       quantity=usage.input_tokens + usage.output_tokens + cr + cw, unit="token",
-                      usd=usd, creator_id=creator_id, policy_version=self.policy.version)
+                      usd=usd, creator_id=creator_id, policy_version=self.policy.version,
+                      agent=self._tag.get("agent"), job_id=self._tag.get("job_id"))
         self.calls.append(u)
         return u
+
+    @contextlib.contextmanager
+    def tagged(self, agent: str, job_id):
+        """Charge every call inside the block to this agent and job (per-agent budgets, traces)."""
+        before, self._tag = self._tag, {"agent": agent, "job_id": job_id}
+        try:
+            yield
+        finally:
+            self._tag = before
 
     def structured(self, role: str, *, system: str, content: Any, schema: type[T],
                    effort: str = "high", creator_id=None) -> T:

@@ -22,15 +22,16 @@ def record(
     creator_id=None,
     post_id=None,
     policy_version: str | None = None,
+    agent: str | None = None,
 ) -> None:
     conn.execute(
         """
         INSERT INTO cost_entries
             (job_id, attempt_id, creator_id, post_id, category, provider,
-             quantity, unit, usd, policy_version)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             quantity, unit, usd, policy_version, agent)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (job_id, attempt_id, creator_id, post_id, category, provider, quantity, unit, usd, policy_version),
+        (job_id, attempt_id, creator_id, post_id, category, provider, quantity, unit, usd, policy_version, agent),
     )
 
 

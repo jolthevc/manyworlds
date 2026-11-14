@@ -210,6 +210,12 @@ creators:
 
 # Content planner (manyworlds.brain.planner): one Brain call per creator per period, rolling.
 # formats: images per post [min, max]. Video posts belong to one of the creator's video series.
+# The Brain (docs/superpowers/specs/2026-11-14-brain-design.md): agents run as brain.<agent> jobs on the
+# control host. Daily LLM budgets per agent sit inside the master operating budget.
+brain:
+  llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0}
+  runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
+
 planner:
   role: brain
   effort: medium
