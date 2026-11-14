@@ -49,6 +49,7 @@ def ensure_lora(conn, policy: Policy, creator_id) -> dict | None:
 def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None, scene_i: int, attempt: int):
     cfg, img = _cfg(policy), policy.get("generation", "image", default={})
     payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=lora and lora.get("trigger")),
+               "scene": post["body"]["scenes"][scene_i],   # the reviewer scores the image against it
                "n": int(cfg.get("candidates_per_scene", 4)),
                "seed": int(str(post["id"]).replace("-", "")[:7], 16) + scene_i * 1000 + attempt * 10,
                "width": img.get("width", 896), "height": img.get("height", 1152),

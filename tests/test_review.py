@@ -190,3 +190,26 @@ def test_a_jobs_reviews_appear_all_at_once_when_both_stages_are_done(conn, datab
     assert other.execute("SELECT count(*) n FROM reviews r JOIN assets a ON a.id = r.asset_id "
                          "WHERE a.job_id = %s", (job,)).fetchone()["n"] > 0
     other.close()
+
+
+def test_post_images_are_judged_against_the_scene_the_planner_wrote(conn, policy, store, tmp_path):
+    # 2026-11-14: Maren's first post asked for a claw clip, fogged glass and herbs on the sill;
+    # it got a beanie and an empty sill, and no gate looked at the scene at all.
+    _, job = creator_with_job(conn, store, tmp_path)
+    conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"scene": "at the window, 4:35am"}), job))
+    judge = JudgeStub([ok(scene=9), ok(scene=2), ok(scene=6), ok(scene=8)], confirm=[ok(scene=9), ok(scene=8)])
+    results = gates.review_job(conn, policy, judge, store, job, tmp_path)
+    assert any("INTENDED SCENE" in str(b.get("text", "")) and "4:35am" in str(b.get("text", ""))
+               for b in judge.calls[0]["content"])
+    assert [r["accepted"] for r in results] == [True, False, True, True]     # 2 is a different scene
+    assert [r["confirmed"] for r in results] == [True, False, False, True]   # best fits go to confirm
+    rows = conn.execute("SELECT count(*) n FROM reviews WHERE gate = 'scene'").fetchone()["n"]
+    assert rows == 4 + 2
+
+
+def test_images_without_a_scene_get_no_scene_gate(conn, policy, store, tmp_path):
+    _, job = creator_with_job(conn, store, tmp_path)
+    judge = JudgeStub([ok(), ok(), ok(), ok()])
+    gates.review_job(conn, policy, judge, store, job, tmp_path)
+    assert not any("INTENDED SCENE" in str(b.get("text", "")) for b in judge.calls[0]["content"])
+    assert conn.execute("SELECT count(*) n FROM reviews WHERE gate = 'scene'").fetchone()["n"] == 0

@@ -141,6 +141,7 @@ review:
     confirm_top_per_job: 2     # Opus confirms the best 2 screen passes per job (one prompt); 0 = all
     min_identity: 7
     min_realism: 6
+    min_scene: 5               # post images: 5 = right setting, details off; below that it is a different scene
     reference_images: 3        # creator reference photos shown with every review
     max_jobs_per_run: 50
     loop_seconds: 120          # how often the reviewer looks for new images

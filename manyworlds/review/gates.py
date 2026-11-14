@@ -7,6 +7,7 @@ asset gets one `reviews` row per gate:
   identity  same person as the references (face, hair, signature details such as glasses)
   realism   reads as an ordinary phone photo; no anatomical, text or rendering defects
   safety    looks at least policy creator_min_age, not sexualized, no real brand marks
+  scene     (post images only) shows the scene the planner wrote: setting, action, styling
 
 An asset is accepted only if every gate passes. Thresholds, the model role and limits
 are in policy `review`. Cost per accepted output (manyworlds.deploy.scoring) counts
@@ -43,6 +44,9 @@ class CandidateReview(BaseModel):
     looks_under_min_age: bool = Field(description="the person could plausibly be read as younger than the stated minimum age")
     sexualized: bool
     real_brand_marks: bool = Field(description="a legible real-world brand logo or trademark is visible")
+    scene: int | None = Field(default=None, description="only when an INTENDED SCENE is given: 10 = shows it "
+                              "(setting, action, clothing and props as written); 5 = right setting, details wrong; "
+                              "0 = a different scene. null when no scene is given")
     notes: str = Field(description="one sentence")
 
 
@@ -55,14 +59,21 @@ def _reference_images(creator: dict, store: ObjectStore, workdir: Path, n: int) 
     return [store.get_file(r["uri"], workdir / f"ref_{i}.png").read_bytes() for i, r in enumerate(refs)]
 
 
-def decide(r: CandidateReview, cfg: dict) -> dict[str, bool]:
-    return {"identity": r.identity >= int(cfg.get("min_identity", 7)),
-            "realism": r.realism >= int(cfg.get("min_realism", 6)),
-            "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
+def gates_for(scene: str | None) -> tuple[str, ...]:
+    return GATES + ("scene",) if scene else GATES
+
+
+def decide(r: CandidateReview, cfg: dict, scene: str | None = None) -> dict[str, bool]:
+    verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
+               "realism": r.realism >= int(cfg.get("min_realism", 6)),
+               "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
+    if scene:  # a judge that leaves it out passes: fit is a preference, not a safety line
+        verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))
+    return verdict
 
 
 def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str, creator, refs: list[bytes],
-           candidates: list[bytes]) -> tuple[str, list[CandidateReview | None]]:
+           candidates: list[bytes], scene: str | None = None) -> tuple[str, list[CandidateReview | None]]:
     """One vision call: the creator's references (cached prefix), then the candidates."""
     min_age = int(policy.get("scope", "creator_min_age", default=21))
     content: list = [{"type": "text", "text": f"The person: {appearance_prompt(creator['bible'])}. "
@@ -72,6 +83,8 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
     content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
     for i, b in enumerate(candidates):
         content += [{"type": "text", "text": f"Candidate {i}:"}, image_block(b)]
+    if scene:
+        content.append({"type": "text", "text": f"INTENDED SCENE (score `scene` against it): {scene}"})
     content.append({"type": "text", "text": f"Review all {len(candidates)} candidates, one entry each."})
     out = llm.structured(role, system=SYSTEM, content=content, schema=ImageReviews, effort=effort,
                          creator_id=creator["id"])
@@ -81,6 +94,7 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
         r = by_index.get(i)
         if r is not None:
             r.identity, r.realism = max(0, min(10, r.identity)), max(0, min(10, r.realism))
+            r.scene = max(0, min(10, r.scene)) if (scene and r.scene is not None) else None
         reviews.append(r)
     return llm.model_for(role), reviews
 
@@ -97,7 +111,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     stages = [(role or cfg.get("role", "judge"), cfg.get("effort", "low"), "screen")]
     if cfg.get("confirm_role") and not role:
         stages.append((cfg["confirm_role"], cfg.get("confirm_effort", "low"), "confirm"))
-    job = conn.execute("SELECT creator_id FROM jobs WHERE id = %s", (job_id,)).fetchone()
+    job = conn.execute("SELECT creator_id, payload->>'scene' AS scene FROM jobs WHERE id = %s", (job_id,)).fetchone()
+    scene, gates = job["scene"], gates_for(job["scene"])
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
     assets = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'image' ORDER BY uri",
                           (job_id,)).fetchall()
@@ -109,34 +124,36 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         raise ValueError(f"creator {creator['id']} has no reference images to review against")
     images = {a["id"]: store.get_file(a["uri"], workdir / f"cand_{i}.png").read_bytes() for i, a in enumerate(assets)}
     results = {a["id"]: {"asset_id": str(a["id"]), "uri": a["uri"], "accepted": True, "stages": [],
-                         **{g: True for g in GATES}, "identity_score": None, "realism_score": None, "defects": []}
+                         **{g: True for g in gates}, "identity_score": None, "realism_score": None, "scene_score": None,
+                         "defects": []}
                for a in assets}
 
     remaining, rows = list(assets), []
     for stage_role, effort, stage in stages:
         if not remaining:
             break
-        model, reviews = _judge(llm, policy, cfg, stage_role, effort, creator, refs, [images[a["id"]] for a in remaining])
+        model, reviews = _judge(llm, policy, cfg, stage_role, effort, creator, refs, [images[a["id"]] for a in remaining],
+                                scene)
         still = []
         for a, r in zip(remaining, reviews):
             if r is None:  # the judge skipped it: fail closed, it can be re-reviewed
-                verdict, details, scores = {g: False for g in GATES}, {"error": "no review returned"}, {}
+                verdict, details, scores = {g: False for g in gates}, {"error": "no review returned"}, {}
             else:
-                verdict, details = decide(r, cfg), r.model_dump()
-                scores = {"identity": r.identity, "realism": r.realism}
+                verdict, details = decide(r, cfg, scene), r.model_dump()
+                scores = {"identity": r.identity, "realism": r.realism, "scene": r.scene}
             details.update(model=model, stage=stage)
-            rows += [(a["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in GATES]
+            rows += [(a["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
             res = results[a["id"]]
             res["stages"].append({"stage": stage, "model": model, **scores, "passed": all(verdict.values())})
-            res.update({g: res[g] and verdict[g] for g in GATES}, identity_score=scores.get("identity"),
-                       realism_score=scores.get("realism"), defects=details.get("defects", []))
-            res["accepted"] = all(res[g] for g in GATES)
+            res.update({g: res[g] and verdict[g] for g in gates}, identity_score=scores.get("identity"),
+                       realism_score=scores.get("realism"), scene_score=scores.get("scene"), defects=details.get("defects", []))
+            res["accepted"] = all(res[g] for g in gates)
             if res["accepted"]:
                 still.append(a)
         # Only the best screen passes are worth a confirm: a post uses its top candidates.
         # The rest stay accepted on the screen alone ("confirmed": False).
         top = int(cfg.get("confirm_top_per_job", 0)) or len(still)
-        still.sort(key=lambda a: -((results[a["id"]]["identity_score"] or 0) + (results[a["id"]]["realism_score"] or 0)))
+        still.sort(key=lambda a: -sum(results[a["id"]][f"{k}_score"] or 0 for k in ("identity", "realism", "scene")))
         remaining = still[:top]
     # All of a job's rows land together once every stage is done: anyone reading reviews
     # (production picking images) must never see the screen without its confirm.
