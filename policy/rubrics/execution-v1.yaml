@@ -1,0 +1,79 @@
+rubric: execution
+version: 1
+applies_to: >-
+  A finished image (or a video's keyframes) and its caption for a planned post by a fictional,
+  openly AI lifestyle creator. Judge how well the idea was made, not whether the idea is good.
+guidance: >-
+  Compare with the REFERENCE photos of the creator and the planned scene. Odd numbers are anchors,
+  even numbers sit between them. 5 is competent and usable.
+dimensions:
+  - key: believability
+    name: Photographic believability
+    definition: How convincingly this reads as a real phone photo of a real moment.
+    not: Beauty; an unflattering real photo is believable.
+    anchors:
+      1: Obviously AI - plastic skin, melted hands, impossible light or text.
+      3: Looks generated on a second look (too smooth, too symmetrical, uncanny eyes).
+      5: Passes a casual scroll; small tells for anyone looking closely.
+      7: Hard to tell from a real phone photo even on close inspection.
+      9: Indistinguishable from a well-taken real photo; natural grain, light and imperfection.
+  - key: visual_appeal
+    name: Visual appeal and composition
+    definition: How attractive and well-composed the image is - light, colour, framing, focus.
+    not: The creator's attractiveness alone.
+    anchors:
+      1: Murky, cluttered or badly framed; nothing draws the eye.
+      3: Acceptable but flat light or awkward crop.
+      5: Pleasant, clean composition; nothing special.
+      7: Strong light and framing; the eye goes where it should.
+      9: Striking; could sit in a top creator's best posts.
+  - key: styling
+    name: Styling and outfit
+    definition: How good the outfit, hair and styling look and how well they fit the creator and moment.
+    not: Fashion-forwardness for its own sake.
+    anchors:
+      1: Clothes or hair look wrong, mismatched or broken.
+      3: Generic or slightly off for the creator.
+      5: Fitting and tidy; unremarkable.
+      7: Stylish and clearly the creator's taste.
+      9: A look people would screenshot to copy.
+  - key: identity
+    name: Identity consistency
+    definition: How clearly this is the same person as the REFERENCE photos, signature details included.
+    not: Image quality.
+    anchors:
+      1: A different person.
+      3: Same general type, different face.
+      5: Recognisably the creator with small drift (face shape, a missing signature detail).
+      7: Clearly the creator; tiny differences only.
+      9: Unmistakably the creator, every signature detail right.
+  - key: setting
+    name: Setting and scene fidelity
+    definition: How well the setting, props and action match the planned scene and look appealing.
+    not: Whether the planned scene was a good idea.
+    anchors:
+      1: A different scene from the plan.
+      3: Right kind of place, wrong key details.
+      5: Matches the plan in the main points.
+      7: Matches the plan with the specific details that made it interesting.
+      9: Better than the plan described; every planned detail and a believable lived-in setting.
+  - key: caption_voice
+    name: Caption voice
+    definition: How well the caption sounds like this creator talking - their voice, rhythm and humour - and not like AI or marketing.
+    not: Caption length.
+    anchors:
+      1: Generic AI or ad copy ("Embrace the moment! ✨"), or off-voice.
+      3: Neutral and safe; could be anyone.
+      5: Fine and on-voice; unremarkable.
+      7: Distinctly theirs; a line followers would recognise as their voice.
+      9: The caption makes the post; witty or touching in their exact voice.
+  - key: defects
+    name: Freedom from defects
+    definition: Absence of visible generation defects - hands, teeth, text, objects merging, warped backgrounds. 10 means none.
+    not: Style choices.
+    anchors:
+      1: Multiple glaring defects.
+      3: One obvious defect a casual viewer would notice.
+      5: Minor defects visible on a close look.
+      7: One tiny defect only a careful look finds.
+      9: No defects found.

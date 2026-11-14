@@ -34,3 +34,16 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 - Brain LLM spend mixed into cost per output: now reported separately; cost per accepted output
   counts GPU and review only.
 - Publications could be marked simulated on a real platform: CHECK constraint.
+
+## Creative evaluation (Brain M2), deferred minors
+
+| Item | Before | Where |
+|---|---|---|
+| A dimension scored by only one of three samples reports spread 0 (looks certain) | rubric recalibration by predictive validity (M6) | `brain/evaluation.py` `score` |
+| A missing asset/idea row or a non-image asset fails retryably with a TypeError instead of a clear non-retryable reason; media type guessed from extension (png/jpeg only) | video keyframe scoring (M10) | `brain/agents/evaluator.py` |
+| `checked()` depends on how an id is written (case, braces) | — | `brain/evaluation.py` |
+| A crash between storing evaluation rows and the remembered decision can duplicate rows on rerun | M6 | `brain/agents/evaluator.py` |
+| `mw brain calibrate`/`rubric-drift` don't check the evaluator's daily budget | — | `manyworlds/cli.py` |
+| Rubric filename version not cross-checked with the file's `version:`; a stray `idea-vdraft.yaml` crashes; schema cache keyed without file hash; `register` race | — | `brain/rubrics.py`, `brain/evaluation.py` |
+| Rubrics always load from the repo/`/app` path, not from `MW_POLICY`'s directory | — | `brain/rubrics.py` |
+| Reference set and drift exist for the idea rubric only; execution and feed have none yet | M7 (feed QA) | `policy/rubrics/reference/` |

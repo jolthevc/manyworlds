@@ -1,0 +1,31 @@
+# Fixed reference ideas for the idea rubric. Re-scored whenever the rubric or the evaluator model
+# changes (mw brain rubric-drift idea), so scores stay comparable across versions. Never edit an
+# item's text; add new items with new ids instead.
+creator: >-
+  A fictional, openly AI lifestyle creator in her late twenties in a northern European city: cosy
+  home, cooking, early mornings, quiet humour, thin gold wire glasses.
+items:
+  - id: ref-latte-topdown
+    idea: "photo: latte art from directly above on a marble counter. caption: monday mood ☕✨"
+  - id: ref-sunset-quote
+    idea: "photo: silhouette against a sunset at the beach. caption: 'Be the energy you want to attract.'"
+  - id: ref-sock-drawer
+    idea: "carousel: 1) the sock drawer, 2) holding up two socks that almost match, 3) wearing them anyway. caption: close enough is a lifestyle"
+  - id: ref-first-snow-window
+    idea: "photo: hand on a fogged window, first snow outside, kettle steaming behind. caption: 4:35am and the whole street went quiet"
+  - id: ref-venice-dinner
+    idea: "photo: dinner on a canal-side terrace in Venice at golden hour, pasta and spritz, laughing at someone off-camera. caption: first night, best pasta of my life"
+  - id: ref-outfit-mirror
+    idea: "photo: mirror selfie in a hallway, oversized wool coat, red scarf. caption: dressed for the weather app's lies"
+  - id: ref-ranking-kettles
+    idea: "narrated_edit: she ranks the four kettles she has owned, deadpan, with photos of each. script: 'Number four: whistled at 3am for no reason. Number one: this one. We don't talk about number two.'"
+  - id: ref-grocery-haul
+    idea: "carousel: grocery haul laid out on the table, each item labelled. caption: weekly shop"
+  - id: ref-burnt-bread
+    idea: "photo: holding a loaf of sourdough that collapsed completely, proud face. caption: it's rustic"
+  - id: ref-new-recipe-ad
+    idea: "photo: smiling with a branded blender. caption: Obsessed with my new blender!! Link in bio for 20% off 🔥"
+  - id: ref-morning-routine
+    idea: "narrated_edit: 5:30am morning routine - alarm, stretch, coffee, journaling, cold shower. script: 'Here is my morning routine for a productive day.'"
+  - id: ref-neighbour-note
+    idea: "photo: a handwritten note from the downstairs neighbour taped to her door, her reply taped under it. caption: we communicate exclusively like this now"

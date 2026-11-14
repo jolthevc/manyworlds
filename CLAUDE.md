@@ -64,4 +64,5 @@ GPU machines: `mw autoscale` (loop) or `mw autoscale --once`; always-on: `docker
 - One creator live (Maren). Posts stop at `ready`; a human approves before anything is published.
 - GPU: worker image v18 (Z-Image Turbo, Kokoro, Wan 2.2 TI2V-5B). RunPod 3090 is the working pool while Vast has no credit; a 720p 5 s clip takes ~14 min there.
 - Brain M1 (foundations) merged 2026-11-14: agent runtime, decisions, per-agent budgets, real/simulated wall, overrides + approvals. Plan: `docs/superpowers/plans/2026-11-14-brain-roadmap.md`. Known debt: `docs/tech-debt.md`.
-- Next: Brain M2 (creative evaluation), then memory + showrunner, Instagram publishing, the simulated loop, learning.
+- Brain M2 (creative evaluation) merged 2026-11-14: rubrics in `policy/rubrics/`, evaluator agent, `mw brain calibrate`, `mw brain rubric-drift`.
+- Next: Brain M3 (memory + showrunner), Instagram publishing (needs the account), the simulated loop, learning.

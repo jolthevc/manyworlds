@@ -92,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
     bdec = ba.add_mutually_exclusive_group()
     bdec.add_argument("--approve", action="store_true")
     bdec.add_argument("--reject", action="store_true")
+    bdr = bsub.add_parser("rubric-drift", help="score the reference set under the current rubric and model; drift vs before")
+    bdr.add_argument("rubric")
+    bcal = bsub.add_parser("calibrate", help="score a creator's latest posts as ideas; noise per dimension")
+    bcal.add_argument("creator")
+    bcal.add_argument("--posts", type=int, default=12)
 
     args = p.parse_args(argv)
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -174,6 +179,21 @@ def _brain_ops(args, conn, pol) -> int:
         _print(ops.approvals(conn))
         return 0
     llm = Claude(conn, pol)
+    if args.brain_cmd in ("rubric-drift", "calibrate"):
+        from .brain import evaluation, rubrics
+        with llm.tagged("evaluator", None):   # Brain spend, outside cost per output
+            if args.brain_cmd == "calibrate":
+                _print({**evaluation.calibrate(conn, pol, llm, _creator_id(conn, args.creator), posts=args.posts),
+                        "llm_usd": llm.spent})
+                return 0
+            r = rubrics.load(args.rubric)
+            rubrics.register(conn, r)
+            after = evaluation.score_reference(conn, pol, llm, args.rubric)   # stores the run and its drift
+            ref = conn.execute("SELECT reference FROM rubric_versions WHERE rubric = %s AND version = %s",
+                               (r.rubric, r.version)).fetchone()["reference"]
+            _print({"rubric": r.rubric, "version": r.version, "prompt_version": evaluation.prompt_version(pol),
+                    "drift": (ref.get("drift") or [None])[-1], "scores": after, "llm_usd": llm.spent})
+            return 0
     worker_id = f"brain-{socket.gethostname()}-{os.getpid()}"
     if args.brain_cmd == "run":
         job = queue.enqueue(conn, f"brain.{args.agent}", json.loads(args.payload))

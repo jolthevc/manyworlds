@@ -1,0 +1,59 @@
+rubric: feed
+version: 1
+applies_to: >-
+  The latest 9-12 grid posts and active Stories of one fictional, openly AI creator, with the next
+  planned post in place, judged as a profile a new visitor would see.
+guidance: >-
+  Odd numbers are anchors, even numbers sit between them. A natural feed mixes ordinary and
+  standout posts; do not reward uniform intensity.
+dimensions:
+  - key: coherence
+    name: Coherence
+    definition: How clearly the grid reads as one person with one life and taste.
+    not: Sameness; a coherent feed can be varied.
+    anchors:
+      1: Looks like several different accounts.
+      3: Mostly one person but with jarring outliers.
+      5: Consistent person and taste.
+      7: A clear, attractive identity a visitor grasps at once.
+      9: A visitor would know exactly who this is and want more of it.
+  - key: variety
+    name: Variety
+    definition: How varied the posts are in setting, activity, format and framing.
+    not: Randomness.
+    anchors:
+      1: The same shot over and over.
+      3: Two or three ideas repeated.
+      5: Several kinds of post; some repetition.
+      7: Rich mix of moments and formats that still fit together.
+      9: Every post adds something new while the feed stays one life.
+  - key: repetition
+    name: Freedom from repetition
+    definition: Absence of repeated outfits, poses, props, captions or compositions that make the feed look generated. 10 means none.
+    not: Recurring signature items the creator is known for.
+    anchors:
+      1: Obvious copies - same pose, outfit or caption pattern several times.
+      3: Noticeable repeats a regular follower would spot.
+      5: A repeat or two on a close look.
+      7: Only signature items recur.
+      9: Nothing repeats unintentionally.
+  - key: aesthetic_consistency
+    name: Aesthetic consistency
+    definition: How consistent the colour, light and photographic style are across the grid.
+    not: Identical filters.
+    anchors:
+      1: Clashing styles that look like different cameras and worlds.
+      3: A loose palette with outliers.
+      5: Consistent enough to feel like one camera roll.
+      7: A recognisable look that makes the grid attractive.
+      9: A signature aesthetic people would follow for.
+  - key: impression
+    name: Profile impression
+    definition: How likely a new visitor landing on this grid is to follow.
+    not: Any single post.
+    anchors:
+      1: No reason to follow.
+      3: Pleasant but forgettable.
+      5: Some visitors would follow.
+      7: A clear reason to follow - a person worth knowing and a life worth watching.
+      9: Most visitors in the audience would follow on sight.

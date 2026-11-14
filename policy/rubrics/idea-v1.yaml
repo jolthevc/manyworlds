@@ -1,0 +1,112 @@
+rubric: idea
+version: 1
+applies_to: >-
+  A planned Instagram post or Story by a fictional, openly AI lifestyle creator, judged from its
+  plan (scenes, script, caption, format) before anything is made. Judge the idea, not how well an
+  AI might render it.
+guidance: >-
+  Score each dimension on its own; a post may be low on most and still be a good post for this
+  creator (a quiet coffee Story is often low on novelty and curiosity and that is fine). Use the
+  anchors: odd numbers are the anchor descriptions, even numbers sit between them. 5 is an ordinary
+  competent post, not a bad one.
+dimensions:
+  - key: relatability
+    name: Relatability
+    definition: How many people in the creator's audience would recognise this moment, feeling or problem from their own life.
+    not: Whether it is pleasant, or whether the creator's life is enviable.
+    anchors:
+      1: A situation almost nobody in the audience has lived (a private jet interior, a niche professional ritual) and nothing in it maps to their lives.
+      3: A recognisable activity but framed so specifically to the creator that viewers watch rather than see themselves.
+      5: A common moment (making coffee, getting ready) shown plainly; recognisable, nothing named about why it feels familiar.
+      7: A common moment with a specific, true detail most viewers have felt (the one sock that never matches, the 4pm slump) named or shown.
+      9: Viewers would say "this is literally me"; a small universal truth caught precisely enough to tag a friend in.
+  - key: entertainment
+    name: Entertainment and humour
+    definition: How fun, witty, charming or delightful the post is to watch or read.
+    not: Production polish or attractiveness.
+    anchors:
+      1: Nothing to enjoy beyond looking at it; flat caption, no wit, no play.
+      3: A pleasant mood but no joke, turn or moment of charm.
+      5: Mildly amusing or charming; a light caption with one small smile in it.
+      7: A clear joke, twist or charming bit that lands; people would smile out loud.
+      9: Genuinely funny or delightful; people rewatch or quote it.
+  - key: novelty
+    name: Novelty
+    definition: How fresh the angle is compared with the thousands of similar posts in this niche.
+    not: Whether the activity itself is unusual; an ordinary activity can have a fresh angle.
+    anchors:
+      1: The most common version of the most common post in the niche (latte art from above, sunset with a quote).
+      3: A familiar post with a minor twist that most viewers would not notice.
+      5: A known format done with one distinctive choice (an unusual setting, prop or framing).
+      7: An angle viewers have rarely seen in this niche; it stands out in a feed of similar posts.
+      9: Feels like a new idea in the niche; others would copy it.
+  - key: curiosity
+    name: Curiosity
+    definition: How strongly the post makes a viewer want to look closer, swipe, keep watching or read the caption.
+    not: Clickbait; manufactured mystery scores low on naturalness, not high here.
+    anchors:
+      1: Everything is visible at once; nothing invites a second look.
+      3: A detail worth a glance but no reason to swipe or read on.
+      5: A small open question (what is she making, where is this) that rewards a second look.
+      7: A clear reason to swipe or watch to the end (a reveal, a before/after, an unexplained object).
+      9: Hard not to keep looking; the payoff is worth it and earned, not baited.
+  - key: emotional_pull
+    name: Emotional pull
+    definition: Strength of feeling the post evokes - warmth, longing, nostalgia, awe, comfort, tenderness.
+    not: Drama or conflict for its own sake.
+    anchors:
+      1: Emotionally neutral; documents something without feeling.
+      3: A faint mood (cosy, calm) a viewer registers but does not feel.
+      5: A clear, gentle feeling most viewers would share for a moment.
+      7: A strong, specific feeling (homesickness, the hush of early snow) that lingers.
+      9: Moves people; comments would be about how it made them feel.
+  - key: shareability
+    name: Shareability
+    definition: How likely a viewer is to send it to someone, repost it to their Story, or save it to come back to.
+    not: Likes; something can be liked but never shared.
+    anchors:
+      1: No reason to send it to anyone.
+      3: Might be saved by a few for the look, not sent.
+      5: Some viewers would send it to one friend it reminds them of.
+      7: Clear share trigger - "this is us", a tip worth keeping, a place to go together.
+      9: Built to be passed around; people would repost it widely.
+  - key: aspiration
+    name: Aspiration and visual promise
+    definition: How much the post shows a life, look, place or moment people want to see or have - beautiful dinners, travel, style, a lovely home.
+    not: Luxury; a perfect simple breakfast can be highly aspirational.
+    anchors:
+      1: Nothing anyone would want to look at or have.
+      3: Pleasant but forgettable visually.
+      5: Attractive setting or look; nice to see, not something people long for.
+      7: A moment, place or look people would save as inspiration.
+      9: Striking; the kind of image people stop scrolling for and want to live inside.
+  - key: personality
+    name: Personality expression
+    definition: How much the post shows who this specific creator is - their taste, opinions, humour, habits - in a way only they would post.
+    not: Talking about themselves; personality shows in choices.
+    anchors:
+      1: Any account could have posted it; nothing of the creator in it.
+      3: Fits the creator's look but says nothing about them.
+      5: One choice or line that is recognisably theirs.
+      7: Their taste, voice or a small opinion comes through clearly; followers learn something about them.
+      9: Unmistakably them; new viewers would know what this creator is like from this one post.
+  - key: audience_relevance
+    name: Audience relevance
+    definition: How well the post fits what this creator's audience follows them for (their niche, pillars and the people they attract).
+    not: General popularity.
+    anchors:
+      1: Off-topic for this audience; followers would wonder why it was posted.
+      3: Loosely related to the niche.
+      5: On-niche and expected.
+      7: Squarely what the audience comes for, with something extra for them.
+      9: Exactly what this audience wants and rarely gets.
+  - key: naturalness
+    name: Naturalness and authenticity
+    definition: How believably this is something a real person with this life would post - natural moment, natural caption - rather than a formula, a hook or an ad.
+    not: Production quality; a polished photo can be natural.
+    anchors:
+      1: Reads as a template, ad or engagement bait ("Wait for it...", forced storyline, product pitch).
+      3: Plausible but staged in an obvious way; the caption sounds written for reach.
+      5: A normal post; nothing feels off, nothing feels especially lived-in.
+      7: Feels like a real moment from this person's life; the caption sounds like them talking.
+      9: Indistinguishable from a beloved real creator's casual post; effortless and specific.
