@@ -216,6 +216,14 @@ creators:
 brain:
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0}
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
+  exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
+  # What the Brain may change on its own (manyworlds.brain.overrides), with inclusive bounds; `*` is one
+  # path segment. Anything else, and always `limits.*` and `budget.master*`, waits for owner approval.
+  authority:
+    autonomous:
+      - {path: "production.candidates_per_scene", min: 2, max: 8}
+      - {path: "brain.exploration_share", min: 0.1, max: 0.6}
+      - {path: "brain.llm_usd_per_day.*", min: 0, max: 5}
 
 planner:
   role: brain

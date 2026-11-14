@@ -15,7 +15,7 @@ from .. import queue
 from ..policy import Policy
 from ..worker.runner import NonRetryable
 from . import agent as agent_mod
-from . import budget
+from . import budget, overrides
 
 log = logging.getLogger("manyworlds.brain")
 POOL = "local"
@@ -28,19 +28,16 @@ def _waiting_kinds(conn) -> list[str]:
 
 
 def _context_policy(conn, policy: Policy) -> Policy:
-    try:
-        from .overrides import effective_policy
-    except ImportError:   # before runtime overrides exist
-        return policy
-    return effective_policy(conn, policy)
+    return overrides.effective_policy(conn, policy)
 
 
 def run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: datetime) -> dict:
     name = job.kind.removeprefix("brain.")
     try:
         a = agent_mod.get(name)
-        budget.check(conn, policy, name)
-        ctx = agent_mod.AgentContext(conn=conn, policy=_context_policy(conn, policy), llm=llm, job=job, now=now)
+        effective = _context_policy(conn, policy)
+        budget.check(conn, effective, name)
+        ctx = agent_mod.AgentContext(conn=conn, policy=effective, llm=llm, job=job, now=now)
         with llm.tagged(name, job.id):
             result = a.run(ctx)
         queue.complete(conn, job.id, worker_id, result or {})
