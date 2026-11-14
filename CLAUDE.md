@@ -9,6 +9,10 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/queue.py` — Postgres job queue for interruptible GPUs (leases, heartbeats, reclaim, reaping)
 - `manyworlds/worker/` — generic worker loop + handlers per job kind (`image.zimage`, `image.narrated`, `image.voice`, `video.wan_i2v`, `train.lora`, `fake.*`); `smoke.py` checks a built image before it is pushed
 - `manyworlds/brain/` — orchestration decisions (research plan, theses, choices, content plans); each one recorded in `decisions`
+- `manyworlds/brain/agent.py` — agent contract (`AgentContext`, `record_decision`, `commission`); agents in `brain/agents/` run as `brain.<name>` jobs via `brain/runtime.py` (`mw brain worker`)
+- `manyworlds/brain/evidence.py` — the only reader of findings and metrics; `real` mode never sees simulated data
+- `manyworlds/brain/overrides.py` — settings the Brain changes at runtime within `brain.authority`; beyond it → `approvals`
+- `manyworlds/brain/budget.py` — per-agent daily LLM budgets from the ledger's `agent` tag
 - `manyworlds/production.py` — planned post → scene images → (narrated edit | story clip) → ready; each piece is a retried `Step`
 - `manyworlds/review/` — review gates: `gates.py` (images), `video.py` (clips from keyframes), `common.py` (shared stages and writes)
 - `manyworlds/creator/lab.py` — creator bible, reference pack, anchors, LoRA, voice; `profile.py` versioned profiles and dials
@@ -32,6 +36,7 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - **Handlers must be idempotent.** Interruptible nodes vanish mid-job; the queue reruns the job elsewhere.
 - **Smoke-test worker images before pushing** (`scripts/build-worker.sh`). A missing package found on a rented machine costs a boot and a model download; the test finds it for free.
 - **Every external capability sits behind an adapter/handler**, so models and vendors can be swapped by config.
+- **Simulated results never count as evidence of demand.** Agents read findings and metrics only through `brain/evidence.py`; the strategist and allocator only through `evidence.for_allocation` (real only). A test fails if anything else under `manyworlds/brain/` reads those tables.
 - **Disclosure is non-negotiable.** Every creator carries the policy `disclosure_line`; posts set platform AI flags; never imply real first-hand experience in sponsored content.
 - **Creator guardrails:** adults only (policy `creator_min_age`), original people (never based on a real person), nothing in `scope.excluded_topics`.
 - **Research privacy:** logged-out public data only; author handles stored only as salted hashes; raw items purged after 30 days (`research.apify.purge_expired`); store derived features, not dossiers.
