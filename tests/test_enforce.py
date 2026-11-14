@@ -129,3 +129,20 @@ def test_slow_starting_providers_keep_the_longer_idle_window(conn, policy):
     from manyworlds.deploy.enforce import idle_stop_minutes
     assert idle_stop_minutes(policy, "salad") == float(policy.get("gpu_runs", "idle_stop_minutes"))
     assert idle_stop_minutes(policy, "vast") < idle_stop_minutes(policy, "salad")
+
+
+def test_a_machine_whose_worker_went_silent_is_stopped_so_work_can_move(conn, policy):
+    # 2026-11-14: a Vast worker hung loading the model; its job stayed 'running' with an
+    # expired lease, so the machine looked busy and would have billed until its deadline.
+    register(conn, "mw-image-4090-a", hours=12, max_usd=100)
+    job = queue.enqueue(conn, "image.zimage", {})
+    conn.execute("UPDATE jobs SET status = 'running', worker_id = 'w1', updated_at = %s, lease_until = %s WHERE id = %s",
+                 (T0 + timedelta(minutes=8), T0 + timedelta(minutes=10), job))
+    conn.execute("INSERT INTO attempts (job_id, worker_id, pool, started_at, gpu_group) "
+                 "VALUES (%s, 'w1', 'salad_batch_4090', %s, 'mw-image-4090-a')", (job, T0 + timedelta(minutes=5)))
+    api = FakeAPI(["mw-image-4090-a"])
+    stuck = float(policy.get("gpu_runs", "stuck_minutes"))
+    tick(conn, policy, api, now=T0 + timedelta(minutes=8 + stuck - 1))
+    assert api.stopped == []                                  # heartbeat recent enough
+    actions = tick(conn, policy, api, now=T0 + timedelta(minutes=8 + stuck + 1))
+    assert api.stopped == ["mw-image-4090-a"] and actions[0]["reason"] == "stuck"

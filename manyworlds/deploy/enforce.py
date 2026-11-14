@@ -4,8 +4,9 @@
 Each tick, for every registered group that is still up:
   1. meter billed instance time since the last tick into the ledger ('gpu_billed');
   2. stop it if it is past its deadline, over its own spend cap, idle (no open jobs
-     for its kinds) after its boot grace, or if all groups together are over the day's
-     GPU budget.
+     for its kinds) after its boot grace, stuck (jobs waiting but no sign of life from
+     its worker for gpu_runs.stuck_minutes), or if all groups together are over the
+     day's GPU budget.
 Any provider group named mw-* that was never registered (so has no deadline) is
 stopped immediately. API or database failures exit non-zero so the run shows red.
 
@@ -79,6 +80,7 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
     cfg = policy.get("gpu_runs", default={})
     grace_min = float(cfg.get("boot_grace_minutes", 45))
     daily_cap = float(cfg.get("daily_gpu_usd", 10))
+    stuck_min = float(cfg.get("stuck_minutes", 10))
     actions: list[dict] = []
 
     live = set(api.list_names())
@@ -114,8 +116,12 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             conn.execute("UPDATE gpu_groups SET last_busy_at = %s WHERE name = %s", (now, g["name"]))
         # Boot grace covers image pull and model download, until the machine starts its first
         # job. After that, idle time is just idle time.
-        started_work = conn.execute("SELECT 1 FROM attempts WHERE gpu_group = %s LIMIT 1",
-                                    (g["name"],)).fetchone() is not None
+        # Last sign of life: an attempt starting or finishing, or a heartbeat on a job it holds.
+        last_seen = conn.execute(
+            """SELECT max(greatest(a.started_at, a.finished_at,
+                                   CASE WHEN j.status = 'running' AND j.worker_id = a.worker_id THEN j.updated_at END)) AS t
+               FROM attempts a JOIN jobs j ON j.id = a.job_id WHERE a.gpu_group = %s""", (g["name"],)).fetchone()["t"]
+        started_work = last_seen is not None
         booting = not started_work and (now - g["started_at"]).total_seconds() <= grace_min * 60
         idle_min = idle_stop_minutes(policy, g["provider"])
         reason = None
@@ -127,6 +133,10 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             reason = "daily_gpu_budget"
         elif not booting and (now - last_busy).total_seconds() > idle_min * 60:
             reason = "idle"
+        elif started_work and busy and (now - last_seen).total_seconds() > stuck_min * 60:
+            # Work is waiting but this machine has gone silent (worker hung or died): it would
+            # otherwise count as busy until its deadline and block a replacement.
+            reason = "stuck"
         if reason:
             if not dry_run:
                 try:

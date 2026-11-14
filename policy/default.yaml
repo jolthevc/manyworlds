@@ -22,6 +22,7 @@ gpu_runs:
   # more than starting a fresh one when work returns.
   idle_stop_minutes_by_provider: {vast: 5, runpod: 5}
   boot_grace_minutes: 45       # until its first job, a machine may take this long (image pull + model download)
+  stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
 
 # Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).
