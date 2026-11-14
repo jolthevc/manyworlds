@@ -95,7 +95,7 @@ def test_the_evaluator_runs_as_a_brain_job(conn, policy):
     job = queue.enqueue(conn, "brain.evaluator", {"idea_id": str(idea)})
     out = runtime.tick(conn, policy, ScoringLLM(conn=conn), worker_id="w1")
     assert out[0]["status"] == "done"
-    assert conn.execute("SELECT count(*) n FROM evaluations WHERE idea_id = %s", (idea,)).fetchone()["n"] == 1
+    assert conn.execute("SELECT count(*) n FROM evaluations WHERE idea_id = %s AND role = 'evaluator'", (idea,)).fetchone()["n"] == 1
     assert conn.execute("SELECT agent FROM cost_entries LIMIT 1").fetchone()["agent"] == "evaluator"
 
 
