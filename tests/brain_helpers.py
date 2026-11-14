@@ -58,3 +58,26 @@ def make_ctx(conn, policy, job_id):
                        (job_id,)).fetchone()
     return AgentContext(conn=conn, policy=policy, llm=StubLLM(conn=conn), job=queue.Job(**row),
                         now=datetime.now(timezone.utc))
+
+
+class ScoringLLM(StubLLM):
+    """Scores every rubric dimension `value` (any rubric schema); records role and content."""
+
+    def __init__(self, value: int = 6, conn=None):
+        super().__init__(conn=conn)
+        self.value = value
+
+    def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
+        super().structured(role, system=system, content=content, schema=schema)
+        self.calls[-1]["system"] = system
+        dims = {k: {"score": self.value, "why": "w"} for k in schema.model_fields if k != "overall_note"}
+        return schema.model_validate({**dims, "overall_note": "n"})
+
+
+def planned_post(conn, creator_id, **body):
+    from psycopg.types.json import Jsonb
+    b = {"scenes": ["dinner on a terrace in Venice, golden hour"], "script": "", "pillar": "food", "tone": "warm",
+         "series": "", **body}
+    return conn.execute("INSERT INTO posts (creator_id, format, status, caption, body) "
+                        "VALUES (%s, 'photo', 'planned', 'first night, best pasta of my life', %s) RETURNING id",
+                        (creator_id, Jsonb(b))).fetchone()["id"]

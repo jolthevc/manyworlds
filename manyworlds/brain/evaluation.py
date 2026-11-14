@@ -88,3 +88,12 @@ def checked(item_id, rate: float) -> bool:
     if rate >= 1:
         return True
     return int(hashlib.sha256(str(item_id).encode()).hexdigest()[:8], 16) / 2**32 < rate
+
+
+def latest(conn, *, idea_id=None, asset_id=None, model: str | None = None) -> dict | None:
+    """The most recent evaluation of an idea or asset (optionally by one evaluator model)."""
+    return conn.execute(
+        """SELECT * FROM evaluations
+           WHERE (%(idea)s::uuid IS NULL OR idea_id = %(idea)s) AND (%(asset)s::uuid IS NULL OR asset_id = %(asset)s)
+             AND (%(model)s::text IS NULL OR evaluator_model = %(model)s)
+           ORDER BY created_at DESC LIMIT 1""", {"idea": idea_id, "asset": asset_id, "model": model}).fetchone()
