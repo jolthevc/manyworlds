@@ -251,8 +251,17 @@ def _produce(args, conn, pol, llm) -> int:
 
     while True:
         from .worker import models
+        if pol.get("brain", "showrunner", "enabled", default=False):
+            # The showrunner plans (brain worker); here: ask for batches, and schedule evaluated ones.
+            from datetime import datetime, timezone
+
+            from .brain import ideas, showrunner_loop
+            scheduled = ideas.schedule_ready(conn, pol, now=datetime.now(timezone.utc))
+            planned = showrunner_loop.ensure_batches(conn, pol) + ([scheduled] if scheduled["batches"] else [])
+        else:
+            planned = planner.ensure_plans(conn, pol, llm)
         result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
-                  "planned": planner.ensure_plans(conn, pol, llm), **production.advance(conn, pol)}
+                  "planned": planned, **production.advance(conn, pol)}
         if any(result.values()) or not args.loop:
             _print(result)
         if not args.loop:
