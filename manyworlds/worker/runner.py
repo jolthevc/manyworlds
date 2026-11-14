@@ -291,7 +291,8 @@ class Worker:
                 self.consecutive_faults += 1
                 log.error("machine fault on job %s (%d in a row): %s", job.id, self.consecutive_faults, e)
                 queue.release(self.conn, job.id, self.worker_id, error,
-                              max_faults=int(self.policy.get("queue", "job_max_worker_faults", default=6)))
+                              max_faults=int(self.policy.get("queue", "job_max_worker_faults", default=6)),
+                              machine=self.group)
             else:
                 log.warning("job %s failed: %s", job.id, e)
                 queue.fail(self.conn, job.id, self.worker_id, error, retryable=True)

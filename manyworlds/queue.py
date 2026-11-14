@@ -124,21 +124,32 @@ def fail(conn, job_id, worker_id: str, error: str, *, retryable: bool = True) ->
     return row["status"] if row else None
 
 
-def release(conn, job_id, worker_id: str, error: str, *, max_faults: int = 6) -> str | None:
+def release(conn, job_id, worker_id: str, error: str, *, max_faults: int = 6,
+            machine: str | None = None) -> str | None:
     """Give a job back without charging it an attempt: the *worker* failed (GPU out of
-    memory, broken CUDA context), not the job. A job that has faulted `max_faults` times
-    across machines is probably the cause itself, so it fails instead of bouncing forever.
+    memory, broken CUDA context), not the job. A job that has faulted `max_faults` different
+    machines is probably the cause itself, so it fails instead of bouncing forever.
+
+    `machine` is the GPU group (else the worker id). Repeat faults on one machine don't count:
+    on 2026-11-14 a RunPod host with a broken driver restarted its container and faulted the
+    same job six times in 12 seconds, failing a job that never got a healthy GPU.
     Returns the job's new status."""
     row = conn.execute(
         """
-        UPDATE jobs SET worker_faults = worker_faults + 1,
-                        status = CASE WHEN worker_faults + 1 >= %(max)s THEN 'failed' ELSE 'queued' END,
+        WITH seen AS (
+            SELECT EXISTS (SELECT 1 FROM attempts WHERE job_id = %(id)s AND outcome = 'worker_fault'
+                           AND coalesce(gpu_group, worker_id) = %(machine)s) AS again)
+        UPDATE jobs SET worker_faults = worker_faults + CASE WHEN seen.again THEN 0 ELSE 1 END,
+                        status = CASE WHEN worker_faults + CASE WHEN seen.again THEN 0 ELSE 1 END >= %(max)s
+                                      THEN 'failed' ELSE 'queued' END,
                         attempts = greatest(attempts - 1, 0), worker_id = NULL,
                         lease_until = NULL, error = %(error)s, updated_at = now()
+        FROM seen
         WHERE id = %(id)s AND worker_id = %(worker)s AND status = 'running'
         RETURNING status
         """,
-        {"max": max_faults, "error": error[:4000], "id": job_id, "worker": worker_id},
+        {"max": max_faults, "error": error[:4000], "id": job_id, "worker": worker_id,
+         "machine": machine or worker_id},
     ).fetchone()
     return row["status"] if row else None
 

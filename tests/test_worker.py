@@ -101,17 +101,43 @@ def test_a_success_resets_the_fault_count(conn, database_url, store, policy):
     assert worker.consecutive_faults == 0
 
 
+def _faulty_machine(database_url, store, policy, conn, name):
+    from datetime import datetime, timedelta, timezone
+    conn.execute("""INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd)
+                    VALUES (%s, 'runpod', 'runpod_comm_3090', 0.22, '{fake.image}', %s, 1) ON CONFLICT DO NOTHING""",
+                 (name, datetime.now(timezone.utc) + timedelta(hours=2)))
+    return Worker(handlers=handlers_for(["fake.image"]), store=store, policy=policy, pool="local",
+                  database_url=database_url, group=name, self_destroy=lambda: "test")
+
+
 def test_job_that_faults_every_machine_eventually_fails(conn, database_url, store, policy):
+    from manyworlds.worker.runner import WorkerUnhealthy
+
     job = queue.enqueue(conn, "fake.image", {"fail": "gpu"})
+    limit = int(policy.get("queue", "job_max_worker_faults"))
+    for i in range(limit):  # a different machine each time
+        try:  # the last one fails the job after one fault, then idles out
+            _faulty_machine(database_url, store, policy, conn, f"mw-image-3090-runpod-{i:04d}").run(
+                poll_seconds=0.01, idle_exit_seconds=0.3)
+        except WorkerUnhealthy:
+            pass
+    row = conn.execute("SELECT status, worker_faults, attempts FROM jobs WHERE id = %s", (job,)).fetchone()
+    assert row["status"] == "failed" and row["worker_faults"] == limit and row["attempts"] == 0
+
+
+def test_one_broken_machine_restarting_does_not_fail_the_job(conn, database_url, store, policy):
+    # 2026-11-14: a RunPod host with a broken driver restarted its container and faulted one
+    # story clip six times in 12 seconds; the job failed without ever reaching a healthy GPU.
     import pytest
 
     from manyworlds.worker.runner import WorkerUnhealthy
 
-    for _ in range(2):  # two fresh workers, three faults each = six machine faults
+    job = queue.enqueue(conn, "fake.image", {"fail": "gpu"})
+    for _ in range(3):  # the same machine, its worker restarted three times: nine faults
         with pytest.raises(WorkerUnhealthy):
-            make_worker(database_url, store, policy).run(poll_seconds=0.01)
-    row = conn.execute("SELECT status, worker_faults, attempts FROM jobs WHERE id = %s", (job,)).fetchone()
-    assert row["status"] == "failed" and row["worker_faults"] == 6 and row["attempts"] == 0
+            _faulty_machine(database_url, store, policy, conn, "mw-image-3090-runpod-bad0").run(poll_seconds=0.01)
+    row = conn.execute("SELECT status, worker_faults FROM jobs WHERE id = %s", (job,)).fetchone()
+    assert row["status"] == "queued" and row["worker_faults"] == 1
 
 
 def test_router_prefers_cheapest_per_accepted_output():
