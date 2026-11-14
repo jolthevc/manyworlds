@@ -295,6 +295,10 @@ def main(argv=None) -> int:
     p.add_argument("--no-launch", action="store_true", help="enforce limits only; start nothing")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
+    # docker stop sends SIGTERM; exiting normally runs the tick's finally, which releases the
+    # tick lease, so a restart doesn't leave the next autoscaler waiting out tick_lease_seconds.
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     conn = db.connect()
     db.migrate(conn)
     while True:
