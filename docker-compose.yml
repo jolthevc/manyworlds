@@ -68,5 +68,13 @@ services:
     command: ["autoscale"]
     restart: unless-stopped
 
+  # Review gates: scores new creator images as they arrive (Claude vision; no GPU).
+  reviewer:
+    build: .
+    profiles: [live]
+    env_file: .env
+    command: ["review", "--loop"]
+    restart: unless-stopped
+
 volumes:
   pgdata:

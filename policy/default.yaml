@@ -111,6 +111,23 @@ autoscale:
     pause_after_failed_machines: 3   # this many machines in a row with no output pauses the pool...
     pause_hours: 24                  # ...for this long, then it gets a new trial
 
+# Review gates for generated images (manyworlds.review.gates). Scores are 0-10.
+review:
+  image:
+    # Two stages: every image is screened by `role`; only screen passes go to `confirm_role`.
+    # On Maren's LoRA test (2026-11-14) Haiku 5.5 and Opus 5.5 rejected the same 12 of 12;
+    # Opus cost $0.012 per image (17x the image itself), Haiku $0.0003.
+    role: review
+    effort: low
+    confirm_role: judge
+    confirm_effort: low
+    min_identity: 7
+    min_realism: 6
+    reference_images: 3        # creator reference photos shown with every review
+    max_jobs_per_run: 50
+    loop_seconds: 120          # how often the reviewer looks for new images
+  max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
+
 generation:
   candidates_per_post: {photo: 15, story_clip: 3, talking_head: 2, narrated_edit: 1}
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
@@ -148,6 +165,8 @@ llm:
     research: claude-opus-5-5
     creator: claude-opus-5-5
     judge: claude-opus-5-5
+    review: claude-haiku-5-5     # first-pass image screen (manyworlds.review); every image
+  server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
     claude-sonnet-5-5: [2.00, 10.00, 0.10, 2.50]
@@ -160,11 +179,6 @@ queue:
   job_max_worker_faults: 6           # a job that faults this many machines fails (it's the cause)
   connect_timeout_seconds: 20        # a rented host that can't reach the database fails fast
   startup_connect_attempts: 3        # then the worker destroys its own machine (Vast/RunPod)
-
-review:
-  identity_min: 0.60           # placeholder until calibrated on hand labels
-  identity_review_band: [0.45, 0.60]
-  max_repairs_per_post: 4
 
 autonomy:
   publish: human_approval      # human_approval | sampled | autonomous

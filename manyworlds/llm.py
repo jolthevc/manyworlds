@@ -76,6 +76,10 @@ class Claude:
     def structured(self, role: str, *, system: str, content: Any, schema: type[T],
                    effort: str = "high", creator_id=None) -> T:
         model = self.model_for(role)
+        # Server-side refusal fallback exists only for some models (not Haiku); policy lists them.
+        fallback = {}
+        if model in (self.policy.get("llm", "server_fallback_models", default=[]) or []):
+            fallback = {"extra_headers": {"anthropic-beta": FALLBACK_BETA}, "extra_body": {"fallbacks": "default"}}
         response = self.client.messages.parse(
             model=model,
             max_tokens=16000,
@@ -83,8 +87,7 @@ class Claude:
             messages=[{"role": "user", "content": content}],
             output_format=schema,
             output_config={"effort": effort},
-            extra_headers={"anthropic-beta": FALLBACK_BETA},
-            extra_body={"fallbacks": "default"},
+            **fallback,
         )
         self._charge(response.model, response.usage, creator_id)
         if response.stop_reason == "refusal":

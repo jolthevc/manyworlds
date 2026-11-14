@@ -54,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="job counts and spend")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
+    rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
+    rv.add_argument("--batch")
+    rv.add_argument("--loop", action="store_true")
+    rv.add_argument("--role", help="LLM role to judge with, for comparing models (with --dry-run)")
+    rv.add_argument("--dry-run", action="store_true", help="print verdicts, write no reviews")
     sc = sub.add_parser("autoscale", help="start/stop GPU machines to follow the queue (loops; --once for one tick)")
     sc.add_argument("--once", action="store_true")
     sc.add_argument("--no-launch", action="store_true")
@@ -103,9 +108,38 @@ def main(argv: list[str] | None = None) -> int:
                 "cost_per_output": ledger.cost_per_output(conn)})
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
-    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator"):
+    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review"):
         return _brain(args, conn, pol)
     return 0
+
+
+def _review(args, conn, pol, llm) -> int:
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from .review import gates
+
+    store = storage.from_url()
+    while True:
+        with tempfile.TemporaryDirectory() as tmp:
+            if args.dry_run:
+                out = []
+                for job in gates.pending_jobs(conn, pol, batch=args.batch):
+                    d = Path(tmp) / str(job)
+                    d.mkdir()
+                    out += gates.review_job(conn, pol, llm, store, job, d, role=args.role, write=False)
+                _print({"reviews": out, "accepted": sum(r["accepted"] for r in out), "of": len(out),
+                        "model": llm.model_for(args.role or pol.get("review", "image", "role")),
+                        "llm_usd": llm.spent})
+            else:
+                result = gates.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch)
+                if result["accepted"] or result["rejected"] or result["errors"] or not args.loop:
+                    _print({**result, "llm_usd": llm.spent})
+        if not args.loop:
+            return 0
+        time.sleep(float(pol.get("review", "image", "loop_seconds", default=120)))
+        pol = policy_mod.load()
 
 
 def _creator_id(conn, ref: str):
@@ -130,6 +164,8 @@ def _brain(args, conn, pol) -> int:
                                            "GROUP BY kind, status", (cid,)).fetchall()})
         return 0
     llm = Claude(conn, pol)
+    if args.cmd == "review":
+        return _review(args, conn, pol, llm)
     if args.cmd == "discover":
         result = disc.discover(conn, pol, llm, ApifySource(conn, pol))
         _print({**result, "llm_usd": llm.spent})
