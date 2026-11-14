@@ -188,3 +188,13 @@ def test_a_job_that_lost_its_last_attempt_is_reaped_and_repaired(conn, policy, s
     out = production.advance(conn, policy, now=NOW)
     assert out["reaped"] == 1
     assert conn.execute("SELECT count(*) n FROM jobs WHERE post_id = %s AND status = 'queued'", (pid,)).fetchone()["n"] == 1
+
+
+def test_story_images_are_vertical(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    planner.plan_period(conn, policy, PlanStub([post(0, "story", ["the view from the bakery roof"])]), cid, start=START)
+    production.advance(conn, policy, now=NOW)
+    p = conn.execute("SELECT payload FROM jobs WHERE kind = 'image.zimage'").fetchone()["payload"]
+    size = policy.get("generation", "image_by_format", "story")
+    assert (p["width"], p["height"]) == (size["width"], size["height"]) and p["height"] > p["width"]
