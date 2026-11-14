@@ -50,6 +50,41 @@ to show why), then a second, distinct creator launched by the Brain with no besp
    responsibilities, durable shared memory, dynamic orchestration, recorded decisions; modular and
    configurable throughout. No agent framework for its own sake; agent count is not a goal.
 
+Added by the owner on approval (2026-11-14, second round):
+
+9. **Market intelligence.** Scouts research whole markets (fitness, lifestyle, beauty, fashion,
+   sports, gaming, home, entertainment, emerging ones), not only our creators: audience size, growth,
+   demographics and attentiveness; successful and emerging archetypes; resonant formats, aesthetics
+   and personalities; competition, saturation and underserved segments; sustained-growth potential;
+   monetization potential (informs long-term attractiveness only; early optimisation stays growth);
+   feasibility and economics of convincing AI-native content. Both original invention and
+   pattern extraction into differentiated fictional personalities.
+10. **Lifecycle vs potential.** Creators move through conceptual stages (exploring, iterating,
+    growing, breaking out, established, paused, retired; not a fixed implementation). Stage
+    (observed results) is separate from **conviction** (evidence-based belief in future upside, with
+    uncertainty). Continue/stop decisions maximise expected value: growth potential + information
+    gained − incremental cost.
+11. **Market clusters.** The Brain can decide a whole category deserves concentrated investment and
+    grow a cluster ("node") of differentiated creators in it (from a few to many; no fixed numbers),
+    with shared node intelligence, reuse of learnings, and awareness of overconcentration,
+    repetition, audience overlap and correlated experiments. Deliberate expansion, never
+    near-identical accounts; no artificial cross-account engagement.
+12. **Master budget, allocated by the Brain.** One configurable operating budget; the Brain allocates
+    across markets/clusters, creators, formats and experiments, models and quality tiers, and
+    research vs new creators vs optimisation. It may fund high-conviction unproven bets, balances
+    exploration, exploitation and diversification, keeps a reserve, and paces spend. Objective: best
+    expected portfolio outcome per incremental dollar, counting growth and information. Authority
+    and safeguards in versioned policy; reallocation within authority is autonomous and reasoned;
+    beyond it needs approval.
+13. **Three levels of intelligence** (post, creator, market) that inform each other, with findings
+    graded proven / tentative / speculative, every allocation traceable to research, experiments,
+    data and stated uncertainty.
+14. **Event-driven, not only scheduled.** Daily and weekly cycles are defaults; the Brain also reacts
+    to trends, breakout posts, research discoveries, QA problems, sudden performance changes and new
+    market opportunities. Agents can commission work, challenge assumptions and request research.
+15. **Video choice is the Brain's.** It picks production approaches per creator and format; the
+    automated video gate decides what ships.
+
 ### Non-goals (for this design)
 
 - Monetization, products, sponsorship matching (later).
@@ -154,6 +189,15 @@ existing production/workers.
 - Hard caps from policy: LLM spend per agent per day, jobs per cycle, repair attempts, research
   items, and the existing GPU caps. Anything over a cap stops and is recorded, never retried blindly.
 - Recovery: every agent job is idempotent (keyed by creator, cycle and step); a crashed run reruns.
+- **Events, not only schedules.** Detectors (code) watch durable state and raise `events`: a post
+  outperforming its baseline by a policy multiple, a sudden drop, a QA failure pattern, a new
+  research finding, a trend surfaced by scouts, budget pacing off-track. The orchestrator routes
+  each event to the agent that owns it (e.g. breakout → analyst + showrunner for a follow-up;
+  drop → analyst diagnosis; market finding → strategist), with per-event-type rate limits so an
+  event storm can't trigger runaway work. Daily/weekly cycles remain as the floor.
+- **Challenge and commission.** Any agent may enqueue a bounded request to another (research
+  question, diagnosis, revision, experiment proposal) with a reason; the receiving agent may
+  decline with a reason. Requests count against the requester's budget.
 
 ### 4.4 Creative scoring framework
 
@@ -250,30 +294,98 @@ experiments or untried directions; the rest exploit what is known. Allocation ac
 uses Thompson sampling over current findings, so uncertain-but-promising directions keep getting
 tried.
 
-**Creator-level intelligence:** each creator is described by attributes (archetype, aesthetic,
-personality traits, age band, setting, format mix, posting cadence, quality tier). Growth curves are
-compared against a portfolio baseline curve for account age. With more creators this becomes the
-dataset for "which identities grow", feeding the strategist and scouts.
+**Three levels, one findings store.** Every finding has a scope (post-level within a creator,
+creator-level, cluster, market, portfolio), an evidence grade (**proven**: replicated experimental
+result at policy confidence; **tentative**: consistent observational pattern with a confidence
+interval; **speculative**: hypothesis from research or a single observation) and links to its
+sources. Levels feed each other explicitly: a strong post-level finding in one fitness creator
+becomes a tentative cluster hypothesis queued for testing in siblings; several creators doing well
+in a market raise market conviction; repeated failures open a diagnosis finding.
 
-### 4.6 Strategist: phases and allocation
+**Creator-level intelligence:** each creator is described by attributes (market, archetype,
+aesthetic, personality traits, age band, setting, format mix, posting cadence, quality tier).
+Growth curves are compared against a portfolio baseline curve for account age. With more creators
+this becomes the dataset for "which identities grow", feeding the strategist, creator lab and scouts.
 
-Each creator has a phase in `creator_states`, all thresholds in policy:
+**Market-level intelligence:** market conviction combines scout research with our own creators'
+outcomes in that market (4.12), and its forecasts are scored against what then happens.
 
-| Phase | Enters when | Behaviour |
-|---|---|---|
-| exploring | launched | broad variety of content and formats; minimum `explore_posts` and `explore_days` before any judgement |
-| adjusting | exploration done and growth below target band | analyst diagnosis: concept vs execution vs distribution; strategist picks an adjustment (formats, aesthetic, personality emphasis, quality tier, cadence); up to `max_adjustment_cycles`, each with its own evidence window |
-| growing | growth in or above target band | more volume, richer formats, better models (quality tier up) as expected value justifies |
-| paused | budget or policy | no production; memory kept |
-| retired | all adjustment cycles spent **and** diagnosis says the concept, not execution, is the problem **and** expected value of more learning < cost of continuing | learnings recorded; account kept or archived per policy |
+### 4.6 Strategist: lifecycle, conviction and continue/stop
 
-Growth target bands are relative to the portfolio baseline for account age, not absolute numbers.
-Value of information: the strategist estimates how much the next window would change a decision
-(uncertainty of the creator's growth estimate) against its cost from the ledger.
+**Stage** (observed results) and **conviction** (belief in future upside) are tracked separately.
 
-Launches: the strategist decides when to launch a new creator (portfolio capacity, budget, research
-pipeline, which identity attributes are under-explored) and asks the scouts/creator lab for a
-creator designed to test that. Creator design follows principle 4 (appealing, distinctive, varied).
+Stages are labels the strategist assigns with a recorded reason; the default set (policy, not
+code) is exploring, iterating, growing, breaking_out, established, paused, retired. Each stage
+maps in policy to default behaviour (variety vs focus, cadence range, quality-tier range, minimum
+evidence window before the next judgement). The strategist may move a creator between any stages;
+policy sets minimum windows (posts, days, real reach) before a downward move and which moves need
+approval.
+
+**Conviction** is a distribution, not a score: the estimated long-run audience outcome for the
+creator (e.g. followers at a policy horizon, relative to the portfolio's age-matched baseline) with
+a credible interval. It combines, with weights the analyst re-estimates as outcomes arrive:
+
+- market attractiveness (the creator's market and cluster, 4.12),
+- creator appeal (pre-publication creator-level evaluation: visual appeal, personality, distinctiveness),
+- creative differentiation vs the market and vs our own creators,
+- early performance signals that have been shown to predict growth (learned, 4.5),
+- unexplored options remaining (formats, aesthetics, personality emphases not yet tried).
+
+A creator can therefore be "exploring, weak results, high conviction" or "growing, strong results,
+low conviction" and be managed accordingly.
+
+**Continue/stop is an expected-value decision.** For each creator and the next evidence window:
+expected growth value + value of information (how much the window could change the allocation,
+from the width of the conviction interval) − incremental cost (ledger-based forecast). Retirement
+additionally requires: minimum windows met, the policy number of strategy adjustments tried, and a
+diagnosis attributing weakness to the concept rather than execution or distribution. Every decision
+records the inputs, the numbers and the reasoning.
+
+Launches: the strategist decides when to launch a creator and what it should test (an
+under-explored identity attribute, a market thesis, a cluster gap), and asks the scouts/creator
+lab for a creator designed for that. Creator design follows principle 4 (appealing, distinctive,
+varied).
+
+### 4.12 Market intelligence and clusters
+
+- **Markets** are first-class records: a category or sub-niche with a research dossier (the
+  factors in principle 9), a **market conviction** distribution (attractiveness for sustained
+  audience growth, with monetization potential as a separate long-term attribute, not in the
+  growth objective), and evidence links. Scouts refresh them on schedule and on demand; findings
+  from our own creators in that market update market conviction (several winners raise it,
+  repeated failures prompt a diagnosis: strategy, production quality, or the thesis itself).
+- **Clusters (nodes)** group our creators in a market. Each keeps shared intelligence: audience,
+  formats, successful personalities, content styles, production strategies; showrunners and the
+  creator lab read their cluster's findings, so learnings transfer while identities stay distinct.
+- **Differentiation is measured, not hoped for:** each new creator in a cluster is checked against
+  its siblings (identity, aesthetic, voice, content themes) with a policy similarity ceiling; feed
+  QA also checks cross-creator repetition. Concentration risk (share of budget and audience in one
+  cluster, correlated outcomes, audience overlap) is reported and bounded by policy.
+- **Platform integrity:** clusters are separate, disclosed accounts with distinct identities;
+  no coordinated engagement, no cross-promotion by automation, account creation paced per policy.
+  Meta treats coordinated networks of accounts as inauthentic behaviour, so cluster growth is
+  rate-limited and every account must stand on its own.
+
+### 4.13 Capital allocation
+
+- One **master operating budget** (policy: amount per period, pacing curve, reserve share). The
+  ledger already records every dollar; allocation turns it into budgets per bucket per period.
+- **Hierarchical allocation**, re-run each portfolio cycle and on events: budget across
+  research / new creators / existing creators / reserve → across markets and clusters → across
+  creators → within a creator, across formats, experiments and quality tiers (the showrunner and
+  production routing spend inside their creator's envelope).
+- **Method:** each candidate use of money (continue creator X at tier T, launch in market M,
+  expand cluster C, research question Q) is an option with expected growth value, information
+  value and cost. The strategist proposes allocations; deterministic code checks them against
+  policy (authority limits, diversification bounds, minimum exploration share, reserve, pacing)
+  and applies only what passes. A share is always held for exploration (new markets, high-conviction
+  unproven creators), so winners never absorb everything.
+- **Authority:** policy `allocation.authority` sets what the Brain may change alone (e.g. moves
+  within a period's budget, tier changes up to a ceiling, launches up to a count per period) and
+  what queues for approval (budget increases, new markets beyond N, anything over `limits`).
+  Approvals are a pending state the owner clears with `mw` or a private page.
+- **Spend enforcement** stays in code: the autoscaler, per-day GPU caps and LLM budgets read the
+  current allocation, so no agent can overspend its envelope.
 
 ### 4.7 QA, repair and feed review
 
@@ -334,6 +446,12 @@ Production stays as built (Step-based `production.py`, workers, review). Changes
 | `metric_snapshots` (exists) | real metrics only, with post age at capture |
 | `simulated_metrics` | synthetic metrics, model and version |
 | `accounts` | per creator per platform: handle, account id, token reference (name of the `.env` key, never the token), status |
+| `markets` | category / sub-niche, dossier, market conviction (mean, interval), monetization notes, evidence links |
+| `clusters` | market, strategy, shared-intelligence summary, member creators, concentration metrics |
+| `convictions` | time series of creator / market conviction distributions with their inputs |
+| `budgets` | master budget periods, allocations per bucket, pacing, reserve; actual spend joined from the ledger |
+| `approvals` | anything beyond authority: what, why, amount, status, decided_by |
+| `events` | detector output: type, subject, payload, routed_to, handled_at |
 
 `posts` remains the unit of publication; an idea produces a post.
 
@@ -356,10 +474,18 @@ pool scoring). Cost per accepted output and cost per real follower gained are re
 5. **Learning:** analyst (normalisation, lift with intervals, findings), experiments, exploration
    share; showrunner consumes findings; a demonstrable "next batch changed because of X" trace.
 6. **QA and repair:** diagnosis-driven repair, caption/originality checks, feed QA, Stories.
-7. **Strategist:** phases, allocation, value of information, launches; portfolio cycle.
-8. **Second creator** launched by the strategist from research, with no bespoke code.
-9. **Video:** talking video and model benchmarks through the video gate (can start in parallel
-   once 1–2 are done, on the existing GPU infrastructure).
+7. **Strategist v1:** stages, creator conviction, continue/stop by expected value, launches;
+   portfolio cycle; events and commissioning.
+8. **Second creator** proposed and launched by the strategist from research, with no bespoke code.
+9. **Portfolio intelligence layer:** markets and market conviction (scouts' market research),
+   clusters with shared intelligence and differentiation checks, master budget with hierarchical
+   allocation, authority and approvals, pacing and reserve.
+10. **Video:** talking video and model benchmarks through the video gate (can start in parallel
+    once 1–2 are done, on the existing GPU infrastructure).
+
+Phase A (steps 1–6, with 3 in parallel) is the Maren loop; Phase B (7–8) the second creator;
+Phase C (9) the portfolio layer. Data structures for markets, clusters and budgets are created in
+step 1 so Phase A writes into them from the start (Maren belongs to a market and a cluster of one).
 
 Each step ships with tests (stubs for Claude/Instagram, as today), policy entries, and a demo
 trace.
@@ -368,8 +494,19 @@ trace.
 
 - Create the Instagram professional account for Maren and a Meta developer app; add the tokens to
   `.env` (I build everything after that).
-- Decide the initial `autonomy.publish` setting for real posts: autonomous from the first post, or
-  human approval for the first N posts, then autonomous.
+- Set the master operating budget and the Brain's allocation authority in policy (defaults below).
+- Decide the initial `autonomy.publish` setting for real posts (default below).
+
+Proposed defaults (builder's call, owner may change in policy at any time):
+
+- Master budget: $750 per month (today's $25/day overall cap), paced evenly with a 15% reserve;
+  `limits.daily_usd_max` stays the hard ceiling. The Brain reallocates freely inside the month's
+  budget; raising the budget or exceeding `limits` needs approval.
+- Publishing: autonomous from the first real post, with a kill switch (`autonomy.publish:
+  paused`) and a daily digest of what went out; Stories and 24 h containers make slow approval
+  costly.
+- Video: the automated video gate decides; the digest includes each new video format or model's
+  first outputs so the owner can object.
 
 ## 6a. Builder's calls (made while writing; open to correction)
 
