@@ -308,7 +308,7 @@ Growth curves are compared against a portfolio baseline curve for account age. W
 this becomes the dataset for "which identities grow", feeding the strategist, creator lab and scouts.
 
 **Market-level intelligence:** market conviction combines scout research with our own creators'
-outcomes in that market (4.12), and its forecasts are scored against what then happens.
+outcomes in that market (4.6a), and its forecasts are scored against what then happens.
 
 ### 4.6 Strategist: lifecycle, conviction and continue/stop
 
@@ -325,7 +325,7 @@ approval.
 creator (e.g. followers at a policy horizon, relative to the portfolio's age-matched baseline) with
 a credible interval. It combines, with weights the analyst re-estimates as outcomes arrive:
 
-- market attractiveness (the creator's market and cluster, 4.12),
+- market attractiveness (the creator's market and cluster, 4.6a),
 - creator appeal (pre-publication creator-level evaluation: visual appeal, personality, distinctiveness),
 - creative differentiation vs the market and vs our own creators,
 - early performance signals that have been shown to predict growth (learned, 4.5),
@@ -346,7 +346,7 @@ under-explored identity attribute, a market thesis, a cluster gap), and asks the
 lab for a creator designed for that. Creator design follows principle 4 (appealing, distinctive,
 varied).
 
-### 4.12 Market intelligence and clusters
+### 4.6a Market intelligence and clusters
 
 - **Markets** are first-class records: a category or sub-niche with a research dossier (the
   factors in principle 9), a **market conviction** distribution (attractiveness for sustained
@@ -366,7 +366,7 @@ varied).
   Meta treats coordinated networks of accounts as inauthentic behaviour, so cluster growth is
   rate-limited and every account must stand on its own.
 
-### 4.13 Capital allocation
+### 4.6b Capital allocation
 
 - One **master operating budget** (policy: amount per period, pacing curve, reserve share). The
   ledger already records every dollar; allocation turns it into budgets per bucket per period.
