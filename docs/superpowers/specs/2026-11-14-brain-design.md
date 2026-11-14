@@ -1,0 +1,398 @@
+# The Brain: design
+
+Status: draft for approval, 2026-11-14. Builds on the existing factory (queue, workers, ledger,
+storage, policy, production, review gates). Source brief: "Manyworlds / The Brain" one-pager plus
+the owner's clarifications of 2026-11-14 (summarised in Intent and Principles below).
+
+## 1. Intent
+
+Manyworlds should be an autonomous, research-driven media intelligence system, not a content
+factory. It runs a portfolio of openly AI-generated, fictional Instagram creators; continuously
+discovers which personalities, aesthetics and posts audiences respond to; produces a lot of
+good content very cheaply; learns from every post; and compounds that knowledge across a growing
+portfolio. Routine operation needs no human content production or management.
+
+**What success looks like first:** one complete, evidence-driven cycle for Maren (research →
+ideation → standardized creative scoring → production → independent QA and repair → Instagram
+publishing or clearly labelled simulated publishing → performance ingestion → analysis → updated
+hypotheses → a next batch that is measurably different because of what was learned, with the trace
+to show why), then a second, distinct creator launched by the Brain with no bespoke code.
+
+### Owner's principles (decided)
+
+1. **Objective: virality and audience growth.** Optimise for reach, breakout potential, follower
+   growth and turning attention into sustained growth. Shares, saves, engagement and follower
+   conversion are supporting signals; the Brain learns which predict sustained growth. Revenue,
+   products and sponsorships are out of scope for now.
+2. **Patience with creators.** Meaningful exploration windows, enough volume, several strategy
+   adjustments before a creator is judged. Distinguish an unpromising creator from a promising one
+   with weak execution or distribution. Cheap production is what makes long experiments affordable.
+   Windows, evidence floors, improvement cycles and retirement criteria are policy, and the
+   strategist weighs the value of learning against the cost of continuing.
+3. **Natural feeds, no forced purpose.** Creators post what such a person would post (dinners,
+   outfits, beach weekends, games, mirror selfies, opinions, small observations). Posts are not
+   assigned a strategic category. Everything is still scored on standard characteristics, to learn,
+   not to restrict.
+4. **Appealing creators and feeds.** Photogenic, charismatic, stylish, distinctive people of varied
+   ages, backgrounds and styles, not one beauty standard or generic model look. Attractive settings,
+   good outfits, believable photography, strong taste.
+5. **Video must be genuinely good.** Photos and cheap lifestyle content first, but video is built
+   early and is not gated on traction. Formats are chosen per creator (talking video, narrated
+   edits, lifestyle clips, …). No standard video style. If cheap video isn't convincing, improve the
+   method or spend more selectively; never ship visibly inferior video.
+6. **Disclosure: clear, unobtrusive.** Account-level disclosure (bio) and Instagram's AI label on
+   every post (`is_ai_generated` on the media container). Captions stay in the creator's natural
+   voice and don't announce AI. Fictional lifestyle content must not fabricate real endorsements or
+   misleading claims.
+7. **Two kinds of intelligence:** post-level (what content works) and creator-level (which
+   identities, aesthetics, personality traits and format mixes grow audiences).
+8. **Architecture:** existing Postgres and queue as the foundation, specialized agents with distinct
+   responsibilities, durable shared memory, dynamic orchestration, recorded decisions; modular and
+   configurable throughout. No agent framework for its own sake; agent count is not a goal.
+
+### Non-goals (for this design)
+
+- Monetization, products, sponsorship matching (later).
+- Platforms other than Instagram (adapters later; nothing Instagram-specific leaks into agents).
+- Comment replies and DMs (policy `autonomy.comment_replies` stays disabled; a later design).
+- A web console. Operator visibility is through `mw` commands and decision traces for now.
+
+### Anti-goals (failure even if it technically works)
+
+- A plot factory or engagement-bait formula: every post optimised into hooks.
+- Learning that is really an LLM vaguely "told to improve", with no traceable evidence.
+- Simulated audience numbers ever treated, displayed or used as evidence of real demand.
+- Killing creators on early noise; or the opposite, funding a dead experiment forever.
+- Endless blind regeneration; runaway spend or loops.
+- Visibly AI-looking video shipped because "video is supported".
+- Copying a real person's identity, face, voice or posts; coordinated behaviour between our accounts.
+
+## 2. Constraints
+
+Existing rules in CLAUDE.md stand: no magic numbers (policy), everything that costs money in the
+ledger, decisions recorded with policy version, adapters for every vendor, adults only
+(`creator_min_age`), original people, `scope.excluded_topics`, research privacy, no cross-account
+engagement, secrets only in `.env`.
+
+Platform facts (checked 2026-11-14; re-verify at build time):
+
+- Instagram Content Publishing API (Instagram API with Instagram Login) publishes photos,
+  carousels, Reels and Stories for professional accounts. Two steps: create container, publish.
+  Containers expire after 24 h. `is_ai_generated=true` on the container applies the AI info label
+  (carousel: on the parent only). Media must be at a public URL (R2 presigned URLs).
+- The per-account publishing cap is documented inconsistently (25/50/100 per 24 h); read it at
+  runtime from `content_publishing_limit`, never hardcode it.
+- Media insights via `/{media-id}/insights`; saves, shares, total views also on the media object.
+  **Story insights expire after 24 h**: they must be polled on a schedule inside that window.
+  Webhooks would need a public HTTPS endpoint, which the laptop host doesn't have; polling is used.
+- Accounts, the Meta developer app and accepting Meta's terms are the owner's steps; tokens go in
+  `.env`. Long-lived tokens are refreshed automatically before expiry.
+
+Real-world content: real places are fine (Venice, a beach, a stadium); real trademarks, logos and
+team marks are not (existing `real brands without rights` rule), so "a college football game" is
+shown without a real school's marks. Nothing implies endorsement by a real brand or person.
+
+## 3. Approaches considered
+
+| Approach | Trade-off | Verdict |
+|---|---|---|
+| **A. Agents as modules on the existing Postgres queue** (chosen) | Reuses durable jobs, retries, leases, idempotency, the ledger and decision log; one system of record. We write the orchestration logic ourselves. | Picked by the owner and builder: no second state store, nothing rebuilt. |
+| B. An agent framework (LangGraph, CrewAI, …) | Ready-made graphs and handoffs, but its own state/checkpoint store duplicates the queue and the decision log; another dependency to keep in step. | Rejected: adds infrastructure for its own sake. |
+| C. Hosted agents (Claude Managed Agents) for every role | Anthropic runs the loop and sandbox; less code. But state lives outside our DB and per-session costs are harder to attribute; overkill for structured calls. | Not for the core. May be used inside one agent (e.g. a scout that browses) behind an adapter. |
+
+## 4. Design
+
+### 4.1 Shape
+
+```
+                 portfolio cycle (daily)                     creator cycle (per creator, per batch)
+   OBSERVE  ─ Scouts ─ Analyst ──┐                 Persona keeper ─ Showrunner ─ Creative evaluator (ideas)
+   HYPOTHESIZE / ALLOCATE ─ Strategist ──────────►  ─ Production (existing) ─ QA & repair (assets + feed)
+                                                   ─ Publisher (Instagram | simulated) ─ Metrics collector
+   LEARN ◄──────────── Analyst/Learner ◄──────────── measurements
+```
+
+Two loops, both on the queue:
+
+- **Portfolio cycle** (daily, policy): scouts refresh research; the analyst updates findings; the
+  strategist reviews every creator's phase and evidence and allocates: launch / continue / adjust /
+  scale / pause / retire, budgets, quality tiers, format mixes, and which experiments to run.
+- **Creator cycle** (per production batch, policy cadence; weekly by default with a mid-week
+  top-up): memory → ideas → idea scoring → production → QA/repair → publish schedule → metrics.
+
+### 4.2 Agents
+
+Each agent is a Python module `manyworlds/brain/agents/<name>.py` with: a typed input (read from
+DB), a typed output (Pydantic), a `run(conn, policy, llm, task)` entry point, its LLM role from
+`policy.llm.roles`, and an LLM budget from policy. Every run writes its outputs to tables and one
+`decisions` row (inputs digest, output, model, policy version, rationale).
+
+| Agent | Responsibility | Writes |
+|---|---|---|
+| **Scouts** | Continuous research on public, logged-out data: fast growers, archetypes, emerging formats, audience interests, unusual growth. Extract transferable patterns (never identities). Commissioned by the strategist with a question, or on schedule. | `research_runs`, `findings` (kind=research) |
+| **Strategist** | Portfolio decisions (4.6): creator phases, launches from theses, budgets/tiers/format mixes, experiment portfolio, value-of-information vs cost. | `creator_states`, `experiments`, `allocations`, decisions |
+| **Persona & memory keeper** | Owns each creator's identity: face/voice anchors (existing), tastes, style signatures, opinions, places, people, running canon, recent history. Updates memory from published posts; resolves contradictions. | `creator_memory`, profile versions (existing) |
+| **Showrunner** | Plans the next batch of ideas as a natural feed: everyday moments, outfits, places, opinions, trends, occasional arcs, Stories. Uses memory, strategist allocation, open experiments and findings. Free creative latitude; no forced purpose. Replaces today's planner. | `ideas` (one per future post/story) |
+| **Creative evaluator** | Independent of the showrunner (different prompt, no access to its reasoning). Scores every idea before production and every finished asset after, on the versioned rubric (4.4). | `evaluations` |
+| **QA & repair** | Existing review gates (identity, realism, safety, scene; clip keyframes) plus caption voice/naturalness, originality, policy, and **feed QA** over the last 9–12 grid posts plus active Stories. Diagnoses failures and picks a targeted repair (4.7). | `reviews` (existing), `evaluations` (execution, feed), repair decisions |
+| **Analyst / learner** | Joins pre-publication attributes to real outcomes; normalises; estimates effects with confidence; proposes and closes experiments; maintains creator-level and portfolio-level findings; recalibrates the rubric by predictive validity. | `findings`, `experiments`, rubric proposals |
+
+Integrations (not agents): **Instagram publisher**, **metrics collector**, **simulated audience**,
+existing production/workers.
+
+### 4.3 Orchestration
+
+- New job kinds `brain.<agent>` (e.g. `brain.showrunner`) run on pool `local` by a **brain worker**
+  service on the control host (`docker compose --profile live`), using the existing runner,
+  leases, retries and idempotency keys. Agents commission each other by enqueueing jobs with
+  `parent_job_id` (e.g. strategist → `brain.scouts` with a question; QA → production with a repair
+  instruction). Dependencies are explicit: a job is enqueued only when its inputs exist.
+- An **orchestrator** module (deterministic code, not an LLM) advances each creator's cycle as a
+  state machine over durable state (like `production.advance` does now), and runs the daily
+  portfolio cycle. LLM judgement lives inside agents at decision points; control flow, limits and
+  retries are code.
+- Hard caps from policy: LLM spend per agent per day, jobs per cycle, repair attempts, research
+  items, and the existing GPU caps. Anything over a cap stops and is recorded, never retried blindly.
+- Recovery: every agent job is idempotent (keyed by creator, cycle and step); a crashed run reruns.
+
+### 4.4 Creative scoring framework
+
+**Rubrics live in versioned files** `policy/rubrics/idea-v1.yaml`, `execution-v1.yaml`,
+`feed-v1.yaml`. Each dimension has a definition, what it is not, and anchors at 1, 3, 5, 7, 9
+written as concrete descriptions plus one or two exemplar posts (described in text; later real
+ones). Starting idea dimensions (refined during build):
+
+| Dimension | Measures |
+|---|---|
+| Relatability | Would the target audience see their own life in it |
+| Entertainment / humour | Fun, wit, charm |
+| Novelty | Fresh angle vs. seen-it-before |
+| Curiosity | Makes you want to look closer, swipe, or read |
+| Emotional pull | Warmth, longing, nostalgia, awe |
+| Shareability | Would someone send it to a friend or repost it |
+| Aspiration / visual promise | A life, place, look or moment people want to see |
+| Personality expression | Says something only this creator would say or do |
+| Audience relevance | Fits what this creator's audience follows them for |
+| Naturalness | Believable as a real person's post; not a formula or a hook |
+
+Execution dimensions (on the finished asset): photographic believability, visual appeal and
+composition, styling and outfit, identity consistency, setting quality, caption voice, technical
+defects. Feed dimensions: grid coherence, variety, repetition, aesthetic consistency, how the
+creator comes across.
+
+**No dimension is a target.** A casual coffee Story scoring 2 on novelty is normal and fine. The
+Brain learns weights from outcomes (4.5); nothing gates on a single dimension except the existing
+safety/identity gates.
+
+**Reproducibility protocol (policy-configured):**
+
+- Each item is scored `samples` times (default 3) by the evaluator model; the median per dimension
+  is stored with the spread. High spread flags an unclear rubric item.
+- A fixed **reference set** of ideas and assets is re-scored whenever a rubric or evaluator model
+  changes; scores are only compared across versions after measuring the shift on this set.
+- The evaluator sees the creator's profile summary but not the showrunner's reasoning.
+- Every evaluation row stores: item (idea or asset), rubric id+version, evaluator model, prompt
+  version, per-dimension scores, spreads, rationale, creator profile version, format, timestamp.
+- All idea evaluations are written before the post is published (enforced: an idea can't be
+  scheduled without one).
+- Cost control: a cheaper model scores at volume; a sample (policy rate) is double-scored by the
+  stronger model to measure agreement.
+
+**Idea vs execution:** ideas are scored from the plan text before anything renders; assets after
+rendering. Analysis keeps both, so "great idea, weak render" is learned as an execution problem.
+
+**Rubric recalibration:** the analyst periodically measures each dimension's predictive validity
+(4.5). It may propose a new rubric version (reweight, redefine, split, drop, add); a proposal is
+recorded with its evidence and adopted under policy limits. Predictive usefulness beats plausibility.
+
+### 4.5 Measurement and learning
+
+**Collection:** the metrics collector polls each published item at policy observation ages (default
+posts: 1 h, 6 h, 24 h, 72 h, 7 d, 28 d; Stories: 1 h, 6 h, 20 h, before expiry) and stores reach,
+views/plays, likes, comments, saves, shares, profile visits and follows where available, plus
+account-level follower counts daily. Real data only in `metric_snapshots`.
+
+**Simulated audience:** a separate module produces synthetic metrics from a panel of
+LLM-simulated audience members, stored only in `simulated_metrics` with its model and version. Used
+for: testing orchestration, data flow and whether the Brain adapts the next cycle. Code-level guard:
+the analyst and strategist read real tables for any finding with `evidence=real`; findings derived
+from simulated data are stored with `evidence=simulated` and the strategist's allocation logic
+refuses them for promotion, retirement and budget. Reports label them "SIMULATED".
+
+**Normalisation:** every outcome is compared to a baseline for that account and format at the
+same post age (rolling median of recent comparable posts), as a log-lift, so a young account's
+small numbers and a mature account's large ones are comparable. Covariates recorded per post:
+account age, follower count at publish, format, publish hour/day, post age, whether trending audio
+or a trend was used.
+
+**Analysis, staged by data volume (thresholds in policy):**
+
+1. Few posts: descriptive only; findings are hypotheses with low confidence.
+2. Enough posts: per-attribute and per-dimension lift with bootstrap confidence intervals, within
+   creator and pooled across creators.
+3. Larger volume: regularised regression / hierarchical model with creator as a grouping factor,
+   so creator-specific and portfolio-wide effects are separated.
+
+**Questions it answers:** which dimensions and attributes predict reach and views (discovery) vs
+follows, saves, shares and return engagement (attachment); which combinations outperform; how this
+differs by format (photo, carousel, Reel, Story) and by creator; which early signals (e.g. shares
+per reach at 6 h) predict sustained follower growth, which tells the strategist what to watch.
+
+**Correlation vs causation:** findings carry confidence and an evidence type
+(observational | experimental | simulated). The analyst turns promising observational findings
+into **experiments**: a hypothesis, two or more arms (e.g. same creator, outfit-led vs place-led
+photos), an outcome metric, a minimum sample from policy, randomised assignment across slots, and a
+stopping rule. Results update confidence; only experimental findings with policy-level confidence
+become "established" in the playbook.
+
+**Exploration:** the showrunner gets a policy exploration share per batch: some ideas test open
+experiments or untried directions; the rest exploit what is known. Allocation across directions
+uses Thompson sampling over current findings, so uncertain-but-promising directions keep getting
+tried.
+
+**Creator-level intelligence:** each creator is described by attributes (archetype, aesthetic,
+personality traits, age band, setting, format mix, posting cadence, quality tier). Growth curves are
+compared against a portfolio baseline curve for account age. With more creators this becomes the
+dataset for "which identities grow", feeding the strategist and scouts.
+
+### 4.6 Strategist: phases and allocation
+
+Each creator has a phase in `creator_states`, all thresholds in policy:
+
+| Phase | Enters when | Behaviour |
+|---|---|---|
+| exploring | launched | broad variety of content and formats; minimum `explore_posts` and `explore_days` before any judgement |
+| adjusting | exploration done and growth below target band | analyst diagnosis: concept vs execution vs distribution; strategist picks an adjustment (formats, aesthetic, personality emphasis, quality tier, cadence); up to `max_adjustment_cycles`, each with its own evidence window |
+| growing | growth in or above target band | more volume, richer formats, better models (quality tier up) as expected value justifies |
+| paused | budget or policy | no production; memory kept |
+| retired | all adjustment cycles spent **and** diagnosis says the concept, not execution, is the problem **and** expected value of more learning < cost of continuing | learnings recorded; account kept or archived per policy |
+
+Growth target bands are relative to the portfolio baseline for account age, not absolute numbers.
+Value of information: the strategist estimates how much the next window would change a decision
+(uncertainty of the creator's growth estimate) against its cost from the ledger.
+
+Launches: the strategist decides when to launch a new creator (portfolio capacity, budget, research
+pipeline, which identity attributes are under-explored) and asks the scouts/creator lab for a
+creator designed to test that. Creator design follows principle 4 (appealing, distinctive, varied).
+
+### 4.7 QA, repair and feed review
+
+- Existing gates stay (image: identity, realism, safety, scene; video: identity, motion, realism,
+  safety, scene). Added: caption voice and naturalness, originality vs the creator's history, and
+  policy (no real-brand implication).
+- **Diagnosis before repair:** a failed item gets a diagnosis (category + evidence) and one targeted
+  action from a policy-ordered list: re-prompt with the specific defect named; new seed; stronger or
+  different model; different format (e.g. a clip that won't animate well becomes a carousel); edit
+  caption; drop. Each item has a repair budget (attempts and dollars); exhausted means drop and
+  record why. No blind regeneration loops.
+- **Feed QA** runs before each publish window over the last 9–12 grid posts plus active Stories,
+  with the next item in place: repetition, aesthetic consistency, variety, continuity with memory.
+  Failures go back to the showrunner as a specific request, not a regeneration.
+
+### 4.8 Production and video
+
+Production stays as built (Step-based `production.py`, workers, review). Changes:
+
+- Ideas, not planner posts, become production orders; format and quality tier come from the idea
+  plus the strategist's allocation.
+- **Stories** as a format (single photo or short clip, 9:16, lighter QA weight).
+- **Routing by measured cost per accepted output and quality tier** (extends today's pool
+  scoring to models): cheap tier first, better models where the creator's tier allows.
+- **Video is built early per principle 5:** narrated edits and lifestyle clips exist; talking
+  video (lip-synced speech from a photo and the creator's voice) is a new capability. Model choices
+  (Wan 2.2 14B, LTX, a talking-head model) are benchmarked on real outputs and judged by the video
+  gate before entering production; the cheapest that passes wins, and a creator's tier can buy a
+  better one.
+
+### 4.9 Publishing
+
+- `manyworlds/publish/instagram.py` adapter (Instagram API with Instagram Login): photo, carousel,
+  Reel, Story; `is_ai_generated=true` on every container; captions in the creator's voice; bio
+  disclosure set at account setup; publish limit read at runtime; container → poll status → publish;
+  stores the media id and permalink on the post; retries are idempotent (never double-post).
+- A **publish scheduler** chooses times inside policy windows (learned later by the analyst).
+- `manyworlds/publish/simulated.py` is the same interface for creators without a real account;
+  every simulated publication is marked and lives only in simulated tables.
+- **Autonomy:** policy `autonomy.publish` (human_approval | sampled | autonomous) already exists and
+  gates the publisher. Setting it is the owner's call (see section 6).
+- **Account safety:** one account per creator; no interaction between our accounts; no follows,
+  likes or comments by automation; accounts warmed up per policy cadence ramp.
+
+### 4.10 Data model (new migrations)
+
+| Table | Purpose |
+|---|---|
+| `creator_memory` | versioned facts per creator: kind (taste, opinion, place, person, routine, canon), text, source post, valid_from/until |
+| `creator_states` | phase, entered_at, window counters, current adjustment, quality tier, history |
+| `ideas` | one future post/story: creator, batch, concept text, format, scenes/script/caption draft, attributes (setting, outfit, activity, mood, trend …), experiment arm, status, post_id once produced |
+| `evaluations` | rubric scores per item (idea, asset, feed), as specified in 4.4 |
+| `rubric_versions` | rubric id, version, file hash, adopted_at, reference-set results |
+| `findings` | scope (creator, portfolio), statement, evidence type, effect size, interval, n, confidence, status (hypothesis, testing, established, rejected), sources |
+| `experiments` (exists; extend) | hypothesis, arms, metric, min sample, assignment, status, result |
+| `allocations` | strategist output per creator per period: budget, tier, format mix, cadence |
+| `publications` | platform, account, external id, permalink, published_at, simulated flag, AI label set |
+| `metric_snapshots` (exists) | real metrics only, with post age at capture |
+| `simulated_metrics` | synthetic metrics, model and version |
+| `accounts` | per creator per platform: handle, account id, token reference (name of the `.env` key, never the token), status |
+
+`posts` remains the unit of publication; an idea produces a post.
+
+### 4.11 Models and cost
+
+LLM roles from `policy.llm.roles`: strategist, showrunner, analyst on the strongest model; the
+evaluator and QA screen on cheaper models with sampled strong-model checks; scouts mixed. Per-agent
+daily LLM budgets in policy, all calls in the ledger. GPU work is unchanged (autoscaler, batching,
+pool scoring). Cost per accepted output and cost per real follower gained are reported per creator.
+
+## 5. Build sequence
+
+1. **Foundations:** migrations (4.10), rubric files v1 with anchors, brain worker and orchestrator
+   skeleton, agent module contract, `mw brain` commands to run and trace a cycle.
+2. **Ideas and scoring:** persona keeper (memory from existing posts/canon), showrunner (replaces
+   planner; ideas table), creative evaluator with the reproducibility protocol and reference set.
+3. **Instagram path (parallel, as soon as an account exists):** adapter, token handling, publish
+   scheduler, metrics collector with Story polling; first real Maren posts.
+4. **Simulated path:** simulated publisher and audience; full creator cycle runs end to end.
+5. **Learning:** analyst (normalisation, lift with intervals, findings), experiments, exploration
+   share; showrunner consumes findings; a demonstrable "next batch changed because of X" trace.
+6. **QA and repair:** diagnosis-driven repair, caption/originality checks, feed QA, Stories.
+7. **Strategist:** phases, allocation, value of information, launches; portfolio cycle.
+8. **Second creator** launched by the strategist from research, with no bespoke code.
+9. **Video:** talking video and model benchmarks through the video gate (can start in parallel
+   once 1–2 are done, on the existing GPU infrastructure).
+
+Each step ships with tests (stubs for Claude/Instagram, as today), policy entries, and a demo
+trace.
+
+## 6. Owner's actions and calls
+
+- Create the Instagram professional account for Maren and a Meta developer app; add the tokens to
+  `.env` (I build everything after that).
+- Decide the initial `autonomy.publish` setting for real posts: autonomous from the first post, or
+  human approval for the first N posts, then autonomous.
+
+## 6a. Builder's calls (made while writing; open to correction)
+
+- **Simulated vs real creators.** Each creator publishes in one mode at a time: `simulated`
+  (sandbox) or `instagram`. A sandbox creator's showrunner may use simulated findings, which is how
+  the learning loop is proven before a real account exists; every such finding and trace is marked
+  SIMULATED. A real creator's agents read real findings only (enforced in the findings query, not by
+  convention), and the strategist never uses simulated findings for promotion, retirement or budget.
+- **Launches and accounts.** A creator the strategist launches starts in sandbox mode with state
+  `awaiting_account` and a recorded request to the owner. Its sandbox history does not count toward
+  real exploration windows; the window starts at its first real post. Ready content can be
+  published once the account is connected.
+- **Autonomy over its own settings.** The Brain changes allocations, tiers, cadences, exploration
+  shares and rubric versions itself, within the bounds in policy `limits`; those runtime values live
+  in the DB as versioned overrides (each decision records the policy file version plus the override
+  version). Anything beyond `limits` waits for a human. The policy file stays the human-edited base.
+- **Existing planner posts** are left to drain through today's production path; new content comes
+  from `ideas`. The planner is retired once the showrunner is live.
+- **TikTok** stays dormant in policy; nothing is built for it in this design.
+
+## 7. Left to the builder
+
+Exact rubric wording and anchors (drafted, then tuned on the reference set); statistical method
+details within the staged plan; prompt design; table columns beyond those listed; scheduling
+defaults; which video models to benchmark first; the exact observation ages; module layout inside
+`manyworlds/brain/`.
