@@ -1,0 +1,59 @@
+"""Creator memory: the facts that keep a creator's life coherent across months of posts.
+
+Facts are versioned rows in `creator_memory`: places, routines, tastes, opinions and running jokes,
+people, the signature item, and canon (small facts posts have established). A single-valued fact
+(`key`, e.g. home) replaces the previous one by closing it (`valid_until`). The showrunner reads the
+open facts; scheduled posts add their canon.
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+
+from ..creator import profile
+
+# Bible fields -> memory kind (the rendered bible carries these from the creator lab and profile).
+_BIBLE_KINDS = {"home_and_places": "place", "interests": "taste", "opinions_and_running_jokes": "opinion",
+                "routines": "routine", "people": "person"}
+
+
+def add(conn, creator_id, kind: str, text: str, *, source_post=None, key: str | None = None) -> uuid.UUID:
+    if key:
+        conn.execute("UPDATE creator_memory SET valid_until = now() WHERE creator_id = %s AND key = %s "
+                     "AND valid_until IS NULL", (creator_id, key))
+    return conn.execute("INSERT INTO creator_memory (creator_id, kind, text, source_post, key) "
+                        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                        (creator_id, kind, text.strip(), source_post, key)).fetchone()["id"]
+
+
+def _items(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [p.strip() for p in re.split(r"[;\n]", value) if p.strip()]
+    return []
+
+
+def seed_from_profile(conn, creator_id) -> int:
+    """Facts from the creator's bible and current profile; skips any text already open. Returns how many were added."""
+    bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()["bible"] or {}
+    candidates = [(kind, t) for field, kind in _BIBLE_KINDS.items() for t in _items(bible.get(field))]
+    current = profile.current(conn, creator_id)
+    signature = ((current[1] if current else {}).get("look") or {}).get("signature_item")
+    if signature:
+        candidates.append(("signature", signature))
+    have = {r["text"] for r in conn.execute("SELECT text FROM creator_memory WHERE creator_id = %s "
+                                            "AND valid_until IS NULL", (creator_id,)).fetchall()}
+    added = 0
+    for kind, text in candidates:
+        if text not in have:
+            add(conn, creator_id, kind, text, key="signature" if kind == "signature" else None)
+            have.add(text)
+            added += 1
+    return added
+
+
+def facts(conn, creator_id, *, limit: int) -> list[dict]:
+    return conn.execute("SELECT kind, text FROM creator_memory WHERE creator_id = %s AND valid_until IS NULL "
+                        "ORDER BY created_at DESC, id DESC LIMIT %s", (creator_id, limit)).fetchall()
