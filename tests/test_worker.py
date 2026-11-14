@@ -198,7 +198,9 @@ def test_a_dropped_database_connection_does_not_silence_the_heartbeat(conn, data
     t = threading.Thread(target=w._heartbeat, args=(job, done, lost), daemon=True)
     t.start()
     import time
-    time.sleep(0.8)
+    deadline = time.monotonic() + 10                # wait for beats, not a fixed time (connects vary)
+    while len(calls) < 4 and time.monotonic() < deadline and not lost.is_set():
+        time.sleep(0.05)
     done.set()
     t.join(2)
     assert len(calls) >= 4 and not lost.is_set()     # kept beating after the failure

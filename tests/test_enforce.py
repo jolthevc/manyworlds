@@ -64,6 +64,8 @@ def test_yesterdays_failure_mode_is_caught(conn, policy):
     """Work finished at 08:19, nobody stopped the group: it must stop within the idle window."""
     register(conn, "mw-image-4090-r2", hours=12, max_usd=100)
     job = queue.enqueue(conn, "image.zimage", {})
+    conn.execute("INSERT INTO attempts (job_id, worker_id, pool, started_at, gpu_group) "
+                 "VALUES (%s, 'w1', 'salad_batch_4090', %s, 'mw-image-4090-r2')", (job, T0 + timedelta(minutes=45)))
     api = FakeAPI(["mw-image-4090-r2"])
     tick(conn, policy, api, now=T0 + timedelta(minutes=50))     # busy
     conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (job,))
@@ -162,3 +164,16 @@ def test_a_machine_alive_but_never_finishing_its_job_is_stopped(conn, policy):
                      (T0 + timedelta(minutes=m), job))
         actions = tick(conn, policy, api, now=T0 + timedelta(minutes=m))
     assert api.stopped == ["mw-image-4090-a"] and actions[0]["reason"] == "attempt_timeout"
+
+
+def test_a_machine_that_never_starts_while_work_waits_is_stopped_after_boot_grace(conn, policy):
+    # 2026-11-14: a RunPod pod sat rented for 100 min without its container starting. Jobs were
+    # queued, so it counted as busy (never idle) and had no attempts (never stuck).
+    register(conn, "mw-image-4090-a", hours=12, max_usd=100)
+    queue.enqueue(conn, "image.zimage", {})
+    api = FakeAPI(["mw-image-4090-a"])
+    grace = float(policy.get("gpu_runs", "boot_grace_minutes"))
+    tick(conn, policy, api, now=T0 + timedelta(minutes=grace - 1))
+    assert api.stopped == []
+    actions = tick(conn, policy, api, now=T0 + timedelta(minutes=grace + 1))
+    assert api.stopped == ["mw-image-4090-a"] and actions[0]["reason"] == "never_started"

@@ -141,6 +141,10 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             reason = "daily_gpu_budget"
         elif not booting and (now - last_busy).total_seconds() > idle_min * 60:
             reason = "idle"
+        elif busy and not booting and not started_work:
+            # Past boot grace without a single job started while work waits: the container never
+            # came up (image pull stuck, bad host). Busy, so never idle; no attempts, so never stuck.
+            reason = "never_started"
         elif started_work and busy and (now - last_seen).total_seconds() > stuck_min * 60:
             # Work is waiting but this machine has gone silent (worker hung or died): it would
             # otherwise count as busy until its deadline and block a replacement.
