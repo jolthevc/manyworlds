@@ -62,9 +62,12 @@ def test_metrics_come_from_the_table_for_the_mode(conn):
     assert [(m["metrics"]["reach"], m["label"]) for m in sandbox] == [(999, "SIMULATED")]
 
 
-def test_only_the_evidence_module_reads_findings_and_metrics(conn):
-    pattern = re.compile(r"FROM\s+(findings|metric_snapshots|simulated_metrics)\b", re.IGNORECASE)
-    offenders = [str(p.relative_to(BRAIN)) for p in BRAIN.rglob("*.py")
+def test_only_the_evidence_module_touches_simulated_tables(conn):
+    # Simulated data lives only in simulated_* tables (the real tables reject it). Only the evidence
+    # module may touch them, anywhere in the package, in any form of query.
+    pattern = re.compile(r"(FROM|JOIN|INTO|UPDATE)\s+(public\.)?\"?simulated_\w+", re.IGNORECASE)
+    package = BRAIN.parent
+    offenders = [str(p.relative_to(package)) for p in package.rglob("*.py")
                  if p.name != "evidence.py" and pattern.search(p.read_text(encoding="utf-8"))]
     assert offenders == []
 
@@ -88,3 +91,22 @@ def test_findings_drawn_from_sandbox_creators_or_simulated_metrics_must_be_simul
                                 sources=[{"table": "simulated_metrics"}])
     evidence.record_finding(conn, scope="portfolio", statement="ok", evidence="observational", grade="tentative",
                             sources=[{"creator_id": str(real)}])
+
+
+def test_real_tables_cannot_hold_simulated_rows_whatever_the_query(conn):
+    # The wall is structural: simulated findings and metrics live only in simulated_* tables, and
+    # the real tables reject them, so a JOIN written anywhere, by anyone, sees real rows only.
+    import psycopg
+    import pytest
+    cid = creator(conn, publish_mode="simulated")
+    real = creator(conn, publish_mode="instagram")
+    evidence.record_finding(conn, scope="creator", creator_id=cid, statement="sim", evidence="simulated",
+                            grade="tentative")
+    evidence.record_finding(conn, scope="creator", creator_id=real, statement="real", evidence="observational",
+                            grade="tentative")
+    joined = conn.execute("SELECT f.statement FROM creators c JOIN public.findings f ON f.creator_id = c.id").fetchall()
+    assert [r["statement"] for r in joined] == ["real"]
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("INSERT INTO findings (scope, statement, evidence, grade) "
+                     "VALUES ('portfolio', 'x', 'simulated', 'speculative')")
+    assert [f["statement"] for f in evidence.findings(conn, mode="sandbox", creator_id=cid)] == ["sim"]

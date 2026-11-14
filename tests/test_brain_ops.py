@@ -24,7 +24,7 @@ def test_trace_shows_decisions_children_and_cost(conn, policy):
 
 
 def test_pending_approvals_are_listed_and_decided(conn, policy):
-    r = overrides.propose(conn, policy, "limits.daily_usd_max", 50, author="strategist", reason="more room")
+    r = overrides.propose(conn, policy, "brain.exploration_share", 0.9, author="strategist", reason="explore more")
     assert [a["id"] for a in ops.approvals(conn)] == [r["approval_id"]]
     ops.decide(conn, r["approval_id"], approved=False, by="owner")
     assert ops.approvals(conn) == []

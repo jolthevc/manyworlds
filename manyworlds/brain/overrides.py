@@ -6,8 +6,13 @@ latest override version, so every decision records exactly what it ran under.
 
 `propose` applies a change when its path matches an `autonomous` entry (`*` = one path
 segment) and the value is inside that entry's inclusive `min`/`max` (numbers) or `allowed`
-list. Everything else, and always `limits.*` and `budget.master*`, becomes a pending approval
-that the owner decides.
+list. Everything else becomes a pending approval that the owner decides; approving applies the
+change in the same transaction, so an approval is never recorded without its change or vice versa.
+
+Only sections listed in `brain.authority.observed_sections` can be overridden at all: those are
+read through the effective policy. The producer, reviewer and autoscaler still read the policy
+file, so a change to `production.*`, `limits.*` and the like is refused outright (not_observed)
+rather than recorded and silently ignored.
 """
 
 from __future__ import annotations
@@ -75,6 +80,10 @@ def _apply(conn, path: str, value, *, author: str, reason: str, decision_id=None
 
 
 def propose(conn, policy: Policy, path: str, value, *, author: str, reason: str, decision_id=None) -> dict:
+    observed = policy.get("brain", "authority", "observed_sections", default=[]) or []
+    if path.split(".")[0] not in observed:
+        return {"applied": False, "not_observed": True,
+                "reason": f"{path.split('.')[0]}.* is not read by any service through the effective policy yet"}
     if within_authority(policy, path, value):
         return {"applied": True, "version": _apply(conn, path, value, author=author, reason=reason,
                                                    decision_id=decision_id)}
@@ -86,6 +95,11 @@ def propose(conn, policy: Policy, path: str, value, *, author: str, reason: str,
 
 
 def decide(conn, approval_id, *, approved: bool, by: str) -> None:
+    with conn.transaction():
+        _decide(conn, approval_id, approved=approved, by=by)
+
+
+def _decide(conn, approval_id, *, approved: bool, by: str) -> None:
     row = conn.execute("UPDATE approvals SET status = %s, decided_by = %s, decided_at = now() "
                        "WHERE id = %s AND status = 'pending' RETURNING kind, subject, reason, requested_by",
                        ("approved" if approved else "rejected", by, approval_id)).fetchone()
