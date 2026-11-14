@@ -63,6 +63,7 @@ job_kinds:
   video.mirror:    {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 0}
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
+  brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
@@ -210,6 +211,22 @@ creators:
 
 # Content planner (manyworlds.brain.planner): one Brain call per creator per period, rolling.
 # formats: images per post [min, max]. Video posts belong to one of the creator's video series.
+# The Brain (docs/superpowers/specs/2026-11-14-brain-design.md): agents run as brain.<agent> jobs on the
+# control host. Daily LLM budgets per agent sit inside the master operating budget.
+brain:
+  llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0}
+  runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
+  exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
+  # What the Brain may change on its own (manyworlds.brain.overrides), with inclusive bounds; `*` is one
+  # path segment. Anything else, and always `limits.*` and `budget.master*`, waits for owner approval.
+  authority:
+    # Sections read through the effective policy. Only Brain agents do so today; the producer, reviewer
+    # and autoscaler read this file, so overrides elsewhere are refused rather than silently ignored.
+    observed_sections: [brain]
+    autonomous:
+      - {path: "brain.exploration_share", min: 0.1, max: 0.6}
+      - {path: "brain.llm_usd_per_day.*", min: 0, max: 5}
+
 planner:
   role: brain
   effort: medium

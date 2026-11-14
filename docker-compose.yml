@@ -68,6 +68,14 @@ services:
     command: ["autoscale"]
     restart: unless-stopped
 
+  # The Brain: runs brain.* agent jobs (manyworlds.brain.runtime) on this host.
+  brain-worker:
+    build: .
+    profiles: [live]
+    env_file: .env
+    command: ["brain", "worker", "--loop"]
+    restart: unless-stopped
+
   # Review gates: scores new creator images as they arrive (Claude vision; no GPU).
   reviewer:
     build: .

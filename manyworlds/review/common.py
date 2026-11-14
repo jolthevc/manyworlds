@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Callable
 
@@ -22,6 +23,15 @@ def reference_images(creator: dict, store: ObjectStore, workdir: Path, n: int) -
     if not refs:
         raise ValueError(f"creator {creator['id']} has no reference images to review against")
     return [store.get_file(r["uri"], Path(workdir) / f"ref_{i}.png").read_bytes() for i, r in enumerate(refs)]
+
+
+@contextlib.contextmanager
+def charged_to(llm, job_id):
+    """Charge the judge's calls to the job under review, so review counts in that output's cost
+    (ledger.cost_per_output). No agent: review is production cost, not the Brain's."""
+    tag = getattr(llm, "tagged", None)
+    with (tag(None, job_id) if tag else contextlib.nullcontext()):
+        yield
 
 
 def write_rows(conn, rows: list[tuple]) -> None:

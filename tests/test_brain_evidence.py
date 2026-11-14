@@ -1,0 +1,112 @@
+"""Simulated results prove the machinery, never demand: real-mode reads can't see them."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from manyworlds.brain import evidence
+
+from brain_helpers import creator, make_post
+
+BRAIN = Path(evidence.__file__).parent
+
+
+def test_real_reads_never_see_simulated_findings(conn):
+    cid = creator(conn, publish_mode="instagram")
+    evidence.record_finding(conn, scope="creator", creator_id=cid, statement="sim", evidence="simulated",
+                            grade="tentative")
+    evidence.record_finding(conn, scope="creator", creator_id=cid, statement="real", evidence="observational",
+                            grade="tentative")
+    assert [f["statement"] for f in evidence.findings(conn, mode="real", creator_id=cid)] == ["real"]
+    assert [f["statement"] for f in evidence.for_allocation(conn, creator_id=cid)] == ["real"]
+
+
+def test_a_creator_that_left_the_sandbox_keeps_its_simulated_history_out_of_real_reads(conn):
+    cid = creator(conn, publish_mode="simulated")
+    evidence.record_finding(conn, scope="post", creator_id=cid, statement="old sim", evidence="simulated",
+                            grade="speculative")
+    conn.execute("UPDATE creators SET publish_mode = 'instagram' WHERE id = %s", (cid,))
+    assert evidence.mode_for(conn, cid) == "real"
+    assert evidence.findings(conn, mode=evidence.mode_for(conn, cid), creator_id=cid) == []
+
+
+def test_sandbox_reads_label_simulated_rows(conn):
+    cid = creator(conn, publish_mode="instagram")   # a real creator's history read in sandbox mode
+    evidence.record_finding(conn, scope="post", creator_id=cid, statement="s", evidence="simulated",
+                            grade="speculative")
+    evidence.record_finding(conn, scope="post", creator_id=cid, statement="r", evidence="observational",
+                            grade="speculative")
+    labels = {f["statement"]: f.get("label") for f in evidence.findings(conn, mode="sandbox", creator_id=cid)}
+    assert labels == {"s": "SIMULATED", "r": None}
+
+
+def test_findings_filter_by_scope_and_grade(conn):
+    cid = creator(conn, publish_mode="instagram")
+    evidence.record_finding(conn, scope="creator", creator_id=cid, statement="a", evidence="experimental",
+                            grade="proven", effect=0.3, interval=(0.1, 0.5), n=40)
+    evidence.record_finding(conn, scope="post", creator_id=cid, statement="b", evidence="observational",
+                            grade="speculative")
+    got = evidence.findings(conn, mode="real", scope="creator", grades=("proven",))
+    assert [(f["statement"], float(f["interval_low"]), f["n"]) for f in got] == [("a", 0.1, 40)]
+
+
+def test_metrics_come_from_the_table_for_the_mode(conn):
+    post = make_post(conn)
+    conn.execute("INSERT INTO metric_snapshots (post_id, metrics, post_age_s) VALUES (%s, '{\"reach\": 10}', 3600)",
+                 (post,))
+    conn.execute("INSERT INTO simulated_metrics (post_id, metrics, post_age_s, model, panel_version) "
+                 "VALUES (%s, '{\"reach\": 999}', 3600, 'm', 'v1')", (post,))
+    assert [m["metrics"]["reach"] for m in evidence.metrics(conn, post, mode="real")] == [10]
+    sandbox = evidence.metrics(conn, post, mode="sandbox")
+    assert [(m["metrics"]["reach"], m["label"]) for m in sandbox] == [(999, "SIMULATED")]
+
+
+def test_only_the_evidence_module_touches_simulated_tables(conn):
+    # Simulated data lives only in simulated_* tables (the real tables reject it). Only the evidence
+    # module may touch them, anywhere in the package, in any form of query.
+    pattern = re.compile(r"(FROM|JOIN|INTO|UPDATE)\s+(public\.)?\"?simulated_\w+", re.IGNORECASE)
+    package = BRAIN.parent
+    offenders = [str(p.relative_to(package)) for p in package.rglob("*.py")
+                 if p.name != "evidence.py" and pattern.search(p.read_text(encoding="utf-8"))]
+    assert offenders == []
+
+
+def test_a_sandbox_creators_findings_can_only_be_recorded_as_simulated(conn):
+    import pytest
+    cid = creator(conn, publish_mode="simulated")
+    with pytest.raises(ValueError, match="sandbox"):
+        evidence.record_finding(conn, scope="creator", creator_id=cid, statement="x", evidence="observational",
+                                grade="tentative")
+
+
+def test_findings_drawn_from_sandbox_creators_or_simulated_metrics_must_be_simulated(conn):
+    import pytest
+    sandbox, real = creator(conn), creator(conn, publish_mode="instagram")
+    with pytest.raises(ValueError, match="sandbox"):
+        evidence.record_finding(conn, scope="portfolio", statement="x", evidence="observational", grade="tentative",
+                                sources=[{"creator_id": str(real)}, {"creator_id": str(sandbox)}])
+    with pytest.raises(ValueError, match="simulated_metrics"):
+        evidence.record_finding(conn, scope="portfolio", statement="x", evidence="observational", grade="tentative",
+                                sources=[{"table": "simulated_metrics"}])
+    evidence.record_finding(conn, scope="portfolio", statement="ok", evidence="observational", grade="tentative",
+                            sources=[{"creator_id": str(real)}])
+
+
+def test_real_tables_cannot_hold_simulated_rows_whatever_the_query(conn):
+    # The wall is structural: simulated findings and metrics live only in simulated_* tables, and
+    # the real tables reject them, so a JOIN written anywhere, by anyone, sees real rows only.
+    import psycopg
+    import pytest
+    cid = creator(conn, publish_mode="simulated")
+    real = creator(conn, publish_mode="instagram")
+    evidence.record_finding(conn, scope="creator", creator_id=cid, statement="sim", evidence="simulated",
+                            grade="tentative")
+    evidence.record_finding(conn, scope="creator", creator_id=real, statement="real", evidence="observational",
+                            grade="tentative")
+    joined = conn.execute("SELECT f.statement FROM creators c JOIN public.findings f ON f.creator_id = c.id").fetchall()
+    assert [r["statement"] for r in joined] == ["real"]
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("INSERT INTO findings (scope, statement, evidence, grade) "
+                     "VALUES ('portfolio', 'x', 'simulated', 'speculative')")
+    assert [f["statement"] for f in evidence.findings(conn, mode="sandbox", creator_id=cid)] == ["sim"]

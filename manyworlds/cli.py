@@ -78,6 +78,20 @@ def main(argv: list[str] | None = None) -> int:
     sc = sub.add_parser("autoscale", help="start/stop GPU machines to follow the queue (loops; --once for one tick)")
     sc.add_argument("--once", action="store_true")
     sc.add_argument("--no-launch", action="store_true")
+    br = sub.add_parser("brain", help="Brain agents: worker, run, trace, approvals")
+    bsub = br.add_subparsers(dest="brain_cmd", required=True)
+    bw = bsub.add_parser("worker", help="run brain.* agent jobs on this host")
+    bw.add_argument("--loop", action="store_true")
+    brn = bsub.add_parser("run", help="enqueue one agent job and run one tick")
+    brn.add_argument("agent")
+    brn.add_argument("--payload", default="{}")
+    bt = bsub.add_parser("trace", help="a job, its decisions, commissioned work and LLM spend by agent")
+    bt.add_argument("job")
+    ba = bsub.add_parser("approvals", help="list pending approvals, or decide one")
+    ba.add_argument("--decide")
+    bdec = ba.add_mutually_exclusive_group()
+    bdec.add_argument("--approve", action="store_true")
+    bdec.add_argument("--reject", action="store_true")
 
     args = p.parse_args(argv)
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -122,7 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "status":
         from .deploy import report
         _print({"jobs": queue.counts(conn), "spend": ledger.totals(conn),
-                "cost_per_output": ledger.cost_per_output(conn), "machines_72h": report.summary(report.machines(conn))})
+                "cost_per_output": ledger.cost_per_output(conn), "brain_costs": ledger.brain_costs(conn),
+                "machines_72h": report.summary(report.machines(conn))})
     elif args.cmd == "machines":
         from .deploy import report
         rows = report.machines(conn, hours=args.hours)
@@ -134,10 +149,44 @@ def main(argv: list[str] | None = None) -> int:
                             "FROM posts WHERE creator_id = %s ORDER BY scheduled_for", (cid,)).fetchall())
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
+    elif args.cmd == "brain":
+        return _brain_ops(args, conn, pol)
     elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce"):
         return _brain(args, conn, pol)
     return 0
 
+
+def _brain_ops(args, conn, pol) -> int:
+    import socket
+    import time
+
+    from .brain import ops, runtime
+    from .llm import Claude
+
+    if args.brain_cmd == "trace":
+        _print(ops.trace(conn, args.job))
+        return 0
+    if args.brain_cmd == "approvals":
+        if args.decide:
+            if not (args.approve or args.reject):
+                raise SystemExit("--decide needs --approve or --reject")
+            ops.decide(conn, args.decide, approved=args.approve, by="owner")
+        _print(ops.approvals(conn))
+        return 0
+    llm = Claude(conn, pol)
+    worker_id = f"brain-{socket.gethostname()}-{os.getpid()}"
+    if args.brain_cmd == "run":
+        job = queue.enqueue(conn, f"brain.{args.agent}", json.loads(args.payload))
+        _print({"job": job, "results": runtime.tick(conn, pol, llm, worker_id=worker_id)})
+        return 0
+    while True:   # worker
+        out = runtime.tick(conn, pol, llm, worker_id=worker_id)
+        if out or not args.loop:
+            _print(out)
+        if not args.loop:
+            return 0
+        time.sleep(float(pol.get("brain", "runtime", "loop_seconds", default=30)))
+        pol = policy_mod.load()
 
 def _review(args, conn, pol, llm) -> int:
     import tempfile
