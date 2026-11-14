@@ -39,7 +39,7 @@ def machine_stats(conn, family: str, pools: list[str], since: datetime) -> list[
     with what it billed and how many accepted outputs it produced."""
     return conn.execute(
         """
-        SELECT g.name, g.pool, g.billed_usd::float AS billed_usd, g.started_at, g.stopped_at, g.stop_reason,
+        SELECT g.name, g.pool, g.billed_usd::float AS billed_usd, g.started_at, g.stopped_at, g.stop_reason, g.image,
                (SELECT count(*) FROM assets s
                   JOIN attempts a ON a.job_id = s.job_id AND a.outcome = 'done' AND a.gpu_group = g.name
                  WHERE NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = s.id AND NOT r.passed)
@@ -74,7 +74,11 @@ def score_pools(conn, policy: Policy, family: str, pools: list[str], now: dateti
         billed = sum(m["billed_usd"] for m in ms)
         outputs = sum(m["outputs"] for m in ms)
         stopped = [m for m in ms if m["stopped_at"] is not None]
-        recent = stopped[:fail_streak]
+        # Only machines on the current worker image count toward a pause: failures caused by
+        # our own software say nothing about the pool once a fixed image ships.
+        img = policy.get("worker_images", family, default={}) or {}
+        current = f"{img.get('image')}:{img.get('tag', 'latest')}" if img else None
+        recent = [m for m in stopped if current is None or m.get("image") == current][:fail_streak]
         paused = (fail_streak > 0 and len(recent) == fail_streak and all(not _worked(m) for m in recent)
                   and recent[0]["stopped_at"] > now - pause)
         per_output = billed / outputs if outputs else math.inf

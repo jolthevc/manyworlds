@@ -23,17 +23,25 @@ def registry(monkeypatch):
     monkeypatch.setattr(autoscale, "image_published", lambda image: True)
 
 
-def machine(conn, pool, *, billed, outputs, family="image", hours_ago=2, stopped=True, rejected=0):
+def current_image(family):
+    from pathlib import Path
+
+    from manyworlds import policy as pm
+    img = pm.load(Path(__file__).resolve().parents[1] / "policy" / "default.yaml").get("worker_images", family)
+    return f"{img['image']}:{img['tag']}"
+
+
+def machine(conn, pool, *, billed, outputs, family="image", hours_ago=2, stopped=True, rejected=0, image=None):
     """A past machine in `pool` that billed `billed` and produced `outputs` assets."""
     name = f"mw-{family}-{pool}-{uuid.uuid4().hex[:4]}"
     started = NOW - timedelta(hours=hours_ago)
     stopped_at = started + timedelta(minutes=30) if stopped else None
     conn.execute(
         """INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, started_at,
-                                   billed_until, billed_usd, last_busy_at, stopped_at, stop_reason, family)
-           VALUES (%s, 'vast', %s, 0.2, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s)""",
+                                   billed_until, billed_usd, last_busy_at, stopped_at, stop_reason, family, image)
+           VALUES (%s, 'vast', %s, 0.2, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (name, pool, [f"{family}.x"], started + timedelta(hours=2), started, started, billed, started,
-         stopped_at, "idle" if stopped else None, family))
+         stopped_at, "idle" if stopped else None, family, image or current_image(family)))
     if outputs:
         job = conn.execute("INSERT INTO jobs (kind, status) VALUES (%s, 'done') RETURNING id",
                            (f"{family}.x",)).fetchone()["id"]
@@ -146,3 +154,13 @@ def test_metering_follows_the_providers_current_price(conn, policy):
     autoscale.update_prices(conn, {name: 0.233})
     assert float(conn.execute("SELECT usd_per_hour FROM gpu_groups WHERE name = %s", (name,)).fetchone()[
         "usd_per_hour"]) == pytest.approx(0.233)
+
+
+def test_failures_on_an_older_worker_image_do_not_pause_a_pool(conn, policy):
+    # 2026-11-14: a Brotli bug in image v7 failed every machine; v8 fixed it and needed a machine.
+    machine(conn, "salad_batch_3090", billed=1.0, outputs=100)
+    for h in (3, 2, 1):
+        machine(conn, "vast_3090", billed=0.01, outputs=0, hours_ago=h, image="mw-worker-image:old")
+    pools, rows = order(conn, policy)
+    assert "vast_3090" in pools
+    assert {r["pool"]: r["status"] for r in rows}["vast_3090"] != "paused"

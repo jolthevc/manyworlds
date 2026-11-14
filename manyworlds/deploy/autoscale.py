@@ -159,10 +159,10 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     # machine's deadline and cap and will stop it.
     conn.execute(
         """INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, replicas, job_kinds, deadline, max_usd,
-                                   started_at, billed_until, last_busy_at, family)
-           VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s)""",
+                                   started_at, billed_until, last_busy_at, family, image)
+           VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (name, provider.name, pool, spec.max_usd_per_hour, kinds, now + timedelta(hours=hours), max_usd,
-         now, now, now, family))
+         now, now, now, family, f"{img['image']}:{img.get('tag', 'latest')}"))
     try:
         m = provider.launch(name, spec)
     except Exception:
