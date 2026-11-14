@@ -86,3 +86,12 @@ def test_a_machine_that_only_mirrored_is_not_a_failed_machine(conn, policy):
                      "'done', %s)", (job, name))
     row = scoring.score_pools(conn, policy, "image", ["vast_3090"], now)[0]
     assert row["status"] != "paused" and row["failed_machines"] == 0
+
+
+def test_a_second_mirror_keeps_what_the_bucket_already_has(store, tmp_path):
+    src = fake_repo(tmp_path)
+    first = models.mirror(REPO, store, tmp_path, source_dir=src)
+    assert first["copied"] == 2
+    store.root.joinpath(f"models/{REPO}/files/model_index.json").unlink()   # as if a machine died mid-copy
+    again = models.mirror(REPO, store, tmp_path, source_dir=src)
+    assert again["copied"] == 1 and again["kept"] == 1

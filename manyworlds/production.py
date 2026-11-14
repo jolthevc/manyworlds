@@ -114,7 +114,7 @@ def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     cfg = _cfg(policy).get("edit", {}) or {}
     payload = {"images": [a["uri"] for a in chosen], "script": body.get("script", ""), "voice": voice,
                "on_screen_text": body.get("on_screen_text", ""), **cfg}
-    return queue.enqueue(conn, "edit.narrated", payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
+    return queue.enqueue(conn, "image.narrated", payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
                          post_id=post["id"], idempotency_key=f"post:{post['id']}:edit:{attempt}")
 
 

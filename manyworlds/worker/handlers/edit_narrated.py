@@ -1,6 +1,6 @@
-"""Narrated edits: a creator's approved photos, their voice reading a short script, and
-burned-in captions, as a vertical video. CPU only (Kokoro TTS + ffmpeg), so it runs on the
-control host or any cheap CPU machine, never a rented GPU.
+"""Narrated edits (kind image.narrated): a creator's approved photos, their voice reading a short script, and
+burned-in captions, as a vertical video. CPU work (Kokoro TTS + ffmpeg) that rides along on the
+image machines already rented for the photos, so it needs no machine of its own.
 
 Payload: images [uri], script, voice (Kokoro id; bf_/bm_ = British), speed, on_screen_text,
 width, height, fps. The script is spoken in chunks (sentences, and "..." for a longer
@@ -133,4 +133,4 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
                          meta={"output_seconds": seconds, "captions": len(cues)})
 
 
-HANDLERS = {"edit.narrated": render}
+HANDLERS = {"image.narrated": render}

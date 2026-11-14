@@ -325,6 +325,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
         family = kind.split(".")[0]
         if family == "fake":
             from .handlers import fake as mod
+        elif kind == "image.narrated":   # CPU edit that rides along on image machines
+            from .handlers import edit_narrated as mod
         elif family == "image":
             from .handlers import image_zimage as mod
         elif family == "video":
@@ -333,8 +335,6 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import tts_kokoro as mod
         elif family == "train":
             from .handlers import train_lora as mod
-        elif family == "edit":
-            from .handlers import edit_narrated as mod
         else:
             raise ValueError(f"no handler family for {kind!r}")
         found[kind] = mod.HANDLERS[kind]

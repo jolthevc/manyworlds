@@ -10,7 +10,7 @@ ARG EXTRA=image
 ARG PREFETCH=""
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HF_HOME=/models/hf
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg espeak-ng && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg espeak-ng fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
 COPY manyworlds ./manyworlds
 RUN pip install --no-cache-dir ".[${EXTRA}]" "huggingface_hub[cli]"

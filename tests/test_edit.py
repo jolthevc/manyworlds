@@ -30,7 +30,7 @@ def test_a_narrated_post_is_ready_once_its_edit_exists(conn, policy, store, tmp_
     production.advance(conn, policy, now=NOW)
     finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok()] * 4), pid)
     assert production.advance(conn, policy, now=NOW)["producing"] == 1          # edit queued
-    job = conn.execute("SELECT id, payload FROM jobs WHERE post_id = %s AND kind = 'edit.narrated'", (pid,)).fetchone()
+    job = conn.execute("SELECT id, payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchone()
     p = job["payload"]
     assert len(p["images"]) == 3 and p["voice"] == "bf_emma" and p["script"] == "soup. ... soup."
     assert p["on_screen_text"] == "thursday soup" and p["width"] == policy.get("production", "edit", "width")

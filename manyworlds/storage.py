@@ -43,6 +43,9 @@ class ObjectStore:
     def exists(self, key: str) -> bool:
         raise NotImplementedError
 
+    def size(self, key: str) -> int | None:
+        raise NotImplementedError
+
 
 class LocalStore(ObjectStore):
     def __init__(self, root: Path):
@@ -66,6 +69,10 @@ class LocalStore(ObjectStore):
 
     def exists(self, key: str) -> bool:
         return (self.root / key).exists()
+
+    def size(self, key: str) -> int | None:
+        p = self.root / key
+        return p.stat().st_size if p.exists() else None
 
 
 class S3Store(ObjectStore):
@@ -104,6 +111,12 @@ class S3Store(ObjectStore):
             return True
         except Exception:  # noqa: BLE001 - 404 or no access: treat as missing
             return False
+
+    def size(self, key: str) -> int | None:
+        try:
+            return int(self.client.head_object(Bucket=self.bucket, Key=key)["ContentLength"])
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def from_url(url: str | None = None) -> ObjectStore:
