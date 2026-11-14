@@ -175,3 +175,30 @@ def test_result_survives_the_database_dropping_the_idle_connection(conn, databas
     worker.handlers["fake.image"] = handler
     assert worker.run(max_jobs=1) == 1
     assert conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,)).fetchone()["status"] == "done"
+
+
+def test_a_dropped_database_connection_does_not_silence_the_heartbeat(conn, database_url, store, policy, monkeypatch):
+    # 2026-11-14: a database blip killed two workers' heartbeats mid-job; they were stopped as stuck.
+    import threading
+
+    w = make_worker(database_url, store, policy)
+    w.lease = 0.3                                   # beat every 0.1 s
+    job = queue.enqueue(conn, "fake.image", {})
+    queue.claim(conn, ["fake.image"], w.worker_id, 60)
+    real, calls = queue.heartbeat, []
+
+    def flaky(c, job_id, worker_id, lease):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("server closed the connection unexpectedly")
+        return real(c, job_id, worker_id, lease)
+
+    monkeypatch.setattr(queue, "heartbeat", flaky)
+    done, lost = threading.Event(), threading.Event()
+    t = threading.Thread(target=w._heartbeat, args=(job, done, lost), daemon=True)
+    t.start()
+    import time
+    time.sleep(0.8)
+    done.set()
+    t.join(2)
+    assert len(calls) >= 4 and not lost.is_set()     # kept beating after the failure

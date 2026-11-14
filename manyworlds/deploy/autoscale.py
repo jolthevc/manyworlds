@@ -179,6 +179,7 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
     cooldown = timedelta(minutes=float(cfg.get("relaunch_cooldown_minutes", 15)))
     daily_cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
     actions: list[dict] = []
+    unfunded: set[str] = set()   # providers whose account is out of credit this tick
     if enforce.billed_today(conn) >= daily_cap:
         work = waiting_work(conn)
         if work:
@@ -227,6 +228,8 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             info = policy.get("gpu_pools", pool)
             if not info or info["provider"] not in providers or not providers[info["provider"]].configured():
                 continue
+            if info["provider"] in unfunded:
+                continue
             try:
                 launched = launch_one(conn, policy, providers, kind, pool, now)
                 if scores:
@@ -235,6 +238,13 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
                 break
             except (NoCapacity, ProviderError) as e:
                 tried.append({"pool": pool, "error": str(e)[:200]})
+                # An account out of credit fails every pool of that provider: say so once, plainly,
+                # and go straight to the next provider.
+                if any(m in str(e).lower() for m in ("insufficient_credit", "lacks credit", "insufficient funds",
+                                                     "balance too low")):
+                    if info["provider"] not in unfunded:
+                        unfunded.add(info["provider"])
+                        actions.append({"action": "provider_unfunded", "provider": info["provider"]})
         else:
             actions.append({"action": "no_capacity", "kind": kind, "waiting": w["n"], "tried": tried})
     return actions

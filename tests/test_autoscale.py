@@ -222,3 +222,19 @@ def test_hosts_must_support_the_images_cuda(policy, monkeypatch):
     monkeypatch.setattr(Vast, "_req", lambda self, m, path, body=None: sent.update(body or {}) or {"offers": []})
     ps["vast"].offers(spec)
     assert sent["cuda_max_good"] == {"gte": 12.8}
+
+
+def test_an_account_out_of_credit_is_reported_and_skipped(conn, policy):
+    # 2026-11-14: Vast ran out of credit overnight; every Vast offer failed with insufficient_credit.
+    class Broke(FakeProvider):
+        def launch(self, name, spec):
+            self.attempts = getattr(self, "attempts", 0) + 1
+            raise ProviderError('400: {"error":"insufficient_credit","msg":"Your account lacks credit"}')
+
+    ps = providers(vast=Broke("vast"))
+    queue.enqueue(conn, "image.mirror", {"repo": "x/y"})
+    from datetime import datetime, timezone
+    actions = autoscale.scale_up(conn, policy, ps, now=datetime.now(timezone.utc))
+    assert {"action": "provider_unfunded", "provider": "vast"} in actions
+    assert ps["vast"].attempts == 1                                # one try, not one per Vast pool
+    assert [a["pool"] for a in actions if a["action"] == "launched"] == ["runpod_comm_3090"]

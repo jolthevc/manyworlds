@@ -225,14 +225,30 @@ class Worker:
             self.conn = self._connect(self.database_url)
 
     def _heartbeat(self, job_id, done: threading.Event, lost: threading.Event):
-        conn = self._connect(self.database_url)
+        """Extend the lease every third of it. A dropped database connection (Neon restarts its
+        compute; poolers drop connections) must not silence a healthy worker: on 2026-11-14 two
+        machines lost their heartbeat this way mid-copy and were stopped as stuck. So any error
+        reconnects and the loop goes on; only the queue saying the job is gone ends it."""
+        conn = None
         try:
             while not done.wait(self.lease / 3):
-                if not queue.heartbeat(conn, job_id, self.worker_id, self.lease):
-                    lost.set()
-                    return
+                try:
+                    if conn is None:
+                        conn = self._connect(self.database_url)
+                    if not queue.heartbeat(conn, job_id, self.worker_id, self.lease):
+                        lost.set()
+                        return
+                except Exception as e:  # noqa: BLE001 - reconnect next round
+                    log.warning("heartbeat failed (%s); reconnecting", str(e)[:200])
+                    try:
+                        if conn is not None:
+                            conn.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    conn = None
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def _run_one(self, job: queue.Job) -> None:
         attempt_id = self.conn.execute(
