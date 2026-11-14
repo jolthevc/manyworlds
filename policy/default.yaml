@@ -82,11 +82,11 @@ worker_images:
   # env: passed to every worker of the family; a pool's worker_env overrides it.
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
-  image: {image: mw-worker-image, tag: v11, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
+  image: {image: mw-worker-image, tag: v13, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   tts:   {image: mw-worker-tts,   tag: day1, min_cuda: 12.8, cpu: 2, ram_gb: 8,  disk_gb: 30}
   # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v11, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
+  video: {image: mw-worker-image, tag: v13, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {MW_VIDEO_BACKEND: diffusers, MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1,
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
@@ -233,7 +233,7 @@ production:
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120
   max_job_failures_per_post: 6   # failed jobs (machines, downloads) per post; apart from review repairs
-  edit: {speed: 0.95, width: 1080, height: 1920, fps: 30}   # narrated edits (edit.narrated)
+  edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
 
 # Claude models by role. Low-volume judgement work runs on Opus; bulk roles
 # (captions, first-pass judging) come in later days and can point elsewhere.

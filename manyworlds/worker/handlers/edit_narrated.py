@@ -99,7 +99,9 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
     frames = max(int(per * fps), 1)
     inputs, filters = [], []
     for i, p in enumerate(paths):
-        inputs += ["-loop", "1", "-t", f"{per:.3f}", "-i", str(p)]
+        # One frame in: zoompan makes exactly `frames` frames from it. (A looped input would make
+        # `frames` frames from every input frame, so the first photo filled the whole video.)
+        inputs += ["-i", str(p)]
         z = f"1+0.07*on/{frames}" if i % 2 == 0 else f"1.07-0.07*on/{frames}"
         filters.append(f"[{i}:v]scale={w * 2}:{h * 2}:force_original_aspect_ratio=increase,crop={w * 2}:{h * 2},"
                        f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={w}x{h}:fps={fps},"
@@ -118,10 +120,13 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
         f.write_text(wrap(hook, 26))
         draws.append(_drawtext(f, 0, min(3.5, total), "h*0.11", int(h * 0.028), box=True))
     filters.append("[base]" + (",".join(draws) if draws else "null") + "[out]")
+    # Voice at short-form loudness (about -14 LUFS), so every edit plays at the same level.
+    filters.append(f"[{len(paths)}:a]loudnorm=I={payload.get('loudness_lufs', -14)}:TP=-1.5:LRA=11,aresample=48000,"
+                   "aformat=sample_fmts=fltp:channel_layouts=stereo[aout]")
 
     out = work / "edit.mp4"
     cmd = ["ffmpeg", "-y", "-loglevel", "error", *inputs, "-i", str(wav), "-filter_complex", ";".join(filters),
-           "-map", "[out]", "-map", f"{len(paths)}:a", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+           "-map", "[out]", "-map", "[aout]", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", str(out)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0 or not out.exists():
