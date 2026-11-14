@@ -85,6 +85,14 @@ def appearance_prompt(bible: dict) -> str:
             f"{a['face']}, {a['eyes']}, {a['hair']}, {a['build']}, {a['signature_details']}")
 
 
+def photo_prompt(bible: dict, scene: str, *, trigger: str | None = None) -> str:
+    """The prompt for any photo of a creator: LoRA trigger, the full fixed appearance, then the scene.
+    Measured 2026-11-14 on Maren: a short description with her LoRA kept 0 of 12 images on
+    identity; the full appearance with the same LoRA kept 12 of 12."""
+    head = f"{trigger}, " if trigger else ""
+    return f"{head}candid smartphone photo of a {appearance_prompt(bible)}. Scene: {scene}. Natural skin texture, realistic."
+
+
 def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> CreatorBible:
     scope = policy.get("scope", default={})
     n = int(policy.get("creator_lab", "reference_prompts", default=12))

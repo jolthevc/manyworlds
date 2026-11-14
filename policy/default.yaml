@@ -121,6 +121,7 @@ review:
     effort: low
     confirm_role: judge
     confirm_effort: low
+    confirm_top_per_job: 2     # Opus confirms the best 2 screen passes per job (one prompt); 0 = all
     min_identity: 7
     min_realism: 6
     reference_images: 3        # creator reference photos shown with every review

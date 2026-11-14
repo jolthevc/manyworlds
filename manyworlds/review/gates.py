@@ -136,7 +136,13 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             res["accepted"] = all(res[g] for g in GATES)
             if res["accepted"]:
                 still.append(a)
-        remaining = still
+        # Only the best screen passes are worth a confirm: a post uses its top candidates.
+        # The rest stay accepted on the screen alone ("confirmed": False).
+        top = int(cfg.get("confirm_top_per_job", 0)) or len(still)
+        still.sort(key=lambda a: -((results[a["id"]]["identity_score"] or 0) + (results[a["id"]]["realism_score"] or 0)))
+        remaining = still[:top]
+    for r in results.values():
+        r["confirmed"] = r["accepted"] and len(r["stages"]) == len(stages)
     return [results[a["id"]] for a in assets]
 
 

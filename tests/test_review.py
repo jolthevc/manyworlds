@@ -151,3 +151,20 @@ def test_only_screen_passes_reach_the_stronger_confirm_and_it_can_still_reject(c
     accepted = conn.execute("""SELECT count(*) n FROM assets a WHERE a.job_id = %s AND NOT EXISTS
         (SELECT 1 FROM reviews r WHERE r.asset_id = a.id AND NOT r.passed)""", (job,)).fetchone()["n"]
     assert accepted == 1
+
+
+def test_confirm_goes_only_to_the_best_screen_passes(conn, policy, store, tmp_path):
+    _, job = creator_with_job(conn, store, tmp_path, n_images=4)
+    top = policy.get("review", "image", "confirm_top_per_job")
+    judge = JudgeStub([ok(identity=7), ok(identity=9), ok(identity=8), ok(identity=10)])
+    results = gates.review_job(conn, policy, judge, store, job, tmp_path)
+    assert judge.calls[1]["n"] == top
+    assert all(r["accepted"] for r in results)
+    best = sorted(range(4), key=lambda i: -judge.scores[i]["identity"])[:top]
+    assert [r["confirmed"] for r in results] == [i in best for i in range(4)]
+
+
+def test_photo_prompt_carries_the_full_appearance():
+    from manyworlds.creator.lab import photo_prompt
+    p = photo_prompt(BIBLE, "at a bus stop", trigger="mw_x")
+    assert p.startswith("mw_x, ") and "thin gold wire glasses" in p and "bus stop" in p
