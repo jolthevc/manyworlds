@@ -300,8 +300,15 @@ queue:
   connect_timeout_seconds: 20        # a rented host that can't reach the database fails fast
   startup_connect_attempts: 3        # then the worker destroys its own machine (Vast/RunPod)
 
+simulation:
+  # Sandbox learning tests (manyworlds.brain.simulation). fast_forward also publishes planned posts
+  # without making them, so the loop can be exercised in minutes; never applies to real creators.
+  fast_forward: false
+  ages_s: [3600, 21600, 86400, 259200]   # observation ages, matched by real ingestion (M4)
+
 autonomy:
-  publish: human_approval      # human_approval | sampled | autonomous
+  # autonomous (approved 2026-11-14) | human_approval | sampled | paused (the kill switch: nothing is published)
+  publish: autonomous
   comment_replies: disabled
 
 limits:                        # bounds the Brain may not cross without a human
