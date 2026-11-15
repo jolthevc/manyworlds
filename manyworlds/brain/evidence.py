@@ -32,7 +32,7 @@ def _label(row: dict) -> dict:
 
 
 def findings(conn, *, mode: Mode, scope: str | None = None, creator_id=None, cluster_id=None, market_id=None,
-             grades: tuple[str, ...] = GRADES) -> list[dict]:
+             grades: tuple[str, ...] = GRADES, statuses: tuple[str, ...] = ("open",)) -> list[dict]:
     if mode not in ("real", "sandbox"):
         raise ValueError(f"unknown evidence mode {mode!r}")
     filters = """ (%(scope)s::text IS NULL OR scope = %(scope)s)
@@ -40,9 +40,10 @@ def findings(conn, *, mode: Mode, scope: str | None = None, creator_id=None, clu
              AND (%(cluster)s::uuid IS NULL OR cluster_id = %(cluster)s)
              AND (%(market)s::uuid IS NULL OR market_id = %(market)s)
              AND grade = ANY(%(grades)s)
+             AND status = ANY(%(statuses)s)
 """
     params = {"scope": scope, "creator": creator_id, "cluster": cluster_id, "market": market_id,
-              "grades": list(grades)}
+              "grades": list(grades), "statuses": list(statuses)}
     sql = f"SELECT * FROM findings WHERE {filters}"
     if mode == "sandbox":
         sql += f" UNION ALL SELECT * FROM simulated_findings WHERE {filters}"
@@ -88,3 +89,25 @@ def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: st
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (scope, creator_id, cluster_id, market_id, statement, evidence, grade, effect, low, high, n,
          Jsonb(list(sources)))).fetchone()["id"]
+
+
+def record_simulated_metrics(conn, post_id, rows: list[dict], *, model: str, panel_version: str) -> None:
+    """Outcomes from the scenario engine; captured_at is the publication time plus each age."""
+    pub = conn.execute("SELECT coalesce(published_at, now()) AS t FROM posts WHERE id = %s", (post_id,)).fetchone()["t"]
+    with conn.transaction():
+        for r in rows:
+            conn.execute("INSERT INTO simulated_metrics (post_id, captured_at, post_age_s, model, panel_version, metrics) "
+                         "VALUES (%s, %s + make_interval(secs => %s), %s, %s, %s, %s)",
+                         (post_id, pub, r["post_age_s"], r["post_age_s"], model, panel_version,
+                          Jsonb(r["metrics"])))   # never the scenario's hidden truth (e.g. which posts broke out)
+
+
+def supersede(conn, *, creator_id) -> int:
+    """Close a creator's open creator-level analysis findings (both tables) when a new analysis replaces
+    them. Proven findings (experiments) and findings at other scopes are left alone."""
+    n = 0
+    for table in ("findings", "simulated_findings"):
+        n += conn.execute(f"UPDATE {table} SET status = 'superseded', updated_at = now() "
+                          "WHERE creator_id = %s AND status = 'open' AND scope = 'creator' AND grade <> 'proven'",
+                          (creator_id,)).rowcount
+    return n

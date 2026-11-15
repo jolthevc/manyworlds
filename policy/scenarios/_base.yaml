@@ -1,0 +1,9 @@
+# Shared defaults for every scenario (each scenario file overrides what it names). The simulated
+# audience is an engineering test of the learning loop, never evidence of real demand.
+base_reach: 900            # median 72 h reach of an ordinary post at the start
+growth_per_post: 0.0       # log-reach change per published post (account growth or decline)
+noise_sd: 0.35             # log-reach noise per post
+effects: []                # hidden truth: {dimension, per_point} | {format, lift} | {attribute, value, lift} | {format, dimension, per_point}
+breakout: {probability: 0.0, multiplier: 5.0}
+curve: {3600: 0.25, 21600: 0.55, 86400: 0.85, 259200: 1.0}   # share of 72 h reach reached at each age
+rates: {views: 1.6, likes: 0.055, comments: 0.004, saves: 0.008, shares: 0.005, follows: 0.003}   # per reach

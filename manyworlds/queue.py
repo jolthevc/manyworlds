@@ -92,6 +92,18 @@ def unclaim(conn, job_id, worker_id: str) -> None:
            WHERE id = %s AND worker_id = %s AND status = 'running'""", (job_id, worker_id))
 
 
+def claim_job(conn, job_id, worker_id: str, lease_seconds: int) -> Job | None:
+    """Claim one specific runnable job (e.g. a sandbox run draining only its own creator's jobs)."""
+    row = conn.execute(
+        """UPDATE jobs SET status = 'running', attempts = attempts + 1, worker_id = %(worker)s,
+                          lease_until = now() + make_interval(secs => %(lease)s), updated_at = now()
+           WHERE id = %(id)s AND attempts < max_attempts
+             AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
+           RETURNING id, kind, payload, attempts, max_attempts, creator_id, batch""",
+        {"worker": worker_id, "lease": lease_seconds, "id": job_id}).fetchone()
+    return Job(**row) if row else None
+
+
 def heartbeat(conn, job_id, worker_id: str, lease_seconds: int) -> bool:
     """Extend the lease. False means the job was lost to another worker: stop work on it."""
     row = conn.execute(

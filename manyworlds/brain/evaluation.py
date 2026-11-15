@@ -62,7 +62,8 @@ def _blocks(content: list) -> list[dict]:
 
 def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: int, creator_id=None) -> Scored:
     schema = schema_for(r)
-    prompt = [{"type": "text", "text": r.as_text()}, *_blocks(content),
+    # The rubric is the same for every item: cached, so repeat calls pay a fraction of its tokens.
+    prompt = [{"type": "text", "text": r.as_text(), "cache_control": {"type": "ephemeral"}}, *_blocks(content),
               {"type": "text", "text": f"Score every dimension of the {r.rubric} rubric for this item."}]
     per_dim: dict[str, list[int]] = {d.key: [] for d in r.dimensions}
     why: dict[str, list[str]] = {d.key: [] for d in r.dimensions}

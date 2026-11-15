@@ -59,3 +59,16 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 | A post linked to two ideas (from `from_post` and a scheduled idea) appears twice in the showrunner's recent posts | — | `brain/agents/showrunner.py` |
 | Scheduled posts record the creator's profile version at scheduling time, not the version the batch was planned under | M6 | `brain/ideas.py` |
 | Only `signature` (and keyed canon) close older facts; seeded places/people have no keys, so a moved home relies on the showrunner setting `canon_key` | — | `brain/memory.py` |
+
+## Simulated loop and analyst (Brain M5), deferred minors
+
+| Item | Before | Where |
+|---|---|---|
+| Trend bias during baseline warm-up could show as a dimension slope when scores drift over time; only the format-shift case is tested | M6 | `brain/analysis.py` `normalise` |
+| Re-analysing every period gives repeated looks: transient tentative findings can appear in a null world; consider requiring persistence across two analyses | M6 (experiments) | `brain/analysis.py`, analyst |
+| Effects are marginal (a dimension correlated with a format picks up the format's effect); say so in the analyst prompt or adjust | M6 | `brain/analysis.py` |
+| Baseline is account-wide, not per format (spec 4.5 says per account and format); intentional so format effects share a baseline | — | `brain/analysis.py` |
+| If `simulate_post` fails after a post is marked simulated, that post never gets outcomes; check-then-insert can duplicate under concurrent runs | — | `publish/scheduler.py`, `brain/simulation.py` |
+| Stall recovery retries every `retry_after_hours` indefinitely (one event per period), bounded only by budget | — | `brain/showrunner_loop.py` |
+| Small: `Claude` built twice in the CLI; a paused producer prints every loop; `sandbox.clone` crashes on an unknown handle; findings queried twice in the showrunner prompt; `effects()` writes `y` into the caller's rows | — | various |
+| `human_approval` / `sampled` hold real posts but no approval flow exists yet | before switching from autonomous | `publish/scheduler.py` |

@@ -176,3 +176,36 @@ def test_stored_evaluations_carry_the_computed_prompt_version(conn, policy):
     eid = evaluator.evaluate_idea(_ctx(conn, policy, ScoringLLM(conn=conn)), idea)
     assert conn.execute("SELECT prompt_version FROM evaluations WHERE id = %s", (eid,)).fetchone()["prompt_version"] == \
         evaluation.prompt_version(policy)
+
+
+# --- live-run fixes (2026-11-14) -------------------------------------------------------------------
+
+def _check_everything(policy):
+    ev = {**policy.body["brain"]["evaluation"], "check_rate": 1.0}
+    return dataclasses.replace(policy, body={**policy.body, "brain": {**policy.body["brain"], "evaluation": ev}})
+
+
+def test_a_refused_check_never_blocks_the_idea(conn, policy):
+    from manyworlds.llm import Refused
+
+    class RefusingCheck(ScoringLLM):
+        def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
+            if role == "evaluator_check":
+                raise Refused("declined (reasoning_extraction)")
+            return super().structured(role, system=system, content=content, schema=schema)
+    pol = _check_everything(policy)
+    idea = ideas.from_post(conn, planned_post(conn, creator(conn)))
+    evaluator.evaluate_idea(_ctx(conn, pol, RefusingCheck(conn=conn)), idea)
+    rows = conn.execute("SELECT role, rationale FROM evaluations WHERE idea_id = %s", (idea,)).fetchall()
+    assert [r["role"] for r in rows] == ["evaluator"]
+
+
+def test_the_check_scores_once_and_the_rubric_prefix_is_cached(conn, policy):
+    pol = _check_everything(policy)
+    idea = ideas.from_post(conn, planned_post(conn, creator(conn)))
+    llm = ScoringLLM(conn=conn)
+    evaluator.evaluate_idea(_ctx(conn, pol, llm), idea)
+    check = conn.execute("SELECT samples FROM evaluations WHERE role = 'evaluator_check'").fetchone()
+    assert check["samples"] == pol.get("brain", "evaluation", "check_samples") == 1
+    first = llm.calls[0]["content"]
+    assert first[0].get("cache_control") == {"type": "ephemeral"} and "RUBRIC" in first[0]["text"]

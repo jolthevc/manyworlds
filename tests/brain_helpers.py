@@ -81,3 +81,33 @@ def planned_post(conn, creator_id, **body):
     return conn.execute("INSERT INTO posts (creator_id, format, status, caption, body) "
                         "VALUES (%s, 'photo', 'planned', 'first night, best pasta of my life', %s) RETURNING id",
                         (creator_id, Jsonb(b))).fetchone()["id"]
+
+
+def sandbox_history(conn, policy, n: int, *, scenario: str = "personality_wins", seed: int = 0, cid=None):
+    """A sandbox creator with n simulated publications: posts with scored ideas and scenario outcomes."""
+    import random
+    from datetime import datetime, timedelta, timezone
+
+    from psycopg.types.json import Jsonb
+
+    from manyworlds.brain import simulation
+    cid = cid or creator(conn, publish_mode="simulated")
+    rng = random.Random(f"history:{seed}")
+    t0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    for i in range(n):
+        fmt = rng.choice(["photo", "carousel", "story", "story_clip"])
+        scores = {d: rng.randint(2, 9) for d in ("personality", "aspiration", "novelty", "naturalness")}
+        when = t0 + timedelta(hours=8 * i)
+        post = conn.execute("INSERT INTO posts (creator_id, format, status, caption, body, scheduled_for, published_at) "
+                            "VALUES (%s, %s, 'simulated', 'SECRET CAPTION TEXT', '{}', %s, %s) RETURNING id",
+                            (cid, fmt, when, when)).fetchone()["id"]
+        idea = conn.execute("INSERT INTO ideas (creator_id, concept, format, status, post_id, attributes) "
+                            "VALUES (%s, 'x', %s, 'scheduled', %s, %s) RETURNING id",
+                            (cid, fmt, post, Jsonb({"mood": rng.choice(["warm", "dry"])}))).fetchone()["id"]
+        conn.execute("INSERT INTO evaluations (item_kind, idea_id, creator_id, rubric, rubric_version, evaluator_model, "
+                     "prompt_version, scores, samples, role) VALUES ('idea', %s, %s, 'idea', 1, 'm', 'p', %s, 3, 'evaluator')",
+                     (idea, cid, Jsonb(scores)))
+        conn.execute("INSERT INTO publications (post_id, platform, simulated, published_at) VALUES (%s, 'simulated', true, %s)",
+                     (post, when))
+        simulation.simulate_post(conn, policy, post, scenario=scenario, seed=seed)
+    return cid

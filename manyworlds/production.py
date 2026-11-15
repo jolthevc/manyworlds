@@ -12,7 +12,7 @@ A scene whose job failed, or whose images were all rejected, gets a new job with
 Narrated edits and story clips are made from the chosen photos once all are chosen; a story clip
 must also pass the video review gate (manyworlds.review.video), with review.video.max_repairs_per_post
 new seeds before the post is dropped.
-`ready` posts wait for approval (policy autonomy.publish) before anything is published.
+`ready` posts are published by manyworlds.publish.scheduler per policy autonomy.publish (autonomous, or held).
 Only formats listed in production.formats are made; video posts wait as 'planned' until their
 format is added there.
 """

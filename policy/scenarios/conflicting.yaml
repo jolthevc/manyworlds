@@ -1,0 +1,4 @@
+description: Aspiration helps photos and hurts story clips; pooled, the effect nearly cancels.
+effects:
+  - {format: photo, dimension: aspiration, per_point: 0.2}
+  - {format: story_clip, dimension: aspiration, per_point: -0.2}

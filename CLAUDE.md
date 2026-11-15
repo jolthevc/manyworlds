@@ -66,4 +66,5 @@ GPU machines: `mw autoscale` (loop) or `mw autoscale --once`; always-on: `docker
 - Brain M1 (foundations) merged 2026-11-14: agent runtime, decisions, per-agent budgets, real/simulated wall, overrides + approvals. Plan: `docs/superpowers/plans/2026-11-14-brain-roadmap.md`. Known debt: `docs/tech-debt.md`.
 - Brain M2 (creative evaluation) merged 2026-11-14: rubrics in `policy/rubrics/`, evaluator agent, `mw brain calibrate`, `mw brain rubric-drift`.
 - Brain M3 (memory + showrunner) merged 2026-11-14: the producer asks the showrunner for batches (`brain.showrunner.enabled`); ideas are scored before they become posts; Stories (9:16).
-- Next: Brain M4 (Instagram publishing and metrics; needs the account), M5 simulated loop, M6 learning.
+- Brain M5 (simulated closed loop) merged 2026-11-14: publisher interface + kill switch, scenario engine (`policy/scenarios/`), analyst (`brain/analysis.py` + agent), `mw brain simulate` / `mw brain learning`. Sandbox runs use their own budget and never touch real creators.
+- Next: Brain M4 (Instagram publishing and metrics; needs the account), M6 learning (experiments, Thompson exploration, rubric validity).

@@ -1,0 +1,6 @@
+description: >-
+  Posts that express the creator's personality grow reach; story clips underperform; rare breakouts.
+effects:
+  - {dimension: personality, per_point: 0.18}
+  - {format: story_clip, lift: -0.5}
+breakout: {probability: 0.03, multiplier: 4.0}

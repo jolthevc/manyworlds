@@ -66,6 +66,7 @@ job_kinds:
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
+  brain.analyst:   {pools: [local], outputs_per_job: 0}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
@@ -217,14 +218,18 @@ creators:
 # The Brain (docs/superpowers/specs/2026-11-14-brain-design.md): agents run as brain.<agent> jobs on the
 # control host. Daily LLM budgets per agent sit inside the master operating budget.
 brain:
-  llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0}
+  llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 6.0}   # sandbox: all test runs together
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
-  evaluation: {samples: 3, check_rate: 0.1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
+  evaluation: {samples: 3, check_rate: 0.1, check_samples: 1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
-  showrunner: {enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, effort: medium}
+  showrunner: {enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
+  # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
+  # graded tentative only past a Bonferroni-corrected interval at family-wide alpha with min_n_tentative posts.
+  analysis: {target_age_s: 259200, min_n_any: 8, min_n_tentative: 20, min_group: 5, min_group_tentative: 10, bootstrap: 300, alpha: 0.1,
+             baseline_window: 20, min_baseline: 3, breakout_ratio: 3.0}
   # What the Brain may change on its own (manyworlds.brain.overrides), with inclusive bounds; `*` is one
   # path segment. Anything else, and always `limits.*` and `budget.master*`, waits for owner approval.
   authority:
@@ -300,8 +305,18 @@ queue:
   connect_timeout_seconds: 20        # a rented host that can't reach the database fails fast
   startup_connect_attempts: 3        # then the worker destroys its own machine (Vast/RunPod)
 
+publishing:
+  max_late_hours: 6            # a real post later than this is left ready, not sent in a burst with others
+
+simulation:
+  # Sandbox learning tests (manyworlds.brain.simulation). fast_forward also publishes planned posts
+  # without making them, so the loop can be exercised in minutes; never applies to real creators.
+  fast_forward: false
+  ages_s: [3600, 21600, 86400, 259200]   # observation ages, matched by real ingestion (M4)
+
 autonomy:
-  publish: human_approval      # human_approval | sampled | autonomous
+  # autonomous (approved 2026-11-14) | human_approval | sampled | paused (the kill switch: nothing is published)
+  publish: autonomous
   comment_replies: disabled
 
 limits:                        # bounds the Brain may not cross without a human
