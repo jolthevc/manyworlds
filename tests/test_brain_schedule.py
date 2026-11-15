@@ -196,3 +196,15 @@ def test_a_period_whose_analysis_is_running_is_left_alone(conn, policy):
     cid = _creator(conn)
     queue.enqueue(conn, "brain.analyst", {"creator_id": str(cid), "then_plan": "2026-11-20"}, creator_id=cid)
     assert showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc)) == []
+
+
+def test_an_idea_whose_evaluation_failed_for_good_is_dropped_without_waiting(conn, policy):
+    from manyworlds import queue
+    cid = _creator(conn)
+    _idea(conn, cid, 0)
+    dead = _idea(conn, cid, 1, evaluated=False)
+    j = queue.enqueue(conn, "brain.evaluator", {"idea_id": str(dead)}, creator_id=cid)
+    conn.execute("UPDATE jobs SET status = 'failed' WHERE id = %s", (j,))
+    out = ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
+    assert out["scheduled"] == 1 and out["dropped"] == 1
+    assert conn.execute("SELECT status FROM ideas WHERE id = %s", (dead,)).fetchone()["status"] == "dropped"

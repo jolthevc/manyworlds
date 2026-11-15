@@ -60,10 +60,15 @@ def schedule_ready(conn, policy, *, now) -> dict:
                           "AND batch IS NOT NULL GROUP BY batch, creator_id ORDER BY 3").fetchall():
         rows = conn.execute(
             """SELECT i.id, i.format, i.body, EXISTS (SELECT 1 FROM evaluations e WHERE e.idea_id = i.id
-                                                      AND e.role = 'evaluator') AS evaluated
+                                                      AND e.role = 'evaluator') AS evaluated,
+                      EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'brain.evaluator' AND j.payload->>'idea_id' = i.id::text
+                              AND j.status IN ('failed', 'dead'))
+                      AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'brain.evaluator'
+                              AND j.payload->>'idea_id' = i.id::text AND j.status IN ('queued', 'running')) AS unevaluable
                FROM ideas i WHERE i.batch = %s AND i.status = 'proposed' ORDER BY (i.body->>'day')::int, i.created_at""",
             (b["batch"],)).fetchall()
-        if not all(r["evaluated"] for r in rows) and now - b["oldest"] < max_wait:
+        # Wait for evaluations still possible; an idea whose evaluation failed for good is dropped now.
+        if not all(r["evaluated"] or r["unevaluable"] for r in rows) and now - b["oldest"] < max_wait:
             continue
         start = date.fromisoformat(b["batch"].rsplit(":", 1)[1])
         ready = [r for r in rows if r["evaluated"]]
@@ -72,7 +77,7 @@ def schedule_ready(conn, policy, *, now) -> dict:
             for r in rows:
                 if not r["evaluated"]:
                     conn.execute("UPDATE ideas SET status = 'dropped', updated_at = now(), "
-                                 "body = body || '{\"drop_reason\": \"not evaluated in time\"}' "
+                                 "body = body || '{\"drop_reason\": \"not evaluated (failed or timed out)\"}' "
                                  "WHERE id = %s AND status = 'proposed'", (r["id"],))
                     out["dropped"] += 1
             times = planner.slot_times(policy, start, [int(r["body"].get("day", 0)) for r in ready])

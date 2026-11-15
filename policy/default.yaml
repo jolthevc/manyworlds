@@ -223,7 +223,7 @@ brain:
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
-  evaluation: {samples: 3, check_rate: 0.1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
+  evaluation: {samples: 3, check_rate: 0.1, check_samples: 1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects

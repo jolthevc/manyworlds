@@ -17,7 +17,9 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from ... import storage
-from ...llm import image_block
+import logging
+
+from ...llm import Refused, image_block
 from ...creator import profile
 from ...review import common as review_common
 from .. import evaluation, rubrics
@@ -25,6 +27,7 @@ from ..agent import AgentContext, register, remember
 
 # What the evaluator may know about the creator: who they are, who follows them and why, what they
 # post about. From the current profile (versioned); the bible only for creators without one.
+log = logging.getLogger("manyworlds.brain.evaluator")
 _BIBLE_FIELDS = ("display_name", "one_line", "caption_voice", "voice_notes", "personality", "interests", "never")
 
 
@@ -51,8 +54,17 @@ def score_and_store(conn, policy, llm, rubric_name: str, item_kind: str, content
     rubrics.register(conn, r)
     roles = ["evaluator"] + (["evaluator_check"] if evaluation.checked(item_key, float(cfg.get("check_rate", 0)))
                              else [])
-    scored = [(role, evaluation.score(llm, policy, r, content, role=role, samples=int(cfg.get("samples", 3)),
-                                      creator_id=creator_id)) for role in roles]
+    scored = []
+    for role in roles:
+        samples = int(cfg.get("check_samples", 1) if role == "evaluator_check" else cfg.get("samples", 3))
+        try:
+            scored.append((role, evaluation.score(llm, policy, r, content, role=role, samples=samples,
+                                                  creator_id=creator_id)))
+        except Refused:
+            if role != "evaluator_check":
+                raise
+            # The strong-model check only measures agreement; a (mistaken) refusal there never blocks the idea.
+            log.warning("evaluator_check refused item %s; volume evaluation kept", item_key)
     for _, s in scored:   # dimensions the evaluator had no basis for are null, never a guess
         for d in null_dimensions:
             s.medians[d], s.spreads[d] = None, None
