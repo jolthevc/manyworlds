@@ -97,6 +97,14 @@ def main(argv: list[str] | None = None) -> int:
     bcal = bsub.add_parser("calibrate", help="score a creator's latest posts as ideas; noise per dimension")
     bcal.add_argument("creator")
     bcal.add_argument("--posts", type=int, default=12)
+    bsim = bsub.add_parser("simulate", help="run the closed learning loop on a sandbox creator (fast-forward, SIMULATED)")
+    bsim.add_argument("creator")
+    bsim.add_argument("--batches", type=int, default=3)
+    bsim.add_argument("--clone-from", help="create the sandbox creator as a copy of this creator first")
+    bsim.add_argument("--scenario", default="personality_wins")
+    bsim.add_argument("--seed", type=int, default=0)
+    blearn = bsub.add_parser("learning", help="what the Brain learned for a creator and how its plans used it")
+    blearn.add_argument("creator")
 
     args = p.parse_args(argv)
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -177,6 +185,21 @@ def _brain_ops(args, conn, pol) -> int:
                 raise SystemExit("--decide needs --approve or --reject")
             ops.decide(conn, args.decide, approved=args.approve, by="owner")
         _print(ops.approvals(conn))
+        return 0
+    if args.brain_cmd == "learning":
+        from .brain import sandbox
+        _print(sandbox.learning_trace(conn, _creator_id(conn, args.creator)))
+        return 0
+    llm = Claude(conn, pol)
+    if args.brain_cmd == "simulate":
+        from .brain import sandbox
+        if args.clone_from and not conn.execute("SELECT 1 FROM creators WHERE handle = %s", (args.creator,)).fetchone():
+            sandbox.clone(conn, args.clone_from, args.creator, scenario=args.scenario, seed=args.seed)
+        cid = _creator_id(conn, args.creator)
+        runs = sandbox.run_batches(conn, pol, llm, cid, batches=args.batches,
+                                   worker_id=f"sandbox-{socket.gethostname()}-{os.getpid()}")
+        _print({"note": "SIMULATED: images are not generated in fast-forward; outcomes come from the scenario engine",
+                "runs": runs, "llm_usd": llm.spent})
         return 0
     llm = Claude(conn, pol)
     if args.brain_cmd in ("rubric-drift", "calibrate"):
@@ -262,6 +285,12 @@ def _produce(args, conn, pol, llm) -> int:
             planned = planner.ensure_plans(conn, pol, llm)
         result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
                   "planned": planned, **production.advance(conn, pol)}
+        from datetime import datetime as _dt, timezone as _tz
+
+        from .publish import scheduler
+        published = scheduler.publish_due(conn, pol, now=_dt.now(_tz.utc))
+        if published.get("simulated") or published.get("published") or published.get("paused"):
+            result["published"] = published
         if any(result.values()) or not args.loop:
             _print(result)
         if not args.loop:

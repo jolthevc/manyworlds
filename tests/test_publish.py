@@ -26,8 +26,14 @@ def _with(policy, path, value):
     return dataclasses.replace(policy, body=body)
 
 
-def test_sandbox_posts_are_simulated_not_published(conn, policy):
+def _sim(conn):
     cid = creator(conn, publish_mode="simulated")
+    conn.execute("UPDATE creators SET anchors = '{\"simulation\": {\"scenario\": \"null\"}}' WHERE id = %s", (cid,))
+    return cid
+
+
+def test_sandbox_posts_are_simulated_not_published(conn, policy):
+    cid = _sim(conn)
     due, later = _post(conn, cid), _post(conn, cid, when=NOW + timedelta(hours=2))
     out = scheduler.publish_due(conn, policy, now=NOW)
     assert out["simulated"] == 1
@@ -40,7 +46,7 @@ def test_sandbox_posts_are_simulated_not_published(conn, policy):
 
 
 def test_the_kill_switch_stops_publishing(conn, policy):
-    cid = creator(conn, publish_mode="simulated")
+    cid = _sim(conn)
     _post(conn, cid)
     out = scheduler.publish_due(conn, _with(policy, ("autonomy", "publish"), "paused"), now=NOW)
     assert out == {"paused": True} and conn.execute("SELECT count(*) n FROM publications").fetchone()["n"] == 0
@@ -55,8 +61,17 @@ def test_real_creators_wait_for_the_instagram_adapter(conn, policy):
 
 
 def test_fast_forward_is_sandbox_only(conn, policy):
-    sandbox, real = creator(conn, publish_mode="simulated"), creator(conn, publish_mode="instagram")
+    sandbox, real = _sim(conn), creator(conn, publish_mode="instagram")
     a, b = _post(conn, sandbox, status="planned"), _post(conn, real, status="planned")
     scheduler.publish_due(conn, _with(policy, ("simulation", "fast_forward"), True), now=NOW)
     status = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM posts").fetchall()}
     assert status[a] == "simulated" and status[b] == "planned"
+
+
+def test_a_creator_waiting_for_their_account_keeps_their_posts(conn, policy):
+    # Maren: sandbox only until her Instagram account is connected; her posts wait for it.
+    cid = creator(conn, publish_mode="simulated")
+    post = _post(conn, cid)
+    out = scheduler.publish_due(conn, policy, now=NOW)
+    assert out["waiting_for_account"] == 1
+    assert conn.execute("SELECT status FROM posts WHERE id = %s", (post,)).fetchone()["status"] == "ready"
