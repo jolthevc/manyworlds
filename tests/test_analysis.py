@@ -72,3 +72,23 @@ def test_conflicting_signals_show_per_format(policy):
     assert by[("format_dimension", "photo:aspiration")]["effect"] > 0
     assert by[("format_dimension", "story_clip:aspiration")]["effect"] < 0
     assert by[("dimension", "aspiration")]["grade"] != "tentative"
+
+
+def test_posts_younger_than_the_target_age_are_left_out(conn, policy):
+    from manyworlds.brain import evidence
+    from brain_helpers import sandbox_history
+    cid = sandbox_history(conn, policy, 12, scenario="null")
+    assert len(analysis.dataset(conn, cid, mode="sandbox", policy=policy)) == 12
+    post = conn.execute("INSERT INTO posts (creator_id, format, status, published_at) "
+                        "VALUES (%s, 'photo', 'simulated', now()) RETURNING id", (cid,)).fetchone()["id"]
+    evidence.record_simulated_metrics(conn, post, [{"post_age_s": 3600, "metrics": {"reach": 10}}],
+                                      model="m", panel_version="v")
+    assert str(post) not in [r["post_id"] for r in analysis.dataset(conn, cid, mode="sandbox", policy=policy)]
+
+
+def test_small_groups_are_never_tentative(policy):
+    rows = _rows(policy, "format_flop", 60, formats=("photo", "carousel"))
+    for r in rows[:-4]:
+        r["format"] = "photo"
+    r = analysis.effects(analysis.normalise(rows, policy), policy, seed=1)
+    assert ("format", "carousel") not in _graded(r)

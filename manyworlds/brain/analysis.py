@@ -29,8 +29,8 @@ def _cfg(policy: Policy) -> dict:
 
 
 def dataset(conn, creator_id, *, mode: evidence.Mode, policy: Policy) -> list[dict]:
-    """Published (or simulated) posts in time order with their idea's scores and attributes and their
-    reach at the target age (the latest observation not after it), read in the creator's mode."""
+    """Published (or simulated) posts in time order with their idea's scores and attributes and their reach
+    at the target age, read in the creator's mode. Posts not yet observed at the target age are left out."""
     target = int(_cfg(policy).get("target_age_s", 259200))
     posts = conn.execute(
         """SELECT p.id, p.published_at, p.format, i.attributes, e.scores
@@ -46,6 +46,8 @@ def dataset(conn, creator_id, *, mode: evidence.Mode, policy: Policy) -> list[di
         if not obs:
             continue
         latest = max(obs, key=lambda m: m["post_age_s"])
+        if latest["post_age_s"] < target:
+            continue   # too young: its reach is still a fraction of what it will be, and would read as failure
         rows.append({"post_id": str(p["id"]), "published_at": p["published_at"], "format": p["format"],
                      "scores": p["scores"] or {}, "attributes": p["attributes"] or {},
                      "reach": latest["metrics"].get("reach"), "age_s": latest["post_age_s"]})
@@ -128,12 +130,14 @@ def effects(rows: list[dict], policy: Policy, *, seed: int = 0) -> dict:
     alpha = float(cfg.get("alpha", 0.1))
     z_family = NormalDist().inv_cdf(1 - alpha / (2 * m))     # Bonferroni across everything tested
     min_tentative = int(cfg.get("min_n_tentative", 20))
+    min_group_tentative = int(cfg.get("min_group_tentative", 10))   # each side of a group comparison
     for kind, key, pairs, stat in candidates:
         est, se = stat(pairs), _bootstrap_se(pairs, stat, draws, rng)
         if est is None or se is None:
             continue
         low, high = est - z_family * se, est + z_family * se
-        tentative = len(pairs) >= min_tentative and (low > 0 or high < 0)
+        smallest = len(pairs) if stat is _slope else min(sum(1 for g, _ in pairs if g), sum(1 for g, _ in pairs if not g))
+        tentative = (len(pairs) >= min_tentative and smallest >= min_group_tentative and (low > 0 or high < 0))
         result["effects"].append({"kind": kind, "key": key, "effect": round(est, 4), "se": round(se, 4),
                                   "low": round(low, 4), "high": round(high, 4), "n": len(pairs),
                                   "grade": "tentative" if tentative else "speculative"})

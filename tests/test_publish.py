@@ -75,3 +75,37 @@ def test_a_creator_waiting_for_their_account_keeps_their_posts(conn, policy):
     out = scheduler.publish_due(conn, policy, now=NOW)
     assert out["waiting_for_account"] == 1
     assert conn.execute("SELECT status FROM posts WHERE id = %s", (post,)).fetchone()["status"] == "ready"
+
+
+class FakeInstagram:
+    platform = "instagram"
+
+    def publish(self, conn, policy, post):
+        return {"external_id": "ig1", "permalink": "https://instagram.example/p/1", "ai_label": True, "simulated": False}
+
+
+def test_real_posts_wait_unless_publishing_is_autonomous(conn, policy, monkeypatch):
+    monkeypatch.setitem(scheduler.PUBLISHERS, "instagram", FakeInstagram())
+    cid = creator(conn, publish_mode="instagram")
+    post = _post(conn, cid)
+    out = scheduler.publish_due(conn, _with(policy, ("autonomy", "publish"), "human_approval"), now=NOW)
+    assert out["awaiting_approval"] == 1
+    assert scheduler.publish_due(conn, policy, now=NOW)["published"] == 1
+    assert conn.execute("SELECT status FROM posts WHERE id = %s", (post,)).fetchone()["status"] == "published"
+
+
+def test_stale_real_posts_are_not_dumped_all_at_once(conn, policy, monkeypatch):
+    monkeypatch.setitem(scheduler.PUBLISHERS, "instagram", FakeInstagram())
+    cid = creator(conn, publish_mode="instagram")
+    late = float(policy.get("publishing", "max_late_hours"))
+    old = _post(conn, cid, when=NOW - timedelta(hours=late + 1))
+    out = scheduler.publish_due(conn, policy, now=NOW)
+    assert out["stale"] == 1
+    assert conn.execute("SELECT status FROM posts WHERE id = %s", (old,)).fetchone()["status"] == "ready"
+
+
+def test_paused_creators_publish_nothing(conn, policy):
+    cid = _sim(conn)
+    conn.execute("UPDATE creators SET status = 'paused' WHERE id = %s", (cid,))
+    _post(conn, cid)
+    assert scheduler.publish_due(conn, policy, now=NOW).get("simulated", 0) == 0

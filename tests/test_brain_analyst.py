@@ -15,7 +15,7 @@ class AnalystLLM(StubLLM):
         super().structured(role, system=system, content=content, schema=schema)
         if schema is analyst.Analysis:
             return schema.model_validate({
-                "hypotheses": [{"statement": "Posts that show more of her personality reach more people.",
+                "hypotheses": [{"statement": "Posts that show more of her personality reach more people.", "direction": "positive",
                                 "supports": ["dimension:personality"], "how_to_confirm": "alternate high/low"}],
                 "guidance": {"more_of": ["personality-led moments"], "less_of": ["story clips"],
                              "explore": ["day-off outdoor scenes"], "notes": "n is modest; keep a third exploratory"}})
@@ -87,3 +87,22 @@ def test_the_analyst_hands_the_period_to_the_showrunner(conn, policy):
     _, job = _run(conn, policy, "analyst", {"creator_id": str(cid), "then_plan": "2026-11-20"}, AnalystLLM(conn=conn))
     nxt = conn.execute("SELECT payload, parent_job_id FROM jobs WHERE kind = 'brain.showrunner'").fetchone()
     assert nxt["payload"]["start"] == "2026-11-20" and nxt["parent_job_id"] == job
+
+
+def test_simulated_guidance_never_reaches_a_real_plan(conn, policy):
+    cid = sandbox_history(conn, policy, 90)
+    _run(conn, policy, "analyst", {"creator_id": str(cid)}, AnalystLLM(conn=conn))
+    conn.execute("UPDATE creators SET publish_mode = 'instagram' WHERE id = %s", (cid,))
+    assert analyst.latest(conn, cid) is None
+
+
+def test_a_hypothesis_that_contradicts_its_effect_is_not_recorded(conn, policy):
+    class Wrong(AnalystLLM):
+        def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
+            out = super().structured(role, system=system, content=content, schema=schema)
+            if schema is analyst.Analysis:
+                out.hypotheses[0].direction = "negative"
+            return out
+    cid = sandbox_history(conn, policy, 90)
+    out, _ = _run(conn, policy, "analyst", {"creator_id": str(cid)}, Wrong(conn=conn))
+    assert out["finding_ids"] == []

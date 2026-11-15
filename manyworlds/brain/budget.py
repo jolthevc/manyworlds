@@ -15,15 +15,18 @@ class OverBudget(NonRetryable):
 
 
 def spent_today(conn, agent: str) -> float:
-    """This UTC day's LLM spend charged to `agent`."""
+    """This UTC day's LLM spend charged to `agent` (all sandbox agents together for a `sandbox:` tag)."""
+    match = "sandbox:%" if agent.startswith("sandbox:") else agent
     row = conn.execute(
-        "SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE agent = %s AND category = 'llm' "
-        "AND created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'", (agent,)).fetchone()
+        "SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE agent LIKE %s AND category = 'llm' "
+        "AND created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'", (match,)).fetchone()
     return float(row["u"])
 
 
 def daily_cap(policy: Policy, agent: str) -> float:
     caps = policy.get("brain", "llm_usd_per_day", default={}) or {}
+    if agent.startswith("sandbox:"):
+        return float(caps.get("sandbox", 0))
     return float(caps.get(agent, caps.get("default", 0)))
 
 
@@ -36,3 +39,16 @@ def check(conn, policy: Policy, agent: str) -> None:
     if left <= 0:
         raise OverBudget(f"agent {agent} is over its daily LLM budget of ${daily_cap(policy, agent):.2f} "
                          f"(spent ${spent_today(conn, agent):.2f})")
+
+
+SANDBOX = "sandbox:"
+
+
+def tag_for(conn, agent: str, creator_id) -> str:
+    """The ledger tag and budget an agent's job is charged to: `sandbox:<agent>` for sandbox test creators
+    (they have a scenario), so test runs share one sandbox budget and never use up real agents' budgets."""
+    if creator_id is None:
+        return agent
+    row = conn.execute("SELECT anchors->'simulation'->>'scenario' AS s FROM creators WHERE id = %s",
+                       (creator_id,)).fetchone()
+    return f"{SANDBOX}{agent}" if row and row["s"] else agent

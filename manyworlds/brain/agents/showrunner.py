@@ -91,7 +91,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
-        f"{json.dumps({'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
+        f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
         f"Days: {day_names} (weekly rituals happen on their weekday). "
         f"Plan about {counts['total']} posts and Stories over {days} days (day 0 to {days - 1}): "
         f"{counts['per_platform']} per platform; about {counts['videos']} videos "

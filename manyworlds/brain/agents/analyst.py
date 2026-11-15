@@ -14,6 +14,8 @@ findings are SIMULATED: an engineering test of the loop, never evidence of deman
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from ...worker.runner import NonRetryable
@@ -32,6 +34,7 @@ into a formula: ordinary moments stay part of a creator's life."""
 
 class Hypothesis(BaseModel):
     statement: str = Field(description="one sentence, evidence-qualified")
+    direction: Literal["positive", "negative"] = Field(description="the sign of the effect the statement claims")
     supports: list[str] = Field(description="effect ids from the table that support it, as kind:key")
     how_to_confirm: str = Field(description="what the next batches could do to test it")
 
@@ -81,6 +84,8 @@ def analyse(ctx: AgentContext, creator_id) -> dict:
             effects = [by_id[s] for s in h.supports if s in by_id]
             if not effects:
                 continue   # a hypothesis citing nothing in the table isn't a finding
+            if any((e["effect"] > 0) != (h.direction == "positive") for e in effects):
+                continue   # a statement that contradicts the numbers it cites isn't a finding
             best = max(effects, key=lambda e: (e["grade"] == "tentative", abs(e["effect"]) / (e["se"] or 1)))
             fid = evidence.record_finding(
                 ctx.conn, scope="creator", creator_id=creator_id, statement=h.statement, evidence=evidence_kind,
@@ -94,9 +99,11 @@ def analyse(ctx: AgentContext, creator_id) -> dict:
 
 
 def latest(conn, creator_id) -> dict | None:
-    """The creator's most recent analysis decision (id and output), for the showrunner."""
+    """The creator's most recent analysis made in their current evidence mode: a creator who left the
+    sandbox never plans on simulated guidance."""
     return conn.execute("SELECT id, output FROM decisions WHERE kind = 'analysis' AND creator_id = %s "
-                        "ORDER BY created_at DESC LIMIT 1", (creator_id,)).fetchone()
+                        "AND output->>'mode' = %s ORDER BY created_at DESC LIMIT 1",
+                        (creator_id, evidence.mode_for(conn, creator_id))).fetchone()
 
 
 class Analyst:

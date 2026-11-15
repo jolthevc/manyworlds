@@ -25,12 +25,13 @@ class LoopLLM(StubLLM):
         super().structured(role, system=system, content=content, schema=schema)
         if schema is analyst.Analysis:
             return schema.model_validate({
-                "hypotheses": [{"statement": "Personality-led posts may reach more people.",
+                "hypotheses": [{"statement": "Personality-led posts may reach more people.", "direction": "positive",
                                 "supports": ["dimension:personality"], "how_to_confirm": "more of them"}],
-                "guidance": {"more_of": ["personality"], "less_of": [], "explore": ["new places"], "notes": "modest n"}})
+                "guidance": {"more_of": ["LEARNED-personality"], "less_of": [], "explore": ["new places"],
+                             "notes": "modest n"}})
         if schema is showrunner.IdeaBatch:
             self.batch += 1
-            led = "personality" in str(content) and "more_of" in str(content)
+            led = "LEARNED-personality" in str(content)          # only a real (non-insufficient) analysis says this
             ideas = [{"day": i % 3, "platform": "instagram", "format": "carousel",
                       "scenes": [f"scene {self.batch}-{i}", f"scene {self.batch}-{i}b"], "caption": f"c{self.batch}{i}", "hashtags": [], "canon": "",
                       "attributes": {"lead": "personality" if led else "place"},
@@ -69,3 +70,44 @@ def test_the_loop_closes_and_the_trace_shows_what_changed(conn, policy):
     assert trace["findings"][0]["statement"].startswith("Personality-led posts")
     assert last["composition"]["attributes"]["lead=personality"] > trace["batches"][0]["composition"]["attributes"].get(
         "lead=personality", 0)
+
+
+def test_only_a_real_finding_changes_the_plan(conn, policy):
+    # Batches planned on "insufficient evidence" stay exploratory; the first batch after an analysis
+    # with findings follows it, and the trace links that batch to those findings.
+    cid = _sim_creator(conn)
+    runs = sandbox.run_batches(conn, policy, LoopLLM(conn), cid, batches=4, worker_id="t")
+    trace = sandbox.learning_trace(conn, cid)
+    by_analysis = {a["id"]: a for a in trace["analyses"]}
+    for b in trace["batches"]:
+        a = by_analysis.get(b["analysis_decision_id"])
+        led = b["composition"]["attributes"].get("lead=personality", 0)
+        if a is None or a["insufficient"]:
+            assert led == 0 and b["finding_ids"] == []
+        else:
+            assert led == 1.0 and b["finding_ids"]
+    assert any(not r["analysis"]["insufficient"] for r in runs)
+
+
+def test_sandbox_runs_refuse_creators_without_a_scenario_or_with_reference_images(conn, policy):
+    no_scenario = creator(conn, publish_mode="simulated")
+    with pytest.raises(ValueError, match="scenario"):
+        sandbox.run_batches(conn, policy, StubLLM(conn=conn), no_scenario, batches=1, worker_id="t")
+    rendered = _sim_creator(conn)
+    conn.execute("UPDATE creators SET anchors = anchors || %s WHERE id = %s",
+                 (Jsonb({"reference_images": [{"uri": "s3://r"}]}), rendered))
+    with pytest.raises(ValueError, match="reference images"):
+        sandbox.run_batches(conn, policy, StubLLM(conn=conn), rendered, batches=1, worker_id="t")
+
+
+def test_a_sandbox_run_only_runs_its_own_jobs_on_its_own_budget(conn, policy):
+    from manyworlds import ledger, queue
+    from manyworlds.brain import budget
+    other = queue.enqueue(conn, "brain.echo", {}, creator_id=creator(conn))
+    cid = _sim_creator(conn)
+    sandbox.run_batches(conn, policy, LoopLLM(conn), cid, batches=1, worker_id="t")
+    assert conn.execute("SELECT status FROM jobs WHERE id = %s", (other,)).fetchone()["status"] == "queued"
+    agents = {r["agent"] for r in conn.execute("SELECT DISTINCT agent FROM cost_entries WHERE agent IS NOT NULL").fetchall()}
+    assert agents and all(a.startswith("sandbox:") for a in agents)
+    ledger.record(conn, category="llm", provider="m", quantity=1, unit="token", usd=999, agent="sandbox:showrunner")
+    budget.check(conn, policy, "showrunner")

@@ -37,21 +37,31 @@ def clone(conn, source_handle: str, handle: str, *, scenario: str, seed: int = 0
     return cid
 
 
-def _drain(conn, policy: Policy, llm, creator_id, worker_id: str, max_ticks: int = 30) -> None:
-    for _ in range(max_ticks):
-        pending = conn.execute("SELECT count(*) n FROM jobs WHERE kind LIKE 'brain.%%' AND creator_id = %s "
-                               "AND status IN ('queued', 'running')", (creator_id,)).fetchone()["n"]
-        pending += conn.execute("SELECT count(*) n FROM jobs j JOIN ideas i ON i.id::text = j.payload->>'idea_id' "
-                                "WHERE j.kind = 'brain.evaluator' AND i.creator_id = %s AND j.status IN ('queued', 'running')",
-                                (creator_id,)).fetchone()["n"]
-        if not pending:
+def _drain(conn, policy: Policy, llm, creator_id, worker_id: str, max_rounds: int = 200) -> None:
+    """Run this creator's brain jobs (and only these) until none is waiting."""
+    lease = int(policy.get("brain", "runtime", "lease_seconds", default=600))
+    for _ in range(max_rounds):
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM jobs WHERE kind LIKE 'brain.%%' AND creator_id = %s AND attempts < max_attempts "
+            "AND status = 'queued' ORDER BY priority DESC, created_at", (creator_id,)).fetchall()]
+        if not ids:
             return
-        runtime.tick(conn, policy, llm, worker_id=worker_id)
+        for jid in ids:
+            job = queue.claim_job(conn, jid, worker_id, lease)
+            if job:
+                runtime.run_job(conn, policy, llm, job, worker_id=worker_id, now=datetime.now(timezone.utc), lease_s=lease)
 
 
 def run_batches(conn, policy: Policy, llm, creator_id, *, batches: int, worker_id: str) -> list[dict]:
+    c = conn.execute("SELECT anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    anchors = (c or {}).get("anchors") or {}
     if evidence.mode_for(conn, creator_id) != "sandbox":
         raise ValueError("sandbox runs are for simulated creators only")
+    if not (anchors.get("simulation") or {}).get("scenario"):
+        raise ValueError("sandbox runs need a test scenario (anchors.simulation.scenario); a sandbox creator without one "
+                         "is waiting for a real account")
+    if anchors.get("reference_images"):
+        raise ValueError("sandbox creators must have no reference images, so production never renders them")
     ff = dataclasses.replace(policy, body={**policy.body, "simulation": {**(policy.get("simulation") or {}),
                                                                          "fast_forward": True}})
     days = int(policy.get("brain", "showrunner", "days", default=3))
@@ -59,7 +69,7 @@ def run_batches(conn, policy: Policy, llm, creator_id, *, batches: int, worker_i
     for _ in range(batches):
         start = planner.next_start(conn, creator_id, date.today())
         job = queue.enqueue(conn, "brain.analyst", {"creator_id": str(creator_id), "then_plan": str(start)},
-                            creator_id=creator_id, idempotency_key=f"sandbox-analyst:{creator_id}:{start}")
+                            creator_id=creator_id, idempotency_key=f"analyst:{creator_id}:{start}")   # same key as planning
         _drain(conn, policy, llm, creator_id, worker_id)
         ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
         end = datetime.combine(start + timedelta(days=days), time(0), tzinfo=timezone.utc)

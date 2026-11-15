@@ -72,10 +72,11 @@ def run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: d
     try:
         a = agent_mod.get(name)
         effective = _context_policy(conn, policy)
-        budget.check(conn, effective, name)
+        tag = budget.tag_for(conn, name, job.creator_id)   # sandbox runs spend their own budget, never real agents'
+        budget.check(conn, effective, tag)
         ctx = agent_mod.AgentContext(conn=conn, policy=effective, llm=llm, job=job, now=now)
         with _heartbeat(conn, job.id, worker_id, lease_s), \
-                llm.tagged(name, job.id, before_call=lambda: budget.check(conn, effective, name)):
+                llm.tagged(tag, job.id, before_call=lambda: budget.check(conn, effective, tag)):
             result = a.run(ctx)
         if not queue.complete(conn, job.id, worker_id, result or {}):
             log.warning("brain job %s was taken over before %s finished", job.id, name)

@@ -103,9 +103,11 @@ def record_simulated_metrics(conn, post_id, rows: list[dict], *, model: str, pan
 
 
 def supersede(conn, *, creator_id) -> int:
-    """Close a creator's open findings (both tables) when a new analysis replaces them."""
+    """Close a creator's open creator-level analysis findings (both tables) when a new analysis replaces
+    them. Proven findings (experiments) and findings at other scopes are left alone."""
     n = 0
     for table in ("findings", "simulated_findings"):
         n += conn.execute(f"UPDATE {table} SET status = 'superseded', updated_at = now() "
-                          "WHERE creator_id = %s AND status = 'open'", (creator_id,)).rowcount
+                          "WHERE creator_id = %s AND status = 'open' AND scope = 'creator' AND grade <> 'proven'",
+                          (creator_id,)).rowcount
     return n
