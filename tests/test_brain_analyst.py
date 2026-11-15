@@ -106,3 +106,26 @@ def test_a_hypothesis_that_contradicts_its_effect_is_not_recorded(conn, policy):
     cid = sandbox_history(conn, policy, 90)
     out, _ = _run(conn, policy, "analyst", {"creator_id": str(cid)}, Wrong(conn=conn))
     assert out["finding_ids"] == []
+
+
+def test_a_finding_is_graded_by_its_own_subject_not_its_strongest_citation(conn, policy):
+    # Live run 2026-11-14: "Shareability may matter most in stories" (speculative, 10 posts) also cited the
+    # general shareability effect (tentative) and was recorded as tentative with that effect's numbers.
+    from manyworlds.brain import analysis
+
+    class Mixed(AnalystLLM):
+        def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
+            out = super().structured(role, system=system, content=content, schema=schema)
+            if schema is analyst.Analysis:
+                out.hypotheses[0].supports = ["format:story", "dimension:personality"]   # subject first
+            return out
+    cid = sandbox_history(conn, policy, 90)
+    rows = analysis.normalise(analysis.dataset(conn, cid, mode="sandbox", policy=policy), policy)
+    by = {f"{e['kind']}:{e['key']}": e for e in analysis.effects(rows, policy, seed=0)["effects"]}
+    subject = by["format:story"]
+    out, _ = _run(conn, policy, "analyst", {"creator_id": str(cid)}, Mixed(conn=conn))
+    if (subject["effect"] > 0) != True:            # the stub claims a positive direction
+        assert out["finding_ids"] == []
+        return
+    f = evidence.findings(conn, mode="sandbox", creator_id=cid)[0]
+    assert f["grade"] == subject["grade"] and float(f["effect"]) == subject["effect"]

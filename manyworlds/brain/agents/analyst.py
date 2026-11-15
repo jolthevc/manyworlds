@@ -35,7 +35,7 @@ into a formula: ordinary moments stay part of a creator's life."""
 class Hypothesis(BaseModel):
     statement: str = Field(description="one sentence, evidence-qualified")
     direction: Literal["positive", "negative"] = Field(description="the sign of the effect the statement claims")
-    supports: list[str] = Field(description="effect ids from the table that support it, as kind:key")
+    supports: list[str] = Field(description="effect ids from the table, as kind:key; the FIRST is what the statement is about")
     how_to_confirm: str = Field(description="what the next batches could do to test it")
 
 
@@ -86,7 +86,11 @@ def analyse(ctx: AgentContext, creator_id) -> dict:
                 continue   # a hypothesis citing nothing in the table isn't a finding
             if any((e["effect"] > 0) != (h.direction == "positive") for e in effects):
                 continue   # a statement that contradicts the numbers it cites isn't a finding
-            best = max(effects, key=lambda e: (e["grade"] == "tentative", abs(e["effect"]) / (e["se"] or 1)))
+            # Graded by its subject (the first effect it cites), never by the strongest citation: a story-only
+            # claim citing a general effect must not inherit that effect's grade (live run, 2026-11-14).
+            best = by_id.get(h.supports[0]) if h.supports else None
+            if best is None:
+                continue
             fid = evidence.record_finding(
                 ctx.conn, scope="creator", creator_id=creator_id, statement=h.statement, evidence=evidence_kind,
                 grade=best["grade"], effect=best["effect"], interval=(best["low"], best["high"]), n=best["n"],
