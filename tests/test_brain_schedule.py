@@ -153,3 +153,28 @@ def test_a_keyed_canon_replaces_the_old_fact(conn, policy):
     ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
     texts = [f["text"] for f in memory.facts(conn, cid, limit=10)]
     assert "she moved to Lisbon" in texts and "lives in Copenhagen" not in texts
+
+
+def _stall(conn, cid, policy, *, hours_ago=0):
+    limit = int(policy.get("brain", "showrunner", "max_period_attempts"))
+    for n in range(1, limit + 1):
+        j = _period_job(conn, cid, "failed", n)
+        conn.execute("UPDATE jobs SET created_at = now() - make_interval(secs => %s) WHERE id = %s", (hours_ago * 3600, j))
+
+
+def test_a_stalled_period_raises_one_event(conn, policy):
+    cid = _creator(conn)
+    _stall(conn, cid, policy)
+    now = datetime(2026, 11, 19, 8, tzinfo=timezone.utc)
+    showrunner_loop.ensure_batches(conn, policy, now=now)
+    showrunner_loop.ensure_batches(conn, policy, now=now)
+    ev = conn.execute("SELECT type, subject, routed_to FROM events").fetchall()
+    assert len(ev) == 1 and ev[0]["type"] == "planning_stalled" and ev[0]["subject"]["creator_id"] == str(cid)
+    assert ev[0]["routed_to"] == "owner"
+
+
+def test_a_stalled_period_is_retried_after_the_cooldown(conn, policy):
+    cid = _creator(conn)
+    _stall(conn, cid, policy, hours_ago=float(policy.get("brain", "showrunner", "retry_after_hours")) + 1)
+    out = showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc))
+    assert len(out) == 1 and out[0].get("job") and not out[0].get("gave_up")
