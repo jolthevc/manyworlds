@@ -1,0 +1,3 @@
+description: Carousels underperform; nothing else matters.
+effects:
+  - {format: carousel, lift: -0.6}

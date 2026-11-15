@@ -88,3 +88,14 @@ def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: st
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (scope, creator_id, cluster_id, market_id, statement, evidence, grade, effect, low, high, n,
          Jsonb(list(sources)))).fetchone()["id"]
+
+
+def record_simulated_metrics(conn, post_id, rows: list[dict], *, model: str, panel_version: str) -> None:
+    """Outcomes from the scenario engine; captured_at is the publication time plus each age."""
+    pub = conn.execute("SELECT coalesce(published_at, now()) AS t FROM posts WHERE id = %s", (post_id,)).fetchone()["t"]
+    with conn.transaction():
+        for r in rows:
+            conn.execute("INSERT INTO simulated_metrics (post_id, captured_at, post_age_s, model, panel_version, metrics) "
+                         "VALUES (%s, %s + make_interval(secs => %s), %s, %s, %s, %s)",
+                         (post_id, pub, r["post_age_s"], r["post_age_s"], model, panel_version,
+                          Jsonb(r["metrics"])))   # never the scenario's hidden truth (e.g. which posts broke out)
