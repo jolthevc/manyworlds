@@ -77,8 +77,9 @@ def test_one_showrunner_job_per_creator_and_period(conn, policy):
     now = datetime(2026, 11, 19, 8, tzinfo=timezone.utc)
     showrunner_loop.ensure_batches(conn, policy, now=now)
     showrunner_loop.ensure_batches(conn, policy, now=now)
-    jobs = conn.execute("SELECT payload FROM jobs WHERE kind = 'brain.showrunner'").fetchall()
-    assert len(jobs) == 1 and jobs[0]["payload"] == {"creator_id": str(cid), "start": "2026-11-20"}
+    jobs = conn.execute("SELECT kind, payload FROM jobs WHERE kind LIKE 'brain.%'").fetchall()
+    # the period starts with the analyst, which hands it to the showrunner
+    assert [(j["kind"], j["payload"]) for j in jobs] == [("brain.analyst", {"creator_id": str(cid), "then_plan": "2026-11-20"})]
 
 
 def test_creators_without_references_get_no_batch(conn, policy):
@@ -178,3 +179,20 @@ def test_a_stalled_period_is_retried_after_the_cooldown(conn, policy):
     _stall(conn, cid, policy, hours_ago=float(policy.get("brain", "showrunner", "retry_after_hours")) + 1)
     out = showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc))
     assert len(out) == 1 and out[0].get("job") and not out[0].get("gave_up")
+
+
+def test_a_failed_analysis_does_not_block_planning(conn, policy):
+    from manyworlds import queue
+    cid = _creator(conn)
+    a = queue.enqueue(conn, "brain.analyst", {"creator_id": str(cid), "then_plan": "2026-11-20"}, creator_id=cid)
+    conn.execute("UPDATE jobs SET status = 'failed' WHERE id = %s", (a,))
+    showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc))
+    sr = conn.execute("SELECT payload FROM jobs WHERE kind = 'brain.showrunner'").fetchall()
+    assert [s["payload"] for s in sr] == [{"creator_id": str(cid), "start": "2026-11-20"}]
+
+
+def test_a_period_whose_analysis_is_running_is_left_alone(conn, policy):
+    from manyworlds import queue
+    cid = _creator(conn)
+    queue.enqueue(conn, "brain.analyst", {"creator_id": str(cid), "then_plan": "2026-11-20"}, creator_id=cid)
+    assert showrunner_loop.ensure_batches(conn, policy, now=datetime(2026, 11, 19, 8, tzinfo=timezone.utc)) == []

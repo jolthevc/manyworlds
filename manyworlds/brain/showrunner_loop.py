@@ -1,7 +1,8 @@
 """Keeps every creator planned ahead: asks the showrunner for the next period when a creator has
 less than `planner.plan_ahead_days` planned (the same rule and creator filter the planner used).
 
-One showrunner job per creator and period at a time. A period whose job failed, or that ended with
+A new period starts with the analyst (fresh findings), which hands it to the showrunner; if the analysis
+fails, the showrunner is asked directly, so analysis never blocks planning. One showrunner job per creator and period at a time. A period whose job failed, or that ended with
 nothing scheduled (every idea invalid or dropped), is asked for again, up to
 `brain.showrunner.max_period_attempts` within `retry_after_hours`. A period that uses them raises one
 `planning_stalled` event for the owner and is tried again once the cooldown has passed, so an unattended
@@ -23,10 +24,12 @@ def _period_state(conn, creator_id, start, retry_after_hours: float) -> tuple[st
                         "WHERE kind = 'brain.showrunner' AND creator_id = %s AND payload->>'start' = %s",
                         (retry_after_hours * 3600, creator_id, str(start))).fetchall()
     recent = sum(1 for j in jobs if j["recent"])
-    if not jobs:
-        return "none", 0, 0
-    if any(j["status"] in ("queued", "running") for j in jobs):
+    analysis = conn.execute("SELECT status FROM jobs WHERE kind = 'brain.analyst' AND creator_id = %s "
+                            "AND payload->>'then_plan' = %s", (creator_id, str(start))).fetchall()
+    if any(j["status"] in ("queued", "running") for j in jobs + analysis):
         return "active", recent, len(jobs)
+    if not jobs:
+        return ("none" if not analysis else "retry"), 0, 0   # a finished or failed analysis: plan directly
     ideas = conn.execute("SELECT count(*) FILTER (WHERE status IN ('proposed', 'scheduling', 'scheduled')) AS live "
                          "FROM ideas WHERE batch = %s", (f"{creator_id}:{start}",)).fetchone()
     return ("active" if ideas["live"] else "retry"), recent, len(jobs)
@@ -62,6 +65,11 @@ def ensure_batches(conn, policy: Policy, *, now: datetime | None = None) -> list
         if recent >= max_attempts:
             _stalled(conn, c, start, recent)
             out.append({"creator": c["handle"], "start": str(start), "gave_up": True})
+            continue
+        if state == "none":   # a new period starts with the analyst, which hands it to the showrunner
+            job = queue.enqueue(conn, "brain.analyst", {"creator_id": str(c["id"]), "then_plan": str(start)},
+                                creator_id=c["id"], idempotency_key=f"analyst:{c['id']}:{start}")
+            out.append({"creator": c["handle"], "start": str(start), "job": str(job), "analysis_first": True})
             continue
         key = f"showrunner:{c['id']}:{start}" + (f":{attempts + 1}" if attempts else "")
         job = queue.enqueue(conn, "brain.showrunner", {"creator_id": str(c["id"]), "start": str(start)},

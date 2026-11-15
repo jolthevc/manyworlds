@@ -66,6 +66,7 @@ job_kinds:
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
+  brain.analyst:   {pools: [local], outputs_per_job: 0}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}

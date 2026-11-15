@@ -21,6 +21,7 @@ from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
 from .. import evidence, memory, planner
 from ..agent import AgentContext, commission, record_decision, register
+from . import analyst
 
 SYSTEM = planner.SYSTEM + """
 
@@ -73,6 +74,9 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     mode = evidence.mode_for(conn, creator_id)
     findings = [{"finding": f["statement"], "grade": f["grade"], **({"label": f["label"]} if f["label"] else {})}
                 for f in evidence.findings(conn, mode=mode, creator_id=creator_id)]
+    last = analyst.latest(conn, creator_id)
+    guidance = (last["output"] or {}).get("guidance") if last else None
+    hypotheses = [h["statement"] for h in ((last["output"] or {}).get("hypotheses") or [])] if last else []
     share = float(policy.get("brain", "exploration_share", default=0.3))
     scope = policy.get("scope", default={})
     hashtags_max = dials.get("hashtags_max") or {}
@@ -84,7 +88,10 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"Recent posts, newest first, with how their ideas scored (1-10) where scored (don't repeat scenes, jokes "
         f"or captions):\n{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}\n"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
-        f"{json.dumps(findings) if findings else 'nothing yet'}\n\n"
+        f"{json.dumps(findings) if findings else 'nothing yet'}\n"
+        f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
+        f"it isn't; say in an idea's reasoning when a finding shaped it): "
+        f"{json.dumps({'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
         f"Days: {day_names} (weekly rituals happen on their weekday). "
         f"Plan about {counts['total']} posts and Stories over {days} days (day 0 to {days - 1}): "
         f"{counts['per_platform']} per platform; about {counts['videos']} videos "
@@ -96,6 +103,8 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
         f"The creator's face is visible in most images, wearing their signature item.")
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,
+            "analysis_decision_id": str(last["id"]) if last else None,
+            "finding_ids": [str(f["id"]) for f in evidence.findings(conn, mode=mode, creator_id=creator_id)],
             "platforms": list(scope.get("platforms") or ["instagram"])}
     return prompt, meta
 
@@ -150,7 +159,8 @@ class Showrunner:
             output = {"batch": batch, "ideas": len(ids), "idea_ids": ids, "dropped": dropped}
             record_decision(ctx, "content_batch", step="plan", creator_id=creator_id, model=ctx.llm.model_for("brain"),
                             inputs={"start": str(start), "days": days, "profile_version": meta["profile_version"],
-                                    "requested": meta["counts"]},
+                                    "requested": meta["counts"], "analysis_decision_id": meta["analysis_decision_id"],
+                                    "finding_ids": meta["finding_ids"]},
                             output=output, rationale=out.rationale)
         return output
 
