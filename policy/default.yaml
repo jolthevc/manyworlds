@@ -225,6 +225,10 @@ brain:
   evaluation: {samples: 3, check_rate: 0.1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
+  # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
+  # graded tentative only past a Bonferroni-corrected interval at family-wide alpha with min_n_tentative posts.
+  analysis: {target_age_s: 259200, min_n_any: 8, min_n_tentative: 20, min_group: 5, bootstrap: 300, alpha: 0.1,
+             baseline_window: 20, min_baseline: 3, breakout_ratio: 3.0}
   # What the Brain may change on its own (manyworlds.brain.overrides), with inclusive bounds; `*` is one
   # path segment. Anything else, and always `limits.*` and `budget.master*`, waits for owner approval.
   authority:
