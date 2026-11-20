@@ -22,7 +22,9 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/deploy/autoscale.py` — starts GPU machines when jobs wait, stops them when the queue drains; runs always-on
 - `manyworlds/deploy/providers.py` — SaladCloud, Vast.ai, RunPod adapters (launch, list, destroy, self-destroy)
 - `manyworlds/deploy/enforce.py` — deadline / spend cap / idle / never-started / stuck / daily-budget checks (autoscaler and GitHub backstop)
-- `manyworlds/deploy/scoring.py` — ranks pools by measured cost per accepted output; `report.py` — billed vs finished work per machine
+- `manyworlds/deploy/scoring.py` — ranks pools by measured cost per accepted output; `report.py` — billed vs finished work per machine; `reconcile.py` — providers' itemised charges (Vast bandwidth/disk) into the ledger
+- `manyworlds/brain/portfolio.py`, `agents/strategist.py` — daily portfolio cycle; `launches.py`, `agents/creator_lab.py` — creator launches; `events.py` — breakout/drop/QA-surge events
+- `manyworlds/publish/instagram.py`, `metrics.py` — Instagram Graph API publishing (AI label always) and real insights
 - `scripts/build-worker.sh` — build, smoke-test and push a worker image
 - `manyworlds/migrations/` — forward-only SQL; add a new numbered file, never edit an applied one
 - `policy/default.yaml` — every tunable number (budgets, GPU pools/prices, models, scope, limits)
@@ -69,4 +71,11 @@ GPU machines: `mw autoscale` (loop) or `mw autoscale --once`; always-on: `docker
 - Brain M5 (simulated closed loop) merged 2026-11-14: publisher interface + kill switch, scenario engine (`policy/scenarios/`), analyst (`brain/analysis.py` + agent), `mw brain simulate` / `mw brain learning`. Sandbox runs use their own budget and never touch real creators.
 - Lip-synced talking video (M10, moved up 2026-11-19) merged 2026-11-20: talk worker image (InfiniteTalk on Wan2.1-I2V-14B, ~94 GB of weights downloaded on the GPU machine), `talking_video` format, stagings and flavors libraries. `talking_video` is not in `production.formats` until the benchmark (`bench-talk.infinitetalk-bba634`) passes the video gate.
 - 2026-11-20 overnight: RunPod adapter on REST v2 (v1 retired 2026-11-15; a CUDA floor, secure-cloud pools); machines carry their attempt limit and pool info; Brain M6 merged (experiments sized by power, Thompson exploration, rubric validity); Brain M7 merged (targeted repair, video-to-photo reroute, feed QA); brain worker reconnects and refreshes its Claude client.
-- Next: Brain M4 (Instagram publishing and metrics; needs the account), M8 strategist (second creator, cohorts).
+- 2026-11-20 day: true machine cost (Vast bills bandwidth per GB; offers ranked by it, caps count it, itemised
+  charges reconciled hourly; `mw reconcile --days N`); Brain M8 merged (events, daily strategist, portfolio
+  numbers from real evidence, autonomous launches via `launches` + `brain.creator_lab`, launches wait for owner
+  approval while `brain.strategist.launch_requires_approval`); Brain M4 built (Instagram publisher with
+  `is_ai_generated` on every post, real metrics collector, `mw account connect <handle> --token-env NAME`),
+  idle until an account is connected. First strategist run proposed 2 launches (pending in `mw brain approvals`).
+- Next: connect Maren's account (M4 live), M9 portfolio allocation, talking video via the 8-step distill LoRA
+  (needs a >48 GB-RAM host), Sand.ai Gaga-avatar pricing (docs/research/2026-11-20-sand-ai.md).

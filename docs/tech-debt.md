@@ -29,6 +29,17 @@ ends the tick for the others.
 | With `review.image.min_scene: 0` the scene gate never fails, so the scene repair can't trigger | only matters if scene becomes a hard gate again | `manyworlds/review/repair.py` |
 | Flavors that need text on the image (tier list, recipe card, text-on-photo memes) aren't offered | needs a text-overlay step for photos (the narrated edit already burns captions into video) | policy `flavors` |
 
+## Brain M8 / M4, noted in review 2026-11-20
+
+| Item | Why it matters | Where |
+|---|---|---|
+| No differentiation check of a new creator against its siblings (spec 4.6a) | two launches could end up too alike; the strategist is told to diversify, nothing measures it | `manyworlds/brain/launches.py` bible step |
+| An event over the daily rate limit is skipped, so it can fire late the next day; `qa_surge` payload has no `mode` label | minor noise for the owner | `manyworlds/brain/events.py` |
+| Event detectors query every creator's last 60 posts each producer tick | fine at today's scale; batch it before dozens of creators | `manyworlds/brain/events.py` |
+| JPEG copies for Instagram (`public/` in the bucket) are never cleaned up | small storage growth | `manyworlds/publish/instagram.py` |
+| Presigned R2 URLs for Instagram are unverified against Meta's fetcher | first real publish may fail; it then holds the post for the owner | first connected account |
+| Story `is_ai_generated` support is not stated in Meta's docs | if Meta rejects it on Stories, Story posts will be held | `manyworlds/publish/instagram.py` |
+
 ## Before talking video goes live (M10)
 
 | Item | Why it matters | Where |
