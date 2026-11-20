@@ -124,3 +124,28 @@ for one creator passes the gate.
 - Tests stub Claude, Apify and Instagram; no spend in tests.
 - Live services rebuilt and restarted after each milestone; worker images only via
   `scripts/build-worker.sh`.
+
+## Owner decisions, 2026-11-19 (toolbox and format direction)
+
+- **Voice means lip-sync.** Anything with a creator speaking is lip-synced talking video; voice-over
+  narration is off (`production.formats` no longer includes `narrated_edit`). M10 (talking video) moves up:
+  benchmark lip-sync models on Vast through the video gate before any goes live.
+- **Stagings.** A format is a production pipeline plus a staging: a template of setting, framing,
+  wardrobe/props and script conventions (post-game press conference at the podium, locker room or court;
+  field reporter; studio news desk; weather map; commentary booth; nature-documentary narrator; late-night
+  monologue; reality-TV confessional; tour guide; cooking-show host; walk-and-talk; ASMR). A policy library
+  the showrunner draws from; every post records its staging so the analyst learns which work per creator.
+- **News.** Real everyday news is allowed; hot-button and sensitive topics are excluded (policy
+  `scope.excluded_topics`). Fictional stories are fine. No real broadcasters, leagues or teams.
+- **Fictional organisations persist.** A creator who reports for a fictional outlet always does so (memory
+  fact with key `employer`); switching outlets is a storyline beat (`canon_key: employer`).
+- **Styles.** Realistic creators first and mostly; animation, cartoon and other non-realistic styles are in
+  the toolbox for the strategist to test later.
+- **Animal creators.** Realistic animals (e.g. dogs) doing human-trend or comic scenes are a candidate
+  market and creator kind (M8/M9 strategist + creator lab): identity consistency via a LoRA per animal,
+  lip-sync for talking animals is a separate capability to benchmark, never depict harm to animals.
+- **Music personas (later).** Disclosed AI music artists (a public example: River Cain, an AI country act) once
+  a commercially licensed music-generation API is chosen; distribution must follow each platform's AI rules.
+- **More flavors for the existing pipelines:** photo dump, expectation vs reality, tier list, recipe card,
+  travel diary, outfit of the week, text-on-photo relatable memes. Reels need our own audio (the publishing
+  API cannot attach licensed trending tracks).
