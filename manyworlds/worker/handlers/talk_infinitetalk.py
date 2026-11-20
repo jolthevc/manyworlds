@@ -35,6 +35,7 @@ REPO_DIR = Path(os.environ.get("MW_INFINITETALK_REPO", "/opt/InfiniteTalk"))
 # The adapter repo is 169 GB, mostly quantised multi-person builds: fetch the single-person adapter
 # (10 GB) and only the quant files a run's flags name ("{infinitetalk}/quant_models/...").
 ADAPTER_FILES = ["single/*"]
+REQUIRED_PARAMS = ("size", "steps", "audio_cfg", "text_cfg", "motion_frame", "timeout_s")
 log = logging.getLogger("manyworlds.talk")
 
 
@@ -78,11 +79,11 @@ def weights(store, workdir: Path, extra: list[str] = ()) -> dict[str, str]:
 
 def build_command(*, base: str, wav2vec: str, infinitetalk: str, input_json: Path, out_stem: Path, size: str,
                   steps: int, audio_cfg: float, text_cfg: float, seed: int, extra: list[str],
-                  lora: dict | None, shift: float | None = None) -> list[str]:
+                  lora: dict | None, motion_frame: int, shift: float | None = None) -> list[str]:
     cmd = [sys.executable, "generate_infinitetalk.py",
            "--ckpt_dir", base, "--wav2vec_dir", wav2vec,
            "--infinitetalk_dir", f"{infinitetalk}/single/infinitetalk.safetensors",
-           "--input_json", str(input_json), "--size", size, "--mode", "streaming", "--motion_frame", "9",
+           "--input_json", str(input_json), "--size", size, "--mode", "streaming", "--motion_frame", str(motion_frame),
            "--sample_steps", str(steps), "--sample_text_guide_scale", str(text_cfg),
            "--sample_audio_guide_scale", str(audio_cfg), "--base_seed", str(seed),
            "--save_file", str(out_stem), "--audio_save_dir", str(Path(out_stem).parent / "audio")]
@@ -99,8 +100,12 @@ def write_input(workdir: Path, *, image: Path, audio: Path, prompt: str) -> Path
     return p
 
 
-def run(cmd: list[str], cwd: Path) -> None:
-    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+def run(cmd: list[str], cwd: Path, timeout: float | None = None) -> None:
+    try:
+        proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        # A hung render heartbeats fine; without this only the enforcers' attempt limit would stop it.
+        raise RuntimeError(f"InfiniteTalk timed out after {timeout:.0f} s") from e
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-3000:]
         log.error("InfiniteTalk failed (%s):\n%s", proc.returncode, tail)
@@ -131,7 +136,12 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         raise NonRetryable("payload needs image_uri")
     if not payload.get("audio_uri") and not (payload.get("script") or "").strip():
         raise NonRetryable("payload needs audio_uri or script")
+    if not payload.get("keyframes"):
+        raise NonRetryable("payload needs keyframes (the video gate judges them)")
     params: dict[str, Any] = payload.get("params") or {}
+    missing = [k for k in REQUIRED_PARAMS if params.get(k) is None]
+    if missing:   # settings come from policy generation.talk; no defaults here to drift from it
+        raise NonRetryable(f"params missing {missing}")
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else random.randrange(1 << 31)
     work = Path(ctx.workdir)
@@ -150,20 +160,19 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     out_stem = work / "talk"
     cmd = build_command(base=w["base"], wav2vec=w["wav2vec"], infinitetalk=w["infinitetalk"],
                         input_json=write_input(work, image=image, audio=audio, prompt=prompt), out_stem=out_stem,
-                        size=params.get("size", "infinitetalk-480"), steps=int(params.get("steps", 40)),
-                        audio_cfg=float(params.get("audio_cfg", 4.0)), text_cfg=float(params.get("text_cfg", 5.0)),
-                        seed=seed, extra=extra, lora=lora_path(params.get("lora"), work),
-                        shift=params.get("shift"))
+                        size=params["size"], steps=int(params["steps"]), audio_cfg=float(params["audio_cfg"]),
+                        text_cfg=float(params["text_cfg"]), motion_frame=int(params["motion_frame"]), seed=seed,
+                        extra=extra, lora=lora_path(params.get("lora"), work), shift=params.get("shift"))
     t0 = time.monotonic()
-    run(cmd, REPO_DIR)
+    run(cmd, REPO_DIR, timeout=float(params["timeout_s"]))
     render_s = round(time.monotonic() - t0, 1)
     clip = Path(f"{out_stem}.mp4")
     if not clip.exists():
         raise RuntimeError(f"InfiniteTalk wrote no {clip.name}")
 
-    outputs = [OutputFile(clip, "video", {"seconds": seconds, "size": params.get("size", "infinitetalk-480"),
+    outputs = [OutputFile(clip, "video", {"seconds": seconds, "size": params["size"],
                                           "lip_sync": True}),
-               *extract_keyframes(clip, work, int(payload.get("keyframes", 4)))]
+               *extract_keyframes(clip, work, int(payload["keyframes"]))]
     if spoken is not None:
         outputs.append(OutputFile(spoken, "audio", {"seconds": seconds}))
     recipe = {"model": MODEL, "base": BASE, "prompt": prompt, "image_uri": payload["image_uri"],

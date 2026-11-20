@@ -17,7 +17,7 @@ def test_the_command_points_at_the_weights_and_the_input(tmp_path):
     cmd = talk.build_command(
         base="/w/wan", wav2vec="/w/wav2vec", infinitetalk="/w/it", input_json=tmp_path / "in.json",
         out_stem=tmp_path / "clip", size="infinitetalk-480", steps=8, audio_cfg=4.0, text_cfg=5.0, seed=7,
-        extra=["--quant", "fp8"], lora=None)
+        extra=["--quant", "fp8"], lora=None, motion_frame=9)
     s = " ".join(cmd)
     assert "--ckpt_dir /w/wan" in s and "--wav2vec_dir /w/wav2vec" in s
     assert "--infinitetalk_dir /w/it/single/infinitetalk.safetensors" in s
@@ -29,7 +29,7 @@ def test_the_command_points_at_the_weights_and_the_input(tmp_path):
 def test_a_lora_adds_its_path_and_scale():
     cmd = talk.build_command(base="b", wav2vec="w", infinitetalk="i", input_json=Path("j"), out_stem=Path("o"),
                              size="infinitetalk-480", steps=8, audio_cfg=2.0, text_cfg=1.0, seed=1, extra=[],
-                             lora={"path": "/w/lora.safetensors", "scale": 1.0})
+                             lora={"path": "/w/lora.safetensors", "scale": 1.0}, motion_frame=9)
     s = " ".join(cmd)
     assert "--lora_dir /w/lora.safetensors" in s and "--lora_scale 1.0" in s
 
@@ -40,6 +40,17 @@ def test_the_input_file_names_the_photo_the_voice_and_the_prompt(tmp_path):
     body = json.loads(p.read_text())
     assert body == {"prompt": "a woman talks to camera at a podium", "cond_video": str(tmp_path / "start.png"),
                     "cond_audio": {"person1": str(tmp_path / "voice.wav")}}
+
+
+PARAMS = {"size": "infinitetalk-480", "steps": 8, "audio_cfg": 2.0, "text_cfg": 1.0, "motion_frame": 9,
+          "timeout_s": 600}
+
+
+def test_settings_come_from_the_payload_not_handler_defaults():
+    ctx = JobContext(job=None, workdir=Path("."), store=None)
+    with pytest.raises(NonRetryable, match="params missing"):
+        talk.generate({"image_uri": "s3://x/a.png", "script": "hi", "keyframes": 4,
+                       "params": {k: v for k, v in PARAMS.items() if k != "steps"}}, ctx)
 
 
 def test_a_job_needs_a_photo_and_either_audio_or_a_script():
@@ -60,7 +71,8 @@ def test_a_talking_clip_is_stored_with_its_keyframes_and_recipe(tmp_path, store,
     monkeypatch.setattr(talk, "audio_seconds", lambda path: 6.5)
     ran = {}
 
-    def fake_run(cmd, cwd):
+    def fake_run(cmd, cwd, timeout=None):
+        ran["timeout"] = timeout
         ran["cmd"] = cmd
         Path(cmd[cmd.index("--save_file") + 1] + ".mp4").write_bytes(b"mp4")
     monkeypatch.setattr(talk, "run", fake_run)
@@ -71,9 +83,10 @@ def test_a_talking_clip_is_stored_with_its_keyframes_and_recipe(tmp_path, store,
     work.mkdir()
     ctx = JobContext(job=None, workdir=work, store=store)
     out = talk.generate({"image_uri": image_uri, "audio_uri": audio_uri, "prompt": "talks", "keyframes": 4,
-                         "seed": 3}, ctx)
+                         "seed": 3, "params": PARAMS}, ctx)
     assert [o.kind for o in out.outputs] == ["video", "keyframe", "keyframe", "keyframe", "keyframe"]
     assert out.outputs[0].meta["seconds"] == 6.5 and out.meta["output_seconds"] == 6.5
+    assert ran["timeout"] == 600 and "--motion_frame" in ran["cmd"]
     assert out.recipe["model"] == talk.MODEL and out.recipe["seed"] == 3 and out.recipe["image_uri"] == image_uri
 
 
@@ -102,3 +115,10 @@ def test_a_talk_benchmark_uses_policy_settings_and_the_given_photo(conn, policy)
     p = jobs[0]["payload"]
     assert p["script"] and p["voice"] == talk_cfg["voice"] and p["params"]["steps"] == talk_cfg["steps"]
     assert "voice" not in p["params"]
+
+
+def test_a_talk_benchmark_without_a_start_photo_is_refused_before_any_machine_starts(conn, policy):
+    from manyworlds import bench
+    with pytest.raises(ValueError, match="image_uri"):
+        bench.enqueue(conn, policy, "talk.infinitetalk", 1)
+    assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 0

@@ -86,7 +86,7 @@ worker_images:
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # talk: Wan2.1-I2V-14B-480P (~77 GB) + InfiniteTalk adapter + wav2vec, all on the rented machine.
-  talk: {image: mw-worker-talk, tag: v1, min_cuda: 12.8, cpu: 8, ram_gb: 64, disk_gb: 200,
+  talk: {image: mw-worker-talk, tag: v2, min_cuda: 12.8, cpu: 8, ram_gb: 64, disk_gb: 200,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -185,6 +185,8 @@ generation:
     shift: 2.0
     lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}
     extra: ["--num_persistent_param_in_dit", "0"]
+    motion_frame: 9              # frames carried between streaming chunks (README value)
+    timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
     voice: af_heart
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.

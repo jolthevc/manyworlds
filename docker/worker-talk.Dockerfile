@@ -16,10 +16,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg espe
  && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/MeiGen-AI/InfiniteTalk.git /opt/InfiniteTalk \
  && git -C /opt/InfiniteTalk checkout ${INFINITETALK_REF} && rm -rf /opt/InfiniteTalk/.git \
- && sed -i '/^from inspect import ArgSpec$/d' /opt/InfiniteTalk/wan/multitalk.py
-# ^ written for Python 3.10; the import is unused and Python 3.11 removed ArgSpec.
+ && sed -i '/^from inspect import ArgSpec$/d' /opt/InfiniteTalk/wan/multitalk.py \
+ && sed -i 's|Wav2Vec2Model.from_pretrained(wav2vec, local_files_only=True)|Wav2Vec2Model.from_pretrained(wav2vec, local_files_only=True, attn_implementation="eager")|' /opt/InfiniteTalk/generate_infinitetalk.py \
+ && grep -q 'attn_implementation="eager"' /opt/InfiniteTalk/generate_infinitetalk.py
+# Written for Python 3.10 and transformers 4.49+: the ArgSpec import is unused (3.11 removed it), and its wav2vec
+# wrapper sets config.output_attentions on every forward pass, which newer transformers refuses under SDPA
+# attention (2026-11-20, first benchmark): load it with eager attention, and keep transformers on 4.x.
 # gradio and dashscope serve its demo app only.
 RUN python -c "import torch; print(f'torch=={torch.__version__.split(\"+\")[0]}')" > /tmp/constraints.txt \
+ && echo "transformers==4.57.6" >> /tmp/constraints.txt \
  && grep -vE '^(gradio|dashscope)' /opt/InfiniteTalk/requirements.txt > /tmp/req.txt \
  && pip install --no-cache-dir -c /tmp/constraints.txt xformers==0.0.32.post2 "${FLASH_ATTN_WHL}" \
  && pip install --no-cache-dir -c /tmp/constraints.txt -r /tmp/req.txt \

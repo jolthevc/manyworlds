@@ -83,6 +83,27 @@ def check_talk() -> list[str]:
         raise RuntimeError(f"generate_infinitetalk.py --help failed: {(proc.stderr or proc.stdout)[-1500:]}")
     done.append("InfiniteTalk script imports")
 
+    # Its wav2vec wrapper, loaded as generate_infinitetalk.py loads it, on a tiny random model: the first
+    # benchmark (2026-11-20) died here after a 20-minute weight download.
+    probe = """
+import sys, tempfile, torch
+sys.path.insert(0, '.')
+from transformers import Wav2Vec2Config
+from src.audio_analysis.wav2vec2 import Wav2Vec2Model
+assert 'attn_implementation="eager"' in open('generate_infinitetalk.py').read(), 'wav2vec not loaded with eager attention'
+d = tempfile.mkdtemp()
+cfg = Wav2Vec2Config(hidden_size=32, num_hidden_layers=1, num_attention_heads=2, intermediate_size=64,
+                     conv_dim=(32, 32), conv_stride=(5, 2), conv_kernel=(10, 3), num_feat_extract_layers=2)
+Wav2Vec2Model(cfg).save_pretrained(d)
+m = Wav2Vec2Model.from_pretrained(d, local_files_only=True, attn_implementation='eager')
+out = m(torch.zeros(1, 16000), seq_len=25, output_hidden_states=True)
+assert len(out.hidden_states) == 2, len(out.hidden_states)
+"""
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=str(talk.REPO_DIR), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"InfiniteTalk's wav2vec encoder failed: {(proc.stderr or proc.stdout)[-1500:]}")
+    done.append("wav2vec encoder forward pass")
+
     import numpy as np
     import soundfile as sf
     d = Path(tempfile.mkdtemp())
