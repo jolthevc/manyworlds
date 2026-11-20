@@ -42,7 +42,7 @@ def from_post(conn, post_id) -> uuid.UUID:
 
 
 # Plan fields a scheduled post carries (the reasoning stays on the idea, never on the post).
-_POST_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series")
+_POST_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series", "staging", "flavor")
 
 
 def schedule_ready(conn, policy, *, now) -> dict:
@@ -53,13 +53,16 @@ def schedule_ready(conn, policy, *, now) -> dict:
 
     from psycopg.types.json import Jsonb
 
-    from . import memory, planner
+    from . import feed_qa, memory, planner
     max_wait = timedelta(hours=float(policy.get("brain", "showrunner", "max_wait_hours", default=6)))
     out = {"scheduled": 0, "dropped": 0, "batches": 0}
     for b in conn.execute("SELECT batch, creator_id, min(created_at) AS oldest FROM ideas WHERE status = 'proposed' "
                           "AND batch IS NOT NULL GROUP BY batch, creator_id ORDER BY 3").fetchall():
         rows = conn.execute(
-            """SELECT i.id, i.format, i.body, EXISTS (SELECT 1 FROM evaluations e WHERE e.idea_id = i.id
+            """SELECT i.id, i.format, i.body, i.attributes, i.experiment_id,
+                      (SELECT scores FROM evaluations e WHERE e.idea_id = i.id AND e.role = 'evaluator'
+                       ORDER BY created_at DESC LIMIT 1) AS scores,
+                      EXISTS (SELECT 1 FROM evaluations e WHERE e.idea_id = i.id
                                                       AND e.role = 'evaluator') AS evaluated,
                       EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'brain.evaluator' AND j.payload->>'idea_id' = i.id::text
                               AND j.status IN ('failed', 'dead'))
@@ -71,7 +74,8 @@ def schedule_ready(conn, policy, *, now) -> dict:
         if not all(r["evaluated"] or r["unevaluable"] for r in rows) and now - b["oldest"] < max_wait:
             continue
         start = date.fromisoformat(b["batch"].rsplit(":", 1)[1])
-        ready = [r for r in rows if r["evaluated"]]
+        # Feed QA (manyworlds.brain.feed_qa): repetition, originality and voice, against recent posts.
+        ready, qa_dropped = feed_qa.screen(conn, policy, b["creator_id"], [r for r in rows if r["evaluated"]])
         version = conn.execute("SELECT profile_version FROM creators WHERE id = %s", (b["creator_id"],)).fetchone()
         with conn.transaction():
             for r in rows:
@@ -80,6 +84,10 @@ def schedule_ready(conn, policy, *, now) -> dict:
                                  "body = body || '{\"drop_reason\": \"not evaluated (failed or timed out)\"}' "
                                  "WHERE id = %s AND status = 'proposed'", (r["id"],))
                     out["dropped"] += 1
+            for r, why in qa_dropped:
+                conn.execute("UPDATE ideas SET status = 'dropped', updated_at = now(), body = body || %s "
+                             "WHERE id = %s AND status = 'proposed'", (Jsonb({"drop_reason": why}), r["id"]))
+                out["dropped"] += 1
             times = planner.slot_times(policy, start, [int(r["body"].get("day", 0)) for r in ready])
             # Claim the ideas: a concurrent scheduler (another producer) that got here first has
             # already taken them, and they must not become posts twice.

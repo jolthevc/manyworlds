@@ -3,6 +3,8 @@ never loop on failures, and never run without a deadline."""
 
 from __future__ import annotations
 
+import json
+
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -65,6 +67,7 @@ def test_waiting_training_starts_one_machine_in_first_pool_with_deadline(conn, p
     assert len(launched) == 1 and launched[0]["pool"] == "vast_3090"
     name, spec = ps["vast"].launched[0]
     assert spec.ram_gb == 48 and spec.env["MW_GROUP"] == name and spec.env["MW_POOL"] == "vast_3090"
+    assert json.loads(spec.env["MW_POOL_INFO"])["usd_per_hour"] == policy.pool("vast_3090")["usd_per_hour"]
     tag = policy.get("worker_images", "train", "tag")
     assert spec.image == f"docker.io/example/mw-worker-train:{tag}" and spec.gpu_name == "RTX 3090"
     g = conn.execute("SELECT * FROM gpu_groups WHERE name = %s", (name,)).fetchone()

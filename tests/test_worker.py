@@ -230,3 +230,15 @@ def test_a_dropped_database_connection_does_not_silence_the_heartbeat(conn, data
     done.set()
     t.join(2)
     assert len(calls) >= 4 and not lost.is_set()     # kept beating after the failure
+
+
+def test_a_worker_on_a_pool_newer_than_its_image_uses_the_pool_info_it_was_given(database_url, store, policy,
+                                                                                monkeypatch):
+    # 2026-11-20: talk v3 predated the runpod_secure_a40 pool and crashed at start ("unknown GPU pool").
+    import json
+    import pytest
+    with pytest.raises(KeyError):
+        make_worker(database_url, store, policy, pool="brand_new_pool")
+    monkeypatch.setenv("MW_POOL_INFO", json.dumps({"provider": "runpod", "gpu": "a40", "usd_per_hour": 0.59}))
+    w = make_worker(database_url, store, policy, pool="brand_new_pool")
+    assert w.pool_info["gpu"] == "a40" and abs(w.usd_per_second - 0.59 / 3600) < 1e-12

@@ -181,7 +181,9 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     env.update({k: str(v) for k, v in (img.get("env") or {}).items()})
     env.update({k: str(v) for k, v in (p.get("worker_env") or {}).items()})
     env.update({"MW_WORKER_KINDS": ",".join(kinds), "MW_POOL": pool, "MW_GROUP": name,
-                "MW_PROVIDER": provider.name})
+                "MW_PROVIDER": provider.name,
+                # so a worker image built before this pool existed still knows its price and provider
+                "MW_POOL_INFO": json.dumps({k: v for k, v in p.items() if k != "worker_env"})})
     spec = LaunchSpec(image=f"{os.environ['MW_REGISTRY'].rstrip('/')}/{img['image']}:{img.get('tag', 'latest')}",
                       gpu_name=gpu_name, cpu=int(img["cpu"]), ram_gb=int(img["ram_gb"]),
                       disk_gb=int(img["disk_gb"]), max_usd_per_hour=float(p["usd_per_hour"]), env=env,

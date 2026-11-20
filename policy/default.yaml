@@ -81,15 +81,15 @@ worker_images:
   # env: passed to every worker of the family; a pool's worker_env overrides it.
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
-  image: {image: mw-worker-image, tag: v19, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
+  image: {image: mw-worker-image, tag: v20, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v19, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
+  video: {image: mw-worker-image, tag: v20, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # talk: Wan2.1-I2V-14B-480P (~82 GB) + adapter (10 GB) + wav2vec, all on the rented machine; 64 GB RAM / 200 GB disk
   # found no RunPod community capacity (2026-11-20); offloading the 14B model needs ~40-45 GB of RAM.
-  talk: {image: mw-worker-talk, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150,
+  talk: {image: mw-worker-talk, tag: v4, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -174,6 +174,17 @@ review:
     max_jobs_per_run: 10
     max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
   max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
+  # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
+  # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
+  # regenerated. {scene} is the scene text; `scene` leads the prompt, the others follow it.
+  repair:
+    lora_scale_step: 0.1         # identity: each identity repair strengthens the likeness LoRA by this...
+    lora_scale_max: 1.2          # ...up to this (mild: 1.3 did no better on Maren, 2026-11-14; the prompt hint does more)
+    drop_on_safety: true
+    hints:
+      scene: "The photo must clearly show: {scene}. "
+      identity: ". Face clearly visible, the same person as always, signature details present"
+      realism: ". Relaxed hands or hands out of frame, natural anatomy, no text or logos"
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
@@ -258,6 +269,12 @@ brain:
   # Exploration directions (manyworlds.brain.exploration): Thompson draws over measured effects and untried
   # formats/stagings (prior N(0, prior_sd) in log-lift); the top `directions` steer the exploratory ideas.
   exploration: {directions: 3, prior_sd: 0.3}
+  # Feed QA at scheduling (manyworlds.brain.feed_qa): ideas that would repeat an attribute value more than
+  # max_repeat times in the last `window` posts, near-duplicate a recent caption or scene (similarity 0-1), or
+  # score below a floor on an idea-rubric dimension (naturalness: doesn't sound like them) are dropped.
+  # Experiment ideas are exempt, so their arms stay comparable.
+  qa: {window: 12, max_repeat: 2, repeat_attributes: [outfit, setting], similarity: 0.85, min_chars: 20,
+       min_scores: {naturalness: 4}}   # min_chars: shorter texts (a word or two) may repeat
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
@@ -296,6 +313,17 @@ planner:
     story: "ONE vertical throwaway Story photo: a quick in-the-moment glimpse (the view, the coffee, the mess, a mood); casual, unposed, 0-6 words of caption; not a grid post"
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity
+
+# Flavors (owner 2026-11-19: "more flavors"): conventions for the pipelines we have, offered like stagings and
+# recorded as an idea attribute. Flavors that need text drawn on the image (tier list, recipe card, text-on-photo
+# memes) wait for a text-overlay step for photos; until then they are not listed here.
+flavors:
+  library:
+    photo_dump: {formats: [carousel], note: "3-4 different moments from the past days (not one scene), in order, a casual round-up"}
+    expectation_vs_reality: {formats: [carousel], note: "photo 1 is what they pictured, photo 2 what actually happened; the caption lands the joke"}
+    travel_diary: {formats: [carousel], note: "a day somewhere (a nearby town counts), one photo per moment, morning to night"}
+    outfit_of_the_week: {formats: [carousel], note: "the week's outfits, one per photo, same mirror or spot, small changes in mood"}
+    before_after: {formats: [carousel], note: "the same place or thing before and after (tidying, a plant, a haircut, a repaint)"}
 
 # Stagings (owner 2026-11-19): a format plus a recognisable setting, framing, wardrobe and script conventions.
 # The showrunner may give an idea one (or none: most posts are plain); each idea records its staging as an
@@ -341,6 +369,8 @@ production:
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120
   max_job_failures_per_post: 6   # failed jobs (machines, downloads) per post; apart from review repairs
+  # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
+  reroute_failed_video: {story_clip: photo, talking_video: photo}
   edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
 
 # Claude models by role. Low-volume judgement work runs on Opus; bulk roles

@@ -20,6 +20,15 @@ ends the tick for the others.
 | Nothing checks that an experiment idea actually followed its arm instruction | arms are compared as assigned (diluting, not biasing, the difference) | showrunner slot handling |
 | Experiments are slow: ~36 posts per arm at 2 per arm per batch is ~54 days, one open at a time | learning pace; raise `slots_per_batch` or `max_open_per_creator` once creators post more | policy `brain.experiments` |
 
+## Brain M7 (QA and repair), noted in review 2026-11-20
+
+| Item | Why it matters | Where |
+|---|---|---|
+| A video rerouted to a photo keeps the caption and script written for the video | the caption may mention movement or speech the photo doesn't have; a caption rewrite (one cheap LLM call) would fix it | `manyworlds/production.py` reroute |
+| Feed repetition is an exact match on free-text attributes ("cafe" vs "cozy cafe" don't match) | conservative: it misses some repeats, never blocks wrongly | `manyworlds/brain/feed_qa.py` |
+| With `review.image.min_scene: 0` the scene gate never fails, so the scene repair can't trigger | only matters if scene becomes a hard gate again | `manyworlds/review/repair.py` |
+| Flavors that need text on the image (tier list, recipe card, text-on-photo memes) aren't offered | needs a text-overlay step for photos (the narrated edit already burns captions into video) | policy `flavors` |
+
 ## Before talking video goes live (M10)
 
 | Item | Why it matters | Where |

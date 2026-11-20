@@ -40,6 +40,7 @@ class PlannedIdea(planner.PlannedPost):
     canon_key: str = Field(default="", description="if `canon` replaces a single fact (home, partner, job, pet, "
                                                    "employer), that fact's name; otherwise empty")
     staging: str = Field(default="", description="the name of a staging from the library, or empty (most posts)")
+    flavor: str = Field(default="", description="the name of a flavor from the library, or empty (most posts)")
     experiment: str = Field(default="", description="the slot id when this idea fills an experiment slot, else empty")
 
 
@@ -59,9 +60,9 @@ def _recent_with_scores(conn, creator_id, n: int) -> list[dict]:
     return [{k: v for k, v in dict(r).items() if v} for r in rows]
 
 
-def stagings_for(policy, formats) -> dict:
-    """The stagings whose formats production makes now."""
-    lib = policy.get("stagings", "library", default={}) or {}
+def stagings_for(policy, formats, section: str = "stagings") -> dict:
+    """The stagings (or flavors) whose formats production makes now."""
+    lib = policy.get(section, "library", default={}) or {}
     return {k: v for k, v in lib.items() if set(v.get("formats") or []) & set(formats)}
 
 
@@ -90,6 +91,9 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     hashtags_max = dials.get("hashtags_max") or {}
     notes = policy.get("planner", "format_notes", default={}) or {}
     stagings = stagings_for(policy, formats)
+    flavors = stagings_for(policy, formats, "flavors")
+    flavor_text = (f"Flavors you may give an idea (set `flavor` to its name; most posts need none): "
+                   f"{json.dumps(flavors)}. " if flavors else "")
     staging_text = (f"Stagings you may give an idea (set `staging` to its name; most posts need none; the scene must "
                     f"show its setting, framing and wardrobe and the script follow its conventions): "
                     f"{json.dumps(stagings)}. {policy.get('stagings', 'rules', default='')} " if stagings else "")
@@ -97,10 +101,17 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     effects = ((last["output"] or {}).get("effects") or []) if last else []
     explore = exploration.directions(policy, effects=effects, seed_key=f"{creator_id}:{start}",
                                      untried=exploration.untried(conn, creator_id, formats=list(formats),
-                                                                 stagings=list(stagings)))
+                                                                 stagings=list(stagings), flavors=list(flavors)))
     slot_text = (f"Experiment slots (randomised: write exactly one idea per slot, on its day, that follows its "
                  f"instruction and is still a natural post; set `experiment` to the slot id): "
                  f"{json.dumps([{k: s[k] for k in ('slot', 'day', 'platform', 'instruction')} for s in slots])}. " if slots else "")
+    qa_window = int(policy.get("brain", "qa", "window", default=12))
+    qa_drops = [r["why"] for r in conn.execute(
+        "SELECT body->>'drop_reason' AS why FROM ideas WHERE creator_id = %s AND status = 'dropped' "
+        "AND body->>'drop_reason' ~ '^(repetitive feed|unoriginal|[a-z_]+ [0-9.]+ below)' "
+        "ORDER BY updated_at DESC LIMIT %s", (creator_id, qa_window)).fetchall()]
+    qa_text = (f"Recent ideas the feed check dropped (don't repeat these mistakes): {json.dumps(qa_drops)}. "
+               if qa_drops else "")
     prompt = (
         f"The creator:\n{json.dumps(who, default=str)}\n"
         f"What we know about their life (keep it consistent):\n"
@@ -118,16 +129,16 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"({planner._video_formats(policy)}), each in one of the creator's video series. "
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
         f"What each format is: {json.dumps({f: n for f, n in notes.items() if f in formats})}. "
-        f"{staging_text}"
+        f"{staging_text}{flavor_text}"
         f"About {round(share * 100)}% of the ideas should try something this creator hasn't done yet (mark them "
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
-        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}Hashtags per post at most {hashtags_max or 1}; often none. "
+        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
         f"The creator's face is visible in most images, wearing their signature item.")
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,
             "analysis_decision_id": str(last["id"]) if last else None,
             "finding_ids": [str(f["id"]) for f in evidence.findings(conn, mode=mode, creator_id=creator_id)],
-            "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings,
+            "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings, "flavors": flavors,
             "slots": {s["slot"]: s for s in slots}, "exploration": explore}
     return prompt, meta
 
@@ -173,18 +184,19 @@ class Showrunner:
                 if slot:
                     used.add(slot["slot"])
                 staging = q.staging if q.staging in meta["stagings"] else ""   # unknown names are dropped
+                flavor = q.flavor if q.flavor in meta["flavors"] else ""
                 body = {"scenes": q.scenes, "script": q.script, "on_screen_text": q.on_screen_text,
                         "hashtags": q.hashtags, "canon": q.canon, "pillar": q.pillar, "tone": q.tone,
                         "series": q.series, "caption": q.caption, "day": q.day, "platform": q.platform,
                         "exploratory": q.exploratory, "reasoning": q.reasoning, "canon_key": q.canon_key,
-                        "staging": staging}
+                        "staging": staging, "flavor": flavor}
                 concept = " | ".join(q.scenes) + (f" | script: {q.script}" if q.script else "") + f" | caption: {q.caption}"
                 iid = ctx.conn.execute(
                     "INSERT INTO ideas (creator_id, batch, concept, format, body, attributes, status, experiment_id, arm) "
                     "VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s) RETURNING id",
                     (creator_id, batch, f"{q.format}: {concept}", q.format, Jsonb(body),
                      Jsonb({**q.attributes, **({"exploratory": "yes"} if q.exploratory else {}),
-                            **({"staging": staging} if staging else {})}),
+                            **({"staging": staging} if staging else {}), **({"flavor": flavor} if flavor else {})}),
                      slot["experiment_id"] if slot else None, slot["arm"] if slot else None)).fetchone()["id"]
                 commission(ctx, "evaluator", {"idea_id": str(iid)}, reason="score before scheduling", key=f"eval:{iid}")
                 ids.append(str(iid))

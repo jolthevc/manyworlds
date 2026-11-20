@@ -27,6 +27,7 @@ from psycopg.types.json import Jsonb
 
 from . import queue
 from .creator.lab import clip_prompt, photo_prompt, talk_prompt
+from .review import repair
 from .policy import Policy
 
 
@@ -51,7 +52,12 @@ def ensure_lora(conn, policy: Policy, creator_id) -> dict | None:
     return lora
 
 
-def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None, scene_i: int, attempt: int):
+class DropPost(Exception):
+    """Raised by a step's job maker when the post must not be retried (e.g. unsafe output)."""
+
+
+def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None, scene_i: int, attempt: int,
+               adjust=None):
     cfg, img = _cfg(policy), policy.get("generation", "image", default={})
     img = {**img, **(policy.get("generation", "image_by_format", post["format"], default={}) or {})}   # Stories are 9:16
     payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=lora and lora.get("trigger")),
@@ -62,6 +68,8 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
                "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}
     if lora:
         payload.update(lora_uri=lora["uri"], lora_scale=lora.get("scale", 1.0))
+    if adjust:   # a targeted repair (manyworlds.review.repair)
+        payload = adjust(payload)
     return queue.enqueue(conn, cfg.get("image_kind", "image.zimage"), payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"],
                          idempotency_key=f"post:{post['id']}:{scene_i}:{attempt}")
@@ -127,7 +135,11 @@ def advance_step(body: dict, step: Step) -> tuple[str, Any]:
                                if state == "rejected" else f"{step.label}the {step.thing} job failed {body[key] + 1} times")
         return "dropped", None
     body[key] = body.get(key, 0) + 1
-    step.jobs.append(str(step.make(len(step.jobs))))
+    try:
+        step.jobs.append(str(step.make(len(step.jobs))))
+    except DropPost as e:
+        body["drop_reason"] = f"{step.label}{e}"
+        return "dropped", None
     return "waiting", None
 
 
@@ -237,7 +249,21 @@ def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:
     def remake(i):
         def make(attempt):
             bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
-            return _scene_job(conn, policy, post, bible, ensure_lora(conn, policy, post["creator_id"]), i, attempt)
+            adjust = None
+            if attempt > 0:   # a retry: repair what the latest reviewed job's review points to
+                # (a job that failed on its machine has no review; the repair before it still applies)
+                last = next((j for j in reversed(body["scene_jobs"][i]) if repair.reviewed(conn, j)), None)
+                diag = repair.diagnose(conn, last) if last else {"cause": None, "failed": {}, "defects": []}
+                if diag["cause"] == "safety" and policy.get("review", "repair", "drop_on_safety", default=True):
+                    raise DropPost(f"safety: {diag['failed']} {diag['defects']}; unsafe output is never regenerated")
+                if diag["cause"]:
+                    done = sum(1 for e in body.get("repair_log", []) if e["scene"] == i and e["cause"] == "identity")
+                    adjust, action = repair.plan(policy, diag["cause"], scene=body["scenes"][i], identity_repairs=done)
+                    body.setdefault("repair_log", []).append(
+                        {"scene": i, "attempt": attempt, "cause": diag["cause"], "action": action,
+                         "defects": diag["defects"]})
+            return _scene_job(conn, policy, post, bible, ensure_lora(conn, policy, post["creator_id"]), i, attempt,
+                              adjust=adjust)
         return make
 
     return [Step(jobs, lambda j: _scene_state(conn, j), remake(i), repairs, ("job_failures", max_failures),
@@ -264,6 +290,18 @@ def advance_post(conn, policy: Policy, post: dict) -> str:
         body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
         if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
             state, video = advance_step(body, _follow_up(conn, policy, post, body, chosen))
+            target = (_cfg(policy).get("reroute_failed_video") or {}).get(post["format"])
+            # Only when review kept rejecting the clips (not machine failures), and never for an experiment
+            # idea, whose arm would then be measured on a photo.
+            rejected = "passed review" in (body.get("drop_reason") or "")
+            in_experiment = conn.execute("SELECT 1 FROM ideas WHERE post_id = %s AND experiment_id IS NOT NULL",
+                                         (post["id"],)).fetchone()
+            if state == "dropped" and target and rejected and not in_experiment:
+                # The video kept failing; its start photo passed review. Ship that instead of nothing.
+                body.update(rerouted_from=post["format"], reroute_reason=body.pop("drop_reason", ""))
+                _set(conn, post["id"], "ready", body, qa_status="passed", asset_ids=[a["id"] for a in chosen],
+                     format=target)
+                return "ready"
             states = {state}
     if "dropped" in states:
         _set(conn, post["id"], "dropped", body, qa_status="failed")
