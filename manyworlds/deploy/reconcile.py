@@ -27,7 +27,9 @@ def run(conn, policy: Policy, providers: dict, *, now: datetime | None = None, d
     for name, p in providers.items():
         if not hasattr(p, "charges") or not p.configured():
             continue
-        rows = p.charges(since, until)
+        # Only our machines (labels mw-...): the same account may run other projects' instances, whose
+        # charges are none of our business (2026-11-20: $18.87 of a $40.40 Vast bill was another project).
+        rows = [r for r in p.charges(since, until) if (r.get("label") or "").startswith("mw-")]
         fetched += len(rows)
         for r in rows:
             conn.execute(
