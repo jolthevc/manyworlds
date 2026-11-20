@@ -85,6 +85,14 @@ def is_worker_fault(exc: BaseException) -> bool:
         "OutOfMemoryError", "AcceleratorError")
 
 
+def check_registered(pool: str) -> None:
+    """A worker for a GPU pool runs only on a machine the autoscaler registered (it always sets MW_GROUP).
+    2026-11-20: a diagnostic container on the owner's laptop, started with a real pool name, claimed a talk
+    benchmark job and began downloading model weights there. Pool `local` (fakes, brain) is exempt."""
+    if pool != "local" and not os.environ.get("MW_GROUP"):
+        raise SystemExit(f"refusing to work pool {pool!r} outside a registered machine (MW_GROUP is not set)")
+
+
 def pool_info(policy: Policy, pool: str) -> dict:
     """The pool's definition: from the policy baked into this image, or, for a pool added after the image
     was built, from MW_POOL_INFO, which the autoscaler sets on every machine. 2026-11-20: a talk worker on a
@@ -379,6 +387,7 @@ def main_from_env() -> None:
     from .. import storage
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    check_registered(os.environ.get("MW_POOL", "local"))
     kinds = [k.strip() for k in os.environ["MW_WORKER_KINDS"].split(",") if k.strip()]
     pol = policy_mod.load()
     handlers, store = handlers_for(kinds), storage.from_url()

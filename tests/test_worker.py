@@ -242,3 +242,14 @@ def test_a_worker_on_a_pool_newer_than_its_image_uses_the_pool_info_it_was_given
     monkeypatch.setenv("MW_POOL_INFO", json.dumps({"provider": "runpod", "gpu": "a40", "usd_per_hour": 0.59}))
     w = make_worker(database_url, store, policy, pool="brand_new_pool")
     assert w.pool_info["gpu"] == "a40" and abs(w.usd_per_second - 0.59 / 3600) < 1e-12
+
+
+def test_a_gpu_pool_worker_refuses_to_run_outside_a_registered_machine(monkeypatch):
+    import pytest
+    from manyworlds.worker.runner import check_registered
+    monkeypatch.delenv("MW_GROUP", raising=False)
+    with pytest.raises(SystemExit, match="registered machine"):
+        check_registered("runpod_secure_a40")
+    check_registered("local")                                      # fakes and the brain run locally
+    monkeypatch.setenv("MW_GROUP", "mw-talk-a40-runpod-0f7c")
+    check_registered("runpod_secure_a40")

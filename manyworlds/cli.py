@@ -113,9 +113,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "worker":
         from .worker.runner import Worker, handlers_for
 
+        from .worker.runner import check_registered
         kinds = (args.kinds or os.environ["MW_WORKER_KINDS"]).split(",")
+        pool = args.pool or os.environ.get("MW_POOL", "local")
+        check_registered(pool)
         worker = Worker(handlers=handlers_for([k.strip() for k in kinds if k.strip()]),
-                        store=storage.from_url(), policy=pol, pool=args.pool or os.environ.get("MW_POOL", "local"))
+                        store=storage.from_url(), policy=pol, pool=pool)
         n = worker.run(max_jobs=args.max_jobs, idle_exit_seconds=args.idle_exit)
         print(f"worker {worker.worker_id} handled {n} jobs")
         return 0
