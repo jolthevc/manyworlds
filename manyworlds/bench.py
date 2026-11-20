@@ -31,6 +31,9 @@ SPEECH_LINES = [
 
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
             extra: dict[str, Any] | None = None, pools: list[str] | None = None) -> str:
+    if kind.startswith("talk.") and not (extra or {}).get("image_uri"):
+        # Otherwise a machine boots, every job fails at once, and it idles until stopped.
+        raise ValueError("a talk benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
     batch = batch or f"bench-{kind}-{uuid.uuid4().hex[:6]}"
     gen = policy.get("generation", default={})
     for i in range(jobs):
@@ -47,10 +50,19 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
                        "frames": vid.get("frames", 81), "seed": 2000 + i,
                        "params": {"steps": vid.get("steps", 4), "guidance": vid.get("guidance", 1.0),
                                   "fps": vid.get("fps", 16)}}
+        elif kind.startswith("talk."):
+            # The start photo is the creator's: pass it with --extra '{"image_uri": "..."}'.
+            talk = dict(gen.get("talk", {}))
+            payload = {"script": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": talk.pop("voice", "af_heart"),
+                       "prompt": "a young woman talks casually to her phone camera, natural head movement",
+                       "seed": 3000 + i, "keyframes": 4, "params": talk}
         else:
             payload = {"text": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": "af_heart"}
         payload.update(extra or {})
-        queue.enqueue(conn, kind, payload, batch=batch, pools=pools, max_attempts=int(policy.get("queue", "max_attempts", default=3)))
+        # A creator_id in extra ties the job to that creator, so the review gates judge it against them.
+        creator_id = payload.pop("creator_id", None)
+        queue.enqueue(conn, kind, payload, batch=batch, pools=pools, creator_id=creator_id,
+                      max_attempts=int(policy.get("queue", "max_attempts", default=3)))
     return batch
 
 

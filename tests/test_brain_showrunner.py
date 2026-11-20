@@ -142,3 +142,34 @@ def test_the_evaluator_is_not_told_which_ideas_are_exploratory(conn, policy):
     iid = conn.execute("SELECT id FROM ideas").fetchone()["id"]
     _, _, content = evaluator.idea_content(conn, iid)
     assert "exploratory" not in str(content) and "reasoning" not in str(content)
+
+
+# --- stagings (owner 2026-11-19): a format plus a setting, framing, wardrobe and script conventions -----
+
+def _with_talking(policy):
+    import dataclasses
+    prod = {**policy.body["production"], "formats": [*policy.body["production"]["formats"], "talking_video"]}
+    return dataclasses.replace(policy, body={**policy.body, "production": prod})
+
+
+def test_stagings_are_offered_for_the_formats_production_makes(conn, policy):
+    cid = _maren(conn)
+    llm = PlanLLM([idea(0)], conn=conn)
+    _run(conn, policy, cid, llm)
+    assert "press_conference" not in str(llm.calls[0]["content"])        # no talking video made yet: no stagings
+    llm = PlanLLM([idea(0)], conn=conn)
+    _run(conn, _with_talking(policy), cid, llm)
+    prompt = str(llm.calls[0]["content"])
+    assert "press_conference" in prompt and "field_reporter" in prompt and "employer" in prompt
+
+
+def test_an_ideas_staging_is_kept_for_learning_and_an_unknown_one_is_cleared(conn, policy):
+    cid = _maren(conn)
+    policy = _with_talking(policy)
+    talk = dict(fmt="talking_video", scenes=("facing the camera outside the corner shop at night",),
+                script="Right, quick report from the corner shop: the samosas are back.")
+    _run(conn, policy, cid, PlanLLM([idea(0, staging="field_reporter", **talk), idea(1, staging="moon_base", **talk)],
+                                    conn=conn))
+    rows = conn.execute("SELECT body, attributes FROM ideas ORDER BY body->>'day'").fetchall()
+    assert rows[0]["body"]["staging"] == "field_reporter" and rows[0]["attributes"]["staging"] == "field_reporter"
+    assert rows[1]["body"]["staging"] == "" and "staging" not in rows[1]["attributes"]

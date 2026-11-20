@@ -5,7 +5,7 @@
 # The registry comes from MW_REGISTRY (e.g. docker.io/yourname); images are public, so they must
 # never contain secrets: the Dockerfiles copy only code and policy, and .dockerignore drops .env.
 set -eu
-family="${1:?family: image or train}"
+family="${1:?family: image, train or talk}"
 tag="${2:?tag, e.g. v18}"
 registry="${MW_REGISTRY:?set MW_REGISTRY, e.g. docker.io/yourname}"
 registry="${registry#docker.io/}"
@@ -13,6 +13,7 @@ registry="${registry#docker.io/}"
 case "$family" in
   image) file=docker/worker.Dockerfile; args="--build-arg EXTRA=image" ;;
   train) file=docker/worker-train.Dockerfile; args="" ;;
+  talk)  file=docker/worker-talk.Dockerfile; args="" ;;
   *) echo "unknown family $family" >&2; exit 2 ;;
 esac
 image="$registry/mw-worker-$family:$tag"

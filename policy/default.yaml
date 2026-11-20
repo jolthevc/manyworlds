@@ -14,8 +14,8 @@ budgets:
 gpu_runs:
   default_max_hours: 2
   default_max_usd: 1.0
-  max_hours_by_family: {train: 3}   # boot + model download + ~1h of training
-  max_usd_by_family: {}
+  max_hours_by_family: {train: 3, talk: 2.5}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
+  max_usd_by_family: {talk: 1.25}
   max_hours_limit: 12          # the launcher refuses anything longer
   idle_stop_minutes: 20        # no open jobs for this long -> stop (SaladCloud: nodes pull images slowly)
   # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
@@ -26,7 +26,7 @@ gpu_runs:
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
-  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240}
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90}   # talk: first boot downloads ~90 GB of weights
   max_attempt_minutes_by_kind: {image.mirror: 120, video.mirror: 120}  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
 
@@ -63,6 +63,8 @@ job_kinds:
   video.mirror:    {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 0}
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
+  # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
+  talk.infinitetalk: {pools: [vast_5090, vast_4090], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -83,6 +85,9 @@ worker_images:
   video: {image: mw-worker-image, tag: v18, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
+  # talk: Wan2.1-I2V-14B-480P (~77 GB) + InfiniteTalk adapter + wav2vec, all on the rented machine.
+  talk: {image: mw-worker-talk, tag: v2, min_cuda: 12.8, cpu: 8, ram_gb: 64, disk_gb: 200,
+         env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {HF_HUB_DISABLE_XET: 1}}
 
@@ -106,11 +111,11 @@ autoscale:
   scale:
     drain_target_minutes: {default: 30, train: 180}
     history_days: 7
-    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200}
+    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200, talk: 900}
   # Production work (made lead_hours ahead) waits to share one machine: each machine bills a boot,
   # model load and idle tail (~7-10 min) however few jobs it runs. Lab work and benchmarks start at once.
   batch:
-    min_work_minutes: {default: 10, video: 25, train: 0}   # start once this much work waits (median job times)...
+    min_work_minutes: {default: 10, video: 25, train: 0, talk: 25}   # start once this much work waits (median job times)...
     max_wait_minutes: {default: 180}                       # ...or once the oldest job has waited this long
     urgent_priority: 1                                     # jobs at this priority or above never wait
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
@@ -123,8 +128,8 @@ autoscale:
   scoring:
     enabled: true
     window_days: 7
-    min_outputs: {default: 20, video: 5, train: 1}   # outputs before a pool is ranked
-    trial_usd: {default: 0.30, video: 0.60, train: 1.00}   # most spent measuring an unranked pool per window
+    min_outputs: {default: 20, video: 5, train: 1, talk: 5}   # outputs before a pool is ranked
+    trial_usd: {default: 0.30, video: 0.60, train: 1.00, talk: 1.50}   # most spent measuring an unranked pool per window
     pause_after_failed_machines: 3   # this many machines in a row with no output pauses the pool...
     pause_hours: 24                  # ...for this long, then it gets a new trial
 
@@ -170,6 +175,19 @@ generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
   image_by_format: {story: {width: 720, height: 1280}}   # 9:16 Stories; other formats use image (4:5)
   video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; measured 2026-11-14
+  # Lip-sync (talk.infinitetalk): the README's distilled-LoRA settings (8 steps, text cfg 1, audio cfg 2, shift 2) with
+  # the Apache-2.0 lightx2v step-distill LoRA, all transformer weights offloaded so 24 GB cards fit. Unmeasured.
+  talk:
+    size: infinitetalk-480
+    steps: 8
+    text_cfg: 1.0
+    audio_cfg: 2.0
+    shift: 2.0
+    lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}
+    extra: ["--num_persistent_param_in_dit", "0"]
+    motion_frame: 9              # frames carried between streaming chunks (README value)
+    timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
+    voice: af_heart
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:
@@ -252,17 +270,39 @@ planner:
   days: 3                      # short periods: each plan sees the latest posts and settings
   plan_ahead_days: 2           # the producer plans the next period when less than this is planned
   auto_statuses: [draft, active]   # creators the producer plans for (needs a profile and reference images)
-  formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1], story: [1, 1]}
-  video_formats: [narrated_edit, story_clip]
+  formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1], story: [1, 1], talking_video: [1, 1]}
+  video_formats: [narrated_edit, story_clip, talking_video]
   # What each format can show; the planner writes to these limits.
   format_notes:
     photo: "one candid photo"
     carousel: "2-4 photos of the same moment, evening or day, in order"
     narrated_edit: "3-6 photos in sequence with the creator's own voice reading `script` (15-30 s of natural speech, said the way they talk) and burned-in captions; routine montages belong here"
     story_clip: "ONE 5-second shot animated from ONE photo, with one simple motion (steam rising, rain running down glass, a hand lifting a mug); `script` says only what moves. Never a montage or several actions"
+    talking_video: "the creator talks to camera, lip-synced in their own voice: ONE scene where they face the camera, chest-up, in the place they are speaking from (the start frame), and `script` = exactly what they say (5-20 s of natural speech, said the way they talk, no stage directions)"
     story: "ONE vertical throwaway Story photo: a quick in-the-moment glimpse (the view, the coffee, the mess, a mood); casual, unposed, 0-6 words of caption; not a grid post"
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity
+
+# Stagings (owner 2026-11-19): a format plus a recognisable setting, framing, wardrobe and script conventions.
+# The showrunner may give an idea one (or none: most posts are plain); each idea records its staging as an
+# attribute, so the analyst learns which work for which creator. Only stagings whose formats production makes
+# are offered. Outlets, leagues, teams and shows are always fictional; a creator who reports for an outlet keeps
+# it (memory fact `employer`); changing outlet is a storyline beat (canon with canon_key `employer`).
+stagings:
+  rules: "Fictional outlets, leagues, teams and shows only, never real ones. If a staging needs an outlet and the creator has no `employer` fact, invent a fictional one and record it as canon with canon_key `employer`; afterwards always use that outlet."
+  library:
+    press_conference: {formats: [talking_video], setting: "post-game press conference: podium with a fictional league's sponsor-free backdrop, or a locker room or courtside", framing: "chest-up behind a mic cluster, slightly off-centre", wardrobe: "team kit or warm-up jacket of a fictional team", script: "short answers to an unheard question, a little out of breath, deadpan or emotional"}
+    field_reporter: {formats: [talking_video], setting: "on location where the story is: a street, a market, a queue, a park", framing: "chest-up holding a mic with a fictional outlet's flag, the scene behind", wardrobe: "practical coat, outlet lanyard", script: "news-report cadence about an everyday or fictional story, signs off with name and outlet"}
+    news_desk: {formats: [talking_video], setting: "studio news desk of the creator's fictional outlet, screens behind", framing: "seated, chest-up, centred", wardrobe: "smart blazer", script: "anchor cadence, a headline then two lines, a light closing aside"}
+    weather_map: {formats: [talking_video], setting: "in front of a weather map of a real or fictional place", framing: "half-body, gesturing at the map", wardrobe: "bright presenter dress or suit", script: "forecast delivery, can be about mood or life instead of weather"}
+    commentary_booth: {formats: [talking_video], setting: "commentary booth above a fictional match or an everyday event", framing: "headset, chest-up, looking down then to camera", wardrobe: "headset, casual shirt", script: "play-by-play energy about something small (a cat, a parking attempt)"}
+    nature_documentary: {formats: [talking_video], setting: "outdoors among the 'wildlife' (pigeons, a flatmate, a toddler-free park)", framing: "crouched, whispering to camera", wardrobe: "field jacket", script: "hushed documentary narration of ordinary behaviour"}
+    late_night_monologue: {formats: [talking_video], setting: "small stage with a curtain or a desk with a city backdrop", framing: "standing, waist-up", wardrobe: "suit or sharp outfit", script: "two or three jokes about the creator's week, setup and punchline"}
+    reality_confessional: {formats: [talking_video], setting: "a confessional booth or a chair against a plain wall", framing: "seated, tight chest-up, direct to camera", wardrobe: "everyday", script: "candid, slightly dramatic aside about something that just happened"}
+    tour_guide: {formats: [talking_video], setting: "a street, landmark-free square, museum-like hall or the creator's own flat", framing: "walking backwards or standing, chest-up", wardrobe: "lanyard, comfortable shoes", script: "guide patter, facts (true or playful) about the place"}
+    cooking_host: {formats: [talking_video], setting: "the creator's kitchen, ingredients out", framing: "behind the counter, waist-up", wardrobe: "apron", script: "one recipe step or tip, a small mess, chatty"}
+    walk_and_talk: {formats: [talking_video], setting: "walking down a street or a path", framing: "selfie-held phone at arm's length", wardrobe: "the creator's usual outfit", script: "talking to the phone like to a friend: a story, an opinion, an update"}
+    asmr: {formats: [talking_video], setting: "a quiet, softly lit room", framing: "close-up, soft focus behind", wardrobe: "cosy", script: "very softly spoken, slow, describing small things"}
 
 # Captions that read as written by an AI are dropped (manyworlds.brain.planner.caption_issues).
 captions:
@@ -282,6 +322,7 @@ production:
   # built yet (M10). The edit pipeline stays in code for the talking-video work.
   formats: [photo, carousel, story_clip, story]   # formats production makes now; others wait in 'planned' until added
   video_kind: video.wan_i2v
+  talk_kind: talk.infinitetalk   # lip-synced talking video (talking_video posts)
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120

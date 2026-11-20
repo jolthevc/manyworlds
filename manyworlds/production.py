@@ -26,7 +26,7 @@ from typing import Any, Callable
 from psycopg.types.json import Jsonb
 
 from . import queue
-from .creator.lab import clip_prompt, photo_prompt
+from .creator.lab import clip_prompt, photo_prompt, talk_prompt
 from .policy import Policy
 
 
@@ -206,11 +206,28 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     return queue.enqueue(conn, _cfg(policy).get("video_kind", "video.wan_i2v"), payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
 
+def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int):
+    """A talking video: the creator says the script to camera from the approved photo, lip-synced,
+    in their own voice (Kokoro on the talk worker)."""
+    row = conn.execute("SELECT bible, anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
+    voice = (row["anchors"] or {}).get("voice") or {}
+    params = dict(policy.get("generation", "talk", default={}) or {})
+    default_voice = params.pop("voice", "af_heart")
+    scene, script = body["scenes"][0], body.get("script", "")
+    payload = {"image_uri": chosen[0]["uri"], "script": script, "voice": voice.get("voice", default_voice),
+               "speed": float(voice.get("speed", 1.0)), "prompt": talk_prompt(row["bible"], scene),
+               "scene": f"{scene} Speaking to camera: {script}",   # the video judge scores against it
+               "keyframes": int(policy.get("review", "video", "keyframes", default=4)),
+               "seed": int(str(post["id"]).replace("-", "")[:7], 16) + 700 + attempt * 10, "params": params}
+    return queue.enqueue(conn, _cfg(policy).get("talk_kind", "talk.infinitetalk"), payload,
+                         creator_id=post["creator_id"], batch=f"post-{post['id']}", post_id=post["id"],
+                         idempotency_key=f"post:{post['id']}:talk:{attempt}")
 
 
 # Formats made from the post's chosen photos: body key for their jobs, job maker, state, name.
 FOLLOW_UPS = {"narrated_edit": ("edit_jobs", _edit_job, _edit_state, "edit"),
-              "story_clip": ("clip_jobs", _clip_job, _clip_state, "clip")}
+              "story_clip": ("clip_jobs", _clip_job, _clip_state, "clip"),
+              "talking_video": ("talk_jobs", _talk_job, _clip_state, "clip")}
 
 
 def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:

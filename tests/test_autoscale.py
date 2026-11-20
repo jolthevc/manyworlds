@@ -69,6 +69,7 @@ def test_waiting_training_starts_one_machine_in_first_pool_with_deadline(conn, p
     assert spec.image == f"docker.io/example/mw-worker-train:{tag}" and spec.gpu_name == "RTX 3090"
     g = conn.execute("SELECT * FROM gpu_groups WHERE name = %s", (name,)).fetchone()
     assert g["deadline"] == T0 + timedelta(hours=3) and float(g["max_usd"]) == 1.0
+    assert float(g["max_attempt_minutes"]) == policy.get("gpu_runs", "max_attempt_minutes_by_family")["train"]
     assert g["provider_ref"] == "ref-1" and float(g["usd_per_hour"]) == 0.15
     # Next tick: already served, so nothing new starts.
     autoscale.tick(conn, policy, ps, now=T0 + timedelta(minutes=1))

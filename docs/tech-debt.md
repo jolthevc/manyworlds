@@ -11,6 +11,13 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 | A `KeyError` raised inside an agent's own code is treated as permanent (non-retryable) | a transient bug would drop a publish or collection job instead of retrying it | `manyworlds/brain/runtime.py` `run_job` |
 | A retryably crashing job ends each runtime tick early until it runs out of attempts | other jobs (publishing, collection) wait a tick per failure | `manyworlds/brain/runtime.py` `tick` |
 
+## Before talking video goes live (M10)
+
+| Item | Why it matters | Where |
+|---|---|---|
+| The video gate judges keyframes, so it cannot see whether the mouth matches the words | an out-of-sync clip could pass; until a sync score (e.g. SyncNet confidence) is computed on the worker, the benchmark clips are checked by watching them | `manyworlds/review/video.py`, `talk_infinitetalk.py` |
+| InfiniteTalk weights (~94 GB) download from Hugging Face on every new talk machine | each boot pays the download; mirror the base model and adapter into R2 once talk runs regularly (`models.mirror` with an allow-list, the adapter repo is 169 GB) | `manyworlds/worker/models.py` |
+
 ## Before the Brain allocates real money (Brain M8/M9)
 
 | Item | Why it matters | Where |

@@ -7,14 +7,14 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 ## Layout
 
 - `manyworlds/queue.py` — Postgres job queue for interruptible GPUs (leases, heartbeats, reclaim, reaping)
-- `manyworlds/worker/` — generic worker loop + handlers per job kind (`image.zimage`, `image.narrated`, `image.voice`, `video.wan_i2v`, `train.lora`, `fake.*`); `smoke.py` checks a built image before it is pushed
+- `manyworlds/worker/` — generic worker loop + handlers per job kind (`image.zimage`, `image.narrated`, `image.voice`, `video.wan_i2v`, `talk.infinitetalk` (lip-sync, own image), `train.lora`, `fake.*`); `smoke.py` checks a built image before it is pushed
 - `manyworlds/brain/` — orchestration decisions (research plan, theses, choices, content plans); each one recorded in `decisions`
 - `manyworlds/brain/agent.py` — agent contract (`AgentContext`, `record_decision`, `commission`); agents in `brain/agents/` run as `brain.<name>` jobs via `brain/runtime.py` (`mw brain worker`)
 - `manyworlds/brain/evidence.py` — the only reader of findings and metrics; `real` mode never sees simulated data
 - `manyworlds/brain/overrides.py` — settings the Brain changes at runtime within `brain.authority`; beyond it → `approvals`
 - `manyworlds/brain/budget.py` — per-agent daily LLM budgets from the ledger's `agent` tag
 - `manyworlds/production.py` — planned post → scene images → (narrated edit | story clip) → ready; each piece is a retried `Step`
-- `manyworlds/review/` — review gates: `gates.py` (images), `video.py` (clips from keyframes), `common.py` (shared stages and writes)
+- `manyworlds/review/` — review gates: `gates.py` (images), `video.py` (story and talking clips from keyframes), `common.py` (shared stages and writes)
 - `manyworlds/creator/lab.py` — creator bible, reference pack, anchors, LoRA, voice; `profile.py` versioned profiles and dials
 - `manyworlds/research/` — Apify data source, signal aggregation
 - `manyworlds/llm.py` — the only place Claude is called; structured outputs, cost recorded per call

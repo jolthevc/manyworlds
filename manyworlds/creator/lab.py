@@ -101,6 +101,13 @@ def clip_prompt(bible: dict, scene: str, motion: str) -> str:
             "Small natural movements, steady face, realistic.")
 
 
+def talk_prompt(bible: dict, scene: str) -> str:
+    """The prompt for a lip-synced talking clip from an approved photo: who, where, talking to camera.
+    The audio drives the mouth; the prompt keeps the rest natural."""
+    return (f"Smartphone video of a {appearance_prompt(bible)}. Scene: {scene}. "
+            "Talking to the camera naturally, with small head movements and expressions; steady face, realistic.")
+
+
 def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> CreatorBible:
     scope = policy.get("scope", default={})
     n = int(policy.get("creator_lab", "reference_prompts", default=12))

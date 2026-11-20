@@ -62,7 +62,59 @@ def check_train() -> list[str]:
     return ["imports", "handlers: train.lora"]
 
 
-CHECKS = {"image": check_image, "train": check_train}
+def check_talk() -> list[str]:
+    import subprocess
+
+    _imports(["torch", "xformers", "flash_attn", "librosa", "misaki", "kokoro", "soundfile", "pyloudnorm",
+              "decord", "optimum.quanto", "imageio", "imageio_ffmpeg", "huggingface_hub"])
+    from .runner import handlers_for
+    from .handlers import talk_infinitetalk as talk
+    handlers_for(["talk.infinitetalk"])
+    done = ["imports", "handlers: talk.infinitetalk"]
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg missing (InfiniteTalk muxes the audio with it)")
+    # --help imports the whole script (wan, xfuser, its attention kernels). wan/modules/t5.py asks for the
+    # current CUDA device in a default argument at import time, so that one call is stubbed here.
+    run_help = ("import runpy, sys, torch; torch.cuda.current_device = lambda: 0; "
+                "sys.argv = ['generate_infinitetalk.py', '--help']; "
+                "runpy.run_path('generate_infinitetalk.py', run_name='__main__')")
+    proc = subprocess.run([sys.executable, "-c", run_help], cwd=str(talk.REPO_DIR), capture_output=True, text=True)
+    if proc.returncode != 0 or "--infinitetalk_dir" not in proc.stdout:
+        raise RuntimeError(f"generate_infinitetalk.py --help failed: {(proc.stderr or proc.stdout)[-1500:]}")
+    done.append("InfiniteTalk script imports")
+
+    # Its wav2vec wrapper, loaded as generate_infinitetalk.py loads it, on a tiny random model: the first
+    # benchmark (2026-11-20) died here after a 20-minute weight download.
+    probe = """
+import sys, tempfile, torch
+sys.path.insert(0, '.')
+from transformers import Wav2Vec2Config
+from src.audio_analysis.wav2vec2 import Wav2Vec2Model
+assert 'attn_implementation="eager"' in open('generate_infinitetalk.py').read(), 'wav2vec not loaded with eager attention'
+d = tempfile.mkdtemp()
+cfg = Wav2Vec2Config(hidden_size=32, num_hidden_layers=1, num_attention_heads=2, intermediate_size=64,
+                     conv_dim=(32, 32), conv_stride=(5, 2), conv_kernel=(10, 3), num_feat_extract_layers=2)
+Wav2Vec2Model(cfg).save_pretrained(d)
+m = Wav2Vec2Model.from_pretrained(d, local_files_only=True, attn_implementation='eager')
+out = m(torch.zeros(1, 16000), seq_len=25, output_hidden_states=True)
+assert len(out.hidden_states) == 2, len(out.hidden_states)
+"""
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=str(talk.REPO_DIR), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"InfiniteTalk's wav2vec encoder failed: {(proc.stderr or proc.stdout)[-1500:]}")
+    done.append("wav2vec encoder forward pass")
+
+    import numpy as np
+    import soundfile as sf
+    d = Path(tempfile.mkdtemp())
+    sf.write(str(d / "a.wav"), np.zeros(24000 * 2, dtype=np.float32), 24000)
+    if talk.audio_seconds(d / "a.wav") != 2.0:
+        raise RuntimeError("audio length came out wrong")
+    done.append("audio length")
+    return done
+
+
+CHECKS = {"image": check_image, "train": check_train, "talk": check_talk}
 
 
 def main(argv=None) -> int:

@@ -146,11 +146,12 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
 
 
 def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int | None = None) -> list:
-    """Finished clip jobs (with keyframes) for a creator with reference images, not yet reviewed."""
+    """Finished clip jobs, story clips and talking clips (with keyframes) for a creator with reference images,
+    not yet reviewed. Keyframes show identity and artefacts, not whether the mouth matches the audio."""
     limit = limit or int(policy.get("review", "video", "max_jobs_per_run", default=10))
     return [r["id"] for r in conn.execute(
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
-           WHERE j.status = 'done' AND j.kind LIKE 'video.%%' AND j.kind <> 'video.mirror'
+           WHERE j.status = 'done' AND (j.kind LIKE 'video.%%' OR j.kind LIKE 'talk.%%') AND j.kind <> 'video.mirror'
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0
              AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)
              AND EXISTS (SELECT 1 FROM assets k WHERE k.job_id = j.id AND k.kind = 'keyframe')
