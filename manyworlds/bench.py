@@ -47,6 +47,12 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
                        "frames": vid.get("frames", 81), "seed": 2000 + i,
                        "params": {"steps": vid.get("steps", 4), "guidance": vid.get("guidance", 1.0),
                                   "fps": vid.get("fps", 16)}}
+        elif kind.startswith("talk."):
+            # The start photo is the creator's: pass it with --extra '{"image_uri": "..."}'.
+            talk = dict(gen.get("talk", {}))
+            payload = {"script": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": talk.pop("voice", "af_heart"),
+                       "prompt": "a young woman talks casually to her phone camera, natural head movement",
+                       "seed": 3000 + i, "keyframes": 4, "params": talk}
         else:
             payload = {"text": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": "af_heart"}
         payload.update(extra or {})

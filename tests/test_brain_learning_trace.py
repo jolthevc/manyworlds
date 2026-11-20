@@ -37,9 +37,10 @@ class LoopLLM(StubLLM):
                       "attributes": {"lead": "personality" if led else "place"},
                       "reasoning": "finding: personality" if led else "explore"} for i in range(9)]
             return schema.model_validate({"rationale": "r", "ideas": ideas})
-        # evaluator: personality-led ideas score high on personality
+        # evaluator: personality-led ideas score high on personality; the rest spread over the whole scale, so the
+        # planted effect has range to show in (3-6 hid it in some random histories)
         led = '"lead": "personality"' in str(content) or "personality" in str(content).split("THE IDEA")[-1]
-        dims = {k: {"score": (8 if (k == "personality" and led) else self.rng.randint(3, 6)), "why": "w"}
+        dims = {k: {"score": (8 if (k == "personality" and led) else self.rng.randint(1, 9)), "why": "w"}
                 for k in schema.model_fields if k != "overall_note"}
         return schema.model_validate({**dims, "overall_note": "n"})
 

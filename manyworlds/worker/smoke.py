@@ -62,7 +62,38 @@ def check_train() -> list[str]:
     return ["imports", "handlers: train.lora"]
 
 
-CHECKS = {"image": check_image, "train": check_train}
+def check_talk() -> list[str]:
+    import subprocess
+
+    _imports(["torch", "xformers", "flash_attn", "librosa", "misaki", "kokoro", "soundfile", "pyloudnorm",
+              "decord", "optimum.quanto", "imageio", "imageio_ffmpeg", "huggingface_hub"])
+    from .runner import handlers_for
+    from .handlers import talk_infinitetalk as talk
+    handlers_for(["talk.infinitetalk"])
+    done = ["imports", "handlers: talk.infinitetalk"]
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg missing (InfiniteTalk muxes the audio with it)")
+    # --help imports the whole script (wan, xfuser, its attention kernels). wan/modules/t5.py asks for the
+    # current CUDA device in a default argument at import time, so that one call is stubbed here.
+    run_help = ("import runpy, sys, torch; torch.cuda.current_device = lambda: 0; "
+                "sys.argv = ['generate_infinitetalk.py', '--help']; "
+                "runpy.run_path('generate_infinitetalk.py', run_name='__main__')")
+    proc = subprocess.run([sys.executable, "-c", run_help], cwd=str(talk.REPO_DIR), capture_output=True, text=True)
+    if proc.returncode != 0 or "--infinitetalk_dir" not in proc.stdout:
+        raise RuntimeError(f"generate_infinitetalk.py --help failed: {(proc.stderr or proc.stdout)[-1500:]}")
+    done.append("InfiniteTalk script imports")
+
+    import numpy as np
+    import soundfile as sf
+    d = Path(tempfile.mkdtemp())
+    sf.write(str(d / "a.wav"), np.zeros(24000 * 2, dtype=np.float32), 24000)
+    if talk.audio_seconds(d / "a.wav") != 2.0:
+        raise RuntimeError("audio length came out wrong")
+    done.append("audio length")
+    return done
+
+
+CHECKS = {"image": check_image, "train": check_train, "talk": check_talk}
 
 
 def main(argv=None) -> int:
