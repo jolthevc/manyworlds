@@ -452,7 +452,7 @@ publishing:
   max_late_hours: 6            # a real post later than this is left ready, not sent in a burst with others
 
 # Instagram Graph API (manyworlds.publish.instagram, metrics): Instagram Login host; Meta's docs v27.0 (2026-11-20).
-instagram: {host: graph.instagram.com, version: v27.0, url_seconds: 3600}
+instagram: {host: graph.instagram.com, version: v27.0, url_seconds: 3600, max_attempts: 3}   # attempts per post, then held
 
 simulation:
   # Sandbox learning tests (manyworlds.brain.simulation). fast_forward also publishes planned posts

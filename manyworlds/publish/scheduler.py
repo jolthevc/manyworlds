@@ -51,10 +51,11 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
             if publisher is None:
                 out["waiting_for_adapter"] += 1
                 continue
-            if mode != "autonomous":
+            in_flight = bool((post.get("body") or {}).get("ig"))   # a container exists: only reconcile it
+            if mode != "autonomous" and not in_flight:
                 out["awaiting_approval"] += 1
                 continue
-            if now - post["scheduled_for"] > max_late:
+            if now - post["scheduled_for"] > max_late and not in_flight:
                 out["stale"] += 1
                 continue
         try:
@@ -70,6 +71,12 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
             continue
         except instagram.GraphError:
             out["failed"] += 1             # recorded on the post (body.publish_errors); retried next tick
+            continue
+        except instagram.Held:
+            out["held"] = out.get("held", 0) + 1   # the owner decides (post status held, owner event)
+            continue
+        except Exception as e:  # noqa: BLE001 - one bad post must not stop the others or production
+            out["errors"] = out.get("errors", []) + [f"{post['id']}: {type(e).__name__}: {str(e)[:200]}"]
             continue
         published_at = post["scheduled_for"] if result["simulated"] else now
         with conn.transaction():

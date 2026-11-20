@@ -349,8 +349,11 @@ def _produce(args, conn, pol, llm) -> int:
         from datetime import datetime as _dt, timezone as _tz
 
         from .publish import scheduler
-        published = scheduler.publish_due(conn, pol, now=_dt.now(_tz.utc))
-        if published.get("simulated") or published.get("published") or published.get("paused"):
+        try:
+            published = scheduler.publish_due(conn, pol, now=_dt.now(_tz.utc))
+        except Exception as e:  # noqa: BLE001 - publishing must never take production down
+            published = {"error": f"{type(e).__name__}: {e}"[:300]}
+        if any(published.get(k) for k in ("simulated", "published", "paused", "held", "errors", "failed", "error")):
             result["published"] = published
         try:   # real metrics for published posts, at the observation ages (nothing to do until an account exists)
             from .publish import metrics

@@ -49,6 +49,10 @@ class QuotaReached(Exception):
     pass
 
 
+class Held(Exception):
+    """The post needs the owner: it must not be (re)published automatically."""
+
+
 def _cfg(policy: Policy) -> dict:
     return policy.get("instagram", default={}) or {}
 
@@ -72,9 +76,17 @@ def graph(method: str, path: str, params: dict | None = None, token: str | None 
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        raise GraphError(f"{method} {path} -> {e.code}: {e.read().decode(errors='replace')[:800]}") from None
-    except urllib.error.URLError as e:
-        raise GraphError(f"{method} {path} -> {e.reason}") from None
+        raise GraphError(_clean(f"{method} {path} -> {e.code}: {e.read().decode(errors='replace')[:800]}", token)) from None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:   # incl. read timeouts and bad JSON
+        raise GraphError(_clean(f"{method} {path} -> {type(e).__name__}: {e}", token)) from None
+
+
+def _clean(text: str, token: str | None) -> str:
+    """No token, env secret or presigned-URL signature in any error we keep or print."""
+    import re
+    from ..deploy.providers import redact
+    text = text.replace(token, "<token>") if token else text
+    return re.sub(r"(X-Amz-[A-Za-z]+=)[^&\s\"']+", r"\1<redacted>", redact(text))
 
 
 def public_jpeg(store, uri: str, tmp: Path) -> str:
@@ -117,9 +129,27 @@ class InstagramPublisher:
         tags = " ".join((post.get("body") or {}).get("hashtags") or [])
         return (post.get("caption") or "") + (f"\n\n{tags}" if tags else "")
 
+    def check(self, post: dict) -> str | None:
+        """Why this post can't go out as it is (never retried), or None."""
+        body, fmt = post.get("body") or {}, post["format"]
+        if body.get("platform_ai_label") is False:
+            return "post says platform_ai_label false: every post must carry the AI label"
+        caption = self._caption(post)
+        if len(caption) > 2200:
+            return f"caption is {len(caption)} characters (Instagram allows 2200)"
+        if caption.count("#") > 30:
+            return f"{caption.count('#')} hashtags (Instagram allows 30)"
+        if fmt in VIDEO_FORMATS and not body.get("video"):
+            return "a video post without a video"
+        if fmt not in VIDEO_FORMATS and not body.get("images"):
+            return "a post without images"
+        if len(body.get("images") or []) > 20:
+            return "more than 20 images in a carousel"
+        return None
+
     def _create(self, ig_id: str, token: str, post: dict) -> dict:
         body, fmt = post.get("body") or {}, post["format"]
-        label = bool(body.get("platform_ai_label", True))
+        label = True   # disclosure is non-negotiable: every post, album and Reel says it is AI-generated
         with tempfile.TemporaryDirectory() as tmp:
             urls = [public_jpeg(self.store(), im["uri"], Path(tmp)) for im in body.get("images") or []]
             if fmt in VIDEO_FORMATS and body.get("video"):
@@ -142,44 +172,88 @@ class InstagramPublisher:
             return {"container": graph("POST", f"/{ig_id}/media", {"image_url": urls[0], "caption": self._caption(post),
                                                                    "is_ai_generated": label}, token)["id"]}
 
+    def _find_published(self, ig_id: str, token: str, post: dict, ig: dict) -> str | None:
+        """The media a container became (it was published but not recorded): by publish time and product type,
+        Stories from /stories. Never by caption alone."""
+        from datetime import datetime, timedelta
+        since = datetime.fromisoformat(ig["publishing_at"]) - timedelta(minutes=5)
+        story = post["format"] == "story"
+        listing = graph("GET", f"/{ig_id}/stories" if story else f"/{ig_id}/media",
+                        {"fields": "id,timestamp,media_product_type", "limit": 25}, token)
+        want = "STORY" if story else ("REELS" if post["format"] in VIDEO_FORMATS else "FEED")
+        hits = [m for m in listing.get("data") or []
+                if m.get("timestamp") and datetime.fromisoformat(m["timestamp"].replace("+0000", "+00:00")) >= since
+                and (m.get("media_product_type") or want) == want]
+        return hits[-1]["id"] if len(hits) == 1 else None
+
+    def _save(self, conn, post: dict, body: dict) -> None:
+        conn.execute("UPDATE posts SET body = %s WHERE id = %s", (Jsonb(body), post["id"]))
+
+    def _hold(self, conn, post: dict, body: dict, why: str) -> None:
+        body["hold_reason"] = why
+        conn.execute("UPDATE posts SET status = 'held', body = %s, updated_at = now() WHERE id = %s",
+                     (Jsonb(body), post["id"]))
+        conn.execute("INSERT INTO events (type, subject, payload, routed_to, creator_id, dedupe_key) VALUES "
+                     "('publish_held', %s, %s, 'owner', %s, %s) ON CONFLICT DO NOTHING",
+                     (Jsonb({"post_id": str(post["id"])}), Jsonb({"why": why[:500]}), post["creator_id"],
+                      f"publish_held:{post['id']}"))
+        raise Held(why)
+
     def publish(self, conn, policy: Policy, post: dict) -> dict:
+        from datetime import datetime, timezone
         _POLICY.clear()
         _POLICY.update(_cfg(policy))
-        ig_id, token = self.account(conn, post["creator_id"])
         body = dict(post.get("body") or {})
+        ig_id, token = self.account(conn, post["creator_id"])   # no account: the post just waits
+        if (why := self.check(post)):
+            self._hold(conn, post, body, why)
+        ig = body.get("ig")
         try:
-            ig = body.get("ig")
-            if not ig:
-                q = graph("GET", f"/{ig_id}/content_publishing_limit", {"fields": "quota_usage,config"}, token)["data"][0]
-                if int(q.get("quota_usage") or 0) >= int((q.get("config") or {}).get("quota_total") or 50):
-                    raise QuotaReached()
-                body["ig"] = ig = self._create(ig_id, token, post)
-                conn.execute("UPDATE posts SET body = %s WHERE id = %s", (Jsonb(body), post["id"]))
-                raise Pending()
-            status = graph("GET", f"/{ig['container']}", {"fields": "status_code"}, token).get("status_code")
-            if status == "IN_PROGRESS":
-                raise Pending()
-            if status in ("ERROR", "EXPIRED"):
-                raise GraphError(f"container {ig['container']} is {status}")
-            if status == "PUBLISHED":   # published before a crash: find it, never publish twice
-                recent = graph("GET", f"/{ig_id}/media", {"fields": "id,caption,permalink", "limit": 10}, token)
-                media = next((m for m in recent.get("data") or [] if (m.get("caption") or "") == self._caption(post)),
-                             None)
-                if not media:
-                    raise GraphError(f"container {ig['container']} is PUBLISHED but the media was not found")
-                media_id = media["id"]
+            if ig and ig.get("publishing_at"):
+                # media_publish was called: from here on only reconcile, never create or publish again.
+                status = graph("GET", f"/{ig['container']}", {"fields": "status_code"}, token).get("status_code")
+                if status != "PUBLISHED":
+                    self._hold(conn, post, body, f"publish was sent but the container is {status}: check the account")
+                media_id = self._find_published(ig_id, token, post, ig)
+                if not media_id:
+                    self._hold(conn, post, body, "published, but the media could not be identified: check the account")
             else:
+                if not ig:
+                    attempts = int(body.get("ig_attempts", 0))
+                    if attempts >= int(_POLICY.get("max_attempts", 3)):
+                        self._hold(conn, post, body, f"{attempts} attempts failed: " + "; ".join(body.get("publish_errors") or []))
+                    q = graph("GET", f"/{ig_id}/content_publishing_limit", {"fields": "quota_usage,config"}, token)
+                    q = (q.get("data") or [{}])[0]
+                    if int(q.get("quota_usage") or 0) >= int((q.get("config") or {}).get("quota_total") or 50):
+                        raise QuotaReached()
+                    body["ig_attempts"] = attempts + 1
+                    body["ig"] = ig = self._create(ig_id, token, post)
+                    self._save(conn, post, body)
+                    raise Pending()
+                status = graph("GET", f"/{ig['container']}", {"fields": "status_code"}, token).get("status_code")
+                if status == "IN_PROGRESS":
+                    raise Pending()
+                if status in ("ERROR", "EXPIRED"):
+                    raise GraphError(f"container {ig['container']} is {status}")
+                if status == "PUBLISHED":   # published without our record of calling publish: never again
+                    ig["publishing_at"] = datetime.now(timezone.utc).isoformat()
+                    self._save(conn, post, body)
+                    self._hold(conn, post, body, "the container shows PUBLISHED before we published it: check the account")
+                ig["publishing_at"] = datetime.now(timezone.utc).isoformat()
+                self._save(conn, post, body)   # recorded before the call: a crash after it can only reconcile
                 media_id = graph("POST", f"/{ig_id}/media_publish", {"creation_id": ig["container"]}, token)["id"]
-            permalink = graph("GET", f"/{media_id}", {"fields": "permalink"}, token).get("permalink")
-            return {"external_id": media_id, "permalink": permalink, "ai_label": bool(body.get("platform_ai_label", True)),
-                    "simulated": False}
         except GraphError as e:
-            body.pop("ig", None)
-            errors = (body.get("publish_errors") or []) + [_redact(str(e), token)[:500]]
+            errors = (body.get("publish_errors") or []) + [_clean(str(e), token)[:500]]
             body["publish_errors"] = errors[-5:]
-            conn.execute("UPDATE posts SET body = %s WHERE id = %s", (Jsonb(body), post["id"]))
+            if not (body.get("ig") or {}).get("publishing_at"):
+                body.pop("ig", None)   # nothing was published: a fresh container next time
+            self._save(conn, post, body)
             raise
-
+        try:
+            permalink = graph("GET", f"/{media_id}", {"fields": "permalink"}, token).get("permalink")
+        except GraphError:
+            permalink = None   # cosmetic: the post is out; never retry the publish for it
+        return {"external_id": media_id, "permalink": permalink, "ai_label": True, "simulated": False}
 
 def connect(conn, policy: Policy, creator_id, *, token_env: str) -> dict:
     """Link a creator's Instagram professional account: the token (named by `token_env` in .env, never passed
