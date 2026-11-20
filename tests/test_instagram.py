@@ -176,3 +176,77 @@ def test_connecting_without_the_token_in_env_changes_nothing(conn, policy, monke
     with pytest.raises(instagram.AccountNotConnected):
         instagram.connect(conn, policy, cid, token_env="IG_TOKEN_NOPE")
     assert conn.execute("SELECT publish_mode FROM creators WHERE id = %s", (cid,)).fetchone()["publish_mode"] == "simulated"
+
+
+# --- review fixes: never twice, always labelled, bounded retries ------------------------------------
+
+def test_a_failed_permalink_lookup_never_republishes(conn, policy, ig, monkeypatch):
+    cid, fake = ig
+    pid = _post(conn, cid)
+    scheduler.publish_due(conn, policy, now=NOW)
+    real = fake.__call__
+
+    def no_permalink(method, path, params=None, token=None):
+        if method == "GET" and path == "/m1":
+            raise instagram.GraphError("500")
+        return real(method, path, params, token)
+    monkeypatch.setattr(instagram, "graph", no_permalink)
+    assert scheduler.publish_due(conn, policy, now=NOW + timedelta(minutes=2))["published"] == 1
+    assert len([c for c in fake.calls if c[1].endswith("/media_publish")]) == 1
+
+
+def test_a_publish_call_that_errors_is_reconciled_not_repeated(conn, policy, ig, monkeypatch):
+    cid, fake = ig
+    pid = _post(conn, cid)
+    scheduler.publish_due(conn, policy, now=NOW)
+    real = fake.__call__
+
+    def lost_reply(method, path, params=None, token=None):
+        if path.endswith("/media_publish"):
+            fake.calls.append((method, path, params))
+            raise instagram.GraphError("timeout")      # Meta may have published anyway
+        return real(method, path, params, token)
+    monkeypatch.setattr(instagram, "graph", lost_reply)
+    scheduler.publish_due(conn, policy, now=NOW + timedelta(minutes=2))
+    fake.status = "FINISHED"                             # not PUBLISHED: we can't be sure what happened
+    out = scheduler.publish_due(conn, policy, now=NOW + timedelta(minutes=4))
+    assert out.get("held") == 1
+    assert len([c for c in fake.calls if c[1].endswith("/media_publish")]) == 1
+    assert conn.execute("SELECT status FROM posts WHERE id = %s", (pid,)).fetchone()["status"] == "held"
+    assert conn.execute("SELECT routed_to FROM events WHERE type = 'publish_held'").fetchone()["routed_to"] == "owner"
+
+
+@pytest.mark.parametrize("change,why", [
+    ({"platform_ai_label": False}, "AI label"),
+    ({"hashtags": [f"#t{i}" for i in range(31)]}, "hashtags"),
+])
+def test_posts_that_break_the_rules_are_held_not_sent(conn, policy, ig, change, why):
+    cid, fake = ig
+    pid = _post(conn, cid)
+    conn.execute("UPDATE posts SET body = body || %s WHERE id = %s", (Jsonb(change), pid))
+    assert scheduler.publish_due(conn, policy, now=NOW).get("held") == 1
+    assert why in conn.execute("SELECT body->>'hold_reason' r FROM posts WHERE id = %s", (pid,)).fetchone()["r"]
+    assert not [c for c in fake.calls if c[1].endswith("/media")]
+
+
+def test_repeated_failures_stop_after_the_attempt_limit(conn, policy, ig):
+    cid, fake = ig
+    pid = _post(conn, cid)
+    fake.status = "ERROR"
+    for i in range(8):
+        scheduler.publish_due(conn, policy, now=NOW + timedelta(minutes=i))
+    creates = [c for c in fake.calls if c[0] == "POST" and c[1].endswith("/media")]
+    assert len(creates) == int(policy.get("instagram", "max_attempts"))
+    assert conn.execute("SELECT status FROM posts WHERE id = %s", (pid,)).fetchone()["status"] == "held"
+
+
+def test_reels_are_asked_only_for_reel_metrics(conn, policy, ig):
+    cid, fake = ig
+    pid = _post(conn, cid, "talking_video", video=True)
+    conn.execute("UPDATE posts SET status = 'published', external_id = 'm1', published_at = %s WHERE id = %s",
+                 (NOW - timedelta(hours=2), pid))
+    conn.execute("INSERT INTO publications (post_id, platform, external_id, ai_label, simulated, published_at) "
+                 "VALUES (%s, 'instagram', 'm1', true, false, %s)", (pid, NOW - timedelta(hours=2)))
+    metrics.collect(conn, policy, now=NOW)
+    asked = [c[2]["metric"] for c in fake.calls if c[1].endswith("/insights")][0]
+    assert "follows" not in asked and "reach" in asked

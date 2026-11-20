@@ -18,6 +18,11 @@ from . import instagram
 
 NAMES = {"reach": "reach", "views": "views", "likes": "likes", "comments": "comments", "saved": "saves",
          "shares": "shares", "follows": "follows"}
+# What Meta serves per media type (asking for one it doesn't fails the whole call).
+BY_FORMAT = {"reels": ("reach", "views", "likes", "comments", "saved", "shares"),
+             "story": ("reach", "views", "shares", "follows"),
+             "feed": ("reach", "views", "likes", "comments", "saved", "shares", "follows")}
+VIDEO = ("story_clip", "talking_video", "narrated_edit", "reel")
 KEYS = ("reach", "views", "likes", "comments", "saves", "shares", "follows")
 
 
@@ -34,6 +39,9 @@ def collect(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     pub = instagram.InstagramPublisher()
     for r in rows:
         age = (now - r["published_at"]).total_seconds()
+        kind = "story" if r["format"] == "story" else ("reels" if r["format"] in VIDEO else "feed")
+        if kind == "story" and age > 86400:
+            continue   # Story insights expire after 24 h
         due = [a for a in ages if a <= age]
         if not due:
             continue
@@ -43,8 +51,10 @@ def collect(conn, policy: Policy, *, now: datetime | None = None) -> dict:
         try:
             _, token = pub.account(conn, r["creator_id"])
             data = instagram.graph("GET", f"/{r['external_id']}/insights",
-                                   {"metric": ",".join(NAMES)}, token).get("data") or []
-        except (instagram.GraphError, instagram.AccountNotConnected):
+                                   {"metric": ",".join(BY_FORMAT[kind])}, token).get("data") or []
+        except (instagram.GraphError, instagram.AccountNotConnected) as e:
+            if kind == "story" and ('"code":10' in str(e).replace(" ", "") or "(#10)" in str(e)):
+                continue   # fewer than 5 viewers: Meta returns no Story data, not an error worth counting
             out["errors"] += 1
             continue
         values = {NAMES[d["name"]]: (d.get("values") or [{}])[0].get("value") for d in data if d.get("name") in NAMES}
