@@ -52,11 +52,11 @@ def test_the_kill_switch_stops_publishing(conn, policy):
     assert out == {"paused": True} and conn.execute("SELECT count(*) n FROM publications").fetchone()["n"] == 0
 
 
-def test_real_creators_wait_for_the_instagram_adapter(conn, policy):
+def test_real_creators_wait_for_their_connected_account(conn, policy):
     cid = creator(conn, publish_mode="instagram")
     post = _post(conn, cid)
     out = scheduler.publish_due(conn, policy, now=NOW)
-    assert out["waiting_for_adapter"] == 1
+    assert out["waiting_for_account"] == 1
     assert conn.execute("SELECT status FROM posts WHERE id = %s", (post,)).fetchone()["status"] == "ready"
 
 

@@ -1,0 +1,66 @@
+"""The creator lab's Claude steps for a launch (manyworlds.brain.launches): bible, anchors, profile.
+
+Each `brain.creator_lab` job does one step of one launch and records it as a decision, so a rerun after a
+crash does not create a second creator or ask Claude again. The GPU steps (reference pack, voice sample,
+LoRA) are ordinary jobs the launch advancer queues itself.
+"""
+
+from __future__ import annotations
+
+import tempfile
+
+from ...creator import lab, profile
+from ...worker.runner import NonRetryable
+from ..agent import AgentContext, register, remember
+
+
+class _Lab:
+    def bible(self, conn, policy, llm, thesis: dict):
+        bible = lab.write_bible(conn, policy, llm, thesis)
+        return lab.create_creator(conn, bible, thesis["id"])["id"]
+
+    def anchors(self, conn, policy, llm, creator_id):
+        from ... import storage
+        with tempfile.TemporaryDirectory() as tmp:
+            return lab.select_anchors(conn, policy, llm, storage.from_url(), creator_id, tmp)
+
+    def profile(self, conn, policy, llm, creator_id):
+        return profile.build(conn, policy, llm, creator_id)
+
+
+LAB = _Lab()
+
+
+class CreatorLab:
+    name = "creator_lab"
+
+    def run(self, ctx: AgentContext) -> dict:
+        p = ctx.job.payload or {}
+        launch = ctx.conn.execute("SELECT * FROM launches WHERE id::text = %s", (p.get("launch_id"),)).fetchone()
+        if not launch or p.get("step") not in ("bible", "anchors", "profile"):
+            raise NonRetryable("creator_lab payload needs a launch_id and a step (bible, anchors, profile)")
+        step = p["step"]
+
+        def compute() -> dict:
+            if step == "bible":
+                t = ctx.conn.execute("SELECT id, body FROM theses WHERE id = %s", (launch["thesis_id"],)).fetchone()
+                if not t:
+                    raise NonRetryable(f"launch {launch['id']} has no thesis")
+                if (row := ctx.conn.execute("SELECT creator_id FROM theses WHERE id = %s", (t["id"],)).fetchone()) \
+                        and row["creator_id"]:
+                    cid = row["creator_id"]   # created before a crash
+                else:
+                    cid = LAB.bible(ctx.conn, ctx.policy, ctx.llm, {"id": t["id"], **(t["body"] or {})})
+                return {"kind": "creator_launch_step", "inputs": {"launch_id": str(launch["id"]), "step": step},
+                        "output": {"creator_id": str(cid)}, "rationale": "bible written from the thesis",
+                        "creator_id": cid}
+            cid = launch["creator_id"]
+            out = (LAB.anchors if step == "anchors" else LAB.profile)(ctx.conn, ctx.policy, ctx.llm, cid)
+            return {"kind": "creator_launch_step", "inputs": {"launch_id": str(launch["id"]), "step": step},
+                    "output": {"result": out if isinstance(out, (dict, int, str)) else str(out)},
+                    "rationale": f"{step} for the launch", "creator_id": cid}
+
+        return remember(ctx, step, compute)
+
+
+register(CreatorLab())

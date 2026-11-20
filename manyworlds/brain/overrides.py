@@ -105,6 +105,11 @@ def _decide(conn, approval_id, *, approved: bool, by: str) -> None:
                        ("approved" if approved else "rejected", by, approval_id)).fetchone()
     if row is None:
         raise ValueError(f"no pending approval {approval_id}")
+    if approved and row["kind"] == "stage_move":   # e.g. a retirement the owner confirmed
+        from . import portfolio
+        s = row["subject"]
+        portfolio.apply_stage_move(conn, s["creator_id"], from_stage=s.get("from"), to=s["to"],
+                                   reason=f"{s.get('reason', '')} (approved by {by})", downward={"paused", "retired"})
     if approved and row["kind"] == "policy_override":
         s = row["subject"]
         _apply(conn, s["path"], s["value"], author=row["requested_by"],
