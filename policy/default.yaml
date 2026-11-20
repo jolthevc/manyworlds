@@ -281,6 +281,27 @@ planner:
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity
 
+# Stagings (owner 2026-11-19): a format plus a recognisable setting, framing, wardrobe and script conventions.
+# The showrunner may give an idea one (or none: most posts are plain); each idea records its staging as an
+# attribute, so the analyst learns which work for which creator. Only stagings whose formats production makes
+# are offered. Outlets, leagues, teams and shows are always fictional; a creator who reports for an outlet keeps
+# it (memory fact `employer`); changing outlet is a storyline beat (canon with canon_key `employer`).
+stagings:
+  rules: "Fictional outlets, leagues, teams and shows only, never real ones. If a staging needs an outlet and the creator has no `employer` fact, invent a fictional one and record it as canon with canon_key `employer`; afterwards always use that outlet."
+  library:
+    press_conference: {formats: [talking_video], setting: "post-game press conference: podium with a fictional league's sponsor-free backdrop, or a locker room or courtside", framing: "chest-up behind a mic cluster, slightly off-centre", wardrobe: "team kit or warm-up jacket of a fictional team", script: "short answers to an unheard question, a little out of breath, deadpan or emotional"}
+    field_reporter: {formats: [talking_video], setting: "on location where the story is: a street, a market, a queue, a park", framing: "chest-up holding a mic with a fictional outlet's flag, the scene behind", wardrobe: "practical coat, outlet lanyard", script: "news-report cadence about an everyday or fictional story, signs off with name and outlet"}
+    news_desk: {formats: [talking_video], setting: "studio news desk of the creator's fictional outlet, screens behind", framing: "seated, chest-up, centred", wardrobe: "smart blazer", script: "anchor cadence, a headline then two lines, a light closing aside"}
+    weather_map: {formats: [talking_video], setting: "in front of a weather map of a real or fictional place", framing: "half-body, gesturing at the map", wardrobe: "bright presenter dress or suit", script: "forecast delivery, can be about mood or life instead of weather"}
+    commentary_booth: {formats: [talking_video], setting: "commentary booth above a fictional match or an everyday event", framing: "headset, chest-up, looking down then to camera", wardrobe: "headset, casual shirt", script: "play-by-play energy about something small (a cat, a parking attempt)"}
+    nature_documentary: {formats: [talking_video], setting: "outdoors among the 'wildlife' (pigeons, a flatmate, a toddler-free park)", framing: "crouched, whispering to camera", wardrobe: "field jacket", script: "hushed documentary narration of ordinary behaviour"}
+    late_night_monologue: {formats: [talking_video], setting: "small stage with a curtain or a desk with a city backdrop", framing: "standing, waist-up", wardrobe: "suit or sharp outfit", script: "two or three jokes about the creator's week, setup and punchline"}
+    reality_confessional: {formats: [talking_video], setting: "a confessional booth or a chair against a plain wall", framing: "seated, tight chest-up, direct to camera", wardrobe: "everyday", script: "candid, slightly dramatic aside about something that just happened"}
+    tour_guide: {formats: [talking_video], setting: "a street, landmark-free square, museum-like hall or the creator's own flat", framing: "walking backwards or standing, chest-up", wardrobe: "lanyard, comfortable shoes", script: "guide patter, facts (true or playful) about the place"}
+    cooking_host: {formats: [talking_video], setting: "the creator's kitchen, ingredients out", framing: "behind the counter, waist-up", wardrobe: "apron", script: "one recipe step or tip, a small mess, chatty"}
+    walk_and_talk: {formats: [talking_video], setting: "walking down a street or a path", framing: "selfie-held phone at arm's length", wardrobe: "the creator's usual outfit", script: "talking to the phone like to a friend: a story, an opinion, an update"}
+    asmr: {formats: [talking_video], setting: "a quiet, softly lit room", framing: "close-up, soft focus behind", wardrobe: "cosy", script: "very softly spoken, slow, describing small things"}
+
 # Captions that read as written by an AI are dropped (manyworlds.brain.planner.caption_issues).
 captions:
   max_emoji: 2
