@@ -208,3 +208,32 @@ def test_the_machine_report_separates_machines_that_made_nothing(conn, policy):
     s = report.summary(rows)
     assert s["machines"] == 2 and s["no_output_usd"] == 0.2 and s["no_output_by_stop_reason"] == {"never_started": 0.2}
     assert s["busy_share_of_working_machines"] == 0.5            # 15 of 30 billed minutes
+
+
+def test_a_machine_keeps_the_attempt_limit_it_was_launched_with(conn, policy):
+    # 2026-11-20: the GitHub backstop runs main's policy, which had no limit for a new family (talk), so it
+    # stopped a talk machine at the 20-minute default while it downloaded 94 GB of weights. Like its deadline
+    # and spend cap, a machine's attempt limit is recorded when it is registered, and every enforcer uses it.
+    register(conn, "mw-talk-4090-a", kinds=("talk.infinitetalk",), hours=12, max_usd=100)
+    conn.execute("UPDATE gpu_groups SET family = 'talk', max_attempt_minutes = 90 WHERE name = 'mw-talk-4090-a'")
+    job = queue.enqueue(conn, "talk.infinitetalk", {})
+    conn.execute("INSERT INTO attempts (job_id, worker_id, pool, started_at, gpu_group) "
+                 "VALUES (%s, 'w1', 'salad_batch_4090', %s, 'mw-talk-4090-a')", (job, T0))
+    old = policy.body["gpu_runs"]
+    import dataclasses
+    stale = dataclasses.replace(policy, body={**policy.body, "gpu_runs": {
+        **old, "max_attempt_minutes_by_family": {"default": 20}}})   # an enforcer that never heard of talk
+    api = FakeAPI(["mw-talk-4090-a"])
+    for m in (30, 89, 91):
+        conn.execute("UPDATE jobs SET status = 'running', worker_id = 'w1', updated_at = %s WHERE id = %s",
+                     (T0 + timedelta(minutes=m), job))
+        actions = tick(conn, stale, api, now=T0 + timedelta(minutes=m))
+        if m < 90:
+            assert api.stopped == [], m
+    assert api.stopped == ["mw-talk-4090-a"] and actions[0]["reason"] == "attempt_timeout"
+
+
+def test_the_launcher_records_the_familys_attempt_limit(conn, policy):
+    from manyworlds.deploy.autoscale import attempt_limit_minutes
+    assert attempt_limit_minutes(policy, "talk") == policy.get("gpu_runs", "max_attempt_minutes_by_family")["talk"]
+    assert attempt_limit_minutes(policy, "nothing") == policy.get("gpu_runs", "max_attempt_minutes_by_family")["default"]

@@ -110,7 +110,9 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
         started_work = last_seen is not None
         by_family = cfg.get("max_attempt_minutes_by_family") or {}
         by_kind = cfg.get("max_attempt_minutes_by_kind") or {}
-        family_limit = float(by_family.get(g.get("family"), by_family.get("default", 20)))
+        # The limit recorded when the machine was registered wins: an enforcer on older policy (the GitHub
+        # backstop runs main's) must not cut a new family's long first job short.
+        family_limit = float(g["max_attempt_minutes"]) if g.get("max_attempt_minutes") is not None else             float(by_family.get(g.get("family"), by_family.get("default", 20)))
         overdue = any(
             (now - a["started_at"]).total_seconds() > float(by_kind.get(a["kind"], family_limit)) * 60
             for a in conn.execute("SELECT a.started_at, j.kind FROM attempts a JOIN jobs j ON j.id = a.job_id "
