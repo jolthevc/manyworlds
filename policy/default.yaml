@@ -174,6 +174,17 @@ review:
     max_jobs_per_run: 10
     max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
   max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
+  # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
+  # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
+  # regenerated. {scene} is the scene text; `scene` leads the prompt, the others follow it.
+  repair:
+    lora_scale_step: 0.1         # identity: each identity repair strengthens the likeness LoRA by this...
+    lora_scale_max: 1.4          # ...up to this
+    drop_on_safety: true
+    hints:
+      scene: "The photo must clearly show: {scene}. "
+      identity: ". Face clearly visible, the same person as always, signature details present"
+      realism: ". Relaxed hands or hands out of frame, natural anatomy, no text or logos"
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
@@ -258,6 +269,12 @@ brain:
   # Exploration directions (manyworlds.brain.exploration): Thompson draws over measured effects and untried
   # formats/stagings (prior N(0, prior_sd) in log-lift); the top `directions` steer the exploratory ideas.
   exploration: {directions: 3, prior_sd: 0.3}
+  # Feed QA at scheduling (manyworlds.brain.feed_qa): ideas that would repeat an attribute value more than
+  # max_repeat times in the last `window` posts, near-duplicate a recent caption or scene (similarity 0-1), or
+  # score below a floor on an idea-rubric dimension (naturalness: doesn't sound like them) are dropped.
+  # Experiment ideas are exempt, so their arms stay comparable.
+  qa: {window: 12, max_repeat: 2, repeat_attributes: [outfit, setting], similarity: 0.85, min_chars: 20,
+       min_scores: {naturalness: 4}}   # min_chars: shorter texts (a word or two) may repeat
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
@@ -341,6 +358,8 @@ production:
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120
   max_job_failures_per_post: 6   # failed jobs (machines, downloads) per post; apart from review repairs
+  # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
+  reroute_failed_video: {story_clip: photo, talking_video: photo}
   edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
 
 # Claude models by role. Low-volume judgement work runs on Opus; bulk roles

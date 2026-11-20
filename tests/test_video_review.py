@@ -146,6 +146,9 @@ def test_a_story_clip_post_is_ready_once_its_clip_passes_review(conn, policy, st
 
 
 def test_rejected_clips_get_new_seeds_then_the_post_is_dropped(conn, policy, store, tmp_path):
+    import dataclasses
+    prod = {**policy.body["production"], "reroute_failed_video": {}}     # rerouting off (tested in test_qa)
+    policy = dataclasses.replace(policy, body={**policy.body, "production": prod})
     pid = _story_post(conn, policy, store, tmp_path)
     limit = policy.get("review", "video", "max_repairs_per_post")
     for _ in range(limit + 1):
