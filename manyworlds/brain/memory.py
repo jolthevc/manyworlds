@@ -40,9 +40,12 @@ def seed_from_profile(conn, creator_id) -> int:
     bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()["bible"] or {}
     candidates = [(kind, t) for field, kind in _BIBLE_KINDS.items() for t in _items(bible.get(field))]
     current = profile.current(conn, creator_id)
-    signature = ((current[1] if current else {}).get("look") or {}).get("signature_item")
-    if signature:
-        candidates.append(("signature", signature))
+    look = (current[1] if current else {}).get("look") or {}
+    if look.get("signature_item"):
+        candidates.append(("signature", look["signature_item"]))
+    # Looks for particular moments: remembered so the showrunner can write them into a scene, never part
+    # of the default appearance every photo prompt carries.
+    candidates += [("look", t) for t in _items(look.get("situational_looks"))]
     have = {r["text"] for r in conn.execute("SELECT text FROM creator_memory WHERE creator_id = %s "
                                             "AND valid_until IS NULL", (creator_id,)).fetchall()}
     added = 0

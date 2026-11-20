@@ -20,6 +20,8 @@ def test_script_chunks_follow_sentences_and_long_pauses():
 
 
 def test_a_narrated_post_is_ready_once_its_edit_exists(conn, policy, store, tmp_path):
+    from brain_helpers import with_narration
+    policy = with_narration(policy)   # off in policy until talking video exists; the pipeline is still tested
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
     conn.execute("UPDATE creators SET anchors = anchors || %s WHERE id = %s",

@@ -57,3 +57,14 @@ def test_core_facts_are_never_crowded_out_by_canon(conn):
     texts = [f["text"] for f in got]
     assert "a top-floor flat above a bakery" in texts and "moss-green cardigan" in texts
     assert sum(f["kind"] == "canon" for f in got) == 60 and "canon 69" in texts and "canon 0" not in texts
+
+
+def test_situational_looks_are_remembered_for_scenes_not_drawn_into_every_photo(conn):
+    cid = creator(conn)
+    conn.execute("INSERT INTO creator_profiles (creator_id, version, body, author) VALUES (%s, 1, %s, 'brain')",
+                 (cid, Jsonb({"look": {"signature_item": "cardigan",
+                                       "situational_looks": ["a dark knitted beanie on the walk home after a shift"]}})))
+    conn.execute("UPDATE creators SET profile_version = 1 WHERE id = %s", (cid,))
+    memory.seed_from_profile(conn, cid)
+    looks = [f["text"] for f in memory.facts(conn, cid, limit=10) if f["kind"] == "look"]
+    assert looks == ["a dark knitted beanie on the walk home after a shift"]

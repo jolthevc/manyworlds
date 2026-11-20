@@ -139,9 +139,12 @@ review:
     confirm_role: judge
     confirm_effort: low
     confirm_top_per_job: 2     # Opus confirms the best 2 screen passes per job (one prompt); 0 = all
-    min_identity: 7
-    min_realism: 6
-    min_scene: 5               # post images: 5 = right setting, details off; below that it is a different scene
+    # 2026-11-19 (owner): keep images unless the face is clearly someone else (identity 5 = recognisably her,
+    # small drift) or there are clear AI defects (realism 5 = passes a casual scroll). Scene fit only ranks
+    # candidates (min_scene 0): rejecting on it threw away 9 in 10 of Maren's images.
+    min_identity: 5
+    min_realism: 5
+    min_scene: 0
     reference_images: 3        # creator reference photos shown with every review
     max_jobs_per_run: 50
     loop_seconds: 120          # how often the reviewer looks for new images
@@ -154,10 +157,10 @@ review:
     confirm_role: judge        # ...confirm the ones it passed
     confirm_effort: low
     keyframes: 4               # spread over the clip, ending on the last frame
-    min_identity: 7            # in the worst keyframe
+    min_identity: 6            # in the worst keyframe (video drift compounds; a notch stricter than photos)
     min_motion: 6
     min_realism: 6
-    min_scene: 5
+    min_scene: 0               # ranks only, as for photos
     reference_images: 3
     max_jobs_per_run: 10
     max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
@@ -172,7 +175,10 @@ generation:
 scope:
   niche: "lifestyle, wide net: daily life, style, food, home, travel, fitness-as-lifestyle, humor"
   platforms: [instagram, tiktok]
-  excluded_topics: [politics, news, health advice, medical claims, financial advice,
+  # News is allowed (owner 2026-11-19): real everyday news or fictional, but never hot-button or sensitive
+  # stories. Fictional organisations a creator belongs to are fine and persist (memory, key employer).
+  excluded_topics: [politics, elections, wars and conflicts, tragedies and disasters, crime stories,
+                    health scares, culture-war topics, health advice, medical claims, financial advice,
                     crypto, gambling, sexualized content, minors, real brands without rights]
   creator_min_age: 21
   disclosure_line: "AI-generated character"
@@ -272,7 +278,9 @@ captions:
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
-  formats: [photo, carousel, narrated_edit, story_clip, story]   # formats production makes now; others wait in 'planned' until added
+  # narrated_edit is out (owner 2026-11-19): anything with a voice is lip-synced talking video, which is not
+  # built yet (M10). The edit pipeline stays in code for the talking-video work.
+  formats: [photo, carousel, story_clip, story]   # formats production makes now; others wait in 'planned' until added
   video_kind: video.wan_i2v
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled

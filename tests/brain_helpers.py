@@ -111,3 +111,10 @@ def sandbox_history(conn, policy, n: int, *, scenario: str = "personality_wins",
                      (post, when))
         simulation.simulate_post(conn, policy, post, scenario=scenario, seed=seed)
     return cid
+
+
+def with_narration(policy):
+    """Production as it was with narrated edits on (they are off until lip-synced talking video exists)."""
+    import dataclasses
+    prod = {**policy.body["production"], "formats": [*policy.body["production"]["formats"], "narrated_edit"]}
+    return dataclasses.replace(policy, body={**policy.body, "production": prod})

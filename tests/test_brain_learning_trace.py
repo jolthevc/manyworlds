@@ -85,7 +85,9 @@ def test_only_a_real_finding_changes_the_plan(conn, policy):
         if a is None or a["insufficient"]:
             assert led == 0 and b["finding_ids"] == []
         else:
-            assert led == 1.0 and b["finding_ids"]
+            # follows the analysis it was given (its findings may be empty when a hypothesis contradicted
+            # the numbers and was rejected, which a random history can produce)
+            assert led == 1.0 and b["analysis_decision_id"] == a["id"]
     assert any(not r["analysis"]["insufficient"] for r in runs)
 
 

@@ -97,6 +97,8 @@ def test_the_face_cannot_change_and_every_change_needs_a_reason(conn, policy):
 
 
 def test_the_planner_works_from_the_profile(conn, policy):
+    from brain_helpers import with_narration
+    policy = with_narration(policy)
     cid = built(conn, policy)
     llm = PlanStub([
         post(0, pillar="night rituals", tone="cozy"),
