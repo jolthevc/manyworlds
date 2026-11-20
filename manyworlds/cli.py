@@ -292,6 +292,12 @@ def _produce(args, conn, pol, llm) -> int:
             raised = events.tick(conn, pol)   # breakouts, drops, QA surges: raised once, routed, rate-limited
             if raised:
                 planned = planned + [{"events": raised}]
+            if pol.get("brain", "strategist", "enabled", default=False):
+                from .brain import launches, portfolio
+                portfolio.ensure_daily(conn, pol)          # the daily portfolio cycle (one strategist job a day)
+                stepped = launches.advance(conn, pol)      # approved launches walk the creator lab's steps
+                if any(stepped.values()):
+                    planned = planned + [{"launches": stepped}]
         else:
             planned = planner.ensure_plans(conn, pol, llm)
         result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
