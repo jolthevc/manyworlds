@@ -1,0 +1,113 @@
+{
+ "success": true,
+ "count": 2,
+ "results": [
+  {
+   "start": 1795132800,
+   "end": 1795132800,
+   "type": "instance",
+   "source": "instance-61596442",
+   "description": "Instance 61596442 Charges - 1 day",
+   "amount": 5.094,
+   "metadata": {
+    "label": "mw-talk-4090-vast-081b"
+   },
+   "items": [
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "gpu",
+     "source": null,
+     "description": "0.260 hours at $0.371/hour",
+     "amount": 0.096,
+     "metadata": {},
+     "items": []
+    },
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "disk",
+     "source": null,
+     "description": "0.384 hours at $0.093/hour",
+     "amount": 0.036,
+     "metadata": {},
+     "items": []
+    },
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "bwd",
+     "source": null,
+     "description": "94.6 GB Downloaded at $0.052/GB",
+     "amount": 4.927,
+     "metadata": {},
+     "items": []
+    },
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "bwu",
+     "source": null,
+     "description": "0.7 GB Uploaded at $0.052/GB",
+     "amount": 0.035,
+     "metadata": {},
+     "items": []
+    }
+   ]
+  },
+  {
+   "start": 1795132800,
+   "end": 1795132800,
+   "type": "instance",
+   "source": "instance-61591305",
+   "description": "Instance 61591305 Charges - 1 day",
+   "amount": 5.173,
+   "metadata": {
+    "label": "mw-talk-4090-vast-41a6"
+   },
+   "items": [
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "gpu",
+     "source": null,
+     "description": "0.339 hours at $0.371/hour",
+     "amount": 0.126,
+     "metadata": {},
+     "items": []
+    },
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "disk",
+     "source": null,
+     "description": "0.462 hours at $0.093/hour",
+     "amount": 0.043,
+     "metadata": {},
+     "items": []
+    },
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "bwd",
+     "source": null,
+     "description": "95.6 GB Downloaded at $0.052/GB",
+     "amount": 4.979,
+     "metadata": {},
+     "items": []
+    },
+    {
+     "start": 1795132800,
+     "end": 1795132800,
+     "type": "bwu",
+     "source": null,
+     "description": "0.5 GB Uploaded at $0.052/GB",
+     "amount": 0.025,
+     "metadata": {},
+     "items": []
+    }
+   ]
+  }
+ ],
+ "next_token": null
+}

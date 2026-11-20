@@ -188,7 +188,7 @@ def test_tick_lease_blocks_concurrent_ticks_and_is_released(conn, policy):
     assert autoscale.tick(conn, policy, providers(), now=T0)[0]["reason"] == "another tick is running"
     conn.execute("UPDATE leases SET until = now() - interval '1 s'")          # holder crashed; lease expired
     assert all(a.get("action") != "skipped" for a in autoscale.tick(conn, policy, providers(), now=T0))
-    assert conn.execute("SELECT count(*) n FROM leases").fetchone()["n"] == 0
+    assert conn.execute("SELECT count(*) n FROM leases WHERE name = 'autoscale.tick'").fetchone()["n"] == 0
 
 
 def test_no_machine_is_rented_for_an_unpublished_image(conn, policy, monkeypatch):

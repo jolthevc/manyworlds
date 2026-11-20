@@ -190,7 +190,7 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
                       interruptible=bool(p.get("interruptible", False)),
                       priority=pool.split("_")[1] if p["provider"] == "salad" else "batch",
                       min_cuda=float(img["min_cuda"]) if img.get("min_cuda") else None,
-                      cloud=str(p.get("cloud", "COMMUNITY")))
+                      cloud=str(p.get("cloud", "COMMUNITY")), download_gb=float(img.get("download_gb", 0)))
     if not image_published(spec.image):
         raise ProviderError(f"worker image {spec.image} is not published; not renting a machine for it")
     # Registered first: if anything after this point dies, the enforcer still knows the
@@ -206,8 +206,8 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     except Exception:
         conn.execute("DELETE FROM gpu_groups WHERE name = %s", (name,))  # never existed
         raise
-    conn.execute("UPDATE gpu_groups SET provider_ref = %s, usd_per_hour = %s WHERE name = %s",
-                 (m.ref, m.usd_per_hour, name))
+    conn.execute("UPDATE gpu_groups SET provider_ref = %s, usd_per_hour = %s, est_extra_usd = %s WHERE name = %s",
+                 (m.ref, m.usd_per_hour, getattr(m, "upfront_usd", 0.0), name))
     return {"group": name, "action": "launched", "kind": kind, "pool": pool,
             "usd_per_hour": m.usd_per_hour, "deadline_hours": hours, "max_usd": max_usd}
 
@@ -328,9 +328,28 @@ def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime 
         actions += enforce.tick(conn, policy, api, now=now, dry_run=dry_run)
         if launch and not dry_run:
             actions += scale_up(conn, policy, providers, now=now)
+        if not dry_run:
+            actions += maybe_reconcile(conn, policy, providers)
         return actions
     finally:
         conn.execute("DELETE FROM leases WHERE name = %s AND holder = %s", (LEASE, holder))
+
+
+def maybe_reconcile(conn, policy: Policy, providers: dict) -> list[dict]:
+    """Pull providers' itemised charges into the ledger at most every `reconcile_every_minutes`."""
+    every = float(policy.get("autoscale", "reconcile_every_minutes", default=60)) * 60
+    due = conn.execute(
+        """INSERT INTO leases (name, holder, until) VALUES ('reconcile', 'autoscaler', now() + make_interval(secs => %s))
+           ON CONFLICT (name) DO UPDATE SET until = excluded.until WHERE leases.until < now()
+           RETURNING name""", (every,)).fetchone()
+    if not due:
+        return []
+    from . import reconcile
+    try:
+        out = reconcile.run(conn, policy, providers)
+    except Exception as e:  # noqa: BLE001 - billing lookups must never stop enforcement or launches
+        return [{"action": "reconcile_failed", "error": redact(str(e))[:300]}]
+    return [{"action": "reconciled", **out}] if out["groups"] else []
 
 
 def main(argv=None) -> int:

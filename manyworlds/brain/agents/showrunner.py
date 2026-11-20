@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import evidence, experiments, exploration, memory, planner
+from .. import events, evidence, experiments, exploration, memory, planner
 from ..agent import AgentContext, commission, record_decision, register
 from . import analyst
 
@@ -110,6 +110,9 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         "SELECT body->>'drop_reason' AS why FROM ideas WHERE creator_id = %s AND status = 'dropped' "
         "AND body->>'drop_reason' ~ '^(repetitive feed|unoriginal|[a-z_]+ [0-9.]+ below)' "
         "ORDER BY updated_at DESC LIMIT %s", (creator_id, qa_window)).fetchall()]
+    breakouts = events.for_planning(conn, creator_id)
+    breakout_text = (f"Recent posts that did far better than usual (a natural follow-up may suit; never a copy): "
+                     f"{json.dumps(breakouts)}. " if breakouts else "")
     qa_text = (f"Recent ideas the feed check dropped (don't repeat these mistakes): {json.dumps(qa_drops)}. "
                if qa_drops else "")
     prompt = (
@@ -132,7 +135,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"{staging_text}{flavor_text}"
         f"About {round(share * 100)}% of the ideas should try something this creator hasn't done yet (mark them "
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
-        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}Hashtags per post at most {hashtags_max or 1}; often none. "
+        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
         f"The creator's face is visible in most images, wearing their signature item.")
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,

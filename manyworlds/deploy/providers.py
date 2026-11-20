@@ -72,6 +72,7 @@ class LaunchSpec:
     priority: str = "batch"    # SaladCloud only
     min_cuda: float | None = None  # the image's CUDA build; hosts with older drivers can't run it
     cloud: str = "COMMUNITY"       # RunPod only: COMMUNITY or SECURE (per pool)
+    download_gb: float = 0.0       # what a machine downloads at boot (image + weights): Vast bills it per GB
 
 
 @dataclass
@@ -79,6 +80,7 @@ class Machine:
     name: str
     ref: str                   # provider's id for it
     usd_per_hour: float
+    upfront_usd: float = 0.0   # expected non-hourly charges (Vast: downloading image and weights)
 
 
 class Provider(Protocol):
@@ -140,13 +142,37 @@ class Salad:
 
 # --- Vast.ai ------------------------------------------------------------------------
 
+def parse_vast_charges(res: dict) -> list[dict]:
+    """Rows of Vast's GET /charges?format=tree: one result per instance and day, items gpu/disk/bwd/bwu with
+    positive amounts (credits, if any, keep their sign)."""
+    from datetime import datetime as _dt, timezone as _tz
+    out = []
+    for r in res.get("results") or []:
+        if r.get("type") not in (None, "instance"):
+            continue
+        ref = (r.get("source") or "").removeprefix("instance-")
+        label = (r.get("metadata") or {}).get("label")
+        day = _dt.fromtimestamp(int(r.get("start") or 0), _tz.utc).date()
+        for it in r.get("items") or []:
+            out.append({"ref": ref, "label": label, "day": day, "component": it.get("type") or "other",
+                        "usd": float(it.get("amount") or 0)})
+    return out
+
+
 class Vast:
     name = "vast"
     API = "https://console.vast.ai/api/v0"
     API_V1 = "https://console.vast.ai/api/v1"
 
     def __init__(self, min_reliability: float = 0.98, verified_only: bool = True, offers_to_try: int = 3,
-                 min_inet_down_mbps: float = 0, exclude_countries: list[str] | None = None):
+                 min_inet_down_mbps: float = 0, exclude_countries: list[str] | None = None,
+                 max_inet_down_usd_per_gb: float | None = None, expected_hours: float = 1.0,
+                 candidates: int = 50):
+        # Vast hosts set their own bandwidth prices (20x apart on 2026-11-20); offers are ranked by
+        # expected_hours of rent plus the boot download, never by hourly price alone.
+        self.max_inet_down = max_inet_down_usd_per_gb
+        self.expected_hours = expected_hours
+        self.candidates = candidates
         self.exclude_countries = list(exclude_countries or [])
         self.min_reliability = min_reliability
         self.verified_only = verified_only
@@ -165,7 +191,9 @@ class Vast:
              "reliability": {"gte": self.min_reliability}, "cpu_ram": {"gte": spec.ram_gb * 1024},
              "disk_space": {"gte": spec.disk_gb}, "cpu_cores_effective": {"gte": spec.cpu},
              "dph_total": {"lte": spec.max_usd_per_hour}, "type": "ondemand",
-             "order": [["dph_total", "asc"]], "limit": self.offers_to_try}
+             "order": [["dph_total", "asc"]], "limit": self.candidates}
+        if self.max_inet_down is not None:
+            q["inet_down_cost"] = {"lte": self.max_inet_down}
         if self.verified_only:
             q["verified"] = {"eq": True}
         if self.min_inet_down:
@@ -174,7 +202,34 @@ class Vast:
             q["geolocation"] = {"notin": self.exclude_countries}
         if spec.min_cuda:
             q["cuda_max_good"] = {"gte": spec.min_cuda}
-        return (self._req("POST", "/bundles/", q) or {}).get("offers", [])
+        offers = (self._req("POST", "/bundles/", q) or {}).get("offers", [])
+        offers.sort(key=lambda o: self.expected_cost(o, spec))
+        return offers[:self.offers_to_try]
+
+    def expected_cost(self, offer: dict, spec: LaunchSpec) -> float:
+        return float(offer["dph_total"]) * self.expected_hours + spec.download_gb * float(offer.get("inet_down_cost") or 0)
+
+    def charges(self, since, until) -> list[dict]:
+        """Vast's itemised charges per instance and day: gpu, disk, bwd (download), bwu (upload)."""
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        filters = urllib.parse.quote(_json.dumps({"day": {"gte": int(since.timestamp()), "lte": int(until.timestamp())}}))
+        sums: dict[tuple, dict] = {}
+        token = None
+        for _ in range(20):
+            path = f"/charges/?select_filters={filters}&format=tree&limit=500" + (
+                f"&after_token={urllib.parse.quote(token)}" if token else "")
+            res = self._req("GET", path) or {}
+            for r in parse_vast_charges(res):
+                k = (r["ref"], r["day"], r["component"])   # summed, so split rows add up instead of overwriting
+                if k in sums:
+                    sums[k]["usd"] += r["usd"]
+                else:
+                    sums[k] = r
+            token = res.get("next_token")
+            if not token:
+                return list(sums.values())
+        raise ProviderError("Vast charges listing did not finish paginating")
 
     def launch(self, name: str, spec: LaunchSpec) -> Machine:
         offers = self.offers(spec)
@@ -188,7 +243,8 @@ class Vast:
                     # 'args' keeps the image's own ENTRYPOINT (mw) and passes CMD.
                     "runtype": "args", "args_str": "worker", "env": spec.env})
                 if res and res.get("new_contract"):
-                    return Machine(name, str(res["new_contract"]), float(o["dph_total"]))
+                    return Machine(name, str(res["new_contract"]), float(o["dph_total"]),
+                                   upfront_usd=spec.download_gb * float(o.get("inet_down_cost") or 0))
                 last = ProviderError(f"Vast rent of offer {o['id']} returned {res}")
             except ProviderError as e:
                 last = e
@@ -293,7 +349,10 @@ def all_providers(policy) -> dict[str, Provider]:
     return {"salad": Salad(),
             "vast": Vast(float(v.get("min_reliability", 0.98)), bool(v.get("verified_only", True)),
                          int(v.get("offers_to_try", 3)), float(v.get("min_inet_down_mbps", 0)),
-                         list(v.get("exclude_countries", []))),
+                         list(v.get("exclude_countries", [])),
+                         max_inet_down_usd_per_gb=(float(v["max_inet_down_usd_per_gb"])
+                                                   if v.get("max_inet_down_usd_per_gb") is not None else None),
+                         expected_hours=float(v.get("expected_hours", 1.0)), candidates=int(v.get("candidates", 50))),
             "runpod": RunPod(policy.get("autoscale", "runpod_cuda_versions", default=[]))}
 
 
