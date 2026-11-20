@@ -34,9 +34,17 @@ IDENTITY_FIELDS = ("apparent_age", "gender_presentation", "ethnicity_and_skin", 
 
 
 class Look(BaseModel):
-    hair: str
+    # hair, accessories and the signature item go into EVERY photo prompt (lab.appearance_prompt). A conditional
+    # variant written here ("on walks it is under a beanie") is drawn into every photo: on 2026-11-19 that made
+    # 9 in 10 of Maren's images miss their scene. Situational looks belong in memory and in scenes.
+    hair: str = Field(description="their DEFAULT hair, as in most photos; never situational variants (hats, hoods, "
+                                  "'on walks it is ...'): those go in `situational_looks`")
     wardrobe: str
-    accessories: str = Field(description="recurring accessories other than the signature item")
+    accessories: str = Field(description="recurring accessories other than the signature item, as usually worn; no "
+                                         "situational variants")
+    situational_looks: list[str] = Field(default_factory=list,
+                                         description="looks for particular moments (e.g. a beanie on the walk home "
+                                                     "after a shift); the showrunner writes them into scenes when they fit")
     makeup: str
     signature_item: str = Field(description="ONE distinctive recurring item they always have (e.g. a particular "
                                             "pair of glasses, a necklace, a mug). Precise visual description. "
