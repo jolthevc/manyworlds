@@ -151,3 +151,9 @@ def test_todays_cap_sees_expected_downloads_of_running_machines(conn, policy):
     register(conn, "mw-run-vast", hours=1, max_usd=1, started=datetime.now(timezone.utc))
     conn.execute("UPDATE gpu_groups SET est_extra_usd = 0.7 WHERE name = 'mw-run-vast'")
     assert billed_today(conn) >= 0.7
+
+
+def test_other_projects_on_the_same_account_are_left_out(conn, policy):
+    rows = [{"ref": "8", "label": "hermes-video", "day": date(2026, 11, 14), "component": "bwd", "usd": 5.0}]
+    out = reconcile.run(conn, policy, {"vast": ChargingVast(rows)}, now=datetime.now(timezone.utc))
+    assert out["charges"] == 0 and conn.execute("SELECT count(*) n FROM provider_charges").fetchone()["n"] == 0
