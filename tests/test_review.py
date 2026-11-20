@@ -141,7 +141,7 @@ def test_refusal_fallback_is_only_requested_from_models_that_support_it(conn, po
 
 def test_only_screen_passes_reach_the_stronger_confirm_and_it_can_still_reject(conn, policy, store, tmp_path):
     _, job = creator_with_job(conn, store, tmp_path)
-    judge = JudgeStub([ok(), ok(identity=3), ok(), ok(realism=2)], confirm=[ok(), ok(identity=5)])
+    judge = JudgeStub([ok(), ok(identity=3), ok(), ok(realism=2)], confirm=[ok(), ok(identity=4)])   # 4: clearly not her
     results = gates.review_job(conn, policy, judge, store, job, tmp_path)
     cfg = policy.get("review", "image")
     assert [c["role"] for c in judge.calls] == [cfg["role"], cfg["confirm_role"]]
@@ -192,17 +192,17 @@ def test_a_jobs_reviews_appear_all_at_once_when_both_stages_are_done(conn, datab
     other.close()
 
 
-def test_post_images_are_judged_against_the_scene_the_planner_wrote(conn, policy, store, tmp_path):
-    # 2026-11-14: Maren's first post asked for a claw clip, fogged glass and herbs on the sill;
-    # it got a beanie and an empty sill, and no gate looked at the scene at all.
+def test_post_images_are_ranked_by_the_scene_the_planner_wrote_but_not_rejected_for_it(conn, policy, store, tmp_path):
+    # 2026-11-19 (owner): scene fit is a preference. Rejecting on it (with a beanie forced into every
+    # prompt) threw away 9 in 10 of Maren's images. A close-enough image is kept; the best fits are chosen.
     _, job = creator_with_job(conn, store, tmp_path)
     conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"scene": "at the window, 4:35am"}), job))
     judge = JudgeStub([ok(scene=9), ok(scene=2), ok(scene=6), ok(scene=8)], confirm=[ok(scene=9), ok(scene=8)])
     results = gates.review_job(conn, policy, judge, store, job, tmp_path)
     assert any("INTENDED SCENE" in str(b.get("text", "")) and "4:35am" in str(b.get("text", ""))
                for b in judge.calls[0]["content"])
-    assert [r["accepted"] for r in results] == [True, False, True, True]     # 2 is a different scene
-    assert [r["confirmed"] for r in results] == [True, False, False, True]   # best fits go to confirm
+    assert [r["accepted"] for r in results] == [True, True, True, True]      # a different scene is not a reject
+    assert [r["confirmed"] for r in results] == [True, False, False, True]   # best scene fits go to confirm
     rows = conn.execute("SELECT count(*) n FROM reviews WHERE gate = 'scene'").fetchone()["n"]
     assert rows == 4 + 2
 
@@ -213,3 +213,11 @@ def test_images_without_a_scene_get_no_scene_gate(conn, policy, store, tmp_path)
     gates.review_job(conn, policy, judge, store, job, tmp_path)
     assert not any("INTENDED SCENE" in str(b.get("text", "")) for b in judge.calls[0]["content"])
     assert conn.execute("SELECT count(*) n FROM reviews WHERE gate = 'scene'").fetchone()["n"] == 0
+
+
+def test_a_little_drift_is_fine_a_different_face_or_clear_defects_are_not(conn, policy, store, tmp_path):
+    # 2026-11-19 (owner): keep images unless the face is clearly someone else or there are clear AI defects.
+    _, job = creator_with_job(conn, store, tmp_path)
+    judge = JudgeStub([ok(identity=5, realism=5), ok(identity=3), ok(realism=3), ok(identity=6, realism=6)])
+    results = gates.review_job(conn, policy, judge, store, job, tmp_path)
+    assert [r["accepted"] for r in results] == [True, False, False, True]
