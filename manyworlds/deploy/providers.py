@@ -222,7 +222,7 @@ class Vast:
 # --- RunPod -------------------------------------------------------------------------
 
 # v2 answers 400 both for no capacity and for rule violations; only these phrases mean "try another pool".
-NO_CAPACITY_PHRASES = ("no instances currently available", "no available capacity", "could not be placed",
+NO_CAPACITY_PHRASES = ("no instances currently available", "no longer any instances available", "no available capacity", "could not be placed",
                        "not enough capacity", "insufficient capacity")
 
 
