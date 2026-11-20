@@ -173,3 +173,20 @@ def test_an_ideas_staging_is_kept_for_learning_and_an_unknown_one_is_cleared(con
     rows = conn.execute("SELECT body, attributes FROM ideas ORDER BY body->>'day'").fetchall()
     assert rows[0]["body"]["staging"] == "field_reporter" and rows[0]["attributes"]["staging"] == "field_reporter"
     assert rows[1]["body"]["staging"] == "" and "staging" not in rows[1]["attributes"]
+
+
+# --- flavors: conventions for the existing pipelines (photo dump, expectation vs reality...) -------
+
+def test_flavors_are_offered_for_formats_made_now_and_kept_for_learning(conn, policy):
+    cid = _maren(conn)
+    llm = PlanLLM([idea(0, "carousel", scenes=("Monday: the bakery queue", "Wednesday: the river at dusk"),
+                        flavor="photo_dump"),
+                   idea(1, "carousel", scenes=("what I pictured: a sunny picnic", "what happened: rain"),
+                        caption="expectation vs the actual weather", flavor="tier_list")], conn=conn)
+    _run(conn, policy, cid, llm)
+    prompt = str(llm.calls[0]["content"])
+    assert "photo_dump" in prompt and "expectation_vs_reality" in prompt
+    assert "tier_list" not in prompt                                  # needs text on images: not offered yet
+    rows = conn.execute("SELECT body, attributes FROM ideas ORDER BY body->>'day'").fetchall()
+    assert rows[0]["body"]["flavor"] == "photo_dump" and rows[0]["attributes"]["flavor"] == "photo_dump"
+    assert rows[1]["body"]["flavor"] == "" and "flavor" not in rows[1]["attributes"]

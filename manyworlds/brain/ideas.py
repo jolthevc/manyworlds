@@ -42,7 +42,7 @@ def from_post(conn, post_id) -> uuid.UUID:
 
 
 # Plan fields a scheduled post carries (the reasoning stays on the idea, never on the post).
-_POST_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series", "staging")
+_POST_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series", "staging", "flavor")
 
 
 def schedule_ready(conn, policy, *, now) -> dict:

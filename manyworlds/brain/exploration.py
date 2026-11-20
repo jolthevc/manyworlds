@@ -15,7 +15,7 @@ import random
 
 from ..policy import Policy
 
-KINDS = ("attribute", "format", "dimension", "staging")
+KINDS = ("attribute", "format", "dimension", "staging", "flavor")
 
 
 def _cfg(policy: Policy) -> dict:
@@ -28,7 +28,7 @@ def describe(direction: str) -> str:
         k, v = key.split("=", 1)
         return f"{k}: {v}"
     return {"format": f"the {key} format", "dimension": f"ideas strong on {key}",
-            "staging": f"the {key} staging"}.get(kind, direction)
+            "staging": f"the {key} staging", "flavor": f"a {key.replace('_', ' ')} post"}.get(kind, direction)
 
 
 def directions(policy: Policy, *, effects: list[dict], untried: list[str], seed_key: str) -> list[dict]:
@@ -48,11 +48,14 @@ def directions(policy: Policy, *, effects: list[dict], untried: list[str], seed_
     return [{**d, "describe": describe(d["direction"])} for d in draws[:int(cfg.get("directions", 3))]]
 
 
-def untried(conn, creator_id, *, formats, stagings) -> list[str]:
-    """Formats and stagings production can make that this creator has never had an idea for."""
+def untried(conn, creator_id, *, formats, stagings, flavors=()) -> list[str]:
+    """Formats, stagings and flavors production can make that this creator has never had an idea for."""
     used_formats = {r["format"] for r in conn.execute(
         "SELECT DISTINCT format FROM ideas WHERE creator_id = %s", (creator_id,)).fetchall()}
     used_stagings = {r["s"] for r in conn.execute(
         "SELECT DISTINCT attributes->>'staging' AS s FROM ideas WHERE creator_id = %s", (creator_id,)).fetchall()}
+    used_flavors = {r["f"] for r in conn.execute(
+        "SELECT DISTINCT attributes->>'flavor' AS f FROM ideas WHERE creator_id = %s", (creator_id,)).fetchall()}
     return [f"format:{f}" for f in formats if f not in used_formats] + \
-           [f"staging:{s}" for s in stagings if s not in used_stagings]
+           [f"staging:{s}" for s in stagings if s not in used_stagings] + \
+           [f"flavor:{f}" for f in flavors if f not in used_flavors]

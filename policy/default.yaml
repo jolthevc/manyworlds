@@ -314,6 +314,17 @@ planner:
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity
 
+# Flavors (owner 2026-11-19: "more flavors"): conventions for the pipelines we have, offered like stagings and
+# recorded as an idea attribute. Flavors that need text drawn on the image (tier list, recipe card, text-on-photo
+# memes) wait for a text-overlay step for photos; until then they are not listed here.
+flavors:
+  library:
+    photo_dump: {formats: [carousel], note: "3-4 different moments from the past days (not one scene), in order, a casual round-up"}
+    expectation_vs_reality: {formats: [carousel], note: "photo 1 is what they pictured, photo 2 what actually happened; the caption lands the joke"}
+    travel_diary: {formats: [carousel], note: "a day somewhere (a nearby town counts), one photo per moment, morning to night"}
+    outfit_of_the_week: {formats: [carousel], note: "the week's outfits, one per photo, same mirror or spot, small changes in mood"}
+    before_after: {formats: [carousel], note: "the same place or thing before and after (tidying, a plant, a haircut, a repaint)"}
+
 # Stagings (owner 2026-11-19): a format plus a recognisable setting, framing, wardrobe and script conventions.
 # The showrunner may give an idea one (or none: most posts are plain); each idea records its staging as an
 # attribute, so the analyst learns which work for which creator. Only stagings whose formats production makes
