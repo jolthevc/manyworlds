@@ -71,6 +71,7 @@ class LaunchSpec:
     interruptible: bool = False
     priority: str = "batch"    # SaladCloud only
     min_cuda: float | None = None  # the image's CUDA build; hosts with older drivers can't run it
+    cloud: str = "COMMUNITY"       # RunPod only: COMMUNITY or SECURE (per pool)
 
 
 @dataclass
@@ -244,7 +245,7 @@ class RunPod:
     def launch(self, name: str, spec: LaunchSpec) -> Machine:
         gpu = {"id": spec.gpu_name, "count": 1, "minRamPerGpu": spec.ram_gb, **self._cuda(spec)}
         try:
-            pod = self._req("POST", "/pods", {"name": name, "image": spec.image, "cloud": "COMMUNITY",
+            pod = self._req("POST", "/pods", {"name": name, "image": spec.image, "cloud": spec.cloud,
                                               "disk": spec.disk_gb, "env": spec.env, "ports": [], "gpu": gpu})
         except ProviderError as e:
             text = str(e).lower()
@@ -261,11 +262,9 @@ class RunPod:
         return Machine(name, pod["id"], price)
 
     def _cuda(self, spec: LaunchSpec) -> dict:
-        """Pods on hosts whose driver predates the image's CUDA fail with 'CUDA unknown error'."""
-        if not spec.min_cuda or not self.cuda_versions:
-            return {}
-        ok = [v for v in self.cuda_versions if float(v) >= spec.min_cuda]
-        return {"allowedCudaVersions": ok} if ok else {}
+        """Pods on hosts whose driver predates the image's CUDA fail with 'CUDA unknown error'. A floor, not a
+        list: on 2026-11-20 every free host reported CUDA 13.2, which an exact list of 12.8/12.9/13.0 excluded."""
+        return {"minCudaVersion": f"{spec.min_cuda:.1f}"} if spec.min_cuda else {}
 
     def list_live(self) -> dict[str, str]:
         live, cursor, seen = {}, None, set()

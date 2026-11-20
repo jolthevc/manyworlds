@@ -38,7 +38,7 @@ def test_a_pod_is_created_with_the_v2_body(rp, monkeypatch):
     assert body == {"name": "mw-talk-3090-runpod-a", "image": SPEC.image, "cloud": "COMMUNITY", "disk": 200,
                     "env": {"MW_POOL": "runpod_comm_3090"}, "ports": [],
                     "gpu": {"id": "NVIDIA GeForce RTX 3090", "count": 1, "minRamPerGpu": 64,
-                            "allowedCudaVersions": ["12.8", "12.9"]}}
+                            "minCudaVersion": "12.8"}}
     assert (m.ref, m.usd_per_hour) == ("p1", 0.22)
 
 
@@ -104,3 +104,11 @@ def test_a_repeating_cursor_cannot_hang_the_listing(rp, monkeypatch):
             "pagination": {"hasNextPage": True, "nextCursor": "same"}}
     monkeypatch.setattr(providers, "http", Recorder(*[page] * 5))
     assert rp.list_live() == {"mw-a": "a"}
+
+
+def test_a_secure_pool_asks_for_secure_cloud(rp, monkeypatch):
+    import dataclasses
+    rec = Recorder({"id": "p1", "cost": 0.59})
+    monkeypatch.setattr(providers, "http", rec)
+    rp.launch("mw-x", dataclasses.replace(SPEC, cloud="SECURE", max_usd_per_hour=0.6))
+    assert rec.calls[0][2]["cloud"] == "SECURE"

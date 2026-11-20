@@ -44,6 +44,8 @@ gpu_pools:
   vast_5090:         {provider: vast,   gpu: rtx5090, usd_per_hour: 0.50, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
   runpod_comm_3090:  {provider: runpod, gpu: rtx3090, usd_per_hour: 0.22, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
   runpod_comm_4090:  {provider: runpod, gpu: rtx4090, usd_per_hour: 0.34, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
+  # Secure cloud A40 (48 GB): RunPod community had no CUDA>=12.8 capacity on 2026-11-20; for talking video.
+  runpod_secure_a40: {provider: runpod, gpu: a40, usd_per_hour: 0.60, interruptible: false, cloud: SECURE}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
 
 # Job kinds and the pools allowed to run them. The autoscaler orders them by measured cost
@@ -64,7 +66,7 @@ job_kinds:
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
-  talk.infinitetalk: {pools: [vast_5090, vast_4090, runpod_comm_4090, runpod_comm_3090], outputs_per_job: 1}
+  talk.infinitetalk: {pools: [vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_comm_3090], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -99,6 +101,7 @@ gpu_names:
   rtx4090:  {salad: "RTX 4090",  vast: "RTX 4090",  runpod: "NVIDIA GeForce RTX 4090"}
   rtx5090:  {salad: "RTX 5090",  vast: "RTX 5090",  runpod: "NVIDIA GeForce RTX 5090"}
   rtxa5000: {salad: "RTX A5000", vast: "RTX A5000", runpod: "NVIDIA RTX A5000"}
+  a40:      {vast: "A40", runpod: "NVIDIA A40"}
 
 # The autoscaler starts machines when jobs are waiting and stops them when the queue
 # drains. A provider is skipped when its API key isn't configured.
