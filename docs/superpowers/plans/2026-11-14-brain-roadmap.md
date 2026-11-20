@@ -165,3 +165,9 @@ for one creator passes the gate.
   needs >48 GB host RAM, so the fp8 build (with prebuilt quanto kernels, talk v6) is the benchmark candidate.
   No lip-sync metric is licensed for commercial use without review (SyncNet weights unlicensed; LatentSync's
   SyncNet under OpenRAIL++): sync is checked by eye until the owner decides.
+- **M10 benchmark, 2026-11-20 (A40, RunPod secure, talk v6).** The worker now boots, downloads, loads and renders.
+  At the README's settings (fp8, 40 steps, text + audio guidance = 3 model passes per step) a ~6 s clip did not
+  finish in 40 min (GPU-resident) or 50 min (CPU-offloaded): far too slow to use. Next: the 8-step distill LoRA
+  (one pass per step, ~15x less compute), which needs either full precision on a host with >48 GB RAM (e.g.
+  RunPod secure L40S, 48 GB VRAM, ~125 GB RAM, $1.09/h) or a patched int8 path (its repo lacks t5_int8; fall back
+  to the bf16 text encoder). Also: drop `--num_persistent_param_in_dit 0` automatically on cards with room.
