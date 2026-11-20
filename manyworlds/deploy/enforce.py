@@ -125,7 +125,8 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
         reason = None
         if now >= g["deadline"]:
             reason = "deadline"
-        elif g["billed_usd"] >= float(g["max_usd"]):
+        # The cap counts expected non-hourly charges too (a Vast boot's download), not just metered hours.
+        elif g["billed_usd"] + float(g.get("est_extra_usd") or 0) >= float(g["max_usd"]):
             reason = "max_usd"
         elif spent_today is not None and spent_today >= daily_cap:
             reason = "daily_gpu_budget"

@@ -39,7 +39,7 @@ def machine_stats(conn, family: str, pools: list[str], since: datetime) -> list[
     with what it billed and how many accepted outputs it produced."""
     return conn.execute(
         """
-        SELECT g.name, g.pool, g.billed_usd::float AS billed_usd, g.started_at, g.stopped_at, g.stop_reason, g.image,
+        SELECT g.name, g.pool, g.cost_usd::float AS billed_usd, g.started_at, g.stopped_at, g.stop_reason, g.image,
                (SELECT count(*) FROM assets s
                   JOIN attempts a ON a.job_id = s.job_id AND a.outcome = 'done' AND a.gpu_group = g.name
                  WHERE NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = s.id AND NOT r.passed)

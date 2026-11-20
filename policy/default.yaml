@@ -81,17 +81,18 @@ worker_images:
   # env: passed to every worker of the family; a pool's worker_env overrides it.
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
-  image: {image: mw-worker-image, tag: v20, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
+  # download_gb: what a machine downloads at boot (compressed image + model weights), priced per GB on Vast.
+  image: {image: mw-worker-image, tag: v20, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80, download_gb: 30,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v20, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
+  video: {image: mw-worker-image, tag: v20, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # talk: Wan2.1-I2V-14B-480P (~82 GB) + adapter (10 GB) + wav2vec, all on the rented machine; 64 GB RAM / 200 GB disk
   # found no RunPod community capacity (2026-11-20); offloading the 14B model needs ~40-45 GB of RAM.
-  talk: {image: mw-worker-talk, tag: v6, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150,
+  talk: {image: mw-worker-talk, tag: v6, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150, download_gb: 50,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
-  train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
+  train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
 
 # What each provider calls each GPU.
@@ -125,7 +126,13 @@ autoscale:
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
   # CN: huggingface.co is unreachable there, so workers that fetch weights at start never begin.
   runpod_cuda_versions: ["12.8", "12.9", "13.0"]   # versions RunPod accepts in allowedCudaVersions
-  vast: {min_reliability: 0.98, verified_only: true, offers_to_try: 3, min_inet_down_mbps: 200, exclude_countries: [CN]}
+  # Vast hosts charge per GB downloaded (set per host, 20x apart): $29 of a $40 bill (2026-11-12..20) was boot
+  # downloads. Offers above max_inet_down_usd_per_gb are skipped; the rest are ranked by expected_hours of rent
+  # plus worker_images.<family>.download_gb at the host's rate.
+  vast: {min_reliability: 0.98, verified_only: true, offers_to_try: 3, min_inet_down_mbps: 200, exclude_countries: [CN],
+         max_inet_down_usd_per_gb: 0.005, expected_hours: 1.0, candidates: 50}
+  reconcile_days: 3              # provider itemised charges pulled into the ledger (manyworlds.deploy.reconcile)
+  reconcile_every_minutes: 60
   worker_self_stop: true         # workers on Vast/RunPod destroy their own machine when idle or past deadline
   # Pools are tried cheapest per accepted output first, from what machines actually billed
   # (boot, idle and failures included) over the window. A number or {family: number, default: n}.
