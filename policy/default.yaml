@@ -199,7 +199,10 @@ generation:
     audio_cfg: 2.0
     shift: 2.0
     lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}
-    extra: ["--num_persistent_param_in_dit", "0"]
+    # int8 single-person build made for LoRAs (19.5 GB): the full-precision 14B model was OOM-killed loading on a
+    # 48 GB-RAM A40 host (2026-11-20).
+    extra: ["--quant", "int8", "--quant_dir", "{infinitetalk}/quant_models/infinitetalk_single_int8_lora.safetensors",
+            "--num_persistent_param_in_dit", "0"]
     motion_frame: 9              # frames carried between streaming chunks (README value)
     timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
     voice: af_heart
