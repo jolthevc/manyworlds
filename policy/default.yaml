@@ -271,7 +271,8 @@ creators:
 budget: {master_usd_per_month: 750, reserve_share: 0.15}
 
 brain:
-  llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 6.0}   # sandbox: all test runs together
+  llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 6.0,
+                    creator_lab: 5.0}   # creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
   # Experiments (manyworlds.brain.experiments): a tentative finding becomes a randomised two-arm test. Slots are
   # assigned per batch; the result is read once, when each arm has its sample (no peeking). The sample per arm
@@ -305,7 +306,7 @@ brain:
     routes: {breakout: analyst, drop: analyst, qa_surge: owner}
   # Launches (manyworlds.brain.launches): an approved launch walks bible -> reference pack -> anchors -> LoRA ->
   # profile -> ready (sandbox + account request); a step whose jobs fail is retried this many times, then stops.
-  launches: {max_step_retries: 2}
+  launches: {max_step_retries: 2, step_timeout_hours: 48, min_reference_renders: 8}
   # The strategist (manyworlds.brain.agents.strategist, daily): proposes stage moves and launches; code checks them.
   strategist:
     enabled: true
@@ -417,6 +418,7 @@ production:
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120
   max_job_failures_per_post: 6   # failed jobs (machines, downloads) per post; apart from review repairs
+  max_ready_unpublished: 6       # no new batch while a creator has this many made-but-unpublished posts
   # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
   reroute_failed_video: {story_clip: photo, talking_video: photo}
   edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
@@ -448,6 +450,9 @@ queue:
 
 publishing:
   max_late_hours: 6            # a real post later than this is left ready, not sent in a burst with others
+
+# Instagram Graph API (manyworlds.publish.instagram, metrics): Instagram Login host; Meta's docs v27.0 (2026-11-20).
+instagram: {host: graph.instagram.com, version: v27.0, url_seconds: 3600}
 
 simulation:
   # Sandbox learning tests (manyworlds.brain.simulation). fast_forward also publishes planned posts

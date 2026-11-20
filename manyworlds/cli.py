@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("discover", help="Brain: plan research, pull it via Apify, propose creator theses")
     sub.add_parser("choose", help="Brain: choose the next thesis to launch")
+    ac = sub.add_parser("account", help="connect a creator's Instagram account (the token stays in .env)")
+    ac.add_argument("action", choices=["connect"])
+    ac.add_argument("creator")
+    ac.add_argument("--token-env", required=True, help="name of the .env variable holding the long-lived token")
+    sub.add_parser("collect-metrics", help="pull Instagram insights for published posts (real metrics)")
     rc = sub.add_parser("reconcile", help="pull providers' itemised charges into the ledger (true machine cost)")
     rc.add_argument("--days", type=int, default=None, help="window to pull (default policy autoscale.reconcile_days)")
     lc = sub.add_parser("launch-creator", help="Creator Lab: bible + creator + reference pack + voice sample")
@@ -145,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(args.payload)
         ids = [queue.enqueue(conn, args.kind, payload, batch=args.batch) for _ in range(args.n)]
         _print({"enqueued": ids})
+    elif args.cmd == "account":
+        from .publish import instagram
+        _print(instagram.connect(conn, pol, _creator_id(conn, args.creator), token_env=args.token_env))
+    elif args.cmd == "collect-metrics":
+        from .publish import metrics
+        _print(metrics.collect(conn, pol))
     elif args.cmd == "reconcile":
         from .deploy import reconcile
         from .deploy.providers import all_providers
@@ -273,6 +284,52 @@ def _review(args, conn, pol, llm) -> int:
         pol = policy_mod.load()
 
 
+def brain_steps(conn, pol) -> dict:
+    """The Brain's part of each producer tick. Each step is isolated: one that fails is reported (an owner event,
+    once a day per step) and the others, and production and publishing after them, still run."""
+    import logging
+    from datetime import datetime, timezone
+
+    from psycopg.types.json import Jsonb
+
+    from .brain import events, ideas, launches, portfolio, showrunner_loop
+    from .deploy.providers import redact
+
+    now = datetime.now(timezone.utc)
+    out: dict = {"planned": [], "errors": []}
+
+    def scheduled():
+        r = ideas.schedule_ready(conn, pol, now=now)
+        return [r] if r["batches"] else []
+
+    def raised():
+        r = events.tick(conn, pol)   # breakouts, drops, QA surges: raised once, routed, rate-limited
+        return [{"events": r}] if r else []
+
+    def portfolio_cycle():
+        if not pol.get("brain", "strategist", "enabled", default=False):
+            return []
+        portfolio.ensure_daily(conn, pol)          # the daily portfolio cycle (one strategist job a day)
+        r = launches.advance(conn, pol)            # approved launches walk the creator lab's steps
+        return [{"launches": r}] if any(r.values()) else []
+
+    for name, step in (("schedule", scheduled), ("batches", lambda: showrunner_loop.ensure_batches(conn, pol)),
+                       ("events", raised), ("portfolio", portfolio_cycle)):
+        try:
+            out["planned"] += step()
+        except Exception as e:  # noqa: BLE001 - a Brain bug must not stop production or publishing
+            logging.getLogger("manyworlds.produce").exception("brain step %s failed", name)
+            err = redact(f"{type(e).__name__}: {e}")[:500]
+            out["errors"].append({"step": name, "error": err})
+            try:
+                conn.execute("INSERT INTO events (type, subject, payload, routed_to, dedupe_key) VALUES "
+                             "('brain_step_failed', %s, %s, 'owner', %s) ON CONFLICT DO NOTHING",
+                             (Jsonb({"step": name}), Jsonb({"error": err}), f"brain_step_failed:{name}:{now.date()}"))
+            except Exception:  # noqa: BLE001 - reporting must not fail the tick either
+                pass
+    return out
+
+
 def _produce(args, conn, pol, llm) -> int:
     import time
 
@@ -282,22 +339,9 @@ def _produce(args, conn, pol, llm) -> int:
     while True:
         from .worker import models
         if pol.get("brain", "showrunner", "enabled", default=False):
-            # The showrunner plans (brain worker); here: ask for batches, and schedule evaluated ones.
-            from datetime import datetime, timezone
-
-            from .brain import ideas, showrunner_loop
-            from .brain import events
-            scheduled = ideas.schedule_ready(conn, pol, now=datetime.now(timezone.utc))
-            planned = showrunner_loop.ensure_batches(conn, pol) + ([scheduled] if scheduled["batches"] else [])
-            raised = events.tick(conn, pol)   # breakouts, drops, QA surges: raised once, routed, rate-limited
-            if raised:
-                planned = planned + [{"events": raised}]
-            if pol.get("brain", "strategist", "enabled", default=False):
-                from .brain import launches, portfolio
-                portfolio.ensure_daily(conn, pol)          # the daily portfolio cycle (one strategist job a day)
-                stepped = launches.advance(conn, pol)      # approved launches walk the creator lab's steps
-                if any(stepped.values()):
-                    planned = planned + [{"launches": stepped}]
+            # The showrunner plans (brain worker); here: ask for batches, schedule evaluated ones, events, launches.
+            steps = brain_steps(conn, pol)
+            planned = steps["planned"] + ([{"brain_errors": steps["errors"]}] if steps["errors"] else [])
         else:
             planned = planner.ensure_plans(conn, pol, llm)
         result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
@@ -308,6 +352,13 @@ def _produce(args, conn, pol, llm) -> int:
         published = scheduler.publish_due(conn, pol, now=_dt.now(_tz.utc))
         if published.get("simulated") or published.get("published") or published.get("paused"):
             result["published"] = published
+        try:   # real metrics for published posts, at the observation ages (nothing to do until an account exists)
+            from .publish import metrics
+            collected = metrics.collect(conn, pol)
+            if collected["snapshots"] or collected["errors"]:
+                result["metrics"] = collected
+        except Exception as e:  # noqa: BLE001 - metrics must never stop production or publishing
+            result["metrics"] = {"error": f"{type(e).__name__}: {e}"[:300]}
         if any(result.values()) or not args.loop:
             _print(result)
         if not args.loop:

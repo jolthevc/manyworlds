@@ -19,9 +19,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from . import instagram
 from .simulated import SimulatedPublisher
 
-PUBLISHERS = {"simulated": SimulatedPublisher()}
+PUBLISHERS = {"simulated": SimulatedPublisher(), "instagram": instagram.InstagramPublisher()}
 
 
 def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
@@ -31,7 +32,7 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
     fast = bool(policy.get("simulation", "fast_forward", default=False))
     max_late = timedelta(hours=float(policy.get("publishing", "max_late_hours", default=6)))
     out = {"simulated": 0, "published": 0, "waiting_for_adapter": 0, "waiting_for_account": 0,
-           "awaiting_approval": 0, "stale": 0}
+           "awaiting_approval": 0, "stale": 0, "pending": 0, "failed": 0, "quota": 0}
     rows = conn.execute(
         """SELECT p.*, c.publish_mode, c.anchors FROM posts p JOIN creators c ON c.id = p.creator_id
            WHERE p.scheduled_for <= %s AND c.status NOT IN ('paused', 'retired')
@@ -56,14 +57,29 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
             if now - post["scheduled_for"] > max_late:
                 out["stale"] += 1
                 continue
-        result = publisher.publish(conn, policy, post)
+        try:
+            result = publisher.publish(conn, policy, post)
+        except instagram.Pending:
+            out["pending"] += 1            # container processing at Instagram: published on a later tick
+            continue
+        except instagram.QuotaReached:
+            out["quota"] += 1
+            continue
+        except instagram.AccountNotConnected:
+            out["waiting_for_account"] += 1
+            continue
+        except instagram.GraphError:
+            out["failed"] += 1             # recorded on the post (body.publish_errors); retried next tick
+            continue
         published_at = post["scheduled_for"] if result["simulated"] else now
         with conn.transaction():
             row = conn.execute(
-                """INSERT INTO publications (post_id, platform, external_id, permalink, ai_label, simulated, published_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (post_id, platform) DO NOTHING RETURNING id""",
-                (post["id"], publisher.platform, result["external_id"], result["permalink"], result["ai_label"],
-                 result["simulated"], published_at)).fetchone()
+                """INSERT INTO publications (post_id, platform, account_id, external_id, permalink, ai_label, simulated,
+                                            published_at)
+                   VALUES (%s, %s, (SELECT id FROM accounts WHERE creator_id = %s AND platform = %s), %s, %s, %s, %s, %s)
+                   ON CONFLICT (post_id, platform) DO NOTHING RETURNING id""",
+                (post["id"], publisher.platform, post["creator_id"], publisher.platform, result["external_id"],
+                 result["permalink"], result["ai_label"], result["simulated"], published_at)).fetchone()
             if row is None:
                 continue
             conn.execute("UPDATE posts SET status = %s, published_at = %s, external_id = %s, updated_at = now() "

@@ -9,6 +9,7 @@ dependencies = [
     "boto3>=1.34",
     "anthropic>=0.75",
     "pydantic>=2.7",
+    "pillow>=10",       # Instagram takes JPEG only: published images are converted from PNG
 ]
 
 [project.optional-dependencies]

@@ -31,25 +31,45 @@ def _cfg(policy: Policy) -> dict:
     return policy.get("brain", "launches", default={}) or {}
 
 
+UUID_RE = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+
 def start_approved(conn) -> int:
-    """A launch row for every approved launch request that doesn't have one yet."""
+    """A launch row for every approved launch request that doesn't have one yet, only for a thesis that is
+    chosen and has no creator (an approval can never re-launch or touch an existing creator). A rejected
+    request returns its thesis to the pool."""
+    conn.execute(
+        """UPDATE theses t SET status = 'proposed' FROM approvals a
+           WHERE a.kind = 'launch' AND a.status = 'rejected' AND a.subject->>'thesis_id' ~ %s
+             AND t.id = (a.subject->>'thesis_id')::uuid AND t.status = 'chosen' AND t.creator_id IS NULL""", (UUID_RE,))
     rows = conn.execute(
         """INSERT INTO launches (approval_id, thesis_id, cohort)
-           SELECT a.id, (a.subject->>'thesis_id')::uuid, a.subject->>'cohort' FROM approvals a
-           WHERE a.kind = 'launch' AND a.status = 'approved'
+           SELECT a.id, t.id, a.subject->>'cohort' FROM approvals a
+           JOIN theses t ON a.subject->>'thesis_id' ~ %s AND t.id = (a.subject->>'thesis_id')::uuid
+           WHERE a.kind = 'launch' AND a.status = 'approved' AND t.creator_id IS NULL
+             AND t.status IN ('chosen', 'proposed')
              AND NOT EXISTS (SELECT 1 FROM launches l WHERE l.approval_id = a.id)
-           ON CONFLICT (approval_id) DO NOTHING RETURNING id""").fetchall()
+           ON CONFLICT (approval_id) DO NOTHING RETURNING id""", (UUID_RE,)).fetchall()
     return len(rows)
 
 
-def _status(conn, job_ids: list[str]) -> str:
-    """done (all done), failed (any failed for good), or waiting."""
+def _status(conn, job_ids: list[str], *, min_done: int | None = None) -> str:
+    """done, failed (for good), over_budget (a Claude step refused by its daily budget), or waiting. With
+    `min_done`, a step is done once nothing is still running and at least that many jobs succeeded."""
     if not job_ids:
         return "waiting"
-    st = [r["status"] for r in conn.execute("SELECT status FROM jobs WHERE id = ANY(%s::uuid[])", (job_ids,)).fetchall()]
+    rows = conn.execute("SELECT status, error FROM jobs WHERE id = ANY(%s::uuid[])", (job_ids,)).fetchall()
+    st = [r["status"] for r in rows]
+    if any(s in ("queued", "running") for s in st):
+        return "waiting"
+    done = sum(s == "done" for s in st)
+    if min_done is not None:
+        return "done" if done >= min_done else "failed"
     if any(s in ("failed", "dead") for s in st):
+        if any("budget" in (r["error"] or "") for r in rows if r["status"] in ("failed", "dead")):
+            return "over_budget"
         return "failed"
-    return "done" if st and all(s == "done" for s in st) else "waiting"
+    return "done" if st and done == len(st) else "waiting"
 
 
 def _start_step(conn, policy: Policy, launch: dict, step: str, attempt: int) -> list[str]:
@@ -95,8 +115,9 @@ def _retry(conn, policy: Policy, launch: dict, step: str, jobs: dict) -> str:
     if step in LLM_STEPS:
         jobs[step] = _start_step(conn, policy, launch, step, launch["retries"] + 1)
     else:
-        conn.execute("UPDATE jobs SET status = 'queued', attempts = 0, worker_id = NULL, lease_until = NULL, "
-                     "updated_at = now() WHERE id = ANY(%s::uuid[]) AND status IN ('failed', 'dead')", (jobs[step],))
+        conn.execute("UPDATE jobs SET status = 'queued', attempts = 0, worker_faults = 0, error = NULL, worker_id = NULL, "
+                     "lease_until = NULL, updated_at = now() WHERE id = ANY(%s::uuid[]) AND status IN ('failed', 'dead')",
+                     (jobs[step],))
     conn.execute("UPDATE launches SET retries = retries + 1, jobs = %s, updated_at = now() WHERE id = %s",
                  (Jsonb(jobs), launch["id"]))
     return "retrying"
@@ -104,7 +125,8 @@ def _retry(conn, policy: Policy, launch: dict, step: str, jobs: dict) -> str:
 
 def _ready(conn, launch: dict) -> None:
     cid = launch["creator_id"]
-    conn.execute("UPDATE creators SET status = 'active', publish_mode = 'simulated' WHERE id = %s", (cid,))
+    # Never downgrade a creator that already publishes for real.
+    conn.execute("UPDATE creators SET status = 'active' WHERE id = %s", (cid,))
     conn.execute("INSERT INTO accounts (creator_id, platform, status) VALUES (%s, 'instagram', 'requested') "
                  "ON CONFLICT (creator_id, platform) DO NOTHING", (cid,))
     handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
@@ -115,9 +137,25 @@ def _ready(conn, launch: dict) -> None:
 
 
 def advance(conn, policy: Policy) -> dict:
-    out = {"started": start_approved(conn), "advanced": 0, "ready": 0, "failed": 0}
+    from datetime import datetime, timedelta, timezone
+
+    cfg = _cfg(policy)
+    now = datetime.now(timezone.utc)
+    out = {"started": start_approved(conn), "advanced": 0, "ready": 0, "failed": 0, "waiting_budget": 0}
     for launch in conn.execute("SELECT * FROM launches WHERE status = 'running' ORDER BY created_at").fetchall():
         step, jobs = launch["step"], dict(launch["jobs"] or {})
+        if jobs.get("wait_until"):
+            if now < datetime.fromisoformat(jobs["wait_until"]):
+                out["waiting_budget"] += 1
+                continue
+            jobs.pop("wait_until")
+            jobs[step] = _start_step(conn, policy, launch, step, int(jobs.get("budget_waits", 0)))
+            conn.execute("UPDATE launches SET jobs = %s, updated_at = now() WHERE id = %s", (Jsonb(jobs), launch["id"]))
+            continue
+        if now - launch["updated_at"] > timedelta(hours=float(cfg.get("step_timeout_hours", 48))):
+            _fail(conn, launch, step, f"step {step} made no progress for {cfg.get('step_timeout_hours')} hours")
+            out["failed"] += 1
+            continue
         if step not in jobs:
             started = _begin(conn, policy, launch, step, 0)
             if started is None:
@@ -127,8 +165,15 @@ def advance(conn, policy: Policy) -> dict:
             conn.execute("UPDATE launches SET jobs = %s, updated_at = now() WHERE id = %s", (Jsonb(jobs), launch["id"]))
             out["advanced"] += 1
             continue
-        state = _status(conn, jobs[step])
+        state = _status(conn, jobs[step], min_done=int(cfg.get("min_reference_renders", 8)) if step == "references" else None)
         if state == "waiting":
+            continue
+        if state == "over_budget":
+            # Its agent is over today's LLM budget: wait for tomorrow's, without using a retry (spec 4.3).
+            jobs["wait_until"] = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).isoformat()
+            jobs["budget_waits"] = int(jobs.get("budget_waits", 0)) + 1
+            conn.execute("UPDATE launches SET jobs = %s WHERE id = %s", (Jsonb(jobs), launch["id"]))
+            out["waiting_budget"] += 1
             continue
         if state == "failed":
             if _retry(conn, policy, launch, step, jobs) == "failed":

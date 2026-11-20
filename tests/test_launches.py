@@ -41,7 +41,7 @@ class FakeLab:
     def bible(self, conn, policy, llm, thesis):
         cid = conn.execute("INSERT INTO creators (handle, status, bible, anchors) VALUES ('newcook', 'draft', %s, %s) "
                            "RETURNING id", (Jsonb({**BIBLE, "display_name": "Nia", "one_line": "cooks badly, happily",
-                                  "reference_prompts": ["at the stove", "at the market"]}),
+                                  "reference_prompts": [f"reference scene {i}" for i in range(10)]}),
                             Jsonb({"voice": {"voice": "af_heart"}}))
                            ).fetchone()["id"]
         conn.execute("UPDATE theses SET creator_id = %s, status = 'launched' WHERE id = %s", (cid, thesis["id"]))

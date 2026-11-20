@@ -46,6 +46,10 @@ class ObjectStore:
     def size(self, key: str) -> int | None:
         raise NotImplementedError
 
+    def public_url(self, uri: str, seconds: int = 3600) -> str:
+        """A time-limited URL anyone can fetch (e.g. Instagram fetching media to publish)."""
+        raise NotImplementedError
+
 
 class LocalStore(ObjectStore):
     def __init__(self, root: Path):
@@ -117,6 +121,12 @@ class S3Store(ObjectStore):
             return int(self.client.head_object(Bucket=self.bucket, Key=key)["ContentLength"])
         except Exception:  # noqa: BLE001
             return None
+
+    def public_url(self, uri: str, seconds: int = 3600) -> str:
+        """A presigned GET URL, so a platform can fetch the object without access to the bucket."""
+        parsed = urlparse(uri)
+        return self.client.generate_presigned_url("get_object", ExpiresIn=int(seconds),
+                                                  Params={"Bucket": parsed.netloc, "Key": parsed.path.lstrip("/")})
 
 
 def from_url(url: str | None = None) -> ObjectStore:

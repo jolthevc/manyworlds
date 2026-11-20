@@ -85,21 +85,13 @@ def _apply_moves(ctx: AgentContext, snap: dict, moves: list[StageMove]) -> dict:
             out["refused"].append({**m.model_dump(), "why": why})
             continue
         if m.to in set(cfg.get("approval_moves") or []):
-            conn.execute("INSERT INTO approvals (kind, subject, reason, requested_by) VALUES ('stage_move', %s, %s, "
-                         "'strategist')", (Jsonb(m.model_dump()), m.reason))
+            if not conn.execute("SELECT 1 FROM approvals WHERE kind = 'stage_move' AND status = 'pending' "
+                                "AND subject->>'creator_id' = %s", (m.creator_id,)).fetchone():   # one at a time
+                conn.execute("INSERT INTO approvals (kind, subject, reason, requested_by) VALUES ('stage_move', %s, "
+                             "%s, 'strategist')", (Jsonb({**m.model_dump(), "from": c["stage"]}), m.reason))
             out["pending"].append(m.model_dump())
             continue
-        now = datetime.now(timezone.utc)
-        entry = {"from": c["stage"], "to": m.to, "reason": m.reason, "at": now.isoformat()}
-        conn.execute(
-            """INSERT INTO creator_states (creator_id, stage, entered_at, adjustments, history)
-               VALUES (%s, %s, now(), 1, %s)
-               ON CONFLICT (creator_id) DO UPDATE SET stage = excluded.stage, entered_at = now(),
-                 adjustments = creator_states.adjustments + 1, history = creator_states.history || %s,
-                 updated_at = now()""", (m.creator_id, m.to, Jsonb([entry]), Jsonb([entry])))
-        status = {"paused": "paused", "retired": "retired"}.get(m.to)
-        if status:
-            conn.execute("UPDATE creators SET status = %s WHERE id = %s", (status, m.creator_id))
+        portfolio.apply_stage_move(conn, m.creator_id, from_stage=c["stage"], to=m.to, reason=m.reason, downward=down)
         out["applied"].append(m.model_dump())
     return out
 

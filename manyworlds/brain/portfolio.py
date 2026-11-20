@@ -97,7 +97,10 @@ def snapshot(conn, policy: Policy, now: datetime | None = None) -> dict:
                   (SELECT coalesce(sum(usd), 0) FROM cost_entries e WHERE e.creator_id = c.id) AS cost,
                   (SELECT status FROM accounts a WHERE a.creator_id = c.id AND a.platform = 'instagram') AS account
            FROM creators c LEFT JOIN creator_states s ON s.creator_id = c.id
-           WHERE c.status <> 'retired' ORDER BY c.created_at""").fetchall()
+           WHERE c.status <> 'retired'
+             AND c.anchors->'simulation' IS NULL      -- sandbox test clones are not portfolio creators
+             AND NOT EXISTS (SELECT 1 FROM launches l WHERE l.creator_id = c.id AND l.status = 'failed')
+           ORDER BY c.created_at""").fetchall()
     creators = []
     for r in rows:
         conv = conviction(conn, policy, r["id"])
@@ -121,3 +124,24 @@ def ensure_daily(conn, policy: Policy, *, now: datetime | None = None):
     now = now or datetime.now(timezone.utc)
     day = now.date().isoformat()
     return queue.enqueue(conn, "brain.strategist", {"day": day}, idempotency_key=f"strategist:{day}")
+
+
+def apply_stage_move(conn, creator_id, *, from_stage: str | None, to: str, reason: str, downward: set) -> None:
+    """Move a creator to a stage (by the strategist within authority, or an approved request). Strategy
+    adjustments count only moves that change course (not pauses or retirements); creator status follows."""
+    from datetime import datetime, timezone
+    from psycopg.types.json import Jsonb
+
+    entry = {"from": from_stage, "to": to, "reason": reason, "at": datetime.now(timezone.utc).isoformat()}
+    adj = 0 if to in downward else 1
+    conn.execute(
+        """INSERT INTO creator_states (creator_id, stage, entered_at, adjustments, history)
+           VALUES (%s, %s, now(), %s, %s)
+           ON CONFLICT (creator_id) DO UPDATE SET stage = excluded.stage, entered_at = now(),
+             adjustments = creator_states.adjustments + %s, history = creator_states.history || %s, updated_at = now()""",
+        (creator_id, to, adj, Jsonb([entry]), adj, Jsonb([entry])))
+    status = {"paused": "paused", "retired": "retired"}.get(to)
+    if status:
+        conn.execute("UPDATE creators SET status = %s WHERE id = %s", (status, creator_id))
+    else:
+        conn.execute("UPDATE creators SET status = 'active' WHERE id = %s AND status = 'paused'", (creator_id,))

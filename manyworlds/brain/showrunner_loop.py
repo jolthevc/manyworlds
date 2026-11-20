@@ -52,10 +52,14 @@ def ensure_batches(conn, policy: Policy, *, now: datetime | None = None) -> list
     max_attempts = int(policy.get("brain", "showrunner", "max_period_attempts", default=3))
     retry_after = float(policy.get("brain", "showrunner", "retry_after_hours", default=12))
     out = []
+    # A creator with this many made-but-unpublished posts (e.g. waiting for its account) gets no new batch:
+    # rendering more would spend GPU on posts that may go stale before they can publish.
+    backlog = int(policy.get("production", "max_ready_unpublished", default=6))
     for c in conn.execute(
             "SELECT c.id, c.handle FROM creators c WHERE c.status = ANY(%s) AND c.profile_version IS NOT NULL "
-            "AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0",
-            (list(cfg.get("auto_statuses", ["active"])),)).fetchall():
+            "AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0 "
+            "AND (SELECT count(*) FROM posts p WHERE p.creator_id = c.id AND p.status = 'ready') < %s",
+            (list(cfg.get("auto_statuses", ["active"])), backlog)).fetchall():
         start = planner.next_start(conn, c["id"], now.date())
         if datetime.combine(start, time(0), tzinfo=timezone.utc) - now > ahead:
             continue
