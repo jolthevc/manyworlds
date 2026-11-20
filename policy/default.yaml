@@ -89,7 +89,7 @@ worker_images:
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # talk: Wan2.1-I2V-14B-480P (~82 GB) + adapter (10 GB) + wav2vec, all on the rented machine; 64 GB RAM / 200 GB disk
   # found no RunPod community capacity (2026-11-20); offloading the 14B model needs ~40-45 GB of RAM.
-  talk: {image: mw-worker-talk, tag: v4, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150,
+  talk: {image: mw-worker-talk, tag: v5, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -190,16 +190,17 @@ generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
   image_by_format: {story: {width: 720, height: 1280}}   # 9:16 Stories; other formats use image (4:5)
   video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; measured 2026-11-14
-  # Lip-sync (talk.infinitetalk): the README's distilled-LoRA settings (8 steps, text cfg 1, audio cfg 2, shift 2) with
-  # the Apache-2.0 lightx2v step-distill LoRA, all transformer weights offloaded so 24 GB cards fit. Unmeasured.
+  # Lip-sync (talk.infinitetalk): InfiniteTalk's fp8 single-person build at the README's settings (40 steps, text cfg
+  # 5, audio cfg 4). 2026-11-20: the full-precision 14B model was OOM-killed loading on a 48 GB-RAM A40 host; the
+  # int8 LoRA build needs a t5_int8 file its repo doesn't have; there is no single-person fp8 LoRA build, so the
+  # 8-step distill LoRA waits. Unmeasured until the benchmark.
   talk:
     size: infinitetalk-480
-    steps: 8
-    text_cfg: 1.0
-    audio_cfg: 2.0
-    shift: 2.0
-    lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}
-    extra: ["--num_persistent_param_in_dit", "0"]
+    steps: 40
+    text_cfg: 5.0
+    audio_cfg: 4.0
+    extra: ["--quant", "fp8", "--quant_dir", "{infinitetalk}/quant_models/infinitetalk_single_fp8.safetensors",
+            "--num_persistent_param_in_dit", "0"]
     motion_frame: 9              # frames carried between streaming chunks (README value)
     timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
     voice: af_heart

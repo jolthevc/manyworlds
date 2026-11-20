@@ -94,7 +94,7 @@ def test_only_the_adapter_files_a_run_names_are_downloaded():
     assert talk.adapter_files([]) == ["single/*"]
     assert talk.adapter_files(["--quant", "fp8", "--quant_dir",
                                "{infinitetalk}/quant_models/infinitetalk_single_fp8.safetensors"]) == [
-        "single/*", "quant_models/infinitetalk_single_fp8*"]
+        "single/*", "quant_models/infinitetalk_single_fp8*", "quant_models/t5_fp8*", "quant_models/t5_map_fp8*"]
 
 
 def test_a_lora_given_as_a_path_is_used_as_is(tmp_path):
@@ -122,3 +122,19 @@ def test_a_talk_benchmark_without_a_start_photo_is_refused_before_any_machine_st
     with pytest.raises(ValueError, match="image_uri"):
         bench.enqueue(conn, policy, "talk.infinitetalk", 1)
     assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 0
+
+
+def test_a_quantised_run_skips_the_full_precision_base_weights(tmp_path, monkeypatch):
+    calls = {}
+
+    def fake_local(repo, store, workdir, **kw):
+        calls[repo] = kw
+        d = tmp_path / repo.replace("/", "--")
+        d.mkdir(exist_ok=True)
+        (d / "model.safetensors").write_bytes(b"x")
+        return str(d)
+    monkeypatch.setattr(talk, "_local", fake_local)
+    talk.weights(None, tmp_path, extra=["--quant", "fp8", "--quant_dir", "{infinitetalk}/quant_models/x.safetensors"])
+    assert calls[talk.BASE]["ignore_patterns"] == talk.QUANT_SKIPS_BASE
+    talk.weights(None, tmp_path, extra=[])
+    assert calls[talk.BASE] == {}                                     # full precision needs everything
