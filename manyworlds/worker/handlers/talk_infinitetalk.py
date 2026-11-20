@@ -52,8 +52,14 @@ def _local(repo: str, store, workdir: Path, **download) -> str:
 
 
 def adapter_files(extra: list[str]) -> list[str]:
+    """The adapter files a run needs: the single-person adapter, any file its flags name, and with --quant the
+    matching quantised text encoder, which InfiniteTalk loads from the same folder (quant_models/t5_<q>...)."""
     named = [a.split("{infinitetalk}/", 1)[1] for a in extra if "{infinitetalk}/" in a]
-    return ADAPTER_FILES + [n.rsplit(".", 1)[0] + "*" for n in named]
+    files = ADAPTER_FILES + [n.rsplit(".", 1)[0] + "*" for n in named]
+    if "--quant" in extra:
+        q = extra[extra.index("--quant") + 1]
+        files += [f"quant_models/t5_{q}*", f"quant_models/t5_map_{q}*"]
+    return files
 
 
 def lora_path(lora: dict | None, workdir: Path) -> dict | None:
@@ -66,8 +72,13 @@ def lora_path(lora: dict | None, workdir: Path) -> dict | None:
     return {"path": path, "scale": lora.get("scale", 1.0)}
 
 
+# With --quant, InfiniteTalk builds the transformer and text encoder from the quantised files and never reads
+# these from the base model (wan/multitalk.py, wan/modules/t5.py): ~68 GB not downloaded per machine.
+QUANT_SKIPS_BASE = ["diffusion_pytorch_model*", "models_t5_umt5-xxl-enc-bf16.pth"]
+
+
 def weights(store, workdir: Path, extra: list[str] = ()) -> dict[str, str]:
-    base = _local(BASE, store, workdir)
+    base = _local(BASE, store, workdir, **({"ignore_patterns": QUANT_SKIPS_BASE} if "--quant" in extra else {}))
     wav2vec = _local(WAV2VEC, store, workdir)
     if not (Path(wav2vec) / "model.safetensors").exists():
         # The README takes the safetensors build from an open PR of the same repo.
