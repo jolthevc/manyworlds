@@ -149,3 +149,19 @@ for one creator passes the gate.
 - **More flavors for the existing pipelines:** photo dump, expectation vs reality, tier list, recipe card,
   travel diary, outfit of the week, text-on-photo relatable memes. Reels need our own audio (the publishing
   API cannot attach licensed trending tracks).
+
+## Progress, 2026-11-20
+
+- **M6 done.** Experiments open from tentative findings (one per creator, effect and evidence mode), sized for
+  80% power to detect `mde` (0.4 log-lift) given the creator's own outcome spread: about 36 posts per arm, so
+  roughly 54 days per experiment at 2 slots per arm per 3-day batch. Slow but honest: 6 per arm could not confirm
+  a planted +0.5 effect. Thompson-sampled exploration over measured effects and untried formats, stagings and
+  flavors; every plan records its draws. Rubric validity report (Spearman, bootstrap interval) in each analysis.
+  Acceptance shown in the sandbox (planted strong effect → tentative finding → experiment → proven, SIMULATED).
+- **M7 done.** Targeted repair by diagnosed cause, video-to-photo reroute after review rejections, feed QA
+  (repetition, originality, naturalness floor), all rule-based. Caption QA by LLM was not needed: the idea
+  rubric's naturalness score is the voice check.
+- **M10 in progress.** InfiniteTalk worker runs on RunPod (REST v2) A40 secure cloud; full-precision model
+  needs >48 GB host RAM, so the fp8 build (with prebuilt quanto kernels, talk v6) is the benchmark candidate.
+  No lip-sync metric is licensed for commercial use without review (SyncNet weights unlicensed; LatentSync's
+  SyncNet under OpenRAIL++): sync is checked by eye until the owner decides.

@@ -89,7 +89,7 @@ worker_images:
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # talk: Wan2.1-I2V-14B-480P (~82 GB) + adapter (10 GB) + wav2vec, all on the rented machine; 64 GB RAM / 200 GB disk
   # found no RunPod community capacity (2026-11-20); offloading the 14B model needs ~40-45 GB of RAM.
-  talk: {image: mw-worker-talk, tag: v5, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150,
+  talk: {image: mw-worker-talk, tag: v6, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {HF_HUB_DISABLE_XET: 1}}
