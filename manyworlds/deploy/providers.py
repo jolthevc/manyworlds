@@ -8,7 +8,7 @@ provider's response body (never request headers, which carry keys).
 API shapes follow each provider's public docs as of Nov 2026:
   SaladCloud  https://api.salad.com/api/public   (container groups)
   Vast.ai     https://console.vast.ai/api/v0     (offers -> instances)
-  RunPod      https://rest.runpod.io/v1          (pods)
+  RunPod      https://api.runpod.io/v2           (pods; v1 retired 2026-11-15)
 """
 
 from __future__ import annotations
@@ -221,9 +221,16 @@ class Vast:
 
 # --- RunPod -------------------------------------------------------------------------
 
+# v2 answers 400 both for no capacity and for rule violations; only these phrases mean "try another pool".
+NO_CAPACITY_PHRASES = ("no instances currently available", "no available capacity", "could not be placed",
+                       "not enough capacity", "insufficient capacity")
+
+
 class RunPod:
+    """RunPod REST v2 (https://api.runpod.io/v2). v1 at rest.runpod.io was retired on 2026-11-15."""
+    MAX_PAGES = 50
     name = "runpod"
-    API = "https://rest.runpod.io/v1"
+    API = "https://api.runpod.io/v2"
 
     def __init__(self, cuda_versions: list[str] | None = None):
         self.cuda_versions = [str(v) for v in (cuda_versions or [])]
@@ -235,17 +242,19 @@ class RunPod:
         return http(method, self.API + path, {"Authorization": f"Bearer {os.environ['RUNPOD_API_KEY']}"}, body)
 
     def launch(self, name: str, spec: LaunchSpec) -> Machine:
+        gpu = {"id": spec.gpu_name, "count": 1, "minRamPerGpu": spec.ram_gb, **self._cuda(spec)}
         try:
-            pod = self._req("POST", "/pods", {
-                "name": name, "imageName": spec.image, "gpuTypeIds": [spec.gpu_name], "gpuCount": 1,
-                "cloudType": "COMMUNITY", "interruptible": spec.interruptible,
-                "containerDiskInGb": spec.disk_gb, "volumeInGb": 0, "minRAMPerGPU": spec.ram_gb,
-                "ports": [], "env": spec.env, **self._cuda(spec)})
+            pod = self._req("POST", "/pods", {"name": name, "image": spec.image, "cloud": "COMMUNITY",
+                                              "disk": spec.disk_gb, "env": spec.env, "ports": [], "gpu": gpu})
         except ProviderError as e:
-            if "no " in str(e).lower() and ("available" in str(e).lower() or "instances" in str(e).lower()):
+            text = str(e).lower()
+            if " -> 402" in text:   # prepaid balance used up: the autoscaler skips the provider
+                raise ProviderError(f"insufficient funds (402): {e}") from None
+            # v2 returns 400 both for no capacity and for rule violations; only the detail tells them apart.
+            if " -> 400" in text and any(m in text for m in NO_CAPACITY_PHRASES):
                 raise NoCapacity(str(e)) from None
             raise
-        price = float(pod.get("costPerHr") or spec.max_usd_per_hour)
+        price = float(pod.get("cost") or spec.max_usd_per_hour)
         if price > spec.max_usd_per_hour:
             self.destroy(name, pod["id"])
             raise NoCapacity(f"RunPod charged ${price}/h for {spec.gpu_name}, over the ${spec.max_usd_per_hour} limit")
@@ -259,9 +268,18 @@ class RunPod:
         return {"allowedCudaVersions": ok} if ok else {}
 
     def list_live(self) -> dict[str, str]:
-        pods = self._req("GET", "/pods") or []
-        return {p["name"]: p["id"] for p in pods
-                if (p.get("name") or "").startswith("mw-") and p.get("desiredStatus") != "TERMINATED"}
+        live, cursor, seen = {}, None, set()
+        for _ in range(self.MAX_PAGES):
+            page = self._req("GET", "/pods" + (f"?cursor={urllib.parse.quote(cursor)}" if cursor else "")) or {}
+            for p in page.get("pods") or []:
+                if (p.get("name") or "").startswith("mw-") and p.get("status") != "TERMINATED":
+                    live[p["name"]] = p["id"]
+            nxt = page.get("pagination") or {}
+            if not nxt.get("hasNextPage") or not nxt.get("nextCursor") or nxt["nextCursor"] in seen:
+                return live
+            cursor = nxt["nextCursor"]
+            seen.add(cursor)
+        raise ProviderError(f"RunPod pod list did not end after {self.MAX_PAGES} pages")
 
     def destroy(self, name: str, ref: str | None) -> None:
         if not ref:
