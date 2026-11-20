@@ -175,7 +175,10 @@ generation:
 scope:
   niche: "lifestyle, wide net: daily life, style, food, home, travel, fitness-as-lifestyle, humor"
   platforms: [instagram, tiktok]
-  excluded_topics: [politics, news, health advice, medical claims, financial advice,
+  # News is allowed (owner 2026-11-19): real everyday news or fictional, but never hot-button or sensitive
+  # stories. Fictional organisations a creator belongs to are fine and persist (memory, key employer).
+  excluded_topics: [politics, elections, wars and conflicts, tragedies and disasters, crime stories,
+                    health scares, culture-war topics, health advice, medical claims, financial advice,
                     crypto, gambling, sexualized content, minors, real brands without rights]
   creator_min_age: 21
   disclosure_line: "AI-generated character"
@@ -275,7 +278,9 @@ captions:
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
-  formats: [photo, carousel, narrated_edit, story_clip, story]   # formats production makes now; others wait in 'planned' until added
+  # narrated_edit is out (owner 2026-11-19): anything with a voice is lip-synced talking video, which is not
+  # built yet (M10). The edit pipeline stays in code for the talking-video work.
+  formats: [photo, carousel, story_clip, story]   # formats production makes now; others wait in 'planned' until added
   video_kind: video.wan_i2v
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
