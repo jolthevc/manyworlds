@@ -167,3 +167,11 @@ def test_a_clip_job_that_fails_is_retried_without_using_a_repair(conn, policy, s
     production.advance(conn, policy, now=NOW)
     body = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
     assert len(_clip_jobs(conn, pid)) == 2 and body.get("clip_repairs", 0) == 0 and body["follow_up_failures"] == 1
+
+
+def test_talking_clips_go_through_the_same_gate(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    talk = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
+    rendered(conn, store, tmp_path, talk)
+    assert video.pending_jobs(conn, policy) == [talk]

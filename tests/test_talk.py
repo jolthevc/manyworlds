@@ -91,9 +91,12 @@ def test_a_lora_given_as_a_path_is_used_as_is(tmp_path):
 
 def test_a_talk_benchmark_uses_policy_settings_and_the_given_photo(conn, policy):
     from manyworlds import bench
-    batch = bench.enqueue(conn, policy, "talk.infinitetalk", 2, extra={"image_uri": "s3://b/maren.png"},
-                          pools=["vast_4090"])
-    jobs = conn.execute("SELECT payload FROM jobs WHERE batch = %s", (batch,)).fetchall()
+    from brain_helpers import creator
+    cid = creator(conn)
+    batch = bench.enqueue(conn, policy, "talk.infinitetalk", 2,
+                          extra={"image_uri": "s3://b/maren.png", "creator_id": str(cid)}, pools=["vast_4090"])
+    jobs = conn.execute("SELECT payload, creator_id FROM jobs WHERE batch = %s", (batch,)).fetchall()
+    assert all(j["creator_id"] == cid and "creator_id" not in j["payload"] for j in jobs)   # the gate judges against her
     talk_cfg = policy.get("generation", "talk")
     assert len(jobs) == 2 and all(j["payload"]["image_uri"] == "s3://b/maren.png" for j in jobs)
     p = jobs[0]["payload"]

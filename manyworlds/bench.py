@@ -56,7 +56,10 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
         else:
             payload = {"text": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": "af_heart"}
         payload.update(extra or {})
-        queue.enqueue(conn, kind, payload, batch=batch, pools=pools, max_attempts=int(policy.get("queue", "max_attempts", default=3)))
+        # A creator_id in extra ties the job to that creator, so the review gates judge it against them.
+        creator_id = payload.pop("creator_id", None)
+        queue.enqueue(conn, kind, payload, batch=batch, pools=pools, creator_id=creator_id,
+                      max_attempts=int(policy.get("queue", "max_attempts", default=3)))
     return batch
 
 
