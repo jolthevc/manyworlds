@@ -16,9 +16,12 @@ from .. import ledger
 from ..policy import Policy
 
 
-def run(conn, policy: Policy, providers: dict, *, now: datetime | None = None) -> dict:
+def run(conn, policy: Policy, providers: dict, *, now: datetime | None = None, days: int | None = None) -> dict:
+    """`days` overrides the window (a one-off backfill). Machines are reconciled once they have been stopped
+    `reconcile_settle_hours`, so the provider has posted their last charges (no early, negative deltas)."""
     now = now or datetime.now(timezone.utc)
-    days = int(policy.get("autoscale", "reconcile_days", default=3))
+    days = days or int(policy.get("autoscale", "reconcile_days", default=3))
+    settle = timedelta(hours=float(policy.get("autoscale", "reconcile_settle_hours", default=2)))
     since, until = now - timedelta(days=days), now
     fetched, groups = 0, 0
     for name, p in providers.items():
@@ -37,15 +40,19 @@ def run(conn, policy: Policy, providers: dict, *, now: datetime | None = None) -
                 """SELECT g.name, g.pool, g.billed_usd, g.reconciled_usd, g.stopped_at, sum(c.usd) AS actual
                    FROM gpu_groups g JOIN provider_charges c ON c.provider = %s
                         AND (c.group_name = g.name OR c.ref = g.provider_ref)
-                   WHERE g.provider = %s AND g.stopped_at IS NOT NULL
-                   GROUP BY g.name, g.pool, g.billed_usd, g.reconciled_usd, g.stopped_at""", (name, name)).fetchall():
+                   WHERE g.provider = %s AND g.stopped_at IS NOT NULL AND g.stopped_at < %s
+                     AND g.started_at > %s
+                   GROUP BY g.name, g.pool, g.billed_usd, g.reconciled_usd, g.stopped_at""",
+                (name, name, now - settle, since)).fetchall():
+            # Only machines whose whole run is inside the window: a partial total would understate them.
             actual = float(g["actual"])
-            delta = round(actual - float(g["billed_usd"]) - float(g["reconciled_usd"]), 6)
-            if abs(delta) >= 0.0005:
-                ledger.record(conn, category="gpu_billed", provider=g["pool"], quantity=0, unit="reconciliation",
-                              usd=delta, policy_version=policy.version, at=g["stopped_at"])   # its own day
-                conn.execute("UPDATE gpu_groups SET reconciled_usd = reconciled_usd + %s WHERE name = %s",
-                             (delta, g["name"]))
-            conn.execute("UPDATE gpu_groups SET actual_usd = %s WHERE name = %s", (actual, g["name"]))
+            with conn.transaction():   # the ledger entry and its bookkeeping land together
+                delta = round(actual - float(g["billed_usd"]) - float(g["reconciled_usd"]), 6)
+                if abs(delta) >= 0.0005:
+                    ledger.record(conn, category="gpu_billed", provider=g["pool"], quantity=0, unit="reconciliation",
+                                  usd=delta, policy_version=policy.version, at=g["stopped_at"])   # its own day
+                    conn.execute("UPDATE gpu_groups SET reconciled_usd = reconciled_usd + %s WHERE name = %s",
+                                 (delta, g["name"]))
+                conn.execute("UPDATE gpu_groups SET actual_usd = %s WHERE name = %s", (actual, g["name"]))
             groups += 1
     return {"charges": fetched, "groups": groups}

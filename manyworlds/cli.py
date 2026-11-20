@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("discover", help="Brain: plan research, pull it via Apify, propose creator theses")
     sub.add_parser("choose", help="Brain: choose the next thesis to launch")
+    rc = sub.add_parser("reconcile", help="pull providers' itemised charges into the ledger (true machine cost)")
+    rc.add_argument("--days", type=int, default=None, help="window to pull (default policy autoscale.reconcile_days)")
     lc = sub.add_parser("launch-creator", help="Creator Lab: bible + creator + reference pack + voice sample")
     lc.add_argument("--thesis", help="thesis id (default: the chosen one)")
     an = sub.add_parser("anchors", help="pick the reference images for a creator")
@@ -143,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(args.payload)
         ids = [queue.enqueue(conn, args.kind, payload, batch=args.batch) for _ in range(args.n)]
         _print({"enqueued": ids})
+    elif args.cmd == "reconcile":
+        from .deploy import reconcile
+        from .deploy.providers import all_providers
+        _print(reconcile.run(conn, pol, all_providers(pol), days=args.days))
     elif args.cmd == "bench":
         batch = bench.enqueue(conn, pol, args.kind, args.jobs, extra=json.loads(args.extra),
                               pools=args.pools.split(",") if args.pools else None)
@@ -280,8 +286,12 @@ def _produce(args, conn, pol, llm) -> int:
             from datetime import datetime, timezone
 
             from .brain import ideas, showrunner_loop
+            from .brain import events
             scheduled = ideas.schedule_ready(conn, pol, now=datetime.now(timezone.utc))
             planned = showrunner_loop.ensure_batches(conn, pol) + ([scheduled] if scheduled["batches"] else [])
+            raised = events.tick(conn, pol)   # breakouts, drops, QA surges: raised once, routed, rate-limited
+            if raised:
+                planned = planned + [{"events": raised}]
         else:
             planned = planner.ensure_plans(conn, pol, llm)
         result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),

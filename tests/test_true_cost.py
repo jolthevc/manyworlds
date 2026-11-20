@@ -72,7 +72,7 @@ def test_reconciling_writes_the_providers_actual_charges_once(conn, policy):
             for c, u in (("gpu", 0.096), ("disk", 0.04), ("bwd", 4.93), ("bwu", 0.04))]
     ps = {"vast": ChargingVast(rows)}
     before = ledger.bill_total(conn)
-    out = reconcile.run(conn, policy, ps, now=T0 + timedelta(days=1))
+    out = reconcile.run(conn, policy, ps, now=T0 + timedelta(days=1))   # stopped long before: settled
     g = conn.execute("SELECT actual_usd, cost_usd FROM gpu_groups WHERE name = 'mw-talk-4090-vast-081b'").fetchone()
     assert abs(float(g["actual_usd"]) - 5.106) < 1e-9 and abs(float(g["cost_usd"]) - 5.106) < 1e-9
     assert abs((ledger.bill_total(conn) - before) - (5.106 - 0.16)) < 1e-6     # the unmetered difference, once
@@ -113,3 +113,41 @@ def test_backfilled_charges_count_on_the_day_they_were_incurred(conn, policy):
     rows = [{"ref": "1", "label": "mw-old-vast", "day": date(2026, 11, 15), "component": "bwd", "usd": 30.0}]
     reconcile.run(conn, policy, {"vast": ChargingVast(rows)}, now=datetime.now(timezone.utc))
     assert billed_today(conn) < 1                     # a week-old bill must not block today's machines
+
+
+def test_vasts_real_charge_format_parses_into_components():
+    import json
+    from pathlib import Path
+    from manyworlds.deploy.providers import parse_vast_charges
+    res = json.loads((Path(__file__).parent / "fixtures" / "vast_charges_tree.json").read_text())
+    rows = parse_vast_charges(res)
+    one = {r["component"]: r["usd"] for r in rows if r["ref"] == "61596442"}
+    assert one == {"gpu": 0.096, "disk": 0.036, "bwd": 4.927, "bwu": 0.035}
+    assert {r["label"] for r in rows} == {"mw-talk-4090-vast-081b", "mw-talk-4090-vast-41a6"}
+
+
+def test_split_charge_rows_add_up(monkeypatch):
+    v = Vast()
+    day = {"start": 1795132800, "type": "instance", "source": "instance-9", "metadata": {"label": "mw-a"}}
+    pages = [{"results": [{**day, "items": [{"type": "bwd", "amount": 1.0}]}], "next_token": "t"},
+             {"results": [{**day, "items": [{"type": "bwd", "amount": 2.0}]}], "next_token": None}]
+    monkeypatch.setattr(Vast, "_req", lambda self, m, p, body=None: pages.pop(0))
+    rows = v.charges(datetime(2026, 11, 20, tzinfo=timezone.utc), datetime(2026, 11, 21, tzinfo=timezone.utc))
+    assert [(r["component"], r["usd"]) for r in rows] == [("bwd", 3.0)]
+
+
+def test_a_machine_is_reconciled_only_after_it_settles(conn, policy):
+    register(conn, "mw-fresh-vast", hours=1, max_usd=1)
+    now = datetime.now(timezone.utc)
+    conn.execute("UPDATE gpu_groups SET provider = 'vast', billed_usd = 0.3, started_at = %s, stopped_at = %s, "
+                 "provider_ref = '5' WHERE name = 'mw-fresh-vast'", (now - timedelta(hours=1), now - timedelta(minutes=5)))
+    rows = [{"ref": "5", "label": "mw-fresh-vast", "day": now.date(), "component": "gpu", "usd": 0.1}]   # not posted yet
+    out = reconcile.run(conn, policy, {"vast": ChargingVast(rows)}, now=now)
+    assert out["groups"] == 0 and conn.execute("SELECT actual_usd FROM gpu_groups").fetchone()["actual_usd"] is None
+
+
+def test_todays_cap_sees_expected_downloads_of_running_machines(conn, policy):
+    from manyworlds.deploy.enforce import billed_today
+    register(conn, "mw-run-vast", hours=1, max_usd=1, started=datetime.now(timezone.utc))
+    conn.execute("UPDATE gpu_groups SET est_extra_usd = 0.7 WHERE name = 'mw-run-vast'")
+    assert billed_today(conn) >= 0.7

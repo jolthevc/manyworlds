@@ -142,6 +142,23 @@ class Salad:
 
 # --- Vast.ai ------------------------------------------------------------------------
 
+def parse_vast_charges(res: dict) -> list[dict]:
+    """Rows of Vast's GET /charges?format=tree: one result per instance and day, items gpu/disk/bwd/bwu with
+    positive amounts (credits, if any, keep their sign)."""
+    from datetime import datetime as _dt, timezone as _tz
+    out = []
+    for r in res.get("results") or []:
+        if r.get("type") not in (None, "instance"):
+            continue
+        ref = (r.get("source") or "").removeprefix("instance-")
+        label = (r.get("metadata") or {}).get("label")
+        day = _dt.fromtimestamp(int(r.get("start") or 0), _tz.utc).date()
+        for it in r.get("items") or []:
+            out.append({"ref": ref, "label": label, "day": day, "component": it.get("type") or "other",
+                        "usd": float(it.get("amount") or 0)})
+    return out
+
+
 class Vast:
     name = "vast"
     API = "https://console.vast.ai/api/v0"
@@ -197,21 +214,21 @@ class Vast:
         import json as _json
         from datetime import datetime as _dt, timezone as _tz
         filters = urllib.parse.quote(_json.dumps({"day": {"gte": int(since.timestamp()), "lte": int(until.timestamp())}}))
-        out, token = [], None
+        sums: dict[tuple, dict] = {}
+        token = None
         for _ in range(20):
             path = f"/charges/?select_filters={filters}&format=tree&limit=500" + (
                 f"&after_token={urllib.parse.quote(token)}" if token else "")
             res = self._req("GET", path) or {}
-            for r in res.get("results") or []:
-                ref = (r.get("source") or "").removeprefix("instance-")
-                label = (r.get("metadata") or {}).get("label")
-                day = _dt.fromtimestamp(int(r.get("start") or 0), _tz.utc).date()
-                for it in r.get("items") or []:
-                    out.append({"ref": ref, "label": label, "day": day, "component": it.get("type") or "other",
-                                "usd": abs(float(it.get("amount") or 0))})
+            for r in parse_vast_charges(res):
+                k = (r["ref"], r["day"], r["component"])   # summed, so split rows add up instead of overwriting
+                if k in sums:
+                    sums[k]["usd"] += r["usd"]
+                else:
+                    sums[k] = r
             token = res.get("next_token")
             if not token:
-                return out
+                return list(sums.values())
         raise ProviderError("Vast charges listing did not finish paginating")
 
     def launch(self, name: str, spec: LaunchSpec) -> Machine:

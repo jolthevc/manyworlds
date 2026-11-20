@@ -133,6 +133,7 @@ autoscale:
          max_inet_down_usd_per_gb: 0.005, expected_hours: 1.0, candidates: 50}
   reconcile_days: 3              # provider itemised charges pulled into the ledger (manyworlds.deploy.reconcile)
   reconcile_every_minutes: 60
+  reconcile_settle_hours: 2      # reconcile a machine once stopped this long (the provider has posted its charges)
   worker_self_stop: true         # workers on Vast/RunPod destroy their own machine when idle or past deadline
   # Pools are tried cheapest per accepted output first, from what machines actually billed
   # (boot, idle and failures included) over the window. A number or {family: number, default: n}.
@@ -283,6 +284,20 @@ brain:
   # Experiment ideas are exempt, so their arms stay comparable.
   qa: {window: 12, max_repeat: 2, repeat_attributes: [outfit, setting], similarity: 0.85, min_chars: 20,
        min_scores: {naturalness: 4}}   # min_chars: shorter texts (a word or two) may repeat
+  # Events (manyworlds.brain.events): detectors over durable state, each event raised once and routed; at most
+  # max_per_type_per_creator_per_day per type and creator, and one routed job per creator and route per tick.
+  events:
+    window_hours: 72             # breakouts among posts published this recently
+    baseline_posts: 10           # previous posts compared at a similar age (age_tolerance: +-50%)
+    age_tolerance: 0.5
+    lookback_posts: 60
+    breakout_ratio: 3.0          # reach >= this x baseline
+    drop_posts: 4                # this many posts in a row...
+    drop_ratio: 0.5              # ...below this x baseline
+    qa_min_posts: 4              # qa_surge: of at least this many posts touched in a day...
+    qa_drop_share: 0.5           # ...more than this share dropped
+    max_per_type_per_creator_per_day: 3
+    routes: {breakout: analyst, drop: analyst, qa_surge: owner}
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.

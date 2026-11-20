@@ -55,11 +55,16 @@ def boot_grace_minutes(policy: Policy, provider: str | None) -> float:
 
 
 def billed_today(conn) -> float:
+    """Machine spend today: metered and reconciled charges, plus the expected download cost of machines
+    started today that are not reconciled yet (it is spent as soon as they boot)."""
     row = conn.execute(
         "SELECT coalesce(sum(usd), 0) AS u FROM cost_entries "
         "WHERE category = 'gpu_billed' AND created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'"
     ).fetchone()
-    return float(row["u"])
+    est = conn.execute(
+        "SELECT coalesce(sum(est_extra_usd), 0) AS u FROM gpu_groups WHERE actual_usd IS NULL "
+        "AND started_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'").fetchone()
+    return float(row["u"]) + float(est["u"])
 
 
 def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dry_run: bool = False) -> list[dict]:
