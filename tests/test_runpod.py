@@ -89,3 +89,18 @@ def test_a_worker_on_runpod_destroys_its_own_pod_through_v2(monkeypatch):
     monkeypatch.setattr(providers, "http", rec)
     assert providers.self_destroy() == "runpod"
     assert rec.calls[0][:2] == ("DELETE", "https://api.runpod.io/v2/pods/p9")
+
+
+def test_a_rule_violation_is_an_error_not_missing_capacity(rp, monkeypatch):
+    monkeypatch.setattr(providers, "http", Recorder(ProviderError(
+        'POST https://api.runpod.io/v2/pods -> 400: {"detail":"GPU type is not available in COMMUNITY cloud"}')))
+    with pytest.raises(ProviderError) as e:
+        rp.launch("mw-x", SPEC)
+    assert not isinstance(e.value, NoCapacity)
+
+
+def test_a_repeating_cursor_cannot_hang_the_listing(rp, monkeypatch):
+    page = {"pods": [{"id": "a", "name": "mw-a", "status": "RUNNING"}],
+            "pagination": {"hasNextPage": True, "nextCursor": "same"}}
+    monkeypatch.setattr(providers, "http", Recorder(*[page] * 5))
+    assert rp.list_live() == {"mw-a": "a"}
