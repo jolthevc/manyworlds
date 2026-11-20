@@ -218,7 +218,7 @@ def test_hosts_must_support_the_images_cuda(policy, monkeypatch):
     monkeypatch.setattr(RunPod, "_req", lambda self, m, path, body=None: sent.update(body or {}) or
                         {"id": "p1", "cost": 0.3})
     ps["runpod"].launch("mw-x", spec)
-    assert sent["gpu"]["allowedCudaVersions"] == ["12.8", "12.9", "13.0"]
+    assert sent["gpu"]["minCudaVersion"] == "12.8"
     sent.clear()
     monkeypatch.setattr(Vast, "_req", lambda self, m, path, body=None: sent.update(body or {}) or {"offers": []})
     ps["vast"].offers(spec)

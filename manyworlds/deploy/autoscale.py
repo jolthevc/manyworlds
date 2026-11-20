@@ -187,7 +187,8 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
                       disk_gb=int(img["disk_gb"]), max_usd_per_hour=float(p["usd_per_hour"]), env=env,
                       interruptible=bool(p.get("interruptible", False)),
                       priority=pool.split("_")[1] if p["provider"] == "salad" else "batch",
-                      min_cuda=float(img["min_cuda"]) if img.get("min_cuda") else None)
+                      min_cuda=float(img["min_cuda"]) if img.get("min_cuda") else None,
+                      cloud=str(p.get("cloud", "COMMUNITY")))
     if not image_published(spec.image):
         raise ProviderError(f"worker image {spec.image} is not published; not renting a machine for it")
     # Registered first: if anything after this point dies, the enforcer still knows the
