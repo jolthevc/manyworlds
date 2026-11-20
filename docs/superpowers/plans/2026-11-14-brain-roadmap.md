@@ -171,3 +171,11 @@ for one creator passes the gate.
   (one pass per step, ~15x less compute), which needs either full precision on a host with >48 GB RAM (e.g.
   RunPod secure L40S, 48 GB VRAM, ~125 GB RAM, $1.09/h) or a patched int8 path (its repo lacks t5_int8; fall back
   to the bf16 text encoder). Also: drop `--num_persistent_param_in_dit 0` automatically on cards with room.
+- **M8 done (2026-11-20).** Events (breakout / drop / QA surge; once, routed, rate-limited); portfolio numbers in
+  code (conviction from real evidence only, EV continue/stop, month budget); daily strategist whose proposals
+  code validates; launches walk bible → references → anchors → LoRA → profile → ready (sandbox + account
+  request) with no bespoke code. Launches wait for owner approval while policy says so. First live run proposed
+  a cohort of two from the best-evidenced theses. Not yet: differentiation check vs siblings.
+- **M4 built (2026-11-20), idle until an account is connected.** Publisher per Meta's v27 docs, crash-safe
+  (never twice; uncertain → held for owner), AI label on every post; metrics per media type at the analysis
+  ages; `mw account connect`.
