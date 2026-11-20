@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import evidence, memory, planner
+from .. import evidence, experiments, exploration, memory, planner
 from ..agent import AgentContext, commission, record_decision, register
 from . import analyst
 
@@ -40,6 +40,7 @@ class PlannedIdea(planner.PlannedPost):
     canon_key: str = Field(default="", description="if `canon` replaces a single fact (home, partner, job, pet, "
                                                    "employer), that fact's name; otherwise empty")
     staging: str = Field(default="", description="the name of a staging from the library, or empty (most posts)")
+    experiment: str = Field(default="", description="the slot id when this idea fills an experiment slot, else empty")
 
 
 class IdeaBatch(BaseModel):
@@ -92,6 +93,14 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     staging_text = (f"Stagings you may give an idea (set `staging` to its name; most posts need none; the scene must "
                     f"show its setting, framing and wardrobe and the script follow its conventions): "
                     f"{json.dumps(stagings)}. {policy.get('stagings', 'rules', default='')} " if stagings else "")
+    slots = experiments.assign(conn, policy, creator_id, start=start, days=days)
+    effects = ((last["output"] or {}).get("effects") or []) if last else []
+    explore = exploration.directions(policy, effects=effects, seed_key=f"{creator_id}:{start}",
+                                     untried=exploration.untried(conn, creator_id, formats=list(formats),
+                                                                 stagings=list(stagings)))
+    slot_text = (f"Experiment slots (randomised: write exactly one idea per slot, on its day, that follows its "
+                 f"instruction and is still a natural post; set `experiment` to the slot id): "
+                 f"{json.dumps([{k: s[k] for k in ('slot', 'day', 'instruction')} for s in slots])}. " if slots else "")
     prompt = (
         f"The creator:\n{json.dumps(who, default=str)}\n"
         f"What we know about their life (keep it consistent):\n"
@@ -111,13 +120,15 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"What each format is: {json.dumps({f: n for f, n in notes.items() if f in formats})}. "
         f"{staging_text}"
         f"About {round(share * 100)}% of the ideas should try something this creator hasn't done yet (mark them "
-        f"exploratory); the rest build on what works. Hashtags per post at most {hashtags_max or 1}; often none. "
+        f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
+        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
         f"The creator's face is visible in most images, wearing their signature item.")
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,
             "analysis_decision_id": str(last["id"]) if last else None,
             "finding_ids": [str(f["id"]) for f in evidence.findings(conn, mode=mode, creator_id=creator_id)],
-            "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings}
+            "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings,
+            "slots": {s["slot"]: s for s in slots}, "exploration": explore}
     return prompt, meta
 
 
@@ -154,8 +165,13 @@ class Showrunner:
                                     (ctx.job.id,)).fetchone()
             if done:
                 return done["output"]
-            ids = []
+            ids, used = [], set()
             for q in kept:
+                slot = meta["slots"].get(q.experiment) if q.experiment else None
+                if slot and (slot["slot"] in used or slot["day"] != q.day):
+                    slot = None   # a slot is filled once, on its randomised day
+                if slot:
+                    used.add(slot["slot"])
                 staging = q.staging if q.staging in meta["stagings"] else ""   # unknown names are dropped
                 body = {"scenes": q.scenes, "script": q.script, "on_screen_text": q.on_screen_text,
                         "hashtags": q.hashtags, "canon": q.canon, "pillar": q.pillar, "tone": q.tone,
@@ -164,18 +180,20 @@ class Showrunner:
                         "staging": staging}
                 concept = " | ".join(q.scenes) + (f" | script: {q.script}" if q.script else "") + f" | caption: {q.caption}"
                 iid = ctx.conn.execute(
-                    "INSERT INTO ideas (creator_id, batch, concept, format, body, attributes, status) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, 'proposed') RETURNING id",
+                    "INSERT INTO ideas (creator_id, batch, concept, format, body, attributes, status, experiment_id, arm) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s) RETURNING id",
                     (creator_id, batch, f"{q.format}: {concept}", q.format, Jsonb(body),
                      Jsonb({**q.attributes, **({"exploratory": "yes"} if q.exploratory else {}),
-                            **({"staging": staging} if staging else {})}))).fetchone()["id"]
+                            **({"staging": staging} if staging else {})}),
+                     slot["experiment_id"] if slot else None, slot["arm"] if slot else None)).fetchone()["id"]
                 commission(ctx, "evaluator", {"idea_id": str(iid)}, reason="score before scheduling", key=f"eval:{iid}")
                 ids.append(str(iid))
             output = {"batch": batch, "ideas": len(ids), "idea_ids": ids, "dropped": dropped}
             record_decision(ctx, "content_batch", step="plan", creator_id=creator_id, model=ctx.llm.model_for("brain"),
                             inputs={"start": str(start), "days": days, "profile_version": meta["profile_version"],
                                     "requested": meta["counts"], "analysis_decision_id": meta["analysis_decision_id"],
-                                    "finding_ids": meta["finding_ids"]},
+                                    "finding_ids": meta["finding_ids"], "exploration": meta["exploration"],
+                                    "experiment_slots": {"offered": len(meta["slots"]), "filled": len(used)}},
                             output=output, rationale=out.rationale)
         return output
 

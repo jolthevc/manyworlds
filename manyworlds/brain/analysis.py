@@ -33,7 +33,7 @@ def dataset(conn, creator_id, *, mode: evidence.Mode, policy: Policy) -> list[di
     at the target age, read in the creator's mode. Posts not yet observed at the target age are left out."""
     target = int(_cfg(policy).get("target_age_s", 259200))
     posts = conn.execute(
-        """SELECT p.id, p.published_at, p.format, i.attributes, e.scores
+        """SELECT p.id, p.published_at, p.format, i.attributes, i.experiment_id, i.arm, e.scores
            FROM posts p LEFT JOIN ideas i ON i.post_id = p.id
            LEFT JOIN LATERAL (SELECT scores FROM evaluations WHERE idea_id = i.id AND role = 'evaluator'
                               ORDER BY created_at DESC LIMIT 1) e ON true
@@ -50,7 +50,8 @@ def dataset(conn, creator_id, *, mode: evidence.Mode, policy: Policy) -> list[di
             continue   # too young: its reach is still a fraction of what it will be, and would read as failure
         rows.append({"post_id": str(p["id"]), "published_at": p["published_at"], "format": p["format"],
                      "scores": p["scores"] or {}, "attributes": p["attributes"] or {},
-                     "reach": latest["metrics"].get("reach"), "age_s": latest["post_age_s"]})
+                     "reach": latest["metrics"].get("reach"), "age_s": latest["post_age_s"],
+                     "experiment_id": str(p["experiment_id"]) if p["experiment_id"] else None, "arm": p["arm"]})
     return rows
 
 
@@ -144,3 +145,48 @@ def effects(rows: list[dict], policy: Policy, *, seed: int = 0) -> dict:
     result["effects"].sort(key=lambda e: -abs(e["effect"]) / (e["se"] or 1))
     result["tested"] = m
     return result
+
+
+def _ranks(xs: list[float]) -> list[float]:
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    return ranks
+
+
+def _spearman(pairs: list[tuple[float, float]]) -> float | None:
+    if len(pairs) < 3:
+        return None
+    rx, ry = _ranks([x for x, _ in pairs]), _ranks([y for _, y in pairs])
+    mx, my = statistics.fmean(rx), statistics.fmean(ry)
+    sxy = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    sxx, syy = sum((a - mx) ** 2 for a in rx), sum((b - my) ** 2 for b in ry)
+    return None if sxx == 0 or syy == 0 else sxy / math.sqrt(sxx * syy)
+
+
+def rubric_validity(rows: list[dict], policy: Policy, *, seed: int = 0) -> list[dict]:
+    """How well each rubric dimension's idea score predicted the post's outcome: Spearman rank correlation
+    with a bootstrap interval at `alpha`. A dimension that predicts nothing is a candidate to reweight or drop
+    when the rubric is next revised (spec 4.4: predictive usefulness beats plausibility). Report only."""
+    cfg = _cfg(policy)
+    usable = [r for r in rows if r.get("lift") is not None]
+    rng, draws = random.Random(seed), int(cfg.get("bootstrap", 300))
+    z = NormalDist().inv_cdf(1 - float(cfg.get("alpha", 0.1)) / 2)
+    out = []
+    for d in sorted({d for r in usable for d, v in (r["scores"] or {}).items() if v is not None}):
+        pairs = [(float(r["scores"][d]), r["lift"]) for r in usable if (r["scores"] or {}).get(d) is not None]
+        if len(pairs) < int(cfg.get("min_n_any", 8)):
+            continue
+        rho, se = _spearman(pairs), _bootstrap_se(pairs, _spearman, draws, rng)
+        if rho is None or se is None:
+            continue
+        out.append({"dimension": d, "n": len(pairs), "rho": round(rho, 3), "low": round(rho - z * se, 3),
+                    "high": round(rho + z * se, 3), "predictive": rho - z * se > 0})
+    return sorted(out, key=lambda x: -x["rho"])

@@ -19,7 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ...worker.runner import NonRetryable
-from .. import analysis, evidence
+from .. import analysis, evidence, experiments
 from ..agent import AgentContext, commission, record_decision, register
 
 SYSTEM = """You are the analyst for an AI creator studio. You are given statistics about how one creator's
@@ -98,6 +98,7 @@ def analyse(ctx: AgentContext, creator_id) -> dict:
                                    "posts": [r["post_id"] for r in rows if r.get("lift") is not None]}])
             finding_ids.append(str(fid))
     return {"mode": mode, "n": result["n"], "insufficient": False, "effects": result["effects"],
+            "rubric_validity": analysis.rubric_validity(rows, ctx.policy),
             "breakouts": result["breakouts"], "hypotheses": [h.model_dump() for h in out.hypotheses],
             "guidance": out.guidance.model_dump(), "finding_ids": finding_ids, "rationale": out.guidance.notes}
 
@@ -121,6 +122,8 @@ class Analyst:
                                 (ctx.job.id,)).fetchone()
         output = done["output"] if done else analyse(ctx, p["creator_id"])
         if not done:
+            # Read experiment results that are due and open new experiments from the fresh findings.
+            output["experiments"] = experiments.review(ctx.conn, ctx.policy, p["creator_id"])
             record_decision(ctx, "analysis", step="analyse", creator_id=p["creator_id"],
                             model=None if output["insufficient"] else ctx.llm.model_for("brain"),
                             inputs={"mode": output["mode"], "n": output["n"]},

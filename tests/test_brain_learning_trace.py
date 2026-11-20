@@ -114,3 +114,50 @@ def test_a_sandbox_run_only_runs_its_own_jobs_on_its_own_budget(conn, policy):
     assert agents and all(a.startswith("sandbox:") for a in agents)
     ledger.record(conn, category="llm", provider="m", quantity=1, unit="token", usd=999, agent="sandbox:showrunner")
     budget.check(conn, policy, "showrunner")
+
+
+class ExperimentLLM(LoopLLM):
+    """Also fills the experiment slots the showrunner is given, following each slot's instruction."""
+
+    def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
+        if schema is not showrunner.IdeaBatch:
+            return super().structured(role, system=system, content=content, schema=schema)
+        out = super().structured(role, system=system, content=content, schema=schema)
+        import json as _json
+        import re as _re
+        m = _re.search(r"Experiment slots \(.*?\): (\[.*?\])\. ", str(content))
+        slots = _json.loads(m.group(1)) if m else []
+        ideas = [i.model_dump() for i in out.ideas][len(slots):]
+        for k, s in enumerate(slots):
+            lead = "personality" if "heart of it" in s["instruction"] else "place"
+            ideas.append({"day": s["day"], "platform": "instagram", "format": "carousel", "experiment": s["slot"],
+                          # the evaluator sees the plan, not attributes: arm A must read as personality-led
+                          "scenes": [f"exp {self.batch}-{k} {'her personality front and centre' if lead == 'personality' else 'the place'}",
+                                     f"exp {self.batch}-{k}b"], "caption": f"e{self.batch}{k}",
+                          "hashtags": [], "canon": "", "attributes": {"lead": lead}, "reasoning": "experiment slot"})
+        return schema.model_validate({"rationale": "r", "ideas": ideas})
+
+
+def test_a_finding_becomes_an_experiment_whose_result_is_proven(conn, policy):
+    import dataclasses
+    # A strong planted effect and a large detectable effect keep the sample (and the test) small.
+    brain = {**policy.body["brain"], "experiments": {**policy.body["brain"]["experiments"], "min_sample": 6, "mde": 1.5}}
+    pol = dataclasses.replace(policy, body={**policy.body, "brain": brain})
+    cid = _sim_creator(conn)
+    conn.execute("UPDATE creators SET anchors = %s WHERE id = %s",
+                 (Jsonb({"simulation": {"scenario": "personality_strong", "seed": 3}}), cid))
+    sandbox.run_batches(conn, pol, ExperimentLLM(conn), cid, batches=12, worker_id="t")
+    exp = conn.execute("SELECT * FROM experiments WHERE creator_id = %s", (cid,)).fetchall()
+    assert len(exp) >= 1 and exp[0]["effect_key"]
+    arms = conn.execute("SELECT arm, count(*) n FROM ideas WHERE experiment_id = %s GROUP BY arm", (exp[0]["id"],)).fetchall()
+    assert {a["arm"] for a in arms} == {"A", "B"}                      # both arms were planned, in randomised slots
+    plans = conn.execute("SELECT inputs FROM decisions WHERE kind = 'content_batch' AND creator_id = %s "
+                         "ORDER BY created_at", (cid,)).fetchall()
+    assert any(p["inputs"]["experiment_slots"]["filled"] for p in plans)
+    assert all(len(p["inputs"]["exploration"]) for p in plans)        # every plan records its exploration draws
+    done = [e for e in exp if e["status"] == "concluded"]
+    assert done and done[0]["result"]["status"] == "confirmed", done[0]["result"]   # the planted effect, confirmed
+    proven = conn.execute("SELECT statement, evidence FROM simulated_findings WHERE creator_id = %s AND grade = 'proven'",
+                          (cid,)).fetchall()
+    assert proven and proven[0]["evidence"] == "simulated" and proven[0]["statement"].startswith("Experiment:")
+    assert conn.execute("SELECT count(*) n FROM findings WHERE creator_id = %s", (cid,)).fetchone()["n"] == 0
