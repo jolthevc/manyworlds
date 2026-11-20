@@ -179,7 +179,7 @@ review:
   # regenerated. {scene} is the scene text; `scene` leads the prompt, the others follow it.
   repair:
     lora_scale_step: 0.1         # identity: each identity repair strengthens the likeness LoRA by this...
-    lora_scale_max: 1.4          # ...up to this
+    lora_scale_max: 1.2          # ...up to this (mild: 1.3 did no better on Maren, 2026-11-14; the prompt hint does more)
     drop_on_safety: true
     hints:
       scene: "The photo must clearly show: {scene}. "

@@ -20,11 +20,27 @@ from ..policy import Policy
 ORDER = ("safety", "identity", "scene", "realism")   # ties go to the earlier cause
 
 
+def reviewed(conn, job_id) -> bool:
+    return bool(conn.execute("SELECT 1 FROM reviews r JOIN assets a ON a.id = r.asset_id WHERE a.job_id = %s LIMIT 1",
+                             (job_id,)).fetchone())
+
+
 def diagnose(conn, job_id) -> dict:
-    rows = conn.execute(
+    """Rows the judge never filled in (it skipped a candidate; the gate fails closed with details.error) say
+    nothing about the image, so they are ignored. Only an apparent minor or sexualised content is `safety`:
+    a stray brand mark usually goes with a new seed, so it counts as `realism` (whose hint asks for no logos)."""
+    rows = [r for r in conn.execute(
         "SELECT r.gate, r.passed, r.details FROM reviews r JOIN assets a ON a.id = r.asset_id "
-        "WHERE a.job_id = %s AND a.kind = 'image'", (job_id,)).fetchall()
-    failed = Counter(r["gate"] for r in rows if not r["passed"])
+        "WHERE a.job_id = %s AND a.kind = 'image'", (job_id,)).fetchall() if not (r["details"] or {}).get("error")]
+    failed: Counter = Counter()
+    for r in rows:
+        if r["passed"]:
+            continue
+        d = r["details"] or {}
+        if r["gate"] == "safety":
+            failed["safety" if (d.get("looks_under_min_age") or d.get("sexualized")) else "realism"] += 1
+        else:
+            failed[r["gate"]] += 1
     if not failed:
         return {"cause": None, "failed": {}, "defects": []}
     cause = "safety" if failed.get("safety") else max(

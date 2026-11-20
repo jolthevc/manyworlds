@@ -250,8 +250,10 @@ def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:
         def make(attempt):
             bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
             adjust = None
-            if attempt > 0:   # the previous job was rejected or failed: repair what its review points to
-                diag = repair.diagnose(conn, body["scene_jobs"][i][-1])
+            if attempt > 0:   # a retry: repair what the latest reviewed job's review points to
+                # (a job that failed on its machine has no review; the repair before it still applies)
+                last = next((j for j in reversed(body["scene_jobs"][i]) if repair.reviewed(conn, j)), None)
+                diag = repair.diagnose(conn, last) if last else {"cause": None, "failed": {}, "defects": []}
                 if diag["cause"] == "safety" and policy.get("review", "repair", "drop_on_safety", default=True):
                     raise DropPost(f"safety: {diag['failed']} {diag['defects']}; unsafe output is never regenerated")
                 if diag["cause"]:
@@ -289,7 +291,12 @@ def advance_post(conn, policy: Policy, post: dict) -> str:
         if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
             state, video = advance_step(body, _follow_up(conn, policy, post, body, chosen))
             target = (_cfg(policy).get("reroute_failed_video") or {}).get(post["format"])
-            if state == "dropped" and target:
+            # Only when review kept rejecting the clips (not machine failures), and never for an experiment
+            # idea, whose arm would then be measured on a photo.
+            rejected = "passed review" in (body.get("drop_reason") or "")
+            in_experiment = conn.execute("SELECT 1 FROM ideas WHERE post_id = %s AND experiment_id IS NOT NULL",
+                                         (post["id"],)).fetchone()
+            if state == "dropped" and target and rejected and not in_experiment:
                 # The video kept failing; its start photo passed review. Ship that instead of nothing.
                 body.update(rerouted_from=post["format"], reroute_reason=body.pop("drop_reason", ""))
                 _set(conn, post["id"], "ready", body, qa_status="passed", asset_ids=[a["id"] for a in chosen],

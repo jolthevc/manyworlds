@@ -152,3 +152,37 @@ def test_a_story_clip_whose_clips_keep_failing_ships_as_its_photo(conn, policy, 
     row = conn.execute("SELECT format, status, body, asset_ids FROM posts WHERE id = %s", (pid,)).fetchone()
     assert row["format"] == "photo" and row["body"]["rerouted_from"] == "story_clip" and "video" not in row["body"]
     assert len(row["asset_ids"]) == 1
+
+
+def test_a_skipped_review_or_a_stray_logo_is_not_treated_as_unsafe(conn, policy, store, tmp_path):
+    pid = _photo_post(conn, policy, store, tmp_path)
+    finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok(real_brand_marks=True)] * 4), pid)
+    assert production.advance(conn, policy, now=NOW)["producing"] == 1          # repaired, not dropped
+    log = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]["repair_log"]
+    assert log[0]["cause"] == "realism"
+
+
+def test_a_repair_survives_a_machine_failure(conn, policy, store, tmp_path):
+    pid = _photo_post(conn, policy, store, tmp_path)
+    finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok(identity=2)] * 4), pid)
+    production.advance(conn, policy, now=NOW)                                   # identity repair queued
+    conn.execute("UPDATE jobs SET status = 'failed' WHERE post_id = %s AND status = 'queued'", (pid,))
+    production.advance(conn, policy, now=NOW)                                   # the machine failed: retry
+    third = _jobs(conn, pid)[2]["payload"]
+    hint = policy.get("review", "repair", "hints", "identity")
+    assert hint in third["prompt"]
+
+
+def test_an_experiment_video_is_not_rerouted_to_a_photo(conn, policy, store, tmp_path):
+    from test_video_review import _clip_jobs, _story_post
+    pid = _story_post(conn, policy, store, tmp_path)
+    exp = conn.execute("INSERT INTO experiments (creator_id, hypothesis, status) SELECT creator_id, 'h', 'open' "
+                       "FROM posts WHERE id = %s RETURNING id", (pid,)).fetchone()["id"]
+    conn.execute("INSERT INTO ideas (creator_id, concept, format, status, post_id, experiment_id, arm) "
+                 "SELECT creator_id, 'x', 'story_clip', 'scheduled', id, %s, 'A' FROM posts WHERE id = %s", (exp, pid))
+    for _ in range(int(policy.get("review", "video", "max_repairs_per_post")) + 1):
+        job = _clip_jobs(conn, pid)[-1]
+        rendered(conn, store, tmp_path, job["id"])
+        video.run_pending(conn, policy, ClipStub(clip(identity=2)), store, tmp_path)
+        state = production.advance(conn, policy, now=NOW)
+    assert state["dropped"] == 1

@@ -101,6 +101,13 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     slot_text = (f"Experiment slots (randomised: write exactly one idea per slot, on its day, that follows its "
                  f"instruction and is still a natural post; set `experiment` to the slot id): "
                  f"{json.dumps([{k: s[k] for k in ('slot', 'day', 'platform', 'instruction')} for s in slots])}. " if slots else "")
+    qa_window = int(policy.get("brain", "qa", "window", default=12))
+    qa_drops = [r["why"] for r in conn.execute(
+        "SELECT body->>'drop_reason' AS why FROM ideas WHERE creator_id = %s AND status = 'dropped' "
+        "AND body->>'drop_reason' ~ '^(repetitive feed|unoriginal|[a-z_]+ [0-9.]+ below)' "
+        "ORDER BY updated_at DESC LIMIT %s", (creator_id, qa_window)).fetchall()]
+    qa_text = (f"Recent ideas the feed check dropped (don't repeat these mistakes): {json.dumps(qa_drops)}. "
+               if qa_drops else "")
     prompt = (
         f"The creator:\n{json.dumps(who, default=str)}\n"
         f"What we know about their life (keep it consistent):\n"
@@ -121,7 +128,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"{staging_text}"
         f"About {round(share * 100)}% of the ideas should try something this creator hasn't done yet (mark them "
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
-        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}Hashtags per post at most {hashtags_max or 1}; often none. "
+        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
         f"The creator's face is visible in most images, wearing their signature item.")
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,

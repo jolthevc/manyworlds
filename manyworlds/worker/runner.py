@@ -85,6 +85,20 @@ def is_worker_fault(exc: BaseException) -> bool:
         "OutOfMemoryError", "AcceleratorError")
 
 
+def pool_info(policy: Policy, pool: str) -> dict:
+    """The pool's definition: from the policy baked into this image, or, for a pool added after the image
+    was built, from MW_POOL_INFO, which the autoscaler sets on every machine. 2026-11-20: a talk worker on a
+    new RunPod pool crashed at start ("unknown GPU pool") until the never-started check stopped its machine."""
+    try:
+        return policy.pool(pool)
+    except KeyError:
+        raw = os.environ.get("MW_POOL_INFO")
+        if not raw:
+            raise
+        import json
+        return json.loads(raw)
+
+
 class Worker:
     def __init__(
         self,
@@ -103,8 +117,8 @@ class Worker:
         self.store = store
         self.policy = policy
         self.pool = pool
-        self.pool_info = policy.pool(pool)
-        self.usd_per_second = policy.usd_per_gpu_second(pool)
+        self.pool_info = pool_info(policy, pool)
+        self.usd_per_second = float(self.pool_info["usd_per_hour"]) / 3600.0
         self.lease = int(policy.get("queue", "lease_seconds", default=120))
         self.max_consecutive_faults = int(policy.get("queue", "worker_max_consecutive_faults", default=3))
         self.consecutive_faults = 0
