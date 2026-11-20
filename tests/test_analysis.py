@@ -92,3 +92,16 @@ def test_small_groups_are_never_tentative(policy):
         r["format"] = "photo"
     r = analysis.effects(analysis.normalise(rows, policy), policy, seed=1)
     assert ("format", "carousel") not in _graded(r)
+
+
+def test_rubric_validity_tells_predictive_dimensions_from_noise(policy):
+    import random as _r
+    from manyworlds.brain import analysis
+    rng = _r.Random(4)
+    rows = []
+    for i in range(60):
+        p, noise = rng.randint(1, 9), rng.randint(1, 9)
+        rows.append({"lift": 0.15 * p + rng.gauss(0, 0.4), "scores": {"personality": p, "noise": noise}})
+    v = {x["dimension"]: x for x in analysis.rubric_validity(rows, policy)}
+    assert v["personality"]["predictive"] and v["personality"]["rho"] > 0.5
+    assert not v["noise"]["predictive"] and abs(v["noise"]["rho"]) < 0.3

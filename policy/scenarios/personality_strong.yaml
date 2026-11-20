@@ -1,0 +1,5 @@
+description: >-
+  Test scenario: a strong personality effect, so a small experiment can confirm it (engineering test only).
+effects:
+  - {dimension: personality, per_point: 0.45}
+breakout: {probability: 0.0, multiplier: 1.0}

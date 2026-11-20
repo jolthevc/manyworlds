@@ -79,14 +79,14 @@ worker_images:
   # env: passed to every worker of the family; a pool's worker_env overrides it.
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
-  image: {image: mw-worker-image, tag: v18, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
+  image: {image: mw-worker-image, tag: v19, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v18, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
+  video: {image: mw-worker-image, tag: v19, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # talk: Wan2.1-I2V-14B-480P (~77 GB) + InfiniteTalk adapter + wav2vec, all on the rented machine.
-  talk: {image: mw-worker-talk, tag: v2, min_cuda: 12.8, cpu: 8, ram_gb: 64, disk_gb: 200,
+  talk: {image: mw-worker-talk, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 64, disk_gb: 200,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -244,6 +244,16 @@ creators:
 brain:
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 6.0}   # sandbox: all test runs together
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
+  # Experiments (manyworlds.brain.experiments): a tentative finding becomes a randomised two-arm test. Slots are
+  # assigned per batch; the result is read once, when each arm has its sample (no peeking). The sample per arm
+  # is sized for `power` to detect `mde` (log-lift; 0.4 = ~50% more reach) given the creator's measured outcome
+  # spread (default_sd until there is enough data), within [min_sample, max_sample]. Small samples miss real
+  # effects: 6 per arm could not confirm a planted +0.5 (2026-11-20 sandbox).
+  experiments: {max_open_per_creator: 1, slots_per_batch: 4, min_sample: 10, max_sample: 60, mde: 0.4, power: 0.8,
+                alpha: 0.05, default_sd: 0.6}
+  # Exploration directions (manyworlds.brain.exploration): Thompson draws over measured effects and untried
+  # formats/stagings (prior N(0, prior_sd) in log-lift); the top `directions` steer the exploratory ideas.
+  exploration: {directions: 3, prior_sd: 0.3}
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
