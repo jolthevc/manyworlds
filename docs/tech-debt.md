@@ -5,11 +5,20 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 
 ## Before autonomous publishing (Brain M4)
 
+Closed 2026-11-20: the brain worker reconnects after a dropped connection and rebuilds its Claude client when
+the policy changes (`runtime.serve`); only an unknown agent is a permanent failure; a crashing job no longer
+ends the tick for the others.
+
 | Item | Why it matters | Where |
 |---|---|---|
-| The brain worker dies on a dropped database connection (Docker restarts it; the job waits out its lease, up to 10 min) | publish and metrics-collection jobs must not stall silently, and Story metrics expire after 24 h | `manyworlds/cli.py` `_brain_ops` loop |
-| A `KeyError` raised inside an agent's own code is treated as permanent (non-retryable) | a transient bug would drop a publish or collection job instead of retrying it | `manyworlds/brain/runtime.py` `run_job` |
-| A retryably crashing job ends each runtime tick early until it runs out of attempts | other jobs (publishing, collection) wait a tick per failure | `manyworlds/brain/runtime.py` `tick` |
+
+## Brain M6 (experiments), noted in review 2026-11-20
+
+| Item | Why it matters | Where |
+|---|---|---|
+| A `no_difference` result is permanent (one experiment per creator, effect and mode, ever), even when the test had low power | a real effect on a noisy creator could be written off; the result records achieved `power`, so a later revision can reopen low-power nulls | `manyworlds/brain/experiments.py` |
+| Nothing checks that an experiment idea actually followed its arm instruction | arms are compared as assigned (diluting, not biasing, the difference) | showrunner slot handling |
+| Experiments are slow: ~36 posts per arm at 2 per arm per batch is ~54 days, one open at a time | learning pace; raise `slots_per_batch` or `max_open_per_creator` once creators post more | policy `brain.experiments` |
 
 ## Before talking video goes live (M10)
 
@@ -22,7 +31,6 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 
 | Item | Why it matters | Where |
 |---|---|---|
-| The brain worker's Claude client keeps the policy it started with (model roles, prices) until restarted | LLM cost entries could be priced or routed on stale settings | `manyworlds/cli.py` `_brain_ops` |
 | `effective_policy` reads override rows and the version in two queries | under concurrent changes a decision could record a version that doesn't exactly match the settings it used | `manyworlds/brain/overrides.py` |
 | Only Brain agents read the effective policy (`brain.authority.observed_sections: [brain]`); overrides of production, review or autoscaler settings are refused | the strategist can't tune production until those services read the effective policy; then add their sections to `observed_sections` | services' policy loading |
 

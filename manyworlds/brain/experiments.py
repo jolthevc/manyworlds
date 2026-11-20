@@ -65,8 +65,9 @@ def _outcome_sd(conn, policy: Policy, creator_id, mode) -> float:
 
 
 def open_for(conn, creator_id) -> list[dict]:
-    return conn.execute("SELECT * FROM experiments WHERE creator_id = %s AND status = 'open' ORDER BY created_at",
-                        (creator_id,)).fetchall()
+    """Open experiments in the creator's current evidence mode (a creator who went live leaves sandbox ones)."""
+    return conn.execute("SELECT * FROM experiments WHERE creator_id = %s AND status = 'open' AND mode = %s "
+                        "ORDER BY created_at", (creator_id, evidence.mode_for(conn, creator_id))).fetchall()
 
 
 def concluded_for(conn, creator_id) -> list[dict]:
@@ -82,7 +83,8 @@ def open_from_findings(conn, policy: Policy, creator_id) -> list[str]:
     found = evidence.findings(conn, mode=mode, creator_id=creator_id, grades=("tentative",))
     found.sort(key=lambda f: -abs(float(f["effect"] or 0)))
     tested = {r["effect_key"] for r in conn.execute(
-        "SELECT effect_key FROM experiments WHERE creator_id = %s AND effect_key IS NOT NULL", (creator_id,)).fetchall()}
+        "SELECT effect_key FROM experiments WHERE creator_id = %s AND mode = %s AND effect_key IS NOT NULL",
+        (creator_id, mode)).fetchall()}
     opened, need = [], None
     for f in found:
         if room <= 0:
@@ -93,11 +95,13 @@ def open_from_findings(conn, policy: Policy, creator_id) -> list[str]:
         if not arms or key in tested:
             continue
         need = need or sample_size(policy, _outcome_sd(conn, policy, creator_id, mode))
-        eid = conn.execute(
-            "INSERT INTO experiments (creator_id, hypothesis, arms, metric, min_sample, status, effect_key, source_finding) "
-            "VALUES (%s, %s, %s, 'reach_lift', %s, 'open', %s, %s) RETURNING id",
-            (creator_id, f["statement"], Jsonb(arms), need, key, f["id"])).fetchone()["id"]
-        opened.append(str(eid))
+        row = conn.execute(   # a concurrent analyst may have opened it first: then this one opens nothing
+            "INSERT INTO experiments (creator_id, hypothesis, arms, metric, min_sample, status, effect_key, source_finding, mode) "
+            "VALUES (%s, %s, %s, 'reach_lift', %s, 'open', %s, %s, %s) "
+            "ON CONFLICT (creator_id, effect_key, mode) WHERE effect_key IS NOT NULL DO NOTHING RETURNING id",
+            (creator_id, f["statement"], Jsonb(arms), need, key, f["id"], mode)).fetchone()
+        if row:
+            opened.append(str(row["id"]))
         tested.add(key)
         room -= 1
     return opened
@@ -107,6 +111,8 @@ def assign(conn, policy: Policy, creator_id, *, start, days: int) -> list[dict]:
     """This batch's experiment slots: for each open experiment, `slots_per_batch` slots split evenly between
     the arms, each on a random day. Seeded by experiment and batch start, so a rerun gets the same slots."""
     per = int(_cfg(policy).get("slots_per_batch", 4))
+    # One platform for every slot, so a format or attribute arm can't drift onto another platform's audience.
+    platform = (policy.get("scope", "platforms", default=None) or ["instagram"])[0]
     slots = []
     for exp in open_for(conn, creator_id):
         rng = random.Random(int(hashlib.sha256(f"{exp['id']}:{start}".encode()).hexdigest()[:12], 16))
@@ -115,7 +121,8 @@ def assign(conn, policy: Policy, creator_id, *, start, days: int) -> list[dict]:
         by_name = {a["name"]: a for a in exp["arms"]}
         for i, arm in enumerate(arms):
             slots.append({"slot": f"{exp['id']}:{i}", "experiment_id": str(exp["id"]), "arm": arm,
-                          "day": rng.randrange(days), "instruction": by_name[arm]["instruction"]})
+                          "day": rng.randrange(days), "platform": platform,
+                          "instruction": f"{by_name[arm]['instruction']}, on {platform}"})
     return slots
 
 
@@ -131,12 +138,15 @@ def compare(rows: list[dict], policy: Policy, *, seed: int = 0) -> dict:
     se = math.sqrt(statistics.variance(a) / len(a) + statistics.variance(b) / len(b))
     z = NormalDist().inv_cdf(1 - alpha / 2)
     low, high = est - z * se, est + z * se
+    mde = float(_cfg(policy).get("mde", 0.4))
+    power = NormalDist().cdf(mde / se - z) if se > 0 else 1.0   # chance this test would catch a true `mde`
     return {"n_a": len(a), "n_b": len(b), "effect": round(est, 4), "se": round(se, 4), "low": round(low, 4),
-            "high": round(high, 4), "significant": low > 0 or high < 0}
+            "high": round(high, 4), "significant": low > 0 or high < 0, "power": round(power, 3)}
 
 
 def rows_for(conn, policy: Policy, exp: dict, mode: evidence.Mode) -> list[dict]:
-    """The experiment's posts with outcomes, by the arm they were assigned (intent to treat)."""
+    """The experiment's posts with outcomes, by the arm they were assigned. Ideas that never became a post with
+    an outcome (dropped, failed renders) are missing; the result reports slots assigned per arm beside them."""
     data = analysis.normalise(analysis.dataset(conn, exp["creator_id"], mode=mode, policy=policy), policy)
     return [{"post_id": r["post_id"], "arm": r["arm"], "lift": r["lift"]} for r in data
             if r.get("experiment_id") == str(exp["id"]) and r.get("arm") and r.get("lift") is not None]
@@ -151,27 +161,39 @@ def conclude(conn, policy: Policy, exp: dict, rows: list[dict]) -> dict | None:
     res = compare([{"arm": r["arm"], "y": max(-cap, min(cap, r["lift"]))} for r in rows], policy)
     status = ("confirmed" if res["effect"] > 0 else "reversed") if res["significant"] else "no_difference"
     finding_id = None
-    if status != "no_difference":
-        mode = evidence.mode_for(conn, exp["creator_id"])
-        a = next(x for x in exp["arms"] if x["name"] == "A")
-        verb = "beat" if status == "confirmed" else "did worse than"
-        statement = (f"Experiment: posts with {a['instruction']} {verb} the control by {abs(res['effect']):.2f} "
-                     f"log-lift in reach ({res['n_a']} vs {res['n_b']} posts). Tested: {exp['hypothesis']}")
-        source = [{"creator_id": str(exp["creator_id"])}, {"experiment_id": str(exp["id"])},
-                  {"posts": [r["post_id"] for r in rows]}] + ([{"table": "simulated_metrics"}] if mode == "sandbox" else [])
-        finding_id = evidence.record_finding(
-            conn, scope="creator", creator_id=exp["creator_id"], statement=statement,
-            evidence="simulated" if mode == "sandbox" else "experimental", grade="proven", effect=res["effect"],
-            interval=(res["low"], res["high"]), n=res["n_a"] + res["n_b"], sources=source)
-    result = {"status": status, **res, "finding_id": str(finding_id) if finding_id else None}
-    conn.execute("UPDATE experiments SET status = 'concluded', result = %s, concluded_at = now(), updated_at = now() "
-                 "WHERE id = %s", (Jsonb(result), exp["id"]))
+    with conn.transaction():
+        # The finding and the closing land together, once: a rerun or a concurrent analyst finds it closed.
+        if not conn.execute("SELECT 1 FROM experiments WHERE id = %s AND status = 'open' FOR UPDATE",
+                            (exp["id"],)).fetchone():
+            return None
+        if status != "no_difference":
+            mode = evidence.mode_for(conn, exp["creator_id"])
+            a = next(x for x in exp["arms"] if x["name"] == "A")
+            verb = "beat" if status == "confirmed" else "did worse than"
+            statement = (f"Experiment: posts with {a['instruction']} {verb} the control by {abs(res['effect']):.2f} "
+                         f"log-lift in reach ({res['n_a']} vs {res['n_b']} posts). Tested: {exp['hypothesis']}")
+            source = [{"creator_id": str(exp["creator_id"])}, {"experiment_id": str(exp["id"])},
+                      {"posts": [r["post_id"] for r in rows]}] + \
+                ([{"table": "simulated_metrics"}] if mode == "sandbox" else [])
+            finding_id = evidence.record_finding(
+                conn, scope="creator", creator_id=exp["creator_id"], statement=statement,
+                evidence="simulated" if mode == "sandbox" else "experimental", grade="proven", effect=res["effect"],
+                interval=(res["low"], res["high"]), n=res["n_a"] + res["n_b"], sources=source)
+        # Slots assigned vs posts with outcomes, per arm: attrition (dropped ideas, failed renders) shows here.
+        assigned = {r["arm"]: r["n"] for r in conn.execute(
+            "SELECT arm, count(*) n FROM ideas WHERE experiment_id = %s GROUP BY arm", (exp["id"],)).fetchall()}
+        result = {"status": status, **res, "assigned": assigned, "finding_id": str(finding_id) if finding_id else None}
+        conn.execute("UPDATE experiments SET status = 'concluded', result = %s, concluded_at = now(), updated_at = now() "
+                     "WHERE id = %s", (Jsonb(result), exp["id"]))
     return result
 
 
 def review(conn, policy: Policy, creator_id) -> dict:
     """The analyst's experiment step: read results that are due, then open new experiments."""
     mode = evidence.mode_for(conn, creator_id)
+    # A creator who left the sandbox doesn't continue its simulated experiments.
+    conn.execute("UPDATE experiments SET status = 'abandoned', updated_at = now() "
+                 "WHERE creator_id = %s AND status = 'open' AND mode <> %s", (creator_id, mode))
     concluded = []
     for exp in open_for(conn, creator_id):
         out = conclude(conn, policy, exp, rows_for(conn, policy, exp, mode))

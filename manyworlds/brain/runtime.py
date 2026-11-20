@@ -82,7 +82,7 @@ def run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: d
             log.warning("brain job %s was taken over before %s finished", job.id, name)
             return {"job": job.id, "agent": name, "status": "lost"}
         return {"job": job.id, "agent": name, "status": "done"}
-    except (KeyError, NonRetryable) as e:
+    except (agent_mod.UnknownAgent, NonRetryable) as e:
         msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
         queue.fail(conn, job.id, worker_id, msg, retryable=False)
         return {"job": job.id, "agent": name, "status": "failed", "error": msg}
@@ -93,6 +93,39 @@ def run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: d
                 "error": f"{type(e).__name__}: {e}"}
 
 
+def serve(connect, load_policy, make_llm, *, worker_id: str, loops: int | None = None, sleep=None,
+          on_output=None) -> None:
+    """The brain worker loop. A dropped database connection is reconnected instead of ending the process
+    (publishing and metrics jobs must not stall behind a container restart and a lapsed lease), and the
+    Claude client is rebuilt whenever the policy changes, so model roles and prices are never stale."""
+    import time
+
+    import psycopg
+
+    sleep = sleep or time.sleep
+    conn, pol = connect(), load_policy()
+    llm, n = make_llm(conn, pol), 0
+    while loops is None or n < loops:
+        n += 1
+        try:
+            out = tick(conn, pol, llm, worker_id=worker_id)
+            if out and on_output:
+                on_output(out)
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            log.exception("brain worker lost its database connection; reconnecting")
+            try:
+                conn = connect()
+                llm = make_llm(conn, pol)
+            except Exception:  # noqa: BLE001 - try again next loop
+                log.exception("reconnect failed")
+        if loops is not None and n >= loops:
+            break
+        sleep(float(pol.get("brain", "runtime", "loop_seconds", default=30)))
+        new = load_policy()
+        if new.version != pol.version:
+            pol, llm = new, make_llm(conn, new)
+
+
 def tick(conn, policy: Policy, llm, *, worker_id: str, now: datetime | None = None) -> list[dict]:
     cfg = policy.get("brain", "runtime", default={}) or {}
     now = now or datetime.now(timezone.utc)
@@ -100,11 +133,10 @@ def tick(conn, policy: Policy, llm, *, worker_id: str, now: datetime | None = No
     ran: set = set()
     for _ in range(int(cfg.get("max_jobs_per_tick", 10))):
         kinds = _waiting_kinds(conn)
-        job = queue.claim(conn, kinds, worker_id, int(cfg.get("lease_seconds", 600)), pool=POOL) if kinds else None
+        # A job retried in this tick waits for the next one; the others still run (it used to end the tick).
+        job = queue.claim(conn, kinds, worker_id, int(cfg.get("lease_seconds", 600)), pool=POOL,
+                          exclude=list(ran)) if kinds else None
         if job is None:
-            break
-        if job.id in ran:   # a job retried in this tick waits for the next one, not a tight loop
-            queue.unclaim(conn, job.id, worker_id)
             break
         ran.add(job.id)
         out.append(run_job(conn, policy, llm, job, worker_id=worker_id, now=now,

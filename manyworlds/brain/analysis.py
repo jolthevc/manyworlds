@@ -61,8 +61,9 @@ def normalise(rows: list[dict], policy: Policy) -> list[dict]:
     out = []
     for i, r in enumerate(rows):
         prev = [x["reach"] for x in rows[max(0, i - window):i] if x.get("reach")]
-        lift = (math.log(r["reach"] / statistics.median(prev))
-                if len(prev) >= need and r.get("reach") else None)
+        # A post nobody saw (reach 0) counts at the floor of one person, instead of vanishing from the data.
+        lift = (math.log(max(r["reach"], 1) / statistics.median(prev))
+                if len(prev) >= need and r.get("reach") is not None else None)
         out.append({**r, "lift": lift})
     return out
 

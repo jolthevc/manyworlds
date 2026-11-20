@@ -100,7 +100,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
                                                                  stagings=list(stagings)))
     slot_text = (f"Experiment slots (randomised: write exactly one idea per slot, on its day, that follows its "
                  f"instruction and is still a natural post; set `experiment` to the slot id): "
-                 f"{json.dumps([{k: s[k] for k in ('slot', 'day', 'instruction')} for s in slots])}. " if slots else "")
+                 f"{json.dumps([{k: s[k] for k in ('slot', 'day', 'platform', 'instruction')} for s in slots])}. " if slots else "")
     prompt = (
         f"The creator:\n{json.dumps(who, default=str)}\n"
         f"What we know about their life (keep it consistent):\n"
@@ -168,7 +168,7 @@ class Showrunner:
             ids, used = [], set()
             for q in kept:
                 slot = meta["slots"].get(q.experiment) if q.experiment else None
-                if slot and (slot["slot"] in used or slot["day"] != q.day):
+                if slot and (slot["slot"] in used or slot["day"] != q.day or slot["platform"] != q.platform):
                     slot = None   # a slot is filled once, on its randomised day
                 if slot:
                     used.add(slot["slot"])

@@ -119,3 +119,48 @@ def test_no_difference_is_a_result_too_and_makes_no_finding(conn, policy):
     out = experiments.conclude(conn, policy, exp, _exp_rows(need, need, 0.0, seed=3))
     assert out["status"] == "no_difference" and out["finding_id"] is None
     assert experiments.concluded_for(conn, cid)[0]["result"]["status"] == "no_difference"
+
+
+# --- review fixes -------------------------------------------------------------------------------
+
+def test_concluding_twice_records_one_finding(conn, policy):
+    cid = creator(conn, publish_mode="simulated")
+    _finding(conn, cid, "attribute:lead=personality")
+    experiments.open_from_findings(conn, policy, cid)
+    exp = experiments.open_for(conn, cid)[0]
+    rows = _exp_rows(exp["min_sample"], exp["min_sample"], 0.8)
+    assert experiments.conclude(conn, policy, exp, rows)["status"] == "confirmed"
+    assert experiments.conclude(conn, policy, exp, rows) is None          # a rerun with the stale row in hand
+    assert len(evidence.findings(conn, mode="sandbox", creator_id=cid, grades=("proven",))) == 1
+
+
+def test_a_creator_who_goes_live_starts_fresh_experiments(conn, policy):
+    cid = creator(conn, publish_mode="simulated")
+    _finding(conn, cid, "attribute:lead=personality")
+    experiments.open_from_findings(conn, policy, cid)
+    conn.execute("UPDATE creators SET publish_mode = 'instagram' WHERE id = %s", (cid,))
+    assert experiments.open_for(conn, cid) == []                          # the sandbox experiment isn't hers now
+    experiments.review(conn, policy, cid)
+    assert conn.execute("SELECT status FROM experiments WHERE creator_id = %s", (cid,)).fetchone()["status"] == "abandoned"
+    evidence.record_finding(conn, scope="creator", creator_id=cid, statement="lead=personality may help",
+                            evidence="observational", grade="tentative", effect=0.4, interval=(0.1, 0.7), n=30,
+                            sources=[{"creator_id": str(cid)}, {"effects": ["attribute:lead=personality"]}])
+    assert len(experiments.open_from_findings(conn, policy, cid)) == 1     # the same effect, tested on real data
+
+
+def test_results_report_power_and_slots_fix_the_platform(conn, policy):
+    cid = creator(conn, publish_mode="simulated")
+    _finding(conn, cid, "attribute:lead=personality")
+    experiments.open_from_findings(conn, policy, cid)
+    slots = experiments.assign(conn, policy, cid, start="2026-11-20", days=3)
+    assert {s["platform"] for s in slots} == {policy.get("scope", "platforms")[0]}
+    exp = experiments.open_for(conn, cid)[0]
+    out = experiments.conclude(conn, policy, exp, _exp_rows(exp["min_sample"], exp["min_sample"], 0.0, seed=3))
+    assert 0 < out["power"] <= 1 and "assigned" in out
+
+
+def test_a_post_nobody_saw_counts_at_the_floor_instead_of_vanishing(policy):
+    from manyworlds.brain import analysis
+    rows = [{"reach": 1000, "post_id": str(i)} for i in range(5)] + [{"reach": 0, "post_id": "z"}]
+    out = analysis.normalise(rows, policy)
+    assert out[-1]["lift"] is not None and out[-1]["lift"] < -5

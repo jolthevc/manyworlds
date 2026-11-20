@@ -222,14 +222,12 @@ def _brain_ops(args, conn, pol) -> int:
         job = queue.enqueue(conn, f"brain.{args.agent}", json.loads(args.payload))
         _print({"job": job, "results": runtime.tick(conn, pol, llm, worker_id=worker_id)})
         return 0
-    while True:   # worker
-        out = runtime.tick(conn, pol, llm, worker_id=worker_id)
-        if out or not args.loop:
-            _print(out)
-        if not args.loop:
-            return 0
-        time.sleep(float(pol.get("brain", "runtime", "loop_seconds", default=30)))
-        pol = policy_mod.load()
+    if not args.loop:   # worker, one tick
+        _print(runtime.tick(conn, pol, llm, worker_id=worker_id))
+        return 0
+    runtime.serve(lambda: db.connect(), policy_mod.load, lambda c, p: Claude(c, p), worker_id=worker_id,
+                  on_output=_print)
+    return 0
 
 def _review(args, conn, pol, llm) -> int:
     import tempfile

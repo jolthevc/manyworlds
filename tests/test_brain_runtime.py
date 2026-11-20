@@ -148,3 +148,58 @@ def test_an_agent_that_keeps_calling_the_llm_is_stopped_at_its_budget(conn, poli
     out = runtime.tick(conn, policy, StubLLM(cost=cap / 4, conn=conn), worker_id="w1")
     assert out[0]["status"] == "failed" and "budget" in out[0]["error"]
     assert budget.spent_today(conn, "echo") <= cap + 1e-9
+
+
+# --- tech debt closed before publishing (2026-11-20) --------------------------------------------
+
+def test_a_key_error_inside_an_agent_is_retried_not_dropped(conn, policy, monkeypatch):
+    job = queue.enqueue(conn, "brain.echo", {})
+
+    def bug(ctx):
+        return {}["missing"]
+    monkeypatch.setattr(agent.get("echo"), "run", bug)
+    out = runtime.tick(conn, policy, StubLLM(conn=conn), worker_id="w1")
+    assert out[0]["status"] == "retry"
+    assert conn.execute("SELECT status FROM jobs WHERE id = %s", (job,)).fetchone()["status"] == "queued"
+
+
+def test_a_crashing_job_does_not_hold_up_the_rest_of_the_tick(conn, policy, monkeypatch):
+    bad = queue.enqueue(conn, "brain.echo", {"crash": True}, priority=5)
+    good = [queue.enqueue(conn, "brain.echo", {"say": i}) for i in range(3)]
+    real = agent.get("echo").run
+
+    def maybe_crash(ctx):
+        if (ctx.job.payload or {}).get("crash"):
+            raise RuntimeError("transient")
+        return real(ctx)
+    monkeypatch.setattr(agent.get("echo"), "run", maybe_crash)
+    out = {r["job"]: r["status"] for r in runtime.tick(conn, policy, StubLLM(conn=conn), worker_id="w1")}
+    assert out[bad] == "retry" and all(out[g] == "done" for g in good)
+
+
+def test_the_brain_worker_reconnects_after_a_dropped_connection(conn, policy, monkeypatch):
+    import psycopg
+    connects, ticks = [], []
+
+    def connect():
+        connects.append(1)
+        return conn
+
+    def fake_tick(c, pol, llm, *, worker_id, now=None):
+        ticks.append(1)
+        if len(ticks) == 1:
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
+        return []
+    monkeypatch.setattr(runtime, "tick", fake_tick)
+    runtime.serve(connect, lambda: policy, lambda c, p: StubLLM(conn=c), worker_id="w1", loops=3, sleep=lambda s: None)
+    assert len(ticks) == 3 and len(connects) == 2        # one reconnect, and the loop kept going
+
+
+def test_the_brain_worker_rebuilds_its_claude_client_when_policy_changes(conn, policy, monkeypatch):
+    import dataclasses
+    versions = iter([policy, policy, dataclasses.replace(policy, version="changed")])
+    built = []
+    monkeypatch.setattr(runtime, "tick", lambda c, p, llm, *, worker_id, now=None: [])
+    runtime.serve(lambda: conn, lambda: next(versions), lambda c, p: built.append(p.version) or StubLLM(conn=c),
+                  worker_id="w1", loops=3, sleep=lambda s: None)
+    assert built == [policy.version, "changed"]

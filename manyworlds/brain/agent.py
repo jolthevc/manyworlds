@@ -44,6 +44,10 @@ class Agent(Protocol):
 REGISTRY: dict[str, Agent] = {}
 
 
+class UnknownAgent(KeyError):
+    """A brain.<name> job for an agent that doesn't exist: permanent, unlike a KeyError inside an agent."""
+
+
 def register(a: Agent) -> Agent:
     REGISTRY[a.name] = a
     return a
@@ -52,7 +56,7 @@ def register(a: Agent) -> Agent:
 def get(name: str) -> Agent:
     from . import agents  # noqa: F401 - registers the agents
     if name not in REGISTRY:
-        raise KeyError(f"no agent named {name!r}")
+        raise UnknownAgent(f"no agent named {name!r}")
     return REGISTRY[name]
 
 
