@@ -12,6 +12,7 @@ pushes an image only when it passes.
 from __future__ import annotations
 
 import importlib
+import os
 import shutil
 import sys
 import tempfile
@@ -103,6 +104,14 @@ assert len(out.hidden_states) == 2, len(out.hidden_states)
     if proc.returncode != 0:
         raise RuntimeError(f"InfiniteTalk's wav2vec encoder failed: {(proc.stderr or proc.stdout)[-1500:]}")
     done.append("wav2vec encoder forward pass")
+
+    # The fp8 path's Marlin kernel must be prebuilt, with the same flags it will be loaded with.
+    import glob
+    import optimum.quanto
+    build = os.path.join(os.path.dirname(optimum.quanto.__file__), "library", "extensions", "cuda", "build")
+    if not glob.glob(os.path.join(build, "*.so")) or os.environ.get("QUANTO_CUDA_ARCH") != "800":
+        raise RuntimeError(f"quanto CUDA kernels are not prebuilt in {build} (or QUANTO_CUDA_ARCH unset)")
+    done.append("quanto fp8 kernels prebuilt")
 
     import numpy as np
     import soundfile as sf
