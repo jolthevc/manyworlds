@@ -464,6 +464,20 @@ llm:
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
     claude-sonnet-5-5: [2.00, 10.00, 0.10, 2.50]
     claude-haiku-5-5:  [0.10, 0.50, 0.01, 0.125]
+  max_output_tokens: 16000
+  # Open-weight models (manyworlds.llm): a role may name one, as `{model: <open model>, fallback: <Claude model>}`.
+  # hosts: OpenAI-compatible endpoints; the key lives in .env/Fly secrets under key_env (never in policy).
+  # open_models: id is the host's model name; usd_per_mtok is [input, output]; vision: accepts images.
+  # Names and prices must be checked on the host's live pricing page before a model is added here.
+  hosts:
+    together:  {base_url: https://api.together.xyz/v1, key_env: TOGETHER_API_KEY, timeout_seconds: 120}
+    deepinfra: {base_url: https://api.deepinfra.com/v1/openai, key_env: DEEPINFRA_API_KEY, timeout_seconds: 120}
+  open_models: {}
+  #   example: {host: deepinfra, id: <host model id>, usd_per_mtok: [0.0, 0.0], vision: false, attempts: 2}
+  # Shadow tests: a share of a role's calls also go to a candidate; compared by `mw llm shadow-report <role>`.
+  #   evaluator: {candidate: <open model>, share: 0.2}
+  shadow: {}
+  shadow_usd_per_day: 1.0
 
 queue:
   lease_seconds: 120           # a worker that stops heartbeating loses its job after this

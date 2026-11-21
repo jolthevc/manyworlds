@@ -53,7 +53,7 @@ def conn(database_url, policy):
         "plans, experiments, theses, creators, research_items, research_runs, decisions, gpu_groups, "
         "markets, clusters, accounts, creator_states, creator_memory, ideas, rubric_versions, evaluations, "
         "findings, allocations, budgets, convictions, publications, simulated_metrics, approvals, events, "
-        "policy_overrides, simulated_findings, leases, provider_charges, launches "
+        "policy_overrides, simulated_findings, leases, provider_charges, launches, llm_shadow "
         "RESTART IDENTITY CASCADE"
     )
     yield c
