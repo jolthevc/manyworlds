@@ -1,0 +1,33 @@
+# Manyworlds control plane on Fly.io: the always-on services that used to run on the laptop
+# (docker compose --profile live). No HTTP service: each process group is a long-running loop.
+# Secrets (DATABASE_URL, R2, Claude, Apify, GPU provider keys) live in `fly secrets`, never here.
+# What actually runs is gated by policy `operations.mode` (paused: only test jobs and bench- batches).
+#
+# Never run two autoscalers: keep `autoscaler` at one machine and the laptop stack down.
+#   fly deploy --remote-only --ha=false   # build on Fly (no local Docker); one machine per group
+#   fly ssh console -C "mw status"
+
+app = "manyworlds-mw"
+primary_region = "iad"     # next to Neon us-east-2
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  MW_POLICY = "policy/default.yaml"
+  LOG_LEVEL = "INFO"
+
+# The image's ENTRYPOINT is `mw`; each command below is its arguments.
+[processes]
+  autoscaler = "autoscale"
+  brain = "brain worker --loop"
+  reviewer = "review --loop"
+  producer = "produce --loop"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[[restart]]
+  policy = "always"
+  retries = 10
