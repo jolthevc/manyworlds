@@ -60,6 +60,13 @@ def conn(database_url, policy):
     c.close()
 
 
+@pytest.fixture(autouse=True)
+def worker_credentials(monkeypatch):
+    """GPU machines need a scoped database login (policy security.worker_database: required); tests that
+    launch machines get a stand-in. test_credentials.py covers the real role."""
+    monkeypatch.setenv("WORKER_DATABASE_URL", "postgresql://mw_worker_login:test@localhost/test")
+
+
 @pytest.fixture()
 def store(tmp_path):
     return LocalStore(tmp_path / "objects")

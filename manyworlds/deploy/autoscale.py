@@ -31,14 +31,11 @@ from datetime import datetime, timedelta, timezone
 from .. import db
 from .. import policy as policy_mod
 from ..policy import Policy
-from . import enforce, scoring
+from . import credentials, enforce, scoring
 from .providers import (LaunchSpec, NoCapacity, Provider, ProviderError, all_providers,
                         image_published, redact)
 
 LEASE = "autoscale.tick"  # name of the lease row, not a tunable
-PASS_THROUGH = ["DATABASE_URL", "STORAGE_URL", "S3_ENDPOINT_URL", "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "HF_TOKEN", "MW_IMAGE_MODEL",
-                "MW_VIDEO_MODEL", "MW_VIDEO_DISTILL_LORA"]
 
 
 class MultiAPI:
@@ -178,7 +175,10 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     max_usd = float(runs.get("max_usd_by_family", {}).get(family, runs.get("default_max_usd", 1.0)))
     name = f"mw-{family}-{p['gpu'].removeprefix('rtx')}-{provider.name}-{uuid.uuid4().hex[:4]}"
     kinds = _family_kinds(policy, family)
-    env = {k: os.environ[k] for k in PASS_THROUGH if os.environ.get(k)}
+    try:
+        env = credentials.worker_env(policy)   # scoped credentials only: the host is not ours
+    except credentials.MissingWorkerCredentials as e:
+        raise ProviderError(str(e)) from None
     # Tunables workers read from the environment, per family then per pool (policy).
     env.update({k: str(v) for k, v in (img.get("env") or {}).items()})
     env.update({k: str(v) for k, v in (p.get("worker_env") or {}).items()})
@@ -229,6 +229,11 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
                             "waiting": {w["kind"]: w["n"] for w in work}})
         return actions
     work = waiting_work(conn, allowed)
+    gaps = credentials.missing(policy)
+    if gaps and work:   # say it once, plainly, instead of as every pool's launch error
+        actions.append({"action": "not_launching", "reason": "worker_credentials", "missing": gaps,
+                        "waiting": {w["kind"]: w["n"] for w in work}})
+        return actions
     for w in work:
         kind = w["kind"]
         if _family(kind) == "fake":

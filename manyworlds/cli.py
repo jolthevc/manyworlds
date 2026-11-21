@@ -61,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="job counts, spend and where GPU money went (72 h)")
     mc = sub.add_parser("machines", help="each GPU machine: billed vs finished work")
     mc.add_argument("--hours", type=float, default=72)
+    wc = sub.add_parser("worker-credentials",
+                        help="create or rotate the GPU machines' scoped database login; prints "
+                             "WORKER_DATABASE_URL=... for piping into `fly secrets import` (never into a terminal)")
+    wc.add_argument("--force", action="store_true", help="rotate even while GPU machines are up (they lose access)")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
@@ -182,6 +186,12 @@ def main(argv: list[str] | None = None) -> int:
                             "FROM posts WHERE creator_id = %s ORDER BY scheduled_for", (cid,)).fetchall())
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
+    elif args.cmd == "worker-credentials":
+        from .deploy import credentials
+        up = conn.execute("SELECT count(*) AS n FROM gpu_groups WHERE stopped_at IS NULL").fetchone()["n"]
+        if up and not args.force:
+            raise SystemExit(f"{up} GPU machine(s) are up and would lose database access; rerun with --force")
+        print(f"WORKER_DATABASE_URL={credentials.rotate_login(conn, os.environ['DATABASE_URL'])}")
     elif args.cmd == "brain":
         return _brain_ops(args, conn, pol)
     elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce"):

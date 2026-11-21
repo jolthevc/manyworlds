@@ -272,6 +272,11 @@ creators:
 # start only for batches with these prefixes. Safety enforcement always runs. Only the owner sets `live`.
 operations: {mode: paused, test_batch_prefixes: [bench-, test-]}
 
+# What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).
+# required: no machine starts without the scoped credential; shared: fall back to the control plane's own.
+# worker_storage is shared until a bucket-scoped R2 token exists (WORKER_AWS_ACCESS_KEY_ID/_SECRET_ACCESS_KEY).
+security: {worker_database: required, worker_storage: shared}
+
 # Master operating budget (spec 6): the Brain allocates inside it; raising it needs the owner.
 budget: {master_usd_per_month: 750, reserve_share: 0.15}
 
