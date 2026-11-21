@@ -1,0 +1,107 @@
+# Build a worker image on Depot (cloud builders, no laptop Docker), smoke-test it, push only if it passes.
+# The cloud version of scripts/build-worker.sh.
+#   git tag worker-image-v21 && git push origin worker-image-v21    # family "image", tag "v21"
+#   or Actions -> build-worker -> Run workflow (family, tag, push)
+# Then set worker_images.<family>.tag in policy. Images are public: the Dockerfiles copy only code and
+# policy, and .dockerignore drops .env. Secrets: DEPOT_TOKEN, DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+name: build-worker
+
+on:
+  push:
+    tags: ["worker-*-v*"]
+  workflow_dispatch:
+    inputs:
+      family: {description: "image, train or talk", required: true, default: image}
+      tag: {description: "e.g. v21", required: true}
+      push: {description: "push after the smoke test passes", type: boolean, default: true}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-worker-${{ github.ref }}-${{ inputs.family }}
+  cancel-in-progress: false
+
+env:
+  DEPOT_PROJECT: 38nnjttn2q
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve family and tag
+        id: what
+        env:
+          IN_FAMILY: ${{ inputs.family }}
+          IN_TAG: ${{ inputs.tag }}
+          IN_PUSH: ${{ inputs.push }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "push" ]; then          # worker-<family>-<tag>
+            rest="${REF_NAME#worker-}"; family="${rest%%-*}"; tag="${rest#*-}"; push=true
+          else
+            family="$IN_FAMILY"; tag="$IN_TAG"; push="$IN_PUSH"
+          fi
+          case "$family" in
+            image) file=docker/worker.Dockerfile; args="EXTRA=image" ;;
+            train) file=docker/worker-train.Dockerfile; args="" ;;
+            talk)  file=docker/worker-talk.Dockerfile; args="" ;;
+            *) echo "::error::unknown family $family"; exit 2 ;;
+          esac
+          case "$tag" in v[0-9]*) ;; *) echo "::error::tag must look like v21, got $tag"; exit 2 ;; esac
+          # The smoke test runs as one extra build step on top of the real image; Depot's layer cache
+          # makes the pushed build below reuse every layer, so it costs seconds, not a second build.
+          cp "$file" smoke.Dockerfile
+          printf '\nRUN python -m manyworlds.worker.smoke %s\n' "$family" >> smoke.Dockerfile
+          { echo "family=$family"; echo "file=$file"; echo "args=$args"; echo "push=$push"
+            echo "image=mw-worker-$family:$tag"; } >> "$GITHUB_OUTPUT"
+
+      - uses: depot/setup-action@v1
+
+      - name: Build and smoke-test (no push)
+        uses: depot/build-push-action@v1
+        with:
+          project: ${{ env.DEPOT_PROJECT }}
+          token: ${{ secrets.DEPOT_TOKEN }}
+          context: .
+          file: smoke.Dockerfile
+          build-args: ${{ steps.what.outputs.args }}
+          platforms: linux/amd64
+          push: false
+
+      - name: Log in to Docker Hub
+        if: steps.what.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push
+        if: steps.what.outputs.push == 'true'
+        uses: depot/build-push-action@v1
+        with:
+          project: ${{ env.DEPOT_PROJECT }}
+          token: ${{ secrets.DEPOT_TOKEN }}
+          context: .
+          file: ${{ steps.what.outputs.file }}
+          build-args: ${{ steps.what.outputs.args }}
+          platforms: linux/amd64
+          push: true
+          tags: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.what.outputs.image }}
+
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.what.outputs.image }}
+          PUSHED: ${{ steps.what.outputs.push }}
+          FAMILY: ${{ steps.what.outputs.family }}
+        run: |
+          if [ "$PUSHED" = "true" ]; then
+            echo "Pushed $IMAGE. Set worker_images.$FAMILY.tag in policy/default.yaml to use it." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Smoke test passed for $IMAGE (not pushed)." >> "$GITHUB_STEP_SUMMARY"
+          fi
