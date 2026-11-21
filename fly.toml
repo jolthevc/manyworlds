@@ -23,6 +23,9 @@ primary_region = "iad"     # next to Neon us-east-2
   brain = "brain worker --loop"
   reviewer = "review --loop"
   producer = "produce --loop"
+  # Jobs a hosted API renders (no GPU): it polls the host and downloads the result. While operations are
+  # paused it takes only test and benchmark batches, like the GPU machines.
+  hosted = "worker --pool hosted --kinds hosted.video"
 
 [[vm]]
   size = "shared-cpu-1x"

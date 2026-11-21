@@ -58,9 +58,10 @@ def enqueue(
 
 
 def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str | None = None,
-          exclude: list | None = None, only_test: bool = False) -> Job | None:
+          exclude: list | None = None, only_test: bool = False, batches: list[str] | None = None) -> Job | None:
     """Atomically take the next runnable job of the given kinds, or None. Jobs pinned to
-    other pools are left for workers in those pools."""
+    other pools are left for workers in those pools. `batches` (SQL LIKE patterns) limits it to those
+    batches: while operations are paused, only tests and benchmarks run (manyworlds.operations)."""
     row = conn.execute(
         """
         UPDATE jobs SET status = 'running',
@@ -76,6 +77,7 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
               AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
               AND NOT (id = ANY(%(exclude)s::uuid[]))
               AND (NOT %(only_test)s OR payload->>'test' = 'true')
+              AND (%(batches)s::text[] IS NULL OR batch LIKE ANY(%(batches)s::text[]))
             ORDER BY priority DESC, created_at
             FOR UPDATE SKIP LOCKED
             LIMIT 1
@@ -83,7 +85,7 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
         RETURNING id, kind, payload, attempts, max_attempts, creator_id, batch
         """,
         {"worker": worker_id, "lease": lease_seconds, "kinds": kinds, "pool": pool, "exclude": list(exclude or []),
-         "only_test": only_test},
+         "only_test": only_test, "batches": batches},
     ).fetchone()
     return Job(**row) if row else None
 

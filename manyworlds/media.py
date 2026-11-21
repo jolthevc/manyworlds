@@ -40,3 +40,25 @@ def concat(paths: list[Path], out: Path, *, timeout: float = 600) -> Path:
             return out
         error = (r.stderr or "")[-500:]
     raise RuntimeError(f"ffmpeg could not join {len(paths)} segments: {error}")
+
+
+def frame_count(path: Path) -> int:
+    import imageio_ffmpeg
+    return int(imageio_ffmpeg.count_frames_and_secs(str(path))[0])
+
+
+def keyframes(video: Path, workdir: Path, n: int, *, timeout: float = 120) -> list[tuple[Path, int, int]]:
+    """`n` frames spread over the clip, ending on its last (the video gate's keyframes), as JPEGs:
+    [(path, frame index, total frames)]. Plain ffmpeg, so it runs where there is no GPU stack (hosted video)."""
+    from .worker.handlers.video_wan import keyframe_indices
+    total = frame_count(video)
+    out = []
+    for i, idx in enumerate(keyframe_indices(total, n)):
+        p = Path(workdir) / f"keyframe_{i}.jpg"
+        r = subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-vf", f"select=eq(n\,{idx})",
+                            "-vsync", "0", "-frames:v", "1", "-q:v", "3", str(p)], capture_output=True, text=True,
+                           timeout=timeout)
+        if r.returncode != 0 or not p.exists():
+            raise RuntimeError(f"keyframe {idx} of {video.name}: {r.stderr[-300:]}")
+        out.append((p, idx, total))
+    return out

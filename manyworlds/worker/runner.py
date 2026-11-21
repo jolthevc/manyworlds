@@ -24,7 +24,7 @@ from typing import Any, Callable, Protocol
 
 from psycopg.types.json import Jsonb
 
-from .. import db, ledger, queue
+from .. import db, ledger, operations, queue
 from ..policy import Policy
 from ..storage import ObjectStore
 
@@ -50,6 +50,11 @@ class JobContext:
     job: queue.Job
     workdir: Path
     store: ObjectStore
+    charges: list[dict] = field(default_factory=list)   # hosted API spend, recorded whatever the outcome
+
+    def charge(self, provider: str, usd: float, quantity: float = 1, unit: str = "request") -> None:
+        """A hosted API billed us (a video render, a voice line): into the ledger as `hosted_api`, success or not."""
+        self.charges.append({"provider": provider, "usd": float(usd), "quantity": quantity, "unit": unit})
 
     def fetch(self, uri: str, name: str) -> Path:
         """Download an input (reference image, LoRA) into the job's working directory."""
@@ -214,7 +219,8 @@ class Worker:
             threading.Thread(target=self._watchdog, daemon=True, name="self-stop").start()
         handled, idle_since = 0, time.monotonic()
         while not self._stop.is_set() and (max_jobs is None or handled < max_jobs):
-            job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease, self.pool)
+            job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease, self.pool,
+                              batches=operations.test_batch_patterns(self.policy))
             if job is None:
                 if idle_exit_seconds is not None and time.monotonic() - idle_since > idle_exit_seconds:
                     break
@@ -283,9 +289,10 @@ class Worker:
         hb.start()
         t0 = time.monotonic()
         outcome, error = "failed", None
+        charges: list[dict] = []
         try:
             with tempfile.TemporaryDirectory(prefix="mw-") as tmp:
-                ctx = JobContext(job=job, workdir=Path(tmp), store=self.store)
+                ctx = JobContext(job=job, workdir=Path(tmp), store=self.store, charges=charges)
                 result = self.handlers[job.kind](job.payload, ctx)
                 # A long job (hours of LoRA training) leaves this connection idle; poolers and
                 # Neon drop idle connections, and losing it here would throw away the result.
@@ -322,6 +329,10 @@ class Worker:
             done.set()
             hb.join(timeout=5)
             self._ensure_conn()
+            for c in charges:
+                ledger.record(self.conn, category="hosted_api", provider=c["provider"], quantity=c["quantity"],
+                              unit=c["unit"], usd=c["usd"], job_id=job.id, attempt_id=attempt_id,
+                              creator_id=job.creator_id, policy_version=self.policy.version)
             self.conn.execute(
                 "UPDATE attempts SET finished_at = now(), gpu_seconds = %s, outcome = %s, error = %s WHERE id = %s",
                 (round(time.monotonic() - t0, 3), outcome, error, attempt_id),
@@ -376,6 +387,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import train_lora as mod
         elif family == "talk":
             from .handlers import talk_infinitetalk as mod
+        elif family == "hosted":         # hosted APIs, on the control plane: no GPU machine
+            from .handlers import hosted_video as mod
         else:
             raise ValueError(f"no handler family for {kind!r}")
         found[kind] = mod.HANDLERS[kind]

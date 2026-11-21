@@ -221,7 +221,10 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)),
                "seed": _seed(post, 500, attempt),
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
-    return queue.enqueue(conn, _cfg(policy).get("video_kind", "video.wan_i2v"), payload, creator_id=post["creator_id"],
+    kind = _cfg(policy).get("video_kind", "video.wan_i2v")
+    if kind.startswith("hosted."):   # a hosted API renders it (generation.hosted_video): no GPU machine
+        payload["params"] = dict(policy.get("generation", "hosted_video", default={}) or {})
+    return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
 
 def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *,

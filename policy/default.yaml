@@ -51,6 +51,9 @@ gpu_pools:
   # Price from 2026-11-20; the machine is metered at what RunPod reports once it runs.
   runpod_secure_l40s: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
+  # Hosted APIs (Together): jobs run on the control plane (fly.toml process `hosted`); the host bills per output
+  # (ledger `hosted_api`), so no machine is rented and nothing idles.
+  hosted:            {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
 
 # Job kinds and the pools allowed to run them. The autoscaler orders them by measured cost
 # per accepted output (autoscale.scoring); this order only breaks ties and decides which
@@ -72,6 +75,8 @@ job_kinds:
   train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
   talk.infinitetalk: {pools: [vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_secure_l40s, runpod_comm_3090], outputs_per_job: 1}
+  # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
+  hosted.video:    {pools: [hosted], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -234,6 +239,10 @@ generation:
   talk_profiles:
     fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: [],
            lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}}
+  # Story clips on a hosted API (production.video_kind: hosted.video): Wan 2.7 i2v on Together, $0.10 per 5 s clip
+  # (catalog 2026-11-21; the job records the host's own cost). Same approved photo as first frame, 9:16 720P.
+  hosted_video: {host: together, model: Wan-AI/wan2.7-i2v, seconds: 5, resolution: 720P, ratio: "9:16",
+                 usd_per_clip: 0.10, poll_seconds: 10, timeout_s: 900}
   # Long talking videos (manyworlds.talk_segments, production): a script longer than one segment is split at
   # sentence boundaries, each segment rendered and judged as its own talk job, then joined by the producer.
   # join: cut = every segment from the approved photo, in parallel, joined with jump cuts (talking-head style);
