@@ -30,7 +30,8 @@ SPEECH_LINES = [
 
 
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
-            extra: dict[str, Any] | None = None, pools: list[str] | None = None, profile: str | None = None) -> str:| None = None, pools: list[str] | None = None) -> str:
+            extra: dict[str, Any] | None = None, pools: list[str] | None = None,
+            profile: str | None = None) -> str:
     if kind.startswith("talk.") and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("a talk benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
