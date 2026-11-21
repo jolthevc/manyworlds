@@ -85,16 +85,18 @@ def _family_kinds(policy: Policy, family: str) -> list[str]:
     return [k for k in policy.get("job_kinds", default={}) if _family(k) == family]
 
 
-def waiting_work(conn) -> list[dict]:
-    """Job kinds (and pinned pools) that have runnable jobs no worker holds."""
+def waiting_work(conn, batches: list[str] | None = None) -> list[dict]:
+    """Job kinds (and pinned pools) that have runnable jobs no worker holds; with `batches` (LIKE patterns),
+    only jobs in those batches (paused operations: tests and benchmarks only)."""
     return conn.execute(
         """
         SELECT kind, pools, count(*) AS n, min(created_at) AS oldest, max(priority) AS top_priority,
                bool_and(coalesce(batch, '') LIKE 'post-%%') AS production FROM jobs
         WHERE attempts < max_attempts
           AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
+          AND (%(b)s::text[] IS NULL OR coalesce(batch, '') LIKE ANY(%(b)s::text[]))
         GROUP BY kind, pools ORDER BY kind
-        """).fetchall()
+        """, {"b": batches}).fetchall()
 
 
 def _per_family(cfg: dict, key: str, family: str, default):
@@ -218,13 +220,15 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
     daily_cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
     actions: list[dict] = []
     unfunded: set[str] = set()   # providers whose account is out of credit this tick
+    from .. import operations
+    allowed = operations.test_batch_patterns(policy)   # None when live; else tests and benchmarks only
     if enforce.billed_today(conn) >= daily_cap:
-        work = waiting_work(conn)
+        work = waiting_work(conn, allowed)
         if work:
             actions.append({"action": "not_launching", "reason": "daily_gpu_budget",
                             "waiting": {w["kind"]: w["n"] for w in work}})
         return actions
-    work = waiting_work(conn)
+    work = waiting_work(conn, allowed)
     for w in work:
         kind = w["kind"]
         if _family(kind) == "fake":

@@ -58,7 +58,7 @@ def enqueue(
 
 
 def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str | None = None,
-          exclude: list | None = None) -> Job | None:
+          exclude: list | None = None, only_test: bool = False) -> Job | None:
     """Atomically take the next runnable job of the given kinds, or None. Jobs pinned to
     other pools are left for workers in those pools."""
     row = conn.execute(
@@ -75,13 +75,15 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
               AND (pools IS NULL OR %(pool)s::text = ANY(pools))
               AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
               AND NOT (id = ANY(%(exclude)s::uuid[]))
+              AND (NOT %(only_test)s OR payload->>'test' = 'true')
             ORDER BY priority DESC, created_at
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
         RETURNING id, kind, payload, attempts, max_attempts, creator_id, batch
         """,
-        {"worker": worker_id, "lease": lease_seconds, "kinds": kinds, "pool": pool, "exclude": list(exclude or [])},
+        {"worker": worker_id, "lease": lease_seconds, "kinds": kinds, "pool": pool, "exclude": list(exclude or []),
+         "only_test": only_test},
     ).fetchone()
     return Job(**row) if row else None
 

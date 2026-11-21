@@ -330,40 +330,52 @@ def brain_steps(conn, pol) -> dict:
     return out
 
 
+def produce_tick(conn, pol, llm=None) -> dict:
+    """One producer tick. With `operations.mode: paused` (the default) it does nothing: no planning, no
+    production, no publishing (manyworlds.operations)."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    from . import operations, production
+    from .brain import planner
+    from .worker import models
+
+    if not operations.is_live(pol):
+        return {"operations": "paused"}
+    if pol.get("brain", "showrunner", "enabled", default=False):
+        # The showrunner plans (brain worker); here: ask for batches, schedule evaluated ones, events, launches.
+        steps = brain_steps(conn, pol)
+        planned = steps["planned"] + ([{"brain_errors": steps["errors"]}] if steps["errors"] else [])
+    else:
+        planned = planner.ensure_plans(conn, pol, llm)
+    result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
+              "planned": planned, **production.advance(conn, pol)}
+    from .publish import scheduler
+    try:
+        published = scheduler.publish_due(conn, pol, now=_dt.now(_tz.utc))
+    except Exception as e:  # noqa: BLE001 - publishing must never take production down
+        published = {"error": f"{type(e).__name__}: {e}"[:300]}
+    if any(published.get(k) for k in ("simulated", "published", "paused", "held", "errors", "failed", "error")):
+        result["published"] = published
+    try:   # real metrics for published posts, at the observation ages (nothing to do until an account exists)
+        from .publish import metrics
+        collected = metrics.collect(conn, pol)
+        if collected["snapshots"] or collected["errors"]:
+            result["metrics"] = collected
+    except Exception as e:  # noqa: BLE001 - metrics must never stop production or publishing
+        result["metrics"] = {"error": f"{type(e).__name__}: {e}"[:300]}
+    return result
+
+
 def _produce(args, conn, pol, llm) -> int:
     import time
 
-    from . import production
-    from .brain import planner
-
+    last = None
     while True:
-        from .worker import models
-        if pol.get("brain", "showrunner", "enabled", default=False):
-            # The showrunner plans (brain worker); here: ask for batches, schedule evaluated ones, events, launches.
-            steps = brain_steps(conn, pol)
-            planned = steps["planned"] + ([{"brain_errors": steps["errors"]}] if steps["errors"] else [])
-        else:
-            planned = planner.ensure_plans(conn, pol, llm)
-        result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
-                  "planned": planned, **production.advance(conn, pol)}
-        from datetime import datetime as _dt, timezone as _tz
-
-        from .publish import scheduler
-        try:
-            published = scheduler.publish_due(conn, pol, now=_dt.now(_tz.utc))
-        except Exception as e:  # noqa: BLE001 - publishing must never take production down
-            published = {"error": f"{type(e).__name__}: {e}"[:300]}
-        if any(published.get(k) for k in ("simulated", "published", "paused", "held", "errors", "failed", "error")):
-            result["published"] = published
-        try:   # real metrics for published posts, at the observation ages (nothing to do until an account exists)
-            from .publish import metrics
-            collected = metrics.collect(conn, pol)
-            if collected["snapshots"] or collected["errors"]:
-                result["metrics"] = collected
-        except Exception as e:  # noqa: BLE001 - metrics must never stop production or publishing
-            result["metrics"] = {"error": f"{type(e).__name__}: {e}"[:300]}
-        if any(result.values()) or not args.loop:
+        result = produce_tick(conn, pol, llm)
+        paused = result == {"operations": "paused"}
+        if not args.loop or (paused and last != "paused") or (not paused and any(result.values())):
             _print(result)
+        last = "paused" if paused else "live"
         if not args.loop:
             return 0
         time.sleep(float(pol.get("production", "loop_seconds", default=120)))

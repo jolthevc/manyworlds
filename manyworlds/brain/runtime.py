@@ -18,7 +18,7 @@ import psycopg
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from .. import queue
+from .. import operations, queue
 from ..policy import Policy
 from ..worker.runner import NonRetryable
 from . import agent as agent_mod
@@ -134,8 +134,9 @@ def tick(conn, policy: Policy, llm, *, worker_id: str, now: datetime | None = No
     for _ in range(int(cfg.get("max_jobs_per_tick", 10))):
         kinds = _waiting_kinds(conn)
         # A job retried in this tick waits for the next one; the others still run (it used to end the tick).
+        # Paused operations (the default): only jobs marked as tests run (manyworlds.operations).
         job = queue.claim(conn, kinds, worker_id, int(cfg.get("lease_seconds", 600)), pool=POOL,
-                          exclude=list(ran)) if kinds else None
+                          exclude=list(ran), only_test=not operations.is_live(policy)) if kinds else None
         if job is None:
             break
         ran.add(job.id)

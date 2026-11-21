@@ -31,8 +31,17 @@ def database_url():
 
 
 @pytest.fixture(scope="session")
-def policy():
+def raw_policy():
     return policy_mod.load(ROOT / "policy" / "default.yaml")
+
+
+@pytest.fixture(scope="session")
+def policy(raw_policy):
+    """The shipped policy with operations live: tests describe what runs once the owner turns it on
+    (paused behaviour is tested explicitly in test_operations.py)."""
+    import dataclasses
+    return dataclasses.replace(raw_policy, body={**raw_policy.body, "operations": {
+        **(raw_policy.body.get("operations") or {}), "mode": "live"}})
 
 
 @pytest.fixture()
