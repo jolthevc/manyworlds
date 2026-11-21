@@ -273,6 +273,10 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             actions.append({"action": "cooldown", "kind": kind, "after": recent["name"],
                             "reason": recent["stop_reason"]})
             continue
+        streak = no_output_streak(conn, policy, _family(kind), now)
+        if streak:   # pinned benchmarks too: they are what ran the talk loop of 2026-11-20
+            actions.append({"action": "not_launching", "reason": "no_output_streak", "kind": kind, **streak})
+            continue
         # Pinned work (benchmarks) runs where it was pinned; everything else goes to the
         # pool with the lowest measured cost per accepted output, skipping paused pools.
         order, scores = (pools, []) if pinned else scoring.launch_order(conn, policy, _family(kind), pools, now)
@@ -305,6 +309,30 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         else:
             actions.append({"action": "no_capacity", "kind": kind, "waiting": w["n"], "tried": tried})
     return actions
+
+
+def no_output_streak(conn, policy: Policy, family: str, now: datetime) -> dict | None:
+    """The family's last `machines` machines (within `hours`, on the current worker image) all tried work and
+    finished none, or never started: renting another would most likely fail the same way. Seven talk machines
+    in a row did exactly that on 2026-11-20. A new worker image tag, or the window passing, gives it a new try."""
+    cfg = policy.get("autoscale", "no_output_guard", default={}) or {}
+    n, hours = int(cfg.get("machines", 0)), float(cfg.get("hours", 24))
+    if n <= 0:
+        return None
+    img = policy.get("worker_images", family) or {}
+    image = f"{img.get('image')}:{img.get('tag', 'latest')}" if img else None
+    rows = conn.execute(
+        """SELECT g.name, g.image, g.stop_reason,
+                  count(a.id) FILTER (WHERE a.outcome = 'done') AS done, count(a.id) AS tried
+           FROM gpu_groups g LEFT JOIN attempts a ON a.gpu_group = g.name
+           WHERE g.family = %s AND g.stopped_at > %s AND coalesce(g.stop_reason, '') <> 'manual'
+           GROUP BY g.name, g.image, g.stop_reason, g.stopped_at
+           ORDER BY g.stopped_at DESC LIMIT %s""", (family, now - timedelta(hours=hours), n)).fetchall()
+    failed = [r for r in rows if not r["done"] and (r["tried"] or r["stop_reason"] == "never_started")
+              and (image is None or r["image"] in (None, image))]
+    if len(rows) < n or len(failed) < n:
+        return None
+    return {"machines": [r["name"] for r in failed], "image": image, "hours": hours}
 
 
 def _brief(scores: list[dict]) -> list[dict]:

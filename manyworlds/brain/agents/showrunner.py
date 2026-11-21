@@ -160,7 +160,8 @@ class Showrunner:
         creator_id, start = p["creator_id"], date.fromisoformat(p["start"])
         days = int(ctx.policy.get("brain", "showrunner", "days", default=3))
         prompt, meta = _prompt(ctx, creator_id, start, days)
-        out = ctx.llm.structured("brain", system=SYSTEM, content=prompt, schema=IdeaBatch,
+        out = ctx.llm.structured(ctx.policy.get("brain", "showrunner", "role", default="brain"), system=SYSTEM,
+                                 content=prompt, schema=IdeaBatch,
                                  effort=ctx.policy.get("brain", "showrunner", "effort", default="medium"),
                                  creator_id=creator_id)
         kept, dropped = [], []

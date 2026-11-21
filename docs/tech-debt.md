@@ -1,3 +1,5 @@
+| The evaluator's agreement check runs on Opus at ~$0.15 a call: 22 calls were 40% of evaluator spend (2026-11-21) | shadow `evaluator` candidates first; then move `evaluator_check` to a different-family model or lower `check_rate` | policy `llm.roles.evaluator_check`, `brain.evaluation.check_rate` |
+| The no-output guard counts a machine as failed when it tried work and finished none; a machine cut off by an interruptible host mid-first-job also counts | at worst it holds a family until the window passes or a new image tag ships, and tells the owner | `manyworlds/deploy/autoscale.py` |
 # Technical debt
 
 Known issues we chose not to fix yet, with when they must be fixed. "Before X" means the

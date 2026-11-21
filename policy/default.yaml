@@ -58,14 +58,15 @@ gpu_pools:
 # SaladCloud A5000s were dropped too (2026-11-13): SaladCloud's 3090 and 4090 cost $0.023-0.025 per
 # accepted image against Vast 3090's $0.0027 (same Windows consumer nodes), so its trial isn't worth it.
 job_kinds:
-  image.zimage:    {pools: [vast_3090, vast_4090, salad_batch_3090, salad_batch_4090, runpod_comm_3090], outputs_per_job: 4}
+  # salad_batch_3090 is out (2026-11-21): its machines never finished a job (attempt timeouts, never started).
+  image.zimage:    {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 4}
   image.mirror:    {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 0}   # copies model weights into R2 once
   image.narrated:  {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # CPU edit (voice + ffmpeg) on image machines
   # Wan 2.2 TI2V-5B. RunPod 3090 measured 2026-11-14: 720p x 5 s in 859 s (cpu offload + tiled VAE), ~$0.05.
   video.wan_i2v:   {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 1}
   video.mirror:    {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 0}
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
-  train.lora:      {pools: [vast_3090, vast_4090, salad_batch_3090], outputs_per_job: 1}
+  train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
   talk.infinitetalk: {pools: [vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_comm_3090], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
@@ -123,10 +124,14 @@ autoscale:
   # Production work (made lead_hours ahead) waits to share one machine: each machine bills a boot,
   # model load and idle tail (~7-10 min) however few jobs it runs. Lab work and benchmarks start at once.
   batch:
-    min_work_minutes: {default: 10, video: 25, train: 0, talk: 25}   # start once this much work waits (median job times)...
+    # image 20: a Salad image machine bills boot + a 20-min idle tail around ~20 min of work (39% busy, 2026-11-21)
+    min_work_minutes: {default: 10, image: 20, video: 25, train: 0, talk: 25}   # start once this much work waits (median job times)...
     max_wait_minutes: {default: 180}                       # ...or once the oldest job has waited this long
     urgent_priority: 1                                     # jobs at this priority or above never wait
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
+  # The last `machines` machines of a family (current worker image, within `hours`) all tried work and finished
+  # none: stop renting that family and tell the owner. A new image tag or the window passing re-arms it.
+  no_output_guard: {machines: 3, hours: 24}
   # CN: huggingface.co is unreachable there, so workers that fetch weights at start never begin.
   runpod_cuda_versions: ["12.8", "12.9", "13.0"]   # versions RunPod accepts in allowedCudaVersions
   # Vast hosts charge per GB downloaded (set per host, 20x apart): $29 of a $40 bill (2026-11-12..20) was boot
@@ -360,7 +365,7 @@ brain:
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
   evaluation: {samples: 3, check_rate: 0.1, check_samples: 1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
-  showrunner: {enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
+  showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
   # graded tentative only past a Bonferroni-corrected interval at family-wide alpha with min_n_tentative posts.
   analysis: {target_age_s: 259200, min_n_any: 8, min_n_tentative: 20, min_group: 5, min_group_tentative: 10, bootstrap: 300, alpha: 0.1,
@@ -462,6 +467,7 @@ llm:
     research: claude-opus-5-5
     creator: claude-opus-5-5
     judge: claude-opus-5-5
+    showrunner: claude-opus-5-5   # batches of post ideas, captions and scripts (brain/agents/showrunner.py)
     evaluator: claude-sonnet-5-5     # creative scoring at volume (manyworlds.brain.evaluation)
     evaluator_check: claude-opus-5-5 # scores a sample of the same items, to measure agreement
     review: claude-haiku-5-5     # first-pass image screen (manyworlds.review); every image
@@ -478,11 +484,26 @@ llm:
   hosts:
     together:  {base_url: https://api.together.xyz/v1, key_env: TOGETHER_API_KEY, timeout_seconds: 120}
     deepinfra: {base_url: https://api.deepinfra.com/v1/openai, key_env: DEEPINFRA_API_KEY, timeout_seconds: 120}
-  open_models: {}
-  #   example: {host: deepinfra, id: <host model id>, usd_per_mtok: [0.0, 0.0], vision: false, attempts: 2}
-  # Shadow tests: a share of a role's calls also go to a candidate; compared by `mw llm shadow-report <role>`.
-  #   evaluator: {candidate: <open model>, share: 0.2}
-  shadow: {}
+  # Probed live on Together 2026-11-21 (JSON schema valid; vision where marked). Qwen models are refused there:
+  # Together forwards them to a third-party provider unless the account opts in, so they stay out.
+  open_models:
+    kimi-k3.1-pro:       {host: together, id: moonshotai/Kimi-K3.1-Pro, usd_per_mtok: [2.00, 10.00], vision: true}
+    glm-5.3:             {host: together, id: zai-org/GLM-5.3, usd_per_mtok: [1.40, 4.40]}
+    glm-5.3-flash:       {host: together, id: zai-org/GLM-5.3-Flash, usd_per_mtok: [0.15, 0.50]}
+    deepseek-v4.1-flash: {host: together, id: deepseek-ai/DeepSeek-V4.1-Flash, usd_per_mtok: [0.30, 1.20]}
+    minimax-m3.1-flash:  {host: together, id: MiniMaxAI/MiniMax-M3.1-Flash, usd_per_mtok: [0.15, 0.60]}
+    nemotron-3.5-vl:     {host: together, id: nvidia/NVIDIA-Nemotron-3.5-Super-VL, usd_per_mtok: [0.15, 0.50], vision: true}
+  #   shape: {host: deepinfra, id: <host model id>, usd_per_mtok: [0.0, 0.0], vision: false, attempts: 2}
+  # Shadow tests: a share of a role's calls also go to one of its candidates (open or Claude); compared by
+  # `mw llm shadow-report <role>`. No role switches model until its report shows it holds up (owner 2026-11-21:
+  # the best model per job at the lowest cost). Candidates were picked from the 2026-11-21 model review.
+  shadow:
+    showrunner: {candidates: [kimi-k3.1-pro, glm-5.3, claude-sonnet-5-5], share: 0.5}
+    brain:      {candidates: [kimi-k3.1-pro, glm-5.3], share: 0.5}          # strategist, analyst
+    creator:    {candidates: [kimi-k3.1-pro], share: 1.0}                   # creator bibles and profiles (rare)
+    evaluator:  {candidates: [claude-haiku-5-5, nemotron-3.5-vl, kimi-k3.1-pro], share: 0.3}
+    review:     {candidates: [nemotron-3.5-vl], share: 0.2}
+    judge:      {candidates: [kimi-k3.1-pro], share: 1.0}
   shadow_usd_per_day: 1.0
 
 queue:

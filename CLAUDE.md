@@ -93,6 +93,9 @@ applies migrations at start. Never start a second autoscaler anywhere else.
   Cloud-native: control plane on Fly (`manyworlds-mw`, iad), tests and image builds (Depot) in GitHub Actions; the
   laptop runs nothing. Hardening: scoped worker database login, owner alerts (ntfy), open-weight LLM routing with
   fallback and shadow tests, long talking videos in segments (cut or chain) joined by the producer.
+- 2026-11-21 evening: model review (`docs/research/2026-11-21-model-landscape.md`) and owner model decisions (roadmap);
+  open-weight candidates live on Together and shadow-tested per role (no role switches without evidence); a family whose
+  last 3 machines finished nothing stops renting (`autoscale.no_output_guard`); Salad 3090 out of the image pools.
 - Next: owner sets `NTFY_TOPIC`, `FLY_API_TOKEN` (GitHub), `WORKER_DATABASE_URL` (via `mw worker-credentials`), an
   inference account for open models; benchmark talking video (8-step distill LoRA, >48 GB-RAM host) only on the
   owner's go; connect Maren's account (M4 live); M9 portfolio allocation; Brain chat (needs the web layer).

@@ -38,9 +38,11 @@ def raw_policy():
 @pytest.fixture(scope="session")
 def policy(raw_policy):
     """The shipped policy with operations live: tests describe what runs once the owner turns it on
-    (paused behaviour is tested explicitly in test_operations.py)."""
+    (paused behaviour is tested explicitly in test_operations.py). Shadow tests are off: they sample at
+    random and would add candidate calls to tests that count calls (test_llm.py turns them on itself)."""
     return policy_mod.from_dict({**raw_policy.body, "operations": {
-        **(raw_policy.body.get("operations") or {}), "mode": "live"}})
+        **(raw_policy.body.get("operations") or {}), "mode": "live"},
+        "llm": {**raw_policy.body["llm"], "shadow": {}}})
 
 
 @pytest.fixture()

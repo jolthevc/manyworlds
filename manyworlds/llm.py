@@ -36,6 +36,7 @@ from .policy import Policy
 
 T = TypeVar("T", bound=BaseModel)
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+USER_AGENT = "manyworlds/1.0"
 SHADOW_AGENT = "shadow"     # ledger tag for shadow calls: outside every agent's budget and every output's cost
 
 log = logging.getLogger("manyworlds.llm")
@@ -73,7 +74,9 @@ def _post_json(url: str, body: dict, key: str, timeout: float) -> dict:
     """POST JSON with a bearer key (in the header, never the URL). Errors carry no key."""
     from .deploy.providers import redact
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+                                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                                          # Together sits behind a firewall that refuses urllib's default agent (403)
+                                          "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
@@ -257,9 +260,14 @@ class LLM:
     # --- shadow testing ------------------------------------------------------------------------------------
     def _shadow(self, role: str, model: str, out: BaseModel, primary_usd: float, **call) -> None:
         cfg = self.policy.get("llm", "shadow", role)
-        if not cfg or cfg.get("candidate") in (None, model) or random.random() >= float(cfg.get("share", 0)):
+        if not cfg:
             return
-        candidate = str(cfg["candidate"])
+        # One candidate or several (`candidates`): each sampled call goes to one of them, so a role can try
+        # several models side by side against the same primary.
+        pool = [str(c) for c in (cfg.get("candidates") or [cfg.get("candidate")]) if c and str(c) != model]
+        if not pool or random.random() >= float(cfg.get("share", 0)):
+            return
+        candidate = random.choice(pool)
         try:
             cap = float(self.policy.get("llm", "shadow_usd_per_day", default=1.0))
             start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)

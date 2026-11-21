@@ -83,8 +83,8 @@ def test_falls_back_when_no_capacity_and_skips_unconfigured(conn, policy):
     queue.enqueue(conn, "train.lora", {})
     ps = providers(vast=FakeProvider("vast", capacity=False), runpod=FakeProvider("runpod", configured=False))
     actions = autoscale.tick(conn, policy, ps, now=T0)
-    # vast_3090 none, runpod unconfigured, vast_4090 none, runpod skipped -> salad_batch_3090
-    assert [a["pool"] for a in actions if a.get("action") == "launched"] == ["salad_batch_3090"]
+    # vast_3090 none, vast_4090 none, runpod unconfigured -> salad_batch_4090
+    assert [a["pool"] for a in actions if a.get("action") == "launched"] == ["salad_batch_4090"]
     assert conn.execute("SELECT count(*) n FROM gpu_groups").fetchone()["n"] == 1   # failed tries left no rows
 
 
@@ -262,7 +262,7 @@ def test_a_little_production_work_waits_to_share_one_machine(conn, policy):
 
 
 def test_enough_production_work_starts_a_machine_at_once(conn, policy):
-    need = policy.get("autoscale", "batch", "min_work_minutes", "default")
+    need = policy.get("autoscale", "batch", "min_work_minutes", "image")
     secs = policy.get("autoscale", "scale", "default_job_seconds", "image")
     for i in range(int(need * 60 / secs) + 1):
         queue.enqueue(conn, "image.zimage", {}, batch=f"post-{i}")

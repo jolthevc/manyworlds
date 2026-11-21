@@ -177,3 +177,50 @@ def test_compare_matches_fields_inside_lists():
     c = shadow.compare(a, b)
     assert c["scores[0].value"] == {"kind": "number", "diff": 1.0, "within": True}
     assert c["scores[1].dim"] == {"kind": "label", "agree": True}
+
+
+def test_a_role_can_shadow_several_candidates_and_never_its_own_model(conn, open_policy):
+    llm_cfg = {**open_policy.body["llm"], "roles": {**open_policy.body["llm"]["roles"], "evaluator": "claude-sonnet-5-5"},
+               "shadow": {"evaluator": {"candidates": ["open-small", "claude-sonnet-5-5", "open-vision"], "share": 1.0}}}
+    pol = policy_mod.from_dict({**open_policy.body, "llm": llm_cfg})
+    host = FakeHost(*[{"score": 6, "passed": True, "label": "x"}] * 40)
+    llm = LLM(conn, pol, client=FakeAnthropic(), post=host)
+    for _ in range(40):
+        llm.structured("evaluator", system="s", content="c", schema=Verdict)
+    tried = {r["candidate_model"] for r in conn.execute("SELECT candidate_model FROM llm_shadow")}
+    assert tried == {"open-small", "open-vision"}
+
+
+def test_open_model_requests_send_a_user_agent(monkeypatch):
+    # Together's firewall answers urllib's default agent with 403 (found on the live host, 2026-11-21).
+    import urllib.request
+
+    from manyworlds import llm as llm_mod
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def urlopen(req, timeout):
+        seen.update(req.headers)
+        return Resp()
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    llm_mod._post_json("https://open.example/v1/chat/completions", {}, "k", 5)
+    assert seen.get("User-agent") == llm_mod.USER_AGENT
+
+
+def test_every_shipped_shadow_candidate_is_a_priced_model(raw_policy):
+    llm_cfg = raw_policy.body["llm"]
+    for role, cfg in (llm_cfg.get("shadow") or {}).items():
+        assert role in llm_cfg["roles"], role
+        for c in cfg.get("candidates") or [cfg.get("candidate")]:
+            assert c in llm_cfg["open_models"] or c in llm_cfg["usd_per_mtok"], (role, c)
+            if role in ("evaluator", "review", "judge") and c in llm_cfg["open_models"]:
+                assert llm_cfg["open_models"][c].get("vision"), (role, c)   # these roles send images

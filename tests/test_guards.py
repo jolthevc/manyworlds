@@ -3,6 +3,8 @@ research items expire, and no machine starts once the day's whole bill reaches b
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from manyworlds import db, ledger, queue
@@ -62,3 +64,43 @@ def test_no_machine_starts_once_the_days_whole_bill_reaches_the_budget(conn, pol
 def test_gpu_attribution_entries_are_not_counted_twice(conn, policy):
     ledger.record(conn, category="gpu", provider="runpod_3090", quantity=1, unit="gpu_second", usd=1000)
     assert ledger.bill_today(conn) == 0
+
+
+def _stopped_machine(conn, policy, name, *, outcome, image=None, minutes_ago=30):
+    img = policy.get("worker_images", "talk")
+    conn.execute(
+        "INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, started_at, "
+        "stopped_at, stop_reason, family, image) VALUES (%s, 'runpod', 'runpod_secure_a40', 0.6, "
+        "'{talk.infinitetalk}', %s, 1, %s, %s, 'idle', 'talk', %s)",
+        (name, T0, T0 - timedelta(minutes=minutes_ago + 30), T0 - timedelta(minutes=minutes_ago),
+         image or f"{img['image']}:{img['tag']}"))
+    job = queue.enqueue(conn, "fake.image", {"n": 1}, batch=f"old-{name}")
+    conn.execute("INSERT INTO attempts (job_id, worker_id, pool, gpu_group, outcome) VALUES (%s, 'w', "
+                 "'runpod_secure_a40', %s, %s)", (job, name, outcome))
+
+
+def test_a_family_whose_last_machines_all_failed_stops_renting_and_tells_the_owner(conn, policy):
+    n = policy.get("autoscale", "no_output_guard", "machines")
+    for i in range(n):
+        _stopped_machine(conn, policy, f"mw-talk-a40-runpod-{i}", outcome="failed", minutes_ago=30 + i)
+    queue.enqueue(conn, "talk.infinitetalk", {}, batch="bench-talk", pools=["runpod_secure_a40"])
+    ps = providers()
+    actions = autoscale.tick(conn, policy, ps, now=T0)
+    assert not ps["runpod"].launched
+    held = [a for a in actions if a.get("reason") == "no_output_streak"]
+    assert held and len(held[0]["machines"]) == n
+    from manyworlds import notify
+    assert notify.from_autoscaler(conn, policy, actions, T0) == 1
+
+
+def test_one_finished_job_or_a_new_worker_image_rearms_the_family(conn, policy):
+    n = policy.get("autoscale", "no_output_guard", "machines")
+    for i in range(n - 1):
+        _stopped_machine(conn, policy, f"mw-talk-a40-runpod-{i}", outcome="failed", minutes_ago=30 + i)
+    _stopped_machine(conn, policy, "mw-talk-a40-runpod-ok", outcome="done", minutes_ago=60)
+    assert autoscale.no_output_streak(conn, policy, "talk", T0) is None
+    conn.execute("TRUNCATE attempts, gpu_groups CASCADE")
+    for i in range(n):
+        _stopped_machine(conn, policy, f"mw-talk-old-{i}", outcome="failed", image="mw-worker-talk:v1",
+                         minutes_ago=30 + i)
+    assert autoscale.no_output_streak(conn, policy, "talk", T0) is None      # a new image gets its own try
