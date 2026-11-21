@@ -33,4 +33,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install ".[test]"
-      - run: pytest -q
+      - name: pytest
+        run: |
+          set -o pipefail
+          pytest -q -rfE --tb=line 2>&1 | tee pytest.txt
+      - name: failures as annotations (readable without log access)
+        if: failure()
+        run: |
+          grep -E "^(FAILED|ERROR) |^E  |^/.*:[0-9]+: " pytest.txt | head -40 | sed 's/^/::error::/'
