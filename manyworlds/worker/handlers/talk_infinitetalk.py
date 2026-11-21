@@ -135,7 +135,8 @@ def _speak(payload: dict, workdir: Path) -> Path:
     from kokoro import KPipeline
 
     pipe = KPipeline(lang_code=payload.get("lang", "a"))
-    chunks = [a for _, _, a in pipe(payload["script"], voice=payload.get("voice", "af_heart"),
+    from ... import voices   # a creator's own blend of stock voices, or one stock voice
+    chunks = [a for _, _, a in pipe(payload["script"], voice=voices.voice_arg(pipe, payload.get("voice", "af_heart")),
                                     speed=float(payload.get("speed", 1.0)))]
     path = workdir / "voice.wav"
     sf.write(str(path), np.concatenate([np.asarray(c) for c in chunks]), 24000)

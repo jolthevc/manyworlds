@@ -129,16 +129,27 @@ def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> Creat
     return bible
 
 
-def create_creator(conn, bible: CreatorBible, thesis_id, *, policy_version: str | None = None) -> dict:
+def create_creator(conn, bible: CreatorBible, thesis_id, *, policy_version: str | None = None,
+                   voice_blend: dict | None = None) -> dict:
+    """The creator row from a bible. With `voice_blend` (policy creator_lab.voice_blend) the creator speaks in a
+    blend of stock voices of their own, distinct from every other creator's (manyworlds.voices)."""
     handle, i = bible.handle, 1
     while conn.execute("SELECT 1 FROM creators WHERE handle = %s", (handle,)).fetchone():
         i += 1
         handle = f"{bible.handle}{i}"
     body = bible.model_dump()
     body["handle"] = handle
+    voice = bible.kokoro_voice
+    if voice_blend:
+        from .. import voices
+        taken = [r["v"] for r in conn.execute("SELECT anchors->'voice'->>'voice' AS v FROM creators "
+                                              "WHERE anchors->'voice'->>'voice' IS NOT NULL").fetchall()]
+        voice = voices.design(bible.kokoro_voice, KOKORO_VOICES, taken, seed=handle,
+                              mix=int(voice_blend.get("mix", 3)), lead=float(voice_blend.get("lead", 0.5)),
+                              min_distance=float(voice_blend.get("min_distance", 0.5)))
     row = conn.execute(
         "INSERT INTO creators (handle, status, bible, anchors) VALUES (%s, 'draft', %s, %s) RETURNING id, handle",
-        (handle, Jsonb(body), Jsonb({"voice": {"engine": "kokoro", "voice": bible.kokoro_voice}})),
+        (handle, Jsonb(body), Jsonb({"voice": {"engine": "kokoro", "voice": voice}})),
     ).fetchone()
     conn.execute("UPDATE theses SET creator_id = %s, status = 'launched' WHERE id = %s", (row["id"], thesis_id))
     conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output, policy_version) "

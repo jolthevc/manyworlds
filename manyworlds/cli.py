@@ -462,7 +462,8 @@ def _brain(args, conn, pol) -> int:
         if not t:
             raise SystemExit("no chosen thesis; run `mw choose` first")
         bible = lab.write_bible(conn, pol, llm, {"id": t["id"], **t["body"]})
-        row = lab.create_creator(conn, bible, t["id"], policy_version=pol.version)
+        row = lab.create_creator(conn, bible, t["id"], policy_version=pol.version,
+                                 voice_blend=pol.get("creator_lab", "voice_blend"))
         batch = lab.enqueue_reference_pack(conn, pol, row["id"])
         voice_job = lab.enqueue_voice_sample(conn, row["id"])
         _print({"creator": row, "reference_batch": batch, "voice_job": voice_job,

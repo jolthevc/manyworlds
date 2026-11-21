@@ -28,7 +28,8 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
     speed = float(payload.get("speed", 1.0))
     if lang not in _state:
         _state[lang] = KPipeline(lang_code=lang)
-    chunks = [audio for _, _, audio in _state[lang](text, voice=voice, speed=speed)]
+    from ... import voices   # a creator's own blend of stock voices, or one stock voice
+    chunks = [audio for _, _, audio in _state[lang](text, voice=voices.voice_arg(_state[lang], voice), speed=speed)]
     audio = np.concatenate([np.asarray(c) for c in chunks])
     path = ctx.workdir / "speech.wav"
     sf.write(str(path), audio, SAMPLE_RATE)

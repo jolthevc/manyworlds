@@ -56,7 +56,8 @@ def _speak(text: str, voice: str, speed: float):
     lang = voice[0] if voice[:1] in ("a", "b") else "a"
     if lang not in _state:
         _state[lang] = KPipeline(lang_code=lang)
-    parts = [np.asarray(a) for _, _, a in _state[lang](text, voice=voice, speed=speed)]
+    from ... import voices   # a creator's own blend of stock voices, or one stock voice
+    parts = [np.asarray(a) for _, _, a in _state[lang](text, voice=voices.voice_arg(_state[lang], voice), speed=speed)]
     return np.concatenate(parts) if parts else np.zeros(0, dtype="float32")
 
 

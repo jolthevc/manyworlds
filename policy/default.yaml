@@ -280,6 +280,9 @@ creator_lab:
     humour that is theirs (dry, chaotic, deadpan, warm), a flaw or two, and a life with texture (a job, friends,
     a neighbourhood, routines). Current and culturally aware without chasing trends. Never a generic wholesome
     lifestyle account, a mood board, a motivational voice or a polished brand; never cringe.
+  # A voice of their own (manyworlds.voices): a fixed blend of `mix` stock Kokoro voices led by the bible's pick
+  # (weight >= lead), at least min_distance (L1 over the weights) from every other creator's voice.
+  voice_blend: {mix: 3, lead: 0.5, min_distance: 0.5}
   reference_prompts: 12          # angles/scenes in the reference pack
   candidates_per_reference: 4
   lora: {steps: 1200, rank: 16, learning_rate: 0.0001, resolution: 1024, log_upload_seconds: 120}

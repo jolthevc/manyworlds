@@ -17,7 +17,8 @@ from ..agent import AgentContext, register, remember
 class _Lab:
     def bible(self, conn, policy, llm, thesis: dict):
         bible = lab.write_bible(conn, policy, llm, thesis)
-        return lab.create_creator(conn, bible, thesis["id"], policy_version=policy.version)["id"]
+        return lab.create_creator(conn, bible, thesis["id"], policy_version=policy.version,
+                                  voice_blend=policy.get("creator_lab", "voice_blend"))["id"]
 
     def anchors(self, conn, policy, llm, creator_id):
         from ... import storage
