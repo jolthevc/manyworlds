@@ -382,28 +382,21 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
     return found
 
 
-def main_from_env() -> None:
-    from .. import policy as policy_mod
-    from .. import storage
-
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    check_registered(os.environ.get("MW_POOL", "local"))
-    kinds = [k.strip() for k in os.environ["MW_WORKER_KINDS"].split(",") if k.strip()]
-    pol = policy_mod.load()
-    handlers, store = handlers_for(kinds), storage.from_url()
-    timeout = float(pol.get("queue", "connect_timeout_seconds", default=20))
-    worker = None
-    for attempt in range(int(pol.get("queue", "startup_connect_attempts", default=3))):
+def start(kinds: list[str], *, pool: str, policy: Policy, store: ObjectStore, connect: Callable = db.connect,
+          self_destroy: Callable[[], str | None] | None = None) -> Worker:
+    """The worker `mw worker` runs (every rented machine starts this way). It refuses to run a GPU pool outside a
+    registered machine, retries the database a few times, and if the queue stays unreachable destroys its own
+    machine: one that can't reach the queue can never do work, so it must not be paid for."""
+    check_registered(pool)
+    handlers = handlers_for(kinds)
+    timeout = float(policy.get("queue", "connect_timeout_seconds", default=20))
+    for attempt in range(int(policy.get("queue", "startup_connect_attempts", default=3))):
         try:
-            worker = Worker(handlers=handlers, store=store, policy=pol, pool=os.environ.get("MW_POOL", "local"),
-                            connect=lambda url=None: db.connect(url, timeout=timeout))
-            break
+            return Worker(handlers=handlers, store=store, policy=policy, pool=pool,
+                          connect=lambda url=None: connect(url, timeout=timeout), self_destroy=self_destroy)
         except Exception as e:  # noqa: BLE001 - some rented hosts block outbound database traffic
             log.warning("database unreachable (attempt %d): %s", attempt + 1, type(e).__name__)
-    if worker is None:
-        # A machine that can't reach the queue can never do work: don't pay for it.
+    if self_destroy is None:
         from ..deploy.providers import self_destroy
-        log.error("database unreachable from this host; destroyed own machine: %s", self_destroy())
-        raise SystemExit(2)
-    log.info("worker %s serving %s", worker.worker_id, kinds)
-    worker.run()
+    log.error("database unreachable from this host; destroyed own machine: %s", self_destroy())
+    raise SystemExit(2)

@@ -3,9 +3,10 @@
 # Each decision and cost entry records the hash of the policy it ran under.
 
 budgets:
-  daily_usd: 25.0              # hard cap on total spend per day
-  per_creator_daily_usd: 3.0
-  mvp_week_usd: 100.0
+  # No new GPU machine starts once today's whole bill (machines, LLM calls, data; UTC) reaches this
+  # (manyworlds.deploy.autoscale). GPU alone is capped by gpu_runs.daily_gpu_usd; Brain LLM calls by
+  # brain.llm_usd_per_day per agent. Machines already running keep their own deadline and spend cap.
+  daily_usd: 25.0
 
 # Rented GPU machines. The autoscaler (manyworlds.deploy.autoscale) starts them when jobs
 # wait and registers each with a deadline and spend cap first. Three independent layers

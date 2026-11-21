@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from datetime import date
 
 from psycopg.types.json import Jsonb
 

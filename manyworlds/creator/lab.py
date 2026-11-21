@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Literal
 
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -129,7 +128,7 @@ def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> Creat
     return bible
 
 
-def create_creator(conn, bible: CreatorBible, thesis_id) -> dict:
+def create_creator(conn, bible: CreatorBible, thesis_id, *, policy_version: str | None = None) -> dict:
     handle, i = bible.handle, 1
     while conn.execute("SELECT 1 FROM creators WHERE handle = %s", (handle,)).fetchone():
         i += 1
@@ -141,8 +140,9 @@ def create_creator(conn, bible: CreatorBible, thesis_id) -> dict:
         (handle, Jsonb(body), Jsonb({"voice": {"engine": "kokoro", "voice": bible.kokoro_voice}})),
     ).fetchone()
     conn.execute("UPDATE theses SET creator_id = %s, status = 'launched' WHERE id = %s", (row["id"], thesis_id))
-    conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output) VALUES ('creator_launch', %s, %s, %s)",
-                 (row["id"], Jsonb({"thesis_id": str(thesis_id)}), Jsonb({"handle": handle})))
+    conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output, policy_version) "
+                 "VALUES ('creator_launch', %s, %s, %s, %s)",
+                 (row["id"], Jsonb({"thesis_id": str(thesis_id)}), Jsonb({"handle": handle}), policy_version))
     return row
 
 

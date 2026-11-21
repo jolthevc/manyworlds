@@ -52,6 +52,12 @@ def ensure_lora(conn, policy: Policy, creator_id) -> dict | None:
     return lora
 
 
+def _seed(post: dict, offset: int, attempt: int) -> int:
+    """A deterministic seed per post, piece and attempt: a rerun asks for the same output, a retry for a new one.
+    Offsets keep pieces apart (scenes: i*1000, story clip: 500, talk: 700 + segment*1000)."""
+    return int(str(post["id"]).replace("-", "")[:7], 16) + offset + attempt * 10
+
+
 class DropPost(Exception):
     """Raised by a step's job maker when the post must not be retried (e.g. unsafe output)."""
 
@@ -63,7 +69,7 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
     payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=lora and lora.get("trigger")),
                "scene": post["body"]["scenes"][scene_i],   # the reviewer scores the image against it
                "n": int(cfg.get("candidates_per_scene", 4)),
-               "seed": int(str(post["id"]).replace("-", "")[:7], 16) + scene_i * 1000 + attempt * 10,
+               "seed": _seed(post, scene_i * 1000, attempt),
                "width": img.get("width", 896), "height": img.get("height", 1152),
                "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}
     if lora:
@@ -213,7 +219,7 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                "scene": f"{scene} Movement: {motion}" if motion else scene,   # the video judge scores against it
                "width": vid.get("width", 704), "height": vid.get("height", 1280), "frames": vid.get("frames", 121),
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)),
-               "seed": int(str(post["id"]).replace("-", "")[:7], 16) + 500 + attempt * 10,
+               "seed": _seed(post, 500, attempt),
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
     return queue.enqueue(conn, _cfg(policy).get("video_kind", "video.wan_i2v"), payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
@@ -228,7 +234,7 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     default_voice = params.pop("voice", "af_heart")
     scene = body["scenes"][0]
     script = body["talk_segments"][segment] if segment is not None else body.get("script", "")
-    seed = int(str(post["id"]).replace("-", "")[:7], 16) + 700 + attempt * 10 + (segment or 0) * 1000
+    seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": start_uri or chosen[0]["uri"], "script": script, "voice": voice.get("voice", default_voice),
                "speed": float(voice.get("speed", 1.0)), "prompt": talk_prompt(row["bible"], scene),
                "scene": f"{scene} Speaking to camera: {script}",   # the video judge scores against it

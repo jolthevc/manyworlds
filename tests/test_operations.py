@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timezone
 
 from manyworlds import operations, queue
 from manyworlds.brain import runtime

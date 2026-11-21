@@ -20,7 +20,7 @@ It reads real evidence only.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field

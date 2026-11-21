@@ -4,7 +4,7 @@ can't touch an existing creator, and approved stage moves are applied."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 

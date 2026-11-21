@@ -44,6 +44,15 @@ def record(
 ATTRIBUTION_ONLY = ("gpu",)
 
 
+def bill_today(conn) -> float:
+    """Everything on today's bill (UTC): machines, LLM calls, data; not the 'gpu' attribution entries."""
+    row = conn.execute(
+        "SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE category <> ALL(%s) "
+        "AND created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'",
+        (list(ATTRIBUTION_ONLY),)).fetchone()
+    return float(row["u"])
+
+
 def bill_total(conn) -> float:
     row = conn.execute("SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE category <> ALL(%s)",
                        (list(ATTRIBUTION_ONLY),)).fetchone()

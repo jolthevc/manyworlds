@@ -127,14 +127,10 @@ def main(argv: list[str] | None = None) -> int:
     pol = policy_mod.load()
 
     if args.cmd == "worker":
-        from .worker.runner import Worker, handlers_for
-
-        from .worker.runner import check_registered
-        kinds = (args.kinds or os.environ["MW_WORKER_KINDS"]).split(",")
-        pool = args.pool or os.environ.get("MW_POOL", "local")
-        check_registered(pool)
-        worker = Worker(handlers=handlers_for([k.strip() for k in kinds if k.strip()]),
-                        store=storage.from_url(), policy=pol, pool=pool)
+        from .worker import runner
+        kinds = [k.strip() for k in (args.kinds or os.environ["MW_WORKER_KINDS"]).split(",") if k.strip()]
+        worker = runner.start(kinds, pool=args.pool or os.environ.get("MW_POOL", "local"), policy=pol,
+                              store=storage.from_url())
         n = worker.run(max_jobs=args.max_jobs, idle_exit_seconds=args.idle_exit)
         print(f"worker {worker.worker_id} handled {n} jobs")
         return 0
@@ -239,7 +235,6 @@ def _brain_ops(args, conn, pol) -> int:
         _print({"note": "SIMULATED: images are not generated in fast-forward; outcomes come from the scenario engine",
                 "runs": runs, "llm_usd": llm.spent})
         return 0
-    llm = Claude(conn, pol)
     if args.brain_cmd in ("rubric-drift", "calibrate"):
         from .brain import evaluation, rubrics
         with llm.tagged("evaluator", None):   # Brain spend, outside cost per output
@@ -451,7 +446,7 @@ def _brain(args, conn, pol) -> int:
         if not t:
             raise SystemExit("no chosen thesis; run `mw choose` first")
         bible = lab.write_bible(conn, pol, llm, {"id": t["id"], **t["body"]})
-        row = lab.create_creator(conn, bible, t["id"])
+        row = lab.create_creator(conn, bible, t["id"], policy_version=pol.version)
         batch = lab.enqueue_reference_pack(conn, pol, row["id"])
         voice_job = lab.enqueue_voice_sample(conn, row["id"])
         _print({"creator": row, "reference_batch": batch, "voice_job": voice_job,

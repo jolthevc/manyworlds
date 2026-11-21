@@ -102,10 +102,6 @@ def public_jpeg(store, uri: str, tmp: Path) -> str:
     return store.public_url(stored.uri, int(_POLICY.get("url_seconds", 3600)))
 
 
-def _redact(text: str, token: str | None) -> str:
-    return text.replace(token, "<token>") if token else text
-
-
 class InstagramPublisher:
     platform = "instagram"
 

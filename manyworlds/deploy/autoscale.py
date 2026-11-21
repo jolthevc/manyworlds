@@ -222,10 +222,14 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
     unfunded: set[str] = set()   # providers whose account is out of credit this tick
     from .. import operations
     allowed = operations.test_batch_patterns(policy)   # None when live; else tests and benchmarks only
-    if enforce.billed_today(conn) >= daily_cap:
+    from .. import ledger
+    total_cap = policy.get("budgets", "daily_usd")
+    over = ("daily_gpu_budget" if enforce.billed_today(conn) >= daily_cap else
+            "daily_total_budget" if total_cap is not None and ledger.bill_today(conn) >= float(total_cap) else None)
+    if over:
         work = waiting_work(conn, allowed)
         if work:
-            actions.append({"action": "not_launching", "reason": "daily_gpu_budget",
+            actions.append({"action": "not_launching", "reason": over,
                             "waiting": {w["kind"]: w["n"] for w in work}})
         return actions
     work = waiting_work(conn, allowed)
@@ -361,6 +365,17 @@ def maybe_reconcile(conn, policy: Policy, providers: dict) -> list[dict]:
     return [{"action": "reconciled", **out}] if out["groups"] else []
 
 
+def housekeeping(conn) -> list[dict]:
+    """Rules that hold whatever the master switch says, on the one loop that always runs: raw research
+    items are deleted once past their retention date (research privacy)."""
+    from ..research.apify import purge_expired
+    try:
+        n = purge_expired(conn)
+        return [{"action": "purged_research_items", "items": n}] if n else []
+    except Exception as e:  # noqa: BLE001 - housekeeping never stops enforcement; retried next tick
+        return [{"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
+
+
 def notify_owner(conn, policy: Policy, actions: list[dict], now: datetime | None = None) -> list[dict]:
     """Record the actions that need the owner and push everything they haven't been told (manyworlds.notify).
     Runs on every loop, paused or not; a failure here never stops enforcement."""
@@ -396,6 +411,7 @@ def main(argv=None) -> int:
             actions = [{"action": "tick_failed", "error": redact(str(e))[:300]}]
             conn = db.connect()
         if not a.dry_run:
+            actions += housekeeping(conn)
             actions += notify_owner(conn, pol, actions)
         # Names, states, prices and errors only: GitHub Actions logs are public.
         interesting = [x for x in actions if x.get("action") != "ok"] if not a.once else actions

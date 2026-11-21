@@ -88,14 +88,6 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
     return Job(**row) if row else None
 
 
-def unclaim(conn, job_id, worker_id: str) -> None:
-    """Undo a claim that was never worked on (no attempt is charged): the job goes back as it was."""
-    conn.execute(
-        """UPDATE jobs SET status = 'queued', attempts = greatest(attempts - 1, 0), worker_id = NULL,
-                          lease_until = NULL, updated_at = now()
-           WHERE id = %s AND worker_id = %s AND status = 'running'""", (job_id, worker_id))
-
-
 def claim_job(conn, job_id, worker_id: str, lease_seconds: int) -> Job | None:
     """Claim one specific runnable job (e.g. a sandbox run draining only its own creator's jobs)."""
     row = conn.execute(
