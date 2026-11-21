@@ -30,7 +30,7 @@ SPEECH_LINES = [
 
 
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
-            extra: dict[str, Any] | None = None, pools: list[str] | None = None) -> str:
+            extra: dict[str, Any] | None = None, pools: list[str] | None = None, profile: str | None = None) -> str:| None = None, pools: list[str] | None = None) -> str:
     if kind.startswith("talk.") and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("a talk benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
@@ -53,6 +53,10 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
         elif kind.startswith("talk."):
             # The start photo is the creator's: pass it with --extra '{"image_uri": "..."}'.
             talk = dict(gen.get("talk", {}))
+            if profile:   # settings under test (generation.talk_profiles), merged over the production ones
+                if profile not in (gen.get("talk_profiles") or {}):
+                    raise ValueError(f"no generation.talk_profiles.{profile}")
+                talk.update(gen["talk_profiles"][profile])
             payload = {"script": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": talk.pop("voice", "af_heart"),
                        "prompt": "a young woman talks casually to her phone camera, natural head movement",
                        "seed": 3000 + i, "keyframes": 4, "params": talk}

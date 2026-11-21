@@ -43,7 +43,9 @@ def _drain(conn, policy: Policy, llm, creator_id, worker_id: str, max_rounds: in
     for _ in range(max_rounds):
         ids = [r["id"] for r in conn.execute(
             "SELECT id FROM jobs WHERE kind LIKE 'brain.%%' AND creator_id = %s AND attempts < max_attempts "
-            "AND status = 'queued' ORDER BY priority DESC, created_at", (creator_id,)).fetchall()]
+            # a job whose run was killed (lease expired) is taken again, or one dead run blocks every later one
+            "AND (status = 'queued' OR (status = 'running' AND lease_until < now())) "
+            "ORDER BY priority DESC, created_at", (creator_id,)).fetchall()]
         if not ids:
             return
         for jid in ids:

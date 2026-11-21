@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .. import models
+from .. import lipsync, models
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 from .video_wan import extract_keyframes
 
@@ -181,8 +181,10 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     if not clip.exists():
         raise RuntimeError(f"InfiniteTalk wrote no {clip.name}")
 
+    # Sync from the frames and the voice (worker/lipsync.py): keyframes can't show it, so the gate reads this.
+    sync = lipsync.score_in_venv(clip, audio, max_offset_frames=int(params.get("sync_max_offset_frames", 5)))
     outputs = [OutputFile(clip, "video", {"seconds": seconds, "size": params["size"],
-                                          "lip_sync": True}),
+                                          "lip_sync": True, "sync": sync}),
                *extract_keyframes(clip, work, int(payload["keyframes"]))]
     if spoken is not None:
         outputs.append(OutputFile(spoken, "audio", {"seconds": seconds}))

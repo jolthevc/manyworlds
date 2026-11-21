@@ -16,7 +16,7 @@ gpu_runs:
   default_max_hours: 2
   default_max_usd: 1.0
   max_hours_by_family: {train: 3, talk: 2.5}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
-  max_usd_by_family: {talk: 1.25}
+  max_usd_by_family: {talk: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders)
   max_hours_limit: 12          # the launcher refuses anything longer
   idle_stop_minutes: 20        # no open jobs for this long -> stop (SaladCloud: nodes pull images slowly)
   # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
@@ -47,6 +47,9 @@ gpu_pools:
   runpod_comm_4090:  {provider: runpod, gpu: rtx4090, usd_per_hour: 0.34, interruptible: false, worker_env: {MW_OFFLOAD_BELOW_GB: 22}}
   # Secure cloud A40 (48 GB): RunPod community had no CUDA>=12.8 capacity on 2026-11-20; for talking video.
   runpod_secure_a40: {provider: runpod, gpu: a40, usd_per_hour: 0.60, interruptible: false, cloud: SECURE}
+  # Secure L40S (48 GB VRAM, ~125 GB RAM): the full-precision talk model with the 4-step LoRA (talk_profiles.fast).
+  # Price from 2026-11-20; the machine is metered at what RunPod reports once it runs.
+  runpod_secure_l40s: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
 
 # Job kinds and the pools allowed to run them. The autoscaler orders them by measured cost
@@ -68,7 +71,7 @@ job_kinds:
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
-  talk.infinitetalk: {pools: [vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_comm_3090], outputs_per_job: 1}
+  talk.infinitetalk: {pools: [vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_secure_l40s, runpod_comm_3090], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -107,6 +110,7 @@ gpu_names:
   rtx5090:  {salad: "RTX 5090",  vast: "RTX 5090",  runpod: "NVIDIA GeForce RTX 5090"}
   rtxa5000: {salad: "RTX A5000", vast: "RTX A5000", runpod: "NVIDIA RTX A5000"}
   a40:      {vast: "A40", runpod: "NVIDIA A40"}
+  l40s:     {vast: "L40S", runpod: "NVIDIA L40S"}
 
 # The autoscaler starts machines when jobs are waiting and stops them when the queue
 # drains. A provider is skipped when its API key isn't configured.
@@ -189,6 +193,9 @@ review:
     reference_images: 3
     max_jobs_per_run: 10
     max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
+    # Talking clips: mouth openness vs voice loudness (worker/lipsync.py), recorded on every clip. Off until clips
+    # judged by eye give the threshold (benchmark); then a clip below it is rejected before any paid review.
+    lip_sync: {enforce: false, min_corr: 0.3, min_face_share: 0.8}
   max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
@@ -220,6 +227,13 @@ generation:
     motion_frame: 9              # frames carried between streaming chunks (README value)
     timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
     voice: af_heart
+  # Settings to benchmark against `talk` (mw bench talk.infinitetalk --profile NAME), merged over it. fast: the
+  # README's lightx2v recipe (4 steps, text cfg 1, audio cfg 2, shift 2), ~15-30x less compute than 40 steps x 3
+  # passes. It runs at full precision (no fp8 LoRA build exists), so the ~82 GB base model loads in host RAM: pin it
+  # to runpod_secure_l40s (48 GB VRAM, ~125 GB RAM). No CPU offload flag: the 14B model fits a 48 GB card.
+  talk_profiles:
+    fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: [],
+           lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}}
   # Long talking videos (manyworlds.talk_segments, production): a script longer than one segment is split at
   # sentence boundaries, each segment rendered and judged as its own talk job, then joined by the producer.
   # join: cut = every segment from the approved photo, in parallel, joined with jump cuts (talking-head style);

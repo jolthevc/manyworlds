@@ -120,6 +120,16 @@ assert len(out.hidden_states) == 2, len(out.hidden_states)
     if talk.audio_seconds(d / "a.wav") != 2.0:
         raise RuntimeError("audio length came out wrong")
     done.append("audio length")
+
+    # The lip-sync score in its own environment, on a blank clip: mediapipe and its model load, and find no face.
+    import imageio.v3 as iio
+
+    from . import lipsync
+    iio.imwrite(str(d / "blank.mp4"), np.zeros((25, 64, 64, 3), dtype=np.uint8), fps=25)
+    s = lipsync.score_in_venv(d / "blank.mp4", d / "a.wav")
+    if "error" in s or s.get("face_share") != 0.0 or not s.get("frames"):
+        raise RuntimeError(f"lip-sync score failed: {s}")
+    done.append("lip-sync score")
     return done
 
 

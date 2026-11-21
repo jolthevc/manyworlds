@@ -40,6 +40,17 @@ RUN Q=$(python -c "import optimum.quanto, os; print(os.path.dirname(optimum.quan
  && grep -q 'os.environ.get("QUANTO_CUDA_ARCH")' $Q \
  && MAX_JOBS=2 python -c "from optimum.quanto.library.extensions.cuda import ext; ext.lib" \
  && ls $(dirname $Q)/build/*.so
+# Lip-sync score (manyworlds/worker/lipsync.py) in its own environment: mediapipe pins numpy and protobuf versions
+# that would clash with the stack above. MediaPipe's code and face landmarker model are Apache-2.0.
+ARG MEDIAPIPE=0.10.21
+ARG LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+ENV MW_LIPSYNC_PYTHON=/opt/lipsync/bin/python MW_FACE_LANDMARKER=/opt/models/face_landmarker.task
+RUN python -m venv /opt/lipsync \
+ && /opt/lipsync/bin/pip install --no-cache-dir "mediapipe==${MEDIAPIPE}" "imageio[ffmpeg]" soundfile \
+ && mkdir -p /opt/models \
+ && python -c "import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+      "${LANDMARKER_URL}" /opt/models/face_landmarker.task \
+ && test -s /opt/models/face_landmarker.task
 WORKDIR /app
 COPY pyproject.toml ./
 COPY manyworlds ./manyworlds

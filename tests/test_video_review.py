@@ -178,3 +178,40 @@ def test_talking_clips_go_through_the_same_gate(conn, policy, store, tmp_path):
     talk = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
     rendered(conn, store, tmp_path, talk)
     assert video.pending_jobs(conn, policy) == [talk]
+
+
+def _with_sync(policy, **lip_sync):
+    import dataclasses
+    review = {**policy.body["review"], "video": {**policy.body["review"]["video"],
+              "lip_sync": {**policy.body["review"]["video"]["lip_sync"], **lip_sync}}}
+    return dataclasses.replace(policy, body={**policy.body, "review": review})
+
+
+def test_a_talking_clip_out_of_sync_is_rejected_before_any_paid_review(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    off, on = (clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk") for _ in range(2))
+    for job, corr in ((off, 0.05), (on, 0.6)):
+        rendered(conn, store, tmp_path, job)
+        conn.execute("UPDATE assets SET meta = %s WHERE job_id = %s AND kind = 'video'",
+                     (Jsonb({"sync": {"corr": corr, "offset_frames": 1, "face_share": 1.0, "frames": 150}}), job))
+    pol = _with_sync(policy, enforce=True)
+    llm = ClipStub(clip(), clip())
+    [r] = video.review_job(conn, pol, llm, store, off, tmp_path)
+    assert not r["accepted"] and r["lip_sync"] is False and llm.calls == []          # no judge paid for it
+    [r] = video.review_job(conn, pol, llm, store, on, tmp_path)
+    assert r["accepted"] and r["lip_sync"] is True and len(llm.calls) == 2
+    gates = {x["gate"] for x in conn.execute("SELECT gate FROM reviews WHERE asset_id = %s", (r["asset_id"],))}
+    assert "lip_sync" in gates
+
+
+def test_until_calibrated_the_sync_score_is_recorded_but_never_rejects(conn, policy, store, tmp_path):
+    assert policy.get("review", "video", "lip_sync", "enforce") is False
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    job = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
+    rendered(conn, store, tmp_path, job)
+    conn.execute("UPDATE assets SET meta = %s WHERE job_id = %s AND kind = 'video'",
+                 (Jsonb({"sync": {"corr": 0.01, "face_share": 1.0}}), job))
+    [r] = video.review_job(conn, policy, ClipStub(clip(), clip()), store, job, tmp_path)
+    assert r["accepted"] and r["sync"]["corr"] == 0.01 and "lip_sync" not in r

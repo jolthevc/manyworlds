@@ -138,3 +138,15 @@ def test_a_quantised_run_skips_the_full_precision_base_weights(tmp_path, monkeyp
     assert calls[talk.BASE]["ignore_patterns"] == talk.QUANT_SKIPS_BASE
     talk.weights(None, tmp_path, extra=[])
     assert calls[talk.BASE] == {}                                     # full precision needs everything
+
+
+def test_a_talk_benchmark_can_run_settings_under_test(conn, policy):
+    from manyworlds import bench
+    batch = bench.enqueue(conn, policy, "talk.infinitetalk", 1, extra={"image_uri": "s3://b/maren.png"},
+                          pools=["runpod_secure_l40s"], profile="fast")
+    p = conn.execute("SELECT payload FROM jobs WHERE batch = %s", (batch,)).fetchone()["payload"]
+    fast = policy.get("generation", "talk_profiles", "fast")
+    assert p["params"]["steps"] == fast["steps"] == 4 and p["params"]["lora"]["repo"] == fast["lora"]["repo"]
+    assert p["params"]["extra"] == [] and p["params"]["size"] == policy.get("generation", "talk", "size")
+    with pytest.raises(ValueError, match="talk_profiles"):
+        bench.enqueue(conn, policy, "talk.infinitetalk", 1, extra={"image_uri": "s3://b/x.png"}, profile="nope")

@@ -115,3 +115,21 @@ def test_a_launch_stuck_waiting_for_too_long_tells_the_owner(conn, policy):
     conn.execute("UPDATE launches SET updated_at = now() - make_interval(hours => %s)", (int(hours) + 1,))
     launches.advance(conn, policy)
     assert conn.execute("SELECT status FROM launches").fetchone()["status"] == "failed"
+
+
+def test_a_killed_sandbox_run_does_not_block_the_next_one(conn, policy, monkeypatch):
+    # 2026-11-21: a trial killed mid-showrunner left its job 'running'; later runs saw nothing queued and did nothing.
+    from manyworlds import queue
+    from manyworlds.brain import runtime, sandbox
+    cid = creator(conn)
+    job = queue.enqueue(conn, "brain.echo", {}, creator_id=cid)
+    conn.execute("UPDATE jobs SET status = 'running', attempts = 1, worker_id = 'dead', "
+                 "lease_until = now() - interval '1 minute' WHERE id = %s", (job,))
+    ran = []
+
+    def run_job(conn_, policy_, llm, j, **kw):
+        ran.append(j.id)
+        conn_.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (j.id,))
+    monkeypatch.setattr(runtime, "run_job", run_job)
+    sandbox._drain(conn, policy, None, cid, "sandbox-test")
+    assert ran == [job]

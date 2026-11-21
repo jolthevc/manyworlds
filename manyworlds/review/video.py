@@ -109,7 +109,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     scene = payload.get("scene")
     gates = gates_for(scene)
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
-    videos = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'video' ORDER BY uri",
+    videos = conn.execute("SELECT id, uri, meta FROM assets WHERE job_id = %s AND kind = 'video' ORDER BY uri",
                           (job_id,)).fetchall()
     keys = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'keyframe' ORDER BY uri",
                         (job_id,)).fetchall()
@@ -125,6 +125,17 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     rows, out = [], []
     for v in videos:
         res = {"asset_id": str(v["id"]), "uri": v["uri"], "accepted": True, "stages": [], **{g: True for g in gates}}
+        sync = (v["meta"] or {}).get("sync")
+        if sync is not None:
+            res["sync"] = sync
+        synced = lip_sync_ok(cfg, sync)
+        if synced is not None:   # checked first: it is free, and a clip out of sync never needs a paid judge
+            rows.append((v["id"], "lip_sync", synced, sync.get("corr"), Jsonb(sync)))
+            res["lip_sync"] = synced
+            if not synced:
+                res.update(accepted=False, confirmed=False)
+                out.append(res)
+                continue
         for role, effort, stage in stages:
             with common.charged_to(llm, job_id):   # review counts in this clip's cost
                 r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene)
@@ -143,6 +154,16 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     if write:
         common.write_rows(conn, rows)
     return out
+
+
+def lip_sync_ok(cfg: dict, sync: dict | None) -> bool | None:
+    """Whether a talking clip's mouth follows its voice (worker/lipsync.py), or None when the score isn't
+    enforced (policy `review.video.lip_sync.enforce`, off until calibrated by eye) or there is none to judge."""
+    ls = cfg.get("lip_sync") or {}
+    if not ls.get("enforce") or not sync or "error" in sync:
+        return None
+    return (sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
+            and float(sync.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8)))
 
 
 def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int | None = None) -> list:

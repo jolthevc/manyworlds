@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--jobs", type=int, default=20)
     b.add_argument("--extra", default="{}", help="JSON merged into each payload")
     b.add_argument("--pools", help="comma-separated GPU pools to pin the batch to, e.g. vast_4090")
+    b.add_argument("--profile", help="talk settings under test (policy generation.talk_profiles), e.g. fast")
 
     r = sub.add_parser("report", help="benchmark / cost report for a batch")
     r.add_argument("batch")
@@ -169,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(reconcile.run(conn, pol, all_providers(pol), days=args.days))
     elif args.cmd == "bench":
         batch = bench.enqueue(conn, pol, args.kind, args.jobs, extra=json.loads(args.extra),
-                              pools=args.pools.split(",") if args.pools else None)
+                              pools=args.pools.split(",") if args.pools else None, profile=args.profile)
         print(batch)
     elif args.cmd == "report":
         _print(bench.report(conn, pol, args.batch))
