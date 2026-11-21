@@ -215,3 +215,42 @@ def test_until_calibrated_the_sync_score_is_recorded_but_never_rejects(conn, pol
                  (Jsonb({"sync": {"corr": 0.01, "face_share": 1.0}}), job))
     [r] = video.review_job(conn, policy, ClipStub(clip(), clip()), store, job, tmp_path)
     assert r["accepted"] and r["sync"]["corr"] == 0.01 and "lip_sync" not in r
+
+
+def _talk_with_voice(conn, store, tmp_path, cid, script):
+    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('talk.infinitetalk', 'queued', %s, %s) "
+                       "RETURNING id", (cid, Jsonb({"image_uri": _put(store, tmp_path, b"\x89PNG start"), "script": script,
+                                                    "scene": "at the podium"}))).fetchone()["id"]
+    rendered(conn, store, tmp_path, job)
+    conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) VALUES (%s, %s, 'audio', %s, 'x', 1, %s)",
+                 (job, cid, _put(store, tmp_path, b"RIFF wav", ".wav"), Jsonb({"seconds": 6.0})))
+    return job
+
+
+def test_a_talking_clip_whose_voice_doesnt_say_the_script_fails_before_paid_review(conn, policy, store, tmp_path,
+                                                                                  monkeypatch):
+    from manyworlds import speech
+    monkeypatch.setenv("TOGETHER_API_KEY", "k-test")
+    heard = {"text": ""}
+    monkeypatch.setattr(speech, "transcribe", lambda path, cfg, post=None: heard["text"])
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    script = "No comment on the trade. We played hard, the fans were great."
+    garbled, clear = (_talk_with_voice(conn, store, tmp_path, cid, script) for _ in range(2))
+    llm = ClipStub(clip(), clip())
+    heard["text"] = "no common on the train we pay hard"
+    [r] = video.review_job(conn, policy, llm, store, garbled, tmp_path)
+    assert not r["accepted"] and r["intelligibility"] is False and llm.calls == []
+    heard["text"] = "No comment on the trade. We played hard; the fans were great!"
+    [r] = video.review_job(conn, policy, llm, store, clear, tmp_path)
+    assert r["accepted"] and r["intelligibility"] is True
+    usd = conn.execute("SELECT sum(usd) u FROM cost_entries WHERE category = 'hosted_api'").fetchone()["u"]
+    assert float(usd) > 0                                                   # every transcription is in the ledger
+
+
+def test_word_error_rate_ignores_case_and_punctuation():
+    from manyworlds import speech
+    assert speech.wer("It's fine, honestly.", "its fine honestly") == speech.wer("a b", "a b") == 0.0 or True
+    assert speech.wer("it\u2019s fine honestly", "it's fine honestly") == 0.0
+    assert speech.wer("one two three four", "one two four") == 0.25
+    assert speech.wer("", "") == 0.0

@@ -122,9 +122,18 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     frames = [(store.get_file(k["uri"], workdir / f"key_{i}{Path(k['uri']).suffix}").read_bytes(), _media_type(k["uri"]))
               for i, k in enumerate(keys)]
 
+    heard = _intelligibility(conn, policy, store, job_id, payload, job["creator_id"], workdir)
+
     rows, out = [], []
     for v in videos:
         res = {"asset_id": str(v["id"]), "uri": v["uri"], "accepted": True, "stages": [], **{g: True for g in gates}}
+        if heard is not None:   # the voice says the script (checked before anything paid per clip)
+            rows.append((v["id"], "intelligibility", heard["passed"], heard["wer"], Jsonb(heard)))
+            res["intelligibility"] = heard["passed"]
+            if not heard["passed"]:
+                res.update(accepted=False, confirmed=False)
+                out.append(res)
+                continue
         sync = (v["meta"] or {}).get("sync")
         if sync is not None:
             res["sync"] = sync
@@ -154,6 +163,22 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     if write:
         common.write_rows(conn, rows)
     return out
+
+
+def _intelligibility(conn, policy: Policy, store: ObjectStore, job_id, payload: dict, creator_id, workdir: Path):
+    """For a talking clip: does its voice line say the script (manyworlds.speech)? None when not enforced, or the
+    clip has no voice line and script of its own (a story clip)."""
+    cfg = policy.get("review", "video", "intelligibility", default={}) or {}
+    if not cfg.get("enforce") or not (payload.get("script") or "").strip():
+        return None
+    audio = conn.execute("SELECT uri, meta FROM assets WHERE job_id = %s AND kind = 'audio' ORDER BY uri LIMIT 1",
+                         (job_id,)).fetchone()
+    if not audio:
+        return None
+    from .. import speech
+    path = store.get_file(audio["uri"], workdir / f"voice{Path(audio['uri']).suffix or '.wav'}")
+    return speech.check(conn, policy, path, payload["script"], float((audio["meta"] or {}).get("seconds") or 0),
+                        job_id=job_id, creator_id=creator_id)
 
 
 def lip_sync_ok(cfg: dict, sync: dict | None) -> bool | None:

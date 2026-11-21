@@ -201,6 +201,11 @@ review:
     # Talking clips: mouth openness vs voice loudness (worker/lipsync.py), recorded on every clip. Off until clips
     # judged by eye give the threshold (benchmark); then a clip below it is rejected before any paid review.
     lip_sync: {enforce: false, min_corr: 0.3, min_face_share: 0.8}
+    # Talking clips: the voice line transcribed (Whisper on Together, $0.0015 a minute, 2026-11-21) must match the
+    # script within max_wer (word error rate), or the clip fails before any paid review (manyworlds.speech).
+    # Voices are judged automatically, never by ear (owner 2026-11-21).
+    intelligibility: {enforce: true, host: together, model: openai/whisper-large-v3, language: en, max_wer: 0.15,
+                      usd_per_minute: 0.0015, timeout_seconds: 120}
   max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
