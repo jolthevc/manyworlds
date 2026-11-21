@@ -267,6 +267,11 @@ creators:
 # formats: images per post [min, max]. Video posts belong to one of the creator's video series.
 # The Brain (docs/superpowers/specs/2026-11-14-brain-design.md): agents run as brain.<agent> jobs on the
 # control host. Daily LLM budgets per agent sit inside the master operating budget.
+# The master switch (owner 2026-11-21): nothing runs on its own until the owner says so (manyworlds.operations).
+# paused: no planning, production, publishing or launches; the Brain worker runs only test jobs; GPU machines
+# start only for batches with these prefixes. Safety enforcement always runs. Only the owner sets `live`.
+operations: {mode: paused, test_batch_prefixes: [bench-, test-]}
+
 # Master operating budget (spec 6): the Brain allocates inside it; raising it needs the owner.
 budget: {master_usd_per_month: 750, reserve_share: 0.15}
 

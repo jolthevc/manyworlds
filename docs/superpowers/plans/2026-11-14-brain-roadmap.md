@@ -179,3 +179,10 @@ for one creator passes the gate.
 - **M4 built (2026-11-20), idle until an account is connected.** Publisher per Meta's v27 docs, crash-safe
   (never twice; uncertain → held for owner), AI label on every post; metrics per media type at the analysis
   ages; `mw account connect`.
+
+## Owner direction, 2026-11-21
+
+- Nothing runs on its own until the owner says so: master switch `operations.mode: paused` (default); launches off.
+- Cloud-native platform, open-weight models where they do the job, long-form lip-sync, and a Brain chat in the
+  web app (the owner discusses strategy; the Brain proposes and makes changes within its authority). Plan:
+  `docs/superpowers/plans/2026-11-21-next-phase.md`.
