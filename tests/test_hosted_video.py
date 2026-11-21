@@ -66,8 +66,8 @@ def _payload(store, tmp_path, policy):
 
 def _ctx(store, tmp_path):
     job = queue.Job(id="j", kind="hosted.video", payload={}, attempts=1, max_attempts=3, creator_id=None, batch=None)
-    work = tmp_path / "work"
-    work.mkdir()
+    import tempfile
+    work = Path(tempfile.mkdtemp(dir=tmp_path))
     return JobContext(job=job, workdir=work, store=store)
 
 

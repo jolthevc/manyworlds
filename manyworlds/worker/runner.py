@@ -90,11 +90,15 @@ def is_worker_fault(exc: BaseException) -> bool:
         "OutOfMemoryError", "AcceleratorError")
 
 
+NO_GPU_POOLS = ("local", "hosted")
+
+
 def check_registered(pool: str) -> None:
     """A worker for a GPU pool runs only on a machine the autoscaler registered (it always sets MW_GROUP).
     2026-11-20: a diagnostic container on the owner's laptop, started with a real pool name, claimed a talk
-    benchmark job and began downloading model weights there. Pool `local` (fakes, brain) is exempt."""
-    if pool != "local" and not os.environ.get("MW_GROUP"):
+    benchmark job and began downloading model weights there. Pools on no GPU (`local`: fakes, brain; `hosted`:
+    hosted APIs on the control plane) are exempt."""
+    if pool not in NO_GPU_POOLS and not os.environ.get("MW_GROUP"):
         raise SystemExit(f"refusing to work pool {pool!r} outside a registered machine (MW_GROUP is not set)")
 
 

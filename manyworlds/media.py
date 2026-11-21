@@ -56,7 +56,7 @@ def keyframes(video: Path, workdir: Path, n: int, *, timeout: float = 120) -> li
     for i, idx in enumerate(keyframe_indices(total, n)):
         p = Path(workdir) / f"keyframe_{i}.jpg"
         r = subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-vf", f"select=eq(n\,{idx})",
-                            "-vsync", "0", "-frames:v", "1", "-q:v", "3", str(p)], capture_output=True, text=True,
+                            "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "3", str(p)], capture_output=True, text=True,
                            timeout=timeout)
         if r.returncode != 0 or not p.exists():
             raise RuntimeError(f"keyframe {idx} of {video.name}: {r.stderr[-300:]}")
