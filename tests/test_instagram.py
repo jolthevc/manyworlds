@@ -50,6 +50,7 @@ def ig(conn, store, tmp_path, monkeypatch):
     fake = FakeGraph()
     monkeypatch.setattr(instagram, "graph", fake)
     monkeypatch.setattr(instagram, "public_jpeg", lambda store, uri, tmp: f"https://cdn.example/{uri.rsplit('/', 1)[-1]}.jpg")
+    monkeypatch.setattr(instagram.InstagramPublisher, "store", lambda self: store)   # never the env's real bucket
     return cid, fake
 
 

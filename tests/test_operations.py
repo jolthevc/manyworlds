@@ -32,6 +32,7 @@ def test_paused_brain_runs_only_test_jobs(conn, policy):
 
 def test_paused_autoscaler_starts_machines_only_for_test_batches(conn, policy, monkeypatch):
     monkeypatch.setenv("MW_REGISTRY", "docker.io/example")
+    monkeypatch.setattr(autoscale, "image_published", lambda image: True)
     pol = _paused(policy)
     queue.enqueue(conn, "image.zimage", {}, batch="post-123")              # production work waits
     ps = providers()

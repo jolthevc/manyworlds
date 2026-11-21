@@ -71,6 +71,9 @@ class LocalStore(ObjectStore):
     def uri_for(self, key: str) -> str:
         return (self.root / key).resolve().as_uri()
 
+    def public_url(self, uri: str, seconds: int = 3600) -> str:
+        return uri   # local development only: nothing outside this machine can fetch it
+
     def exists(self, key: str) -> bool:
         return (self.root / key).exists()
 
