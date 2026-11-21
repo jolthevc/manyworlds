@@ -50,9 +50,12 @@ def sync_score(openness: np.ndarray, loud: np.ndarray, *, max_offset_frames: int
     for lag in range(-max_offset_frames, max_offset_frames + 1):
         x, y = (a[lag:], b[:n - lag]) if lag >= 0 else (a[:n + lag], b[-lag:])
         keep = ~np.isnan(x) & ~np.isnan(y)
-        if keep.sum() < min_frames or np.std(x[keep]) == 0 or np.std(y[keep]) == 0:
+        # a mouth that never moves (or silent audio) has no correlation to measure, not a correlation of 0
+        if keep.sum() < min_frames or np.std(x[keep]) < 1e-6 or np.std(y[keep]) < 1e-6:
             continue
         r = float(np.corrcoef(x[keep], y[keep])[0, 1])
+        if not np.isfinite(r):
+            continue
         if best["corr"] is None or r > best["corr"]:
             best.update(corr=round(r, 3), offset_frames=lag)
     return best
