@@ -155,9 +155,6 @@ class LLM:
         """(model, fallback) for a role: an approved switch (`llm.roles.<role>` in policy_overrides, from model
         selection) wins over the policy file, in every service that calls models, not only the Brain."""
         spec = self._role_override(role) or self.policy.get("llm", "roles", role)
-| None]:
-        """(model, fallback) for a role."""
-        spec = self.policy.get("llm", "roles", role)
         if not spec:
             raise KeyError(f"no model configured for LLM role {role!r}")
         if isinstance(spec, dict):
