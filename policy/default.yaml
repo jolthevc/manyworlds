@@ -277,6 +277,21 @@ operations: {mode: paused, test_batch_prefixes: [bench-, test-]}
 # worker_storage is shared until a bucket-scoped R2 token exists (WORKER_AWS_ACCESS_KEY_ID/_SECRET_ACCESS_KEY).
 security: {worker_database: required, worker_storage: shared}
 
+# Owner alerts (manyworlds.notify): owner events and pending approvals pushed via ntfy (topic in NTFY_TOPIC).
+# max_age_hours: older unsent items are never pushed (no flood when the topic is first set).
+# machine_stop_reasons: GPU stops worth a message (idle and deadline stops are routine).
+notify:
+  ntfy_server: https://ntfy.sh
+  timeout_seconds: 10
+  max_per_run: 5
+  max_age_hours: 24
+  body_chars: 400
+  quiet: []
+  machine_stop_reasons: [max_usd, daily_gpu_budget, stuck, never_started, attempt_timeout, unregistered]
+  priority: {publish_held: high, launch_failed: high, provider_unfunded: high, not_launching: high,
+             machine_stop_failed: urgent, machine_stopped: default, autoscaler_failed: high,
+             brain_step_failed: default, account_needed: default, approval_launch: high}
+
 # Master operating budget (spec 6): the Brain allocates inside it; raising it needs the owner.
 budget: {master_usd_per_month: 750, reserve_share: 0.15}
 

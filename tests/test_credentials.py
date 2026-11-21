@@ -8,7 +8,7 @@ import pytest
 from manyworlds import db, policy as policy_mod, queue
 from manyworlds.deploy import autoscale, credentials
 
-from test_autoscale import T0, providers
+from test_autoscale import T0, providers, registry  # noqa: F401 - registry: autouse image registry stub
 from test_worker import make_worker
 
 

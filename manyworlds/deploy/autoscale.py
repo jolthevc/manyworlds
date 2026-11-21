@@ -361,6 +361,19 @@ def maybe_reconcile(conn, policy: Policy, providers: dict) -> list[dict]:
     return [{"action": "reconciled", **out}] if out["groups"] else []
 
 
+def notify_owner(conn, policy: Policy, actions: list[dict], now: datetime | None = None) -> list[dict]:
+    """Record the actions that need the owner and push everything they haven't been told (manyworlds.notify).
+    Runs on every loop, paused or not; a failure here never stops enforcement."""
+    from .. import notify
+    now = now or datetime.now(timezone.utc)
+    try:
+        notify.from_autoscaler(conn, policy, actions, now)
+        sent = notify.deliver(conn, policy, now=now)
+        return [{"action": "notified", "items": len(sent)}] if sent else []
+    except Exception as e:  # noqa: BLE001
+        return [{"action": "notify_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="autoscale")
     p.add_argument("--once", action="store_true")
@@ -382,6 +395,8 @@ def main(argv=None) -> int:
                 raise
             actions = [{"action": "tick_failed", "error": redact(str(e))[:300]}]
             conn = db.connect()
+        if not a.dry_run:
+            actions += notify_owner(conn, pol, actions)
         # Names, states, prices and errors only: GitHub Actions logs are public.
         interesting = [x for x in actions if x.get("action") != "ok"] if not a.once else actions
         if interesting:
