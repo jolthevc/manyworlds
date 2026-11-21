@@ -79,15 +79,34 @@ def _video_formats(policy: Policy) -> list[str]:
 
 
 def caption_issues(policy: Policy, text: str) -> list[str]:
-    """Why a caption (or script) reads as AI-written, per policy `captions`; empty if fine."""
+    """Why a caption (or script) reads as AI-written, per policy `captions`; empty if fine. Phrases match at a
+    word start ("drop a" catches "drop a comment", never "raindrop a"); patterns are regexes for AI-shaped
+    sentences."""
     cfg = policy.get("captions", default={})
-    low = text.lower()
-    issues = [f"phrase '{p}'" for p in cfg.get("banned_phrases", []) if p.lower() in low]
+    issues = [f"phrase '{p}'" for p in cfg.get("banned_phrases", [])
+              if re.search(r"(?<![\w])" + re.escape(p), text, re.IGNORECASE)]
+    issues += [f"pattern {name}" for name, rx in (cfg.get("banned_patterns") or {}).items()
+               if re.search(rx, text, re.IGNORECASE)]
     if cfg.get("no_em_dash", True) and "—" in text:
         issues.append("em dash")
     if len(EMOJI.findall(text)) > int(cfg.get("max_emoji", 2)):
         issues.append("too many emoji")
     return issues
+
+
+def voice_rules(policy: Policy) -> str:
+    """The voice rules as an instruction, so the model writes within them instead of having its ideas
+    dropped afterwards (a dropped idea is generation already paid for)."""
+    cfg = policy.get("captions", default={})
+    rules = [str(cfg.get("voice_guide", "")).strip(),
+             f"Never use these words or phrases: {', '.join(cfg.get('banned_phrases', []))}.",
+             "Never write: " + "; ".join((cfg.get("pattern_notes") or {}).values()) + "." if cfg.get("pattern_notes") else "",
+             f"At most {int(cfg.get('max_emoji', 2))} emoji" + (", and no em dashes." if cfg.get("no_em_dash", True) else ".")]
+    return "\n\nVOICE (captions, on-screen text and scripts):\n" + "\n".join(r for r in rules if r)
+
+
+def system_prompt(policy: Policy) -> str:
+    return SYSTEM + voice_rules(policy)
 
 
 def _recent(conn, creator_id, n: int) -> list[dict]:
@@ -191,7 +210,7 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
         f"Vary places, times of day, light and framing; the creator's face should be visible in most images, "
         f"wearing their signature item.")
     role = cfg.get("role", "brain")
-    out = llm.structured(role, system=SYSTEM, content=prompt, schema=ContentPlan,
+    out = llm.structured(role, system=system_prompt(policy), content=prompt, schema=ContentPlan,
                          effort=cfg.get("effort", "medium"), creator_id=creator_id)
     kept, dropped = [], []
     for p in out.posts:

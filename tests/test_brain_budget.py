@@ -9,6 +9,8 @@ from manyworlds import ledger, queue
 from manyworlds.brain import budget
 from manyworlds.llm import Claude
 
+from brain_helpers import creator
+
 
 class Echo(BaseModel):
     say: str = "hi"
@@ -60,3 +62,14 @@ def test_an_agent_that_has_spent_exactly_its_budget_is_stopped(conn, policy):
                   usd=budget.daily_cap(policy, "echo"), agent="echo")
     with pytest.raises(budget.OverBudget):
         budget.check(conn, policy, "echo")
+
+
+def test_per_creator_agents_get_more_budget_as_the_portfolio_grows(conn, policy):
+    base = budget.daily_cap(policy, "showrunner", conn)
+    per = policy.get("brain", "llm_usd_per_creator_day", "showrunner")
+    n0 = budget.active_creators(conn)
+    for _ in range(3):
+        creator(conn)
+    assert budget.daily_cap(policy, "showrunner", conn) == pytest.approx(base + 3 * per)
+    assert budget.active_creators(conn) == n0 + 3
+    assert budget.daily_cap(policy, "strategist", conn) == policy.get("brain", "llm_usd_per_day", "strategist")

@@ -46,6 +46,22 @@ def creator_summary(conn, creator_id) -> tuple[int | None, str]:
     return version, evaluation.CREATOR_TEMPLATE.format(handle=c["handle"], facts=json.dumps(facts, ensure_ascii=False))
 
 
+def near_floor(policy, rubric_name: str):
+    """Extra samples for an idea whose score sits within `resample.margin` of a feed-QA floor (the scores that
+    drop ideas), so one noisy sample never decides a drop; ideas far from every floor are scored once."""
+    cfg = policy.get("brain", "evaluation", "resample", default={}) or {}
+    floors = (policy.get("brain", "qa", "min_scores", default={}) or {}) if rubric_name == "idea" else {}
+    if not cfg or not floors:
+        return None
+    margin, extra = float(cfg.get("margin", 1)), int(cfg.get("extra", 2))
+
+    def more(medians: dict) -> int:
+        near = any(medians.get(d) is not None and abs(float(medians[d]) - float(f)) <= margin
+                   for d, f in floors.items())
+        return extra if near else 0
+    return more
+
+
 def score_and_store(conn, policy, llm, rubric_name: str, item_kind: str, content: list, *, creator_id, fmt,
                     idea_id=None, asset_id=None, item_key, null_dimensions=()) -> list[str]:
     """Score an item with the evaluator (and the strong model when sampled) and store the rows."""
@@ -57,9 +73,10 @@ def score_and_store(conn, policy, llm, rubric_name: str, item_kind: str, content
     scored = []
     for role in roles:
         samples = int(cfg.get("check_samples", 1) if role == "evaluator_check" else cfg.get("samples", 3))
+        more = None if role == "evaluator_check" else near_floor(policy, rubric_name)
         try:
             scored.append((role, evaluation.score(llm, policy, r, content, role=role, samples=samples,
-                                                  creator_id=creator_id)))
+                                                  creator_id=creator_id, more=more)))
         except Refused:
             if role != "evaluator_check":
                 raise

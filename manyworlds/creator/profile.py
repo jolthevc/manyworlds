@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from ..llm import StructuredLLM
 from ..policy import Policy
+from .lab import persona_system
 
 IDENTITY_FIELDS = ("apparent_age", "gender_presentation", "ethnicity_and_skin", "face", "eyes", "build")
 
@@ -230,8 +231,9 @@ def build(conn, policy: Policy, llm: StructuredLLM, creator_id, *, force: bool =
               f"Keep their face, age and existing signature details; pick the signature item from what they "
               f"already wear or carry if one fits. Starting dials for reference (adjust with reason): "
               f"{json.dumps(defaults)}. Early on, photos outnumber videos.")
-    d = llm.structured(policy.get("creators", "profile_role", default="creator"), system=SYSTEM, content=prompt,
-                       schema=ProfileDraft, effort="high", creator_id=creator_id)
+    d = llm.structured(policy.get("creators", "profile_role", default="creator"),
+                       system=persona_system(policy, SYSTEM), content=prompt, schema=ProfileDraft, effort="high",
+                       creator_id=creator_id)
     a = c["bible"]["appearance"]
     body = {
         "identity": {k: a.get(k) for k in IDENTITY_FIELDS},

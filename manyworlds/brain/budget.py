@@ -23,21 +23,32 @@ def spent_today(conn, agent: str) -> float:
     return float(row["u"])
 
 
-def daily_cap(policy: Policy, agent: str) -> float:
+def active_creators(conn) -> int:
+    """Real creators the Brain works for: not retired, not sandbox test creators."""
+    return int(conn.execute("SELECT count(*) AS n FROM creators WHERE status <> 'retired' "
+                            "AND anchors->'simulation'->>'scenario' IS NULL").fetchone()["n"])
+
+
+def daily_cap(policy: Policy, agent: str, conn=None) -> float:
+    """The agent's fixed daily budget, plus `llm_usd_per_creator_day` for each active creator when the agent's
+    work grows with the portfolio (the showrunner and evaluator run per creator: a fixed cap would stall them
+    at a few dozen creators)."""
     caps = policy.get("brain", "llm_usd_per_day", default={}) or {}
     if agent.startswith("sandbox:"):
         return float(caps.get("sandbox", 0))
-    return float(caps.get(agent, caps.get("default", 0)))
+    base = float(caps.get(agent, caps.get("default", 0)))
+    per = float((policy.get("brain", "llm_usd_per_creator_day", default={}) or {}).get(agent, 0))
+    return base + (per * active_creators(conn) if per and conn is not None else 0)
 
 
 def remaining(conn, policy: Policy, agent: str) -> float:
-    return daily_cap(policy, agent) - spent_today(conn, agent)
+    return daily_cap(policy, agent, conn) - spent_today(conn, agent)
 
 
 def check(conn, policy: Policy, agent: str) -> None:
     left = remaining(conn, policy, agent)
     if left <= 0:
-        raise OverBudget(f"agent {agent} is over its daily LLM budget of ${daily_cap(policy, agent):.2f} "
+        raise OverBudget(f"agent {agent} is over its daily LLM budget of ${daily_cap(policy, agent, conn):.2f} "
                          f"(spent ${spent_today(conn, agent):.2f})")
 
 

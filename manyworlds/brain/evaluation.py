@@ -13,7 +13,7 @@ import hashlib
 import json
 import statistics
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field, create_model
 
@@ -60,7 +60,10 @@ def _blocks(content: list) -> list[dict]:
     return [{"type": "text", "text": c} if isinstance(c, str) else c for c in content]
 
 
-def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: int, creator_id=None) -> Scored:
+def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: int, creator_id=None,
+          more: Callable[[dict], int] | None = None) -> Scored:
+    """`samples` scorings, then as many more as `more(medians)` asks for: a score near a decision line is
+    worth re-checking, one far from it is not (at scale every sample is a paid call)."""
     schema = schema_for(r)
     # The rubric is the same for every item: cached, so repeat calls pay a fraction of its tokens.
     prompt = [{"type": "text", "text": r.as_text(), "cache_control": {"type": "ephemeral"}}, *_blocks(content),
@@ -68,7 +71,11 @@ def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: 
     per_dim: dict[str, list[int]] = {d.key: [] for d in r.dimensions}
     why: dict[str, list[str]] = {d.key: [] for d in r.dimensions}
     notes: list[str] = []
-    for _ in range(samples):
+
+    def medians() -> dict:
+        return {k: (statistics.median(v) if v else None) for k, v in per_dim.items()}
+
+    def sample() -> None:
         out = llm.structured(role, system=SYSTEM, content=prompt, schema=schema, effort=effort(policy),
                              creator_id=creator_id)
         for d in r.dimensions:
@@ -79,9 +86,14 @@ def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: 
             why[d.key].append(s.why)
         if getattr(out, "overall_note", ""):
             notes.append(out.overall_note)
-    return Scored(medians={k: (statistics.median(v) if v else None) for k, v in per_dim.items()},
-                  spreads={k: (max(v) - min(v) if v else None) for k, v in per_dim.items()},
-                  rationale=why, model=llm.model_for(role), samples=samples, notes=notes)
+
+    for _ in range(samples):
+        sample()
+    extra = int(more(medians())) if more else 0
+    for _ in range(extra):
+        sample()
+    return Scored(medians=medians(), spreads={k: (max(v) - min(v) if v else None) for k, v in per_dim.items()},
+                  rationale=why, model=llm.model_for(role), samples=samples + extra, notes=notes)
 
 
 # How items are laid out for the evaluator. Part of the prompt version: change them and the

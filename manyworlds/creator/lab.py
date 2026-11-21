@@ -117,7 +117,8 @@ def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> Creat
         f"Off-limits topics: {scope.get('excluded_topics')}. Disclosure must say '{scope.get('disclosure_line')}'.\n"
         f"Handles already taken: {taken}.\nKokoro voices to choose from: {KOKORO_VOICES}.\n"
         f"Write exactly {n} reference_prompts.")
-    bible = llm.structured("creator", system=SYSTEM, content=prompt, schema=CreatorBible, effort="high")
+    bible = llm.structured("creator", system=persona_system(policy, SYSTEM), content=prompt, schema=CreatorBible,
+                           effort="high")
     bible.handle = _slug(bible.handle)
     if bible.appearance.apparent_age < int(scope.get("creator_min_age", 21)):
         raise ValueError(f"bible apparent_age {bible.appearance.apparent_age} below policy minimum")
@@ -221,3 +222,10 @@ def enqueue_voice_sample(conn, creator_id) -> object:
     line = f"Hi, I'm {c['bible']['display_name']}. {c['bible']['one_line']}"
     return queue.enqueue(conn, "image.voice", {"text": line, "voice": c["anchors"]["voice"]["voice"]},
                          creator_id=creator_id, idempotency_key=f"{creator_id}:voice:sample")
+
+
+def persona_system(policy: Policy, system: str) -> str:
+    """A creator-design prompt with the owner's persona and voice guides (policy), so every creator is someone
+    worth following and writes like a real person (shared by the bible and the profile)."""
+    guides = [policy.get("creator_lab", "persona_guide", default=""), policy.get("captions", "voice_guide", default="")]
+    return system + "".join(f"\n\n{g.strip()}" for g in guides if g)

@@ -249,6 +249,14 @@ research:
   usd_per_1k_items: {instagram: 2.70, tiktok: 1.70}   # for the ledger; check the Apify invoice
 
 creator_lab:
+  # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
+  # with `captions.voice_guide` for how they write.
+  persona_guide: >-
+    Design someone a stranger would follow after three posts: real taste (specific places, music, food and
+    objects; never real brands), a clear point of view and a few opinions people could disagree with, a sense of
+    humour that is theirs (dry, chaotic, deadpan, warm), a flaw or two, and a life with texture (a job, friends,
+    a neighbourhood, routines). Current and culturally aware without chasing trends. Never a generic wholesome
+    lifestyle account, a mood board, a motivational voice or a polished brand; never cringe.
   reference_prompts: 12          # angles/scenes in the reference pack
   candidates_per_reference: 4
   lora: {steps: 1200, rank: 16, learning_rate: 0.0001, resolution: 1024, log_upload_seconds: 120}
@@ -309,6 +317,10 @@ budget: {master_usd_per_month: 750, reserve_share: 0.15}
 brain:
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 6.0,
                     creator_lab: 5.0}   # creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+  # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
+  # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
+  # third of that at one.
+  llm_usd_per_creator_day: {showrunner: 0.10, evaluator: 0.10}
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
   # Experiments (manyworlds.brain.experiments): a tentative finding becomes a randomised two-arm test. Slots are
   # assigned per batch; the result is read once, when each arm has its sample (no peeking). The sample per arm
@@ -363,7 +375,10 @@ brain:
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
-  evaluation: {samples: 3, check_rate: 0.1, check_samples: 1, effort: low, prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
+  # samples: 1 since 2026-11-21 (was 3): two more only for an idea within resample.margin of a feed-QA floor, the
+  # only place a score drops an idea. At thousands of creators, three calls per idea tripled the largest Brain bill.
+  evaluation: {samples: 1, resample: {margin: 1, extra: 2}, check_rate: 0.1, check_samples: 1, effort: low,
+               prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
@@ -431,14 +446,39 @@ stagings:
     walk_and_talk: {formats: [talking_video], setting: "walking down a street or a path", framing: "selfie-held phone at arm's length", wardrobe: "the creator's usual outfit", script: "talking to the phone like to a friend: a story, an opinion, an update"}
     asmr: {formats: [talking_video], setting: "a quiet, softly lit room", framing: "close-up, soft focus behind", wardrobe: "cosy", script: "very softly spoken, slow, describing small things"}
 
-# Captions that read as written by an AI are dropped (manyworlds.brain.planner.caption_issues).
+# Captions, on-screen text and scripts (manyworlds.brain.planner): the rules go into the planner's and the
+# showrunner's prompts (`voice_rules`), and anything that still breaks them is dropped (`caption_issues`).
+# Owner 2026-11-21: never cringy or "too AI"; every creator should read as a real, cool person worth following.
 captions:
   max_emoji: 2
-  banned_phrases: [embrace, "little things in life", romanticiz, "core memory", "living my best", obsessed,
-                   "game changer", "game-changer", journey, self-care, "self care", "main character", "vibes",
-                   "let's dive", "here's to", "cozy season", "soul", "magic of", "the simple joys",
-                   "nothing beats", "who else", "drop a", "comment below", "link in bio"]
+  # Matched at a word start, case-insensitive ("drop a" catches "drop a comment", never "raindrop a").
+  banned_phrases: [embrace, "little things in life", romanticiz, "core memory", "living my best", "game changer",
+                   "game-changer", journey, self-care, "self care", "main character", "vibes", "let's dive", "here's to",
+                   "cozy season", "soul", "magic of", "the simple joys", "nothing beats", "who else", "drop a",
+                   "comment below", "link in bio", delve, tapestry, "testament to", elevate, unleash, "in a world",
+                   "pure bliss", blissful, serene, nestled, breathtaking, cherish, "grateful for", blessed, manifest,
+                   "sun-kissed", wanderlust, "hey guys", "welcome back", "so today", "in this video", "don't forget to"]
+  # Sentence shapes AI writing falls into; regexes. pattern_notes say the same in words, for the prompt.
+  banned_patterns:   # single-quoted: backslashes are literal, '' is an apostrophe
+    not_just: '\b(it[''’]?s not|this is not|that[''’]?s not|this isn[''’]?t|it isn[''’]?t) (just|only|about) [^.!?]{1,40}[,;] (it[''’]?s|this is)\b'
+    audience_question: '(what about you|what[''’]?s your (favou?rite|go-to)|anyone else\b|tell me (in the comments|below)|thoughts\?$)'
+    lesson: '\b(a (gentle )?reminder (that|to)|remember to|life is (too short|about)|the lesson|note to self:)'
+    narrated_gratitude: '\bfeeling (so )?(grateful|thankful|blessed)\b'
+  pattern_notes:
+    not_just: "'it's not just X, it's Y'"
+    audience_question: "questions to the audience ('what about you?', 'anyone else?')"
+    lesson: "lessons, reminders or morals"
+    narrated_gratitude: "narrated gratitude"
   no_em_dash: true
+  voice_guide: >-
+    Write like a real person people choose to follow, not a brand, a poet or an assistant. Be specific: name the
+    actual thing (the bodega, the bus line, the exact snack, the song). Have a point of view and small opinions;
+    be a little dry and self-aware; leave things unsaid. Captions are usually short, often one line or a fragment,
+    written the way this person texts (their casing and punctuation; slang only if it is theirs and current, never
+    forced). Never explain the joke, narrate feelings, moralise, sum up a lesson, sound inspirational or wholesome
+    on purpose, or perform gratitude. Hashtags rarely, never in the caption. Talking-video scripts sound spoken:
+    contractions, short sentences, an aside or a restart is fine, no lists, no intros. If a line would make a
+    stylish 25-year-old cringe, cut it. Cool comes from taste and restraint, not adjectives.
 
 # Production (manyworlds.production): planned posts -> image jobs -> reviewed images.
 # On Maren with the full appearance prompt, 12 of 12 images passed review, so 4 candidates

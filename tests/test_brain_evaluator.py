@@ -209,3 +209,17 @@ def test_the_check_scores_once_and_the_rubric_prefix_is_cached(conn, policy):
     assert check["samples"] == pol.get("brain", "evaluation", "check_samples") == 1
     first = llm.calls[0]["content"]
     assert first[0].get("cache_control") == {"type": "ephemeral"} and "RUBRIC" in first[0]["text"]
+
+
+def test_an_idea_is_scored_once_unless_it_sits_near_a_floor_that_drops_ideas(conn, policy):
+    # 2026-11-21: three samples per idea tripled the largest Brain bill; only scores that decide a drop need more.
+    floor = policy.get("brain", "qa", "min_scores")["naturalness"]
+    extra = policy.get("brain", "evaluation", "resample", "extra")
+    c = creator(conn)
+    far = evaluator.evaluate_idea(_ctx(conn, policy, ScoringLLM(floor + 3, conn=conn)),
+                                  ideas.from_post(conn, planned_post(conn, c)))
+    near = evaluator.evaluate_idea(_ctx(conn, policy, ScoringLLM(floor, conn=conn)),
+                                   ideas.from_post(conn, planned_post(conn, c)))
+    got = {str(r["id"]): r["samples"] for r in conn.execute("SELECT id, samples FROM evaluations WHERE role = 'evaluator'")}
+    assert got[str(far)] == policy.get("brain", "evaluation", "samples") == 1
+    assert got[str(near)] == 1 + extra
