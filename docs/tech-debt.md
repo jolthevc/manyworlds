@@ -1,3 +1,4 @@
+| `test_a_finding_becomes_an_experiment_whose_result_is_proven` is flaky: slot assignment seeds from the experiment's random UUID, and 10 posts per arm sometimes miss the planted effect (failed once on 2026-11-21 on a policy-only commit) | `tests/test_brain_learning_trace.py`, `manyworlds/brain/experiments.py` |
 | The evaluator's agreement check runs on Opus at ~$0.15 a call: 22 calls were 40% of evaluator spend (2026-11-21) | shadow `evaluator` candidates first; then move `evaluator_check` to a different-family model or lower `check_rate` | policy `llm.roles.evaluator_check`, `brain.evaluation.check_rate` |
 | The no-output guard counts a machine as failed when it tried work and finished none; a machine cut off by an interruptible host mid-first-job also counts | at worst it holds a family until the window passes or a new image tag ships, and tells the owner | `manyworlds/deploy/autoscale.py` |
 # Technical debt
