@@ -218,22 +218,100 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     return queue.enqueue(conn, _cfg(policy).get("video_kind", "video.wan_i2v"), payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
 
-def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int):
+def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *,
+              segment: int | None = None, start_uri: str | None = None):
     """A talking video: the creator says the script to camera from the approved photo, lip-synced,
-    in their own voice (Kokoro on the talk worker)."""
+    in their own voice (Kokoro on the talk worker). For a long script, one segment of it."""
     row = conn.execute("SELECT bible, anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
     voice = (row["anchors"] or {}).get("voice") or {}
     params = dict(policy.get("generation", "talk", default={}) or {})
     default_voice = params.pop("voice", "af_heart")
-    scene, script = body["scenes"][0], body.get("script", "")
-    payload = {"image_uri": chosen[0]["uri"], "script": script, "voice": voice.get("voice", default_voice),
+    scene = body["scenes"][0]
+    script = body["talk_segments"][segment] if segment is not None else body.get("script", "")
+    seed = int(str(post["id"]).replace("-", "")[:7], 16) + 700 + attempt * 10 + (segment or 0) * 1000
+    payload = {"image_uri": start_uri or chosen[0]["uri"], "script": script, "voice": voice.get("voice", default_voice),
                "speed": float(voice.get("speed", 1.0)), "prompt": talk_prompt(row["bible"], scene),
                "scene": f"{scene} Speaking to camera: {script}",   # the video judge scores against it
-               "keyframes": int(policy.get("review", "video", "keyframes", default=4)),
-               "seed": int(str(post["id"]).replace("-", "")[:7], 16) + 700 + attempt * 10, "params": params}
+               "keyframes": int(policy.get("review", "video", "keyframes", default=4)), "seed": seed, "params": params}
+    if segment is not None:
+        payload["segment"] = {"index": segment, "of": len(body["talk_segments"])}
+    key = f"post:{post['id']}:talk:{attempt}" if segment is None else f"post:{post['id']}:talk:{segment}:{attempt}"
     return queue.enqueue(conn, _cfg(policy).get("talk_kind", "talk.infinitetalk"), payload,
                          creator_id=post["creator_id"], batch=f"post-{post['id']}", post_id=post["id"],
-                         idempotency_key=f"post:{post['id']}:talk:{attempt}")
+                         idempotency_key=key)
+
+
+def _talk_long_cfg(policy: Policy) -> dict:
+    return policy.get("generation", "talk_long", default={}) or {}
+
+
+def talk_segments(policy: Policy, script: str) -> list[str]:
+    from .talk_segments import split_script
+    cfg = _talk_long_cfg(policy)
+    return split_script(script, max_seconds=float(cfg.get("max_segment_seconds", 25)),
+                        words_per_second=float(cfg.get("words_per_second", 2.5)))
+
+
+def _last_frame(conn, video: dict) -> str:
+    """The last keyframe of a chosen segment (keyframes always end on the clip's last frame)."""
+    row = conn.execute(
+        """SELECT k.uri FROM assets v JOIN assets k ON k.job_id = v.job_id AND k.kind = 'keyframe'
+           WHERE v.id = %s ORDER BY (k.meta->>'frame')::int DESC NULLS LAST, k.uri DESC LIMIT 1""",
+        (video["id"],)).fetchone()
+    if not row:
+        raise DropPost("a chosen segment has no keyframes to continue from")
+    return row["uri"]
+
+
+def join_talk(conn, policy: Policy, post: dict, videos: list[dict], store=None) -> dict:
+    """The post's segments joined into one video asset. Idempotent: a rerun reuses the joined asset."""
+    import tempfile
+    from pathlib import Path
+
+    from . import media, storage
+    store = store or storage.from_url()
+    key = f"assets/{post['creator_id']}/post-{post['id']}/talk-joined.mp4"
+    uri = store.uri_for(key)
+    existing = conn.execute("SELECT id, uri FROM assets WHERE uri = %s AND kind = 'video'", (uri,)).fetchone()
+    if existing:
+        return existing
+    with tempfile.TemporaryDirectory(prefix="mw-join-") as d:
+        paths = [store.get_file(v["uri"], Path(d) / f"segment_{i:02d}.mp4") for i, v in enumerate(videos)]
+        out = media.concat(paths, Path(d) / "joined.mp4",
+                           timeout=float(_talk_long_cfg(policy).get("join_timeout_s", 600)))
+        stored = store.put_file(out, key)
+    return conn.execute(
+        """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
+           VALUES (%s, 'video', %s, %s, %s, %s, %s) RETURNING id, uri""",
+        (post["creator_id"], stored.uri, stored.sha256, stored.bytes,
+         Jsonb({"lip_sync": True, "segments": [str(v["id"]) for v in videos]}),
+         Jsonb({"joined": [v["uri"] for v in videos], "join": _talk_long_cfg(policy).get("join", "cut")}))).fetchone()
+
+
+def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], store=None):
+    """A script longer than one segment: every segment is a talk job of its own, judged by the video gate and
+    repaired on its own; `cut` renders them all from the approved photo at once, `chain` starts each from the
+    last frame of the one before. Once all are chosen they are joined into the post's video."""
+    chain = _talk_long_cfg(policy).get("join", "cut") == "chain"
+    jobs = body.setdefault("talk_segment_jobs", [[] for _ in body["talk_segments"]])
+    repairs = int(policy.get("review", "video", "max_repairs_per_post", default=2))
+    failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
+    results: list[tuple[str, Any]] = []
+    for i in range(len(body["talk_segments"])):
+        if chain and i > 0 and results[-1][0] != "chosen":
+            results.append(("waiting", None))   # starts from the previous segment's last frame
+            continue
+        start_uri = _last_frame(conn, results[-1][1]) if chain and i > 0 else None
+        step = Step(jobs[i], lambda j: _clip_state(conn, j),
+                    lambda attempt, i=i, s=start_uri: _talk_job(conn, policy, post, body, chosen, attempt,
+                                                                 segment=i, start_uri=s),
+                    (f"segment_repairs_{i}", repairs), ("follow_up_failures", failures), "clip", f"segment {i}: ")
+        results.append(advance_step(body, step))
+        if results[-1][0] == "dropped":
+            return "dropped", None
+    if any(state != "chosen" for state, _ in results):
+        return "waiting", None
+    return "chosen", join_talk(conn, policy, post, [video for _, video in results], store)
 
 
 # Formats made from the post's chosen photos: body key for their jobs, job maker, state, name.
@@ -278,7 +356,7 @@ def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict])
                 ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))), thing)
 
 
-def advance_post(conn, policy: Policy, post: dict) -> str:
+def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
     body = dict(post["body"])
     results = []
     for step in _scene_steps(conn, policy, post, body):
@@ -289,7 +367,13 @@ def advance_post(conn, policy: Policy, post: dict) -> str:
     if states == {"chosen"}:
         body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
         if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
-            state, video = advance_step(body, _follow_up(conn, policy, post, body, chosen))
+            if post["format"] == "talking_video" and "talk_segments" not in body:
+                segments = talk_segments(policy, body.get("script", ""))
+                body["talk_segments"] = segments if len(segments) > 1 else []   # [] = one clip
+            if body.get("talk_segments"):   # a long script: one job per segment, then joined
+                state, video = _advance_long_talk(conn, policy, post, body, chosen, store)
+            else:
+                state, video = advance_step(body, _follow_up(conn, policy, post, body, chosen))
             target = (_cfg(policy).get("reroute_failed_video") or {}).get(post["format"])
             # Only when review kept rejecting the clips (not machine failures), and never for an experiment
             # idea, whose arm would then be measured on a photo.
@@ -317,7 +401,7 @@ def advance_post(conn, policy: Policy, post: dict) -> str:
     return "ready"
 
 
-def advance(conn, policy: Policy, *, now: datetime | None = None) -> dict:
+def advance(conn, policy: Policy, *, now: datetime | None = None, store=None) -> dict:
     now = now or datetime.now(timezone.utc)
     lead = timedelta(hours=float(_cfg(policy).get("lead_hours", 48)))
     # Jobs that used their last attempt and lost the lease are dead, so their scene gets repaired
@@ -341,5 +425,5 @@ def advance(conn, policy: Policy, *, now: datetime | None = None) -> dict:
         start(conn, policy, post)
         out["started"] += 1
     for post in conn.execute("SELECT * FROM posts WHERE status = 'producing' ORDER BY scheduled_for").fetchall():
-        out[advance_post(conn, policy, post)] += 1
+        out[advance_post(conn, policy, post, store)] += 1
     return out

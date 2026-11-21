@@ -10,6 +10,7 @@ dependencies = [
     "anthropic>=0.75",
     "pydantic>=2.7",
     "pillow>=10",       # Instagram takes JPEG only: published images are converted from PNG
+    "imageio-ffmpeg>=0.5",   # static ffmpeg: the producer joins long talking-video segments (manyworlds.media)
 ]
 
 [project.optional-dependencies]

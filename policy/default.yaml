@@ -214,6 +214,11 @@ generation:
     motion_frame: 9              # frames carried between streaming chunks (README value)
     timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
     voice: af_heart
+  # Long talking videos (manyworlds.talk_segments, production): a script longer than one segment is split at
+  # sentence boundaries, each segment rendered and judged as its own talk job, then joined by the producer.
+  # join: cut = every segment from the approved photo, in parallel, joined with jump cuts (talking-head style);
+  #       chain = each segment starts from the last frame of the one before (continuous, one at a time).
+  talk_long: {max_segment_seconds: 25, words_per_second: 2.5, join: cut, join_timeout_s: 600}
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:
@@ -383,7 +388,7 @@ planner:
     carousel: "2-4 photos of the same moment, evening or day, in order"
     narrated_edit: "3-6 photos in sequence with the creator's own voice reading `script` (15-30 s of natural speech, said the way they talk) and burned-in captions; routine montages belong here"
     story_clip: "ONE 5-second shot animated from ONE photo, with one simple motion (steam rising, rain running down glass, a hand lifting a mug); `script` says only what moves. Never a montage or several actions"
-    talking_video: "the creator talks to camera, lip-synced in their own voice: ONE scene where they face the camera, chest-up, in the place they are speaking from (the start frame), and `script` = exactly what they say (5-20 s of natural speech, said the way they talk, no stage directions)"
+    talking_video: "the creator talks to camera, lip-synced in their own voice: ONE scene where they face the camera, chest-up, in the place they are speaking from (the start frame), and `script` = exactly what they say (10-90 s of natural speech in full sentences, said the way they talk, no stage directions; long scripts are rendered in segments)"
     story: "ONE vertical throwaway Story photo: a quick in-the-moment glimpse (the view, the coffee, the mess, a mood); casual, unposed, 0-6 words of caption; not a grid post"
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity

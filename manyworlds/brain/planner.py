@@ -49,7 +49,8 @@ class PlannedPost(BaseModel):
     scenes: list[str] = Field(description="one per image: setting, action, wardrobe, light, framing. "
                                           "The creator is the only clear face; no legible text, logos or brands")
     script: str = Field(default="", description="for narrated_edit: what they say, in their speaking voice, "
-                                                "about 10-25 seconds; for story_clip: what moves in the shot")
+                                                "about 10-25 seconds; for story_clip: what moves in the shot; "
+                                                "for talking_video: exactly what they say, in full sentences")
     on_screen_text: str = Field(default="", description="short text overlay, if the format uses one")
     caption: str = Field(description="in the creator's caption voice")
     hashtags: list[str] = Field(description="without '#', lowercase; often none")
