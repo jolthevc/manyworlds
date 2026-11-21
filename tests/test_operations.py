@@ -30,7 +30,8 @@ def test_paused_brain_runs_only_test_jobs(conn, policy):
     assert conn.execute("SELECT status FROM jobs WHERE id = %s", (real,)).fetchone()["status"] == "queued"
 
 
-def test_paused_autoscaler_starts_machines_only_for_test_batches(conn, policy):
+def test_paused_autoscaler_starts_machines_only_for_test_batches(conn, policy, monkeypatch):
+    monkeypatch.setenv("MW_REGISTRY", "docker.io/example")
     pol = _paused(policy)
     queue.enqueue(conn, "image.zimage", {}, batch="post-123")              # production work waits
     ps = providers()

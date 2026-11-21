@@ -94,9 +94,9 @@ def test_videos_go_out_as_reels_and_stories_as_stories(conn, policy, ig):
     _post(conn, cid, "talking_video", video=True)
     _post(conn, cid, "story")
     scheduler.publish_due(conn, policy, now=NOW)
-    creates = [c[2] for c in fake.calls if c[0] == "POST" and c[1].endswith("/media")]
-    assert creates[0]["media_type"] == "REELS" and creates[0]["video_url"] and creates[0]["share_to_feed"] is True
-    assert creates[1]["media_type"] == "STORIES"
+    creates = {c[2]["media_type"]: c[2] for c in fake.calls if c[0] == "POST" and c[1].endswith("/media")}
+    assert set(creates) == {"REELS", "STORIES"}              # same scheduled time: no order between them
+    assert creates["REELS"]["video_url"] and creates["REELS"]["share_to_feed"] is True
 
 
 def test_a_container_still_processing_waits_and_an_error_is_reported(conn, policy, ig):

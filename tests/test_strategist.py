@@ -46,6 +46,7 @@ def _with(policy, **kw):
 
 def test_launch_proposals_wait_for_the_owner_while_policy_says_so(conn, policy):
     t = _theses(conn)
+    policy = _with(policy, launches_per_week=2)          # the shipped policy allows none (owner 2026-11-21)
     out, llm = _run(conn, policy, {"stage_moves": [], "notes": "n",
                                    "launches": [{"thesis_id": str(t[0]), "cohort": "nov-a", "reason": "untested niche"}]})
     a = conn.execute("SELECT kind, status, subject FROM approvals").fetchall()
@@ -119,3 +120,12 @@ def test_one_strategist_run_per_day(conn, policy):
     portfolio.ensure_daily(conn, policy, now=datetime(2026, 11, 20, 15, tzinfo=timezone.utc))
     jobs = conn.execute("SELECT payload FROM jobs WHERE kind = 'brain.strategist'").fetchall()
     assert [j["payload"] for j in jobs] == [{"day": "2026-11-20"}]
+
+
+def test_the_shipped_policy_launches_nothing(conn, raw_policy):
+    t = _theses(conn, 1)
+    pol = __import__("manyworlds.policy", fromlist=["from_dict"]).from_dict(
+        {**raw_policy.body, "operations": {**raw_policy.body["operations"], "mode": "live"}})
+    out, _ = _run(conn, pol, {"stage_moves": [], "notes": "n",
+                              "launches": [{"thesis_id": str(t[0]), "cohort": "c", "reason": "r"}]})
+    assert out["launches"]["requested"] == 0 and "per week" in out["launches"]["refused"][0]["why"]
