@@ -224,3 +224,17 @@ def test_every_shipped_shadow_candidate_is_a_priced_model(raw_policy):
             assert c in llm_cfg["open_models"] or c in llm_cfg["usd_per_mtok"], (role, c)
             if role in ("evaluator", "review", "judge") and c in llm_cfg["open_models"]:
                 assert llm_cfg["open_models"][c].get("vision"), (role, c)   # these roles send images
+
+
+def test_a_trial_sends_every_call_to_every_candidate_until_its_budget_is_spent(conn, open_policy):
+    llm_cfg = {**open_policy.body["llm"], "roles": {**open_policy.body["llm"]["roles"], "evaluator": "claude-sonnet-5-5"},
+               "shadow": {"evaluator": {"candidates": ["open-small", "open-vision"], "share": 0.0}}}
+    pol = policy_mod.from_dict({**open_policy.body, "llm": llm_cfg})
+    host = FakeHost(*[{"score": 6, "passed": True, "label": "x"}] * 10)
+    llm = LLM(conn, pol, client=FakeAnthropic(), post=host)
+    llm.trial_usd = 0.002            # each candidate call costs $0.0004 (open-small) or $0.0008 (open-vision)
+    for _ in range(4):
+        llm.structured("evaluator", system="s", content="c", schema=Verdict)
+    rows = [r["candidate_model"] for r in conn.execute("SELECT candidate_model FROM llm_shadow ORDER BY id")]
+    assert rows[:2] == ["open-small", "open-vision"]            # both, on the same call, though share is 0
+    assert llm.trial_spent >= llm.trial_usd and len(rows) < 8     # stopped once the trial budget was spent

@@ -122,6 +122,8 @@ class LLM:
         self._post = post
         self.calls: list[Usage] = []
         self._tag: dict = {}   # agent and job the current calls are charged to (Brain runtime)
+        self.trial_usd: float | None = None   # set for a test run: every call goes to every shadow candidate
+        self.trial_spent = 0.0
 
     @property
     def client(self):
@@ -244,7 +246,7 @@ class LLM:
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": schema.__name__, "schema": schema.model_json_schema(), "strict": False}}}
         prices = spec.get("usd_per_mtok") or [0, 0]
-        timeout = float(host.get("timeout_seconds", 120))
+        timeout = float(spec.get("timeout_seconds", host.get("timeout_seconds", 120)))   # slow thinkers need more
         last = None
         for _ in range(int(spec.get("attempts", 2))):
             r = self._post(f"{host['base_url'].rstrip('/')}/chat/completions", body, key, timeout)
@@ -263,30 +265,43 @@ class LLM:
         if not cfg:
             return
         # One candidate or several (`candidates`): each sampled call goes to one of them, so a role can try
-        # several models side by side against the same primary.
+        # several models side by side against the same primary. In a trial (`self.trial_usd`, set for a test
+        # run) every call goes to every candidate, so one short run compares them all on the same inputs.
         pool = [str(c) for c in (cfg.get("candidates") or [cfg.get("candidate")]) if c and str(c) != model]
-        if not pool or random.random() >= float(cfg.get("share", 0)):
+        if not pool:
             return
-        candidate = random.choice(pool)
-        try:
-            cap = float(self.policy.get("llm", "shadow_usd_per_day", default=1.0))
-            start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            spent = self.conn.execute("SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE agent = %s "
-                                      "AND created_at >= %s", (SHADOW_AGENT, start)).fetchone()["u"]
-            if float(spent) >= cap:
+        if self.trial_usd is None:
+            if random.random() >= float(cfg.get("share", 0)):
                 return
+            pool = [random.choice(pool)]
+        for candidate in pool:
+            self._shadow_one(role, model, candidate, out, primary_usd, **call)
+
+    def _shadow_one(self, role: str, model: str, candidate: str, out: BaseModel, primary_usd: float, **call) -> None:
+        try:
+            if self.trial_usd is not None:
+                if self.trial_spent >= self.trial_usd:
+                    return
+            else:
+                cap = float(self.policy.get("llm", "shadow_usd_per_day", default=1.0))
+                start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                spent = self.conn.execute("SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE agent = %s "
+                                          "AND created_at >= %s", (SHADOW_AGENT, start)).fetchone()["u"]
+                if float(spent) >= cap:
+                    return
             n0, t0 = len(self.calls), time.monotonic()
             try:
                 got, error = self._call(candidate, agent=SHADOW_AGENT, **call).model_dump(mode="json"), None
             except Exception as e:  # noqa: BLE001 - a candidate's failure is a result, never the caller's problem
                 got, error = None, f"{type(e).__name__}: {e}"[:500]
+            usd = sum(c.usd for c in self.calls[n0:])
+            self.trial_spent += usd
             self.conn.execute(
                 "INSERT INTO llm_shadow (role, primary_model, candidate_model, primary_output, candidate_output, "
                 "candidate_error, primary_usd, candidate_usd, candidate_seconds, agent) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (role, model, candidate, Jsonb(out.model_dump(mode="json")), Jsonb(got) if got is not None else None,
-                 error, primary_usd, sum(c.usd for c in self.calls[n0:]), round(time.monotonic() - t0, 3),
-                 self._tag.get("agent")))
+                 error, primary_usd, usd, round(time.monotonic() - t0, 3), self._tag.get("agent")))
         except Exception as e:  # noqa: BLE001 - shadow bookkeeping must never fail the real call
             log.warning("shadow call for %s failed: %s", role, type(e).__name__)
 

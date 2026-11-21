@@ -117,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     bsim.add_argument("creator")
     bsim.add_argument("--batches", type=int, default=3)
     bsim.add_argument("--clone-from", help="create the sandbox creator as a copy of this creator first")
+    bsim.add_argument("--trial-usd", type=float, help="also send every call to every llm.shadow candidate, up to "
+                      "this much candidate spend (compare models on the same inputs: mw llm shadow-report)")
     bsim.add_argument("--scenario", default="personality_wins")
     bsim.add_argument("--seed", type=int, default=0)
     blearn = bsub.add_parser("learning", help="what the Brain learned for a creator and how its plans used it")
@@ -226,6 +228,7 @@ def _brain_ops(args, conn, pol) -> int:
         return 0
     llm = Claude(conn, pol)
     if args.brain_cmd == "simulate":
+        llm.trial_usd = args.trial_usd
         from .brain import sandbox
         if args.clone_from and not conn.execute("SELECT 1 FROM creators WHERE handle = %s", (args.creator,)).fetchone():
             sandbox.clone(conn, args.clone_from, args.creator, scenario=args.scenario, seed=args.seed)
