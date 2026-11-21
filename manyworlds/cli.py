@@ -305,11 +305,9 @@ def _review(args, conn, pol, llm) -> int:
 def brain_steps(conn, pol) -> dict:
     """The Brain's part of each producer tick. Each step is isolated: one that fails is reported (an owner event,
     once a day per step) and the others, and production and publishing after them, still run."""
-    import logging
     from datetime import datetime, timezone
 
-    from psycopg.types.json import Jsonb
-
+    from . import notify
     from .brain import events, ideas, launches, portfolio, showrunner_loop
     from .deploy.providers import redact
 
@@ -340,9 +338,8 @@ def brain_steps(conn, pol) -> dict:
             err = redact(f"{type(e).__name__}: {e}")[:500]
             out["errors"].append({"step": name, "error": err})
             try:
-                conn.execute("INSERT INTO events (type, subject, payload, routed_to, dedupe_key) VALUES "
-                             "('brain_step_failed', %s, %s, 'owner', %s) ON CONFLICT DO NOTHING",
-                             (Jsonb({"step": name}), Jsonb({"error": err}), f"brain_step_failed:{name}:{now.date()}"))
+                notify.owner_event(conn, "brain_step_failed", subject={"step": name}, payload={"error": err},
+                                   dedupe_key=f"brain_step_failed:{name}:{now.date()}")
             except Exception:  # noqa: BLE001 - reporting must not fail the tick either
                 pass
     return out

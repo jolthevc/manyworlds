@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from psycopg.types.json import Jsonb
 
-from .. import queue
+from .. import notify, queue
 from ..creator import lab
 from ..policy import Policy
 
@@ -90,10 +90,9 @@ def _start_step(conn, policy: Policy, launch: dict, step: str, attempt: int) -> 
 def _fail(conn, launch: dict, step: str, error: str) -> None:
     conn.execute("UPDATE launches SET status = 'failed', error = %s, updated_at = now() WHERE id = %s",
                  (error, launch["id"]))
-    conn.execute("INSERT INTO events (type, subject, payload, routed_to, creator_id, dedupe_key) "
-                 "VALUES ('launch_failed', %s, %s, 'owner', %s, %s) ON CONFLICT DO NOTHING",
-                 (Jsonb({"launch_id": str(launch["id"])}), Jsonb({"step": step, "error": error[:500]}),
-                  launch["creator_id"], f"launch_failed:{launch['id']}"))
+    notify.owner_event(conn, "launch_failed", subject={"launch_id": str(launch["id"])},
+                       payload={"step": step, "error": error[:500]}, creator_id=launch["creator_id"],
+                       dedupe_key=f"launch_failed:{launch['id']}")
 
 
 def _begin(conn, policy: Policy, launch: dict, step: str, attempt: int) -> list[str] | None:
@@ -130,10 +129,9 @@ def _ready(conn, launch: dict) -> None:
     conn.execute("INSERT INTO accounts (creator_id, platform, status) VALUES (%s, 'instagram', 'requested') "
                  "ON CONFLICT (creator_id, platform) DO NOTHING", (cid,))
     handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
-    conn.execute("INSERT INTO events (type, subject, payload, routed_to, creator_id, dedupe_key) "
-                 "VALUES ('account_needed', %s, %s, 'owner', %s, %s) ON CONFLICT DO NOTHING",
-                 (Jsonb({"creator_id": str(cid)}), Jsonb({"handle": handle, "platform": "instagram"}), cid,
-                  f"account_needed:{cid}:instagram"))
+    notify.owner_event(conn, "account_needed", subject={"creator_id": str(cid)},
+                       payload={"handle": handle, "platform": "instagram"}, creator_id=cid,
+                       dedupe_key=f"account_needed:{cid}:instagram")
 
 
 def advance(conn, policy: Policy) -> dict:

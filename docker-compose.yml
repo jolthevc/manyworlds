@@ -58,39 +58,8 @@ services:
     deploy:
       replicas: 2
 
-  # Autoscaler against the REAL services in .env (Neon, R2, GPU providers): starts GPU
-  # machines when jobs wait, stops them when the queue drains. Meant to run on an
-  # always-on host; locally: docker compose --profile live up -d autoscaler
-  autoscaler:
-    build: .
-    profiles: [live]
-    env_file: .env
-    command: ["autoscale"]
-    restart: unless-stopped
-
-  # The Brain: runs brain.* agent jobs (manyworlds.brain.runtime) on this host.
-  brain-worker:
-    build: .
-    profiles: [live]
-    env_file: .env
-    command: ["brain", "worker", "--loop"]
-    restart: unless-stopped
-
-  # Review gates: scores new creator images as they arrive (Claude vision; no GPU).
-  reviewer:
-    build: .
-    profiles: [live]
-    env_file: .env
-    command: ["review", "--loop"]
-    restart: unless-stopped
-
-  # Production: plans each creator a few days ahead (Brain), turns due posts into image jobs, picks reviewed images.
-  producer:
-    build: .
-    profiles: [live]
-    env_file: .env
-    command: ["produce", "--loop"]
-    restart: unless-stopped
+  # The live services (autoscaler, brain worker, reviewer, producer) against the real services run on
+  # Fly.io (fly.toml), not here: two autoscalers must never run at once, so this file has no live profile.
 
 volumes:
   pgdata:

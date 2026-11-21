@@ -24,7 +24,7 @@ jobs:
       - name: Skip without a token
         if: env.FLY_API_TOKEN == ''
         run: echo "::warning::FLY_API_TOKEN is not set; not deploying"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: env.FLY_API_TOKEN != ''
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}

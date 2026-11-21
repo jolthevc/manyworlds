@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
 
-from .. import queue
+from .. import notify, queue
 from ..policy import Policy
 from . import planner
 
@@ -41,8 +41,8 @@ def _stalled(conn, creator, start, attempts: int) -> None:
     subject = {"creator_id": str(creator["id"]), "handle": creator["handle"], "start": str(start)}
     if conn.execute("SELECT 1 FROM events WHERE type = 'planning_stalled' AND subject = %s", (Jsonb(subject),)).fetchone():
         return
-    conn.execute("INSERT INTO events (type, subject, payload, routed_to) VALUES ('planning_stalled', %s, %s, 'owner')",
-                 (Jsonb(subject), Jsonb({"attempts": attempts, "retry": "after the cooldown, automatically"})))
+    notify.owner_event(conn, "planning_stalled", subject=subject,
+                       payload={"attempts": attempts, "retry": "after the cooldown, automatically"})
 
 
 def ensure_batches(conn, policy: Policy, *, now: datetime | None = None) -> list[dict]:

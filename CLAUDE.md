@@ -13,19 +13,23 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/brain/evidence.py` — the only reader of findings and metrics; `real` mode never sees simulated data
 - `manyworlds/brain/overrides.py` — settings the Brain changes at runtime within `brain.authority`; beyond it → `approvals`
 - `manyworlds/brain/budget.py` — per-agent daily LLM budgets from the ledger's `agent` tag
-- `manyworlds/production.py` — planned post → scene images → (narrated edit | story clip) → ready; each piece is a retried `Step`
+- `manyworlds/production.py` — planned post → scene images → (narrated edit | story clip | talking video) → ready; each piece is a retried `Step`; long talking videos run one job per segment (`talk_segments.py`) and are joined on the control plane (`media.py`)
+- `manyworlds/operations.py` — the master switch `operations.mode` (shipped `paused`: only test jobs and `bench-`/`test-` batches run)
 - `manyworlds/review/` — review gates: `gates.py` (images), `video.py` (story and talking clips from keyframes), `common.py` (shared stages and writes)
 - `manyworlds/creator/lab.py` — creator bible, reference pack, anchors, LoRA, voice; `profile.py` versioned profiles and dials
 - `manyworlds/research/` — Apify data source, signal aggregation
-- `manyworlds/llm.py` — the only place Claude is called; structured outputs, cost recorded per call
+- `manyworlds/llm.py` — the only place LLMs are called: per role Claude or an open-weight model on an OpenAI-compatible host (`llm.hosts`, `llm.open_models`, `{model, fallback}` roles); structured outputs, cost recorded per call; shadow tests of candidates into `llm_shadow`, compared by `shadow.py` (`mw llm shadow-report <role>`)
+- `manyworlds/notify.py` — owner alerts: owner events and pending approvals pushed once via ntfy (`NTFY_TOPIC`) from the autoscaler loop; `owner_event()` is how code tells the owner something
 - `manyworlds/ledger.py` — cost entries (GPU seconds, tokens, data items)
 - `manyworlds/deploy/autoscale.py` — starts GPU machines when jobs wait, stops them when the queue drains; runs always-on
 - `manyworlds/deploy/providers.py` — SaladCloud, Vast.ai, RunPod adapters (launch, list, destroy, self-destroy)
+- `manyworlds/deploy/credentials.py` — what a rented machine may hold: a scoped `mw_worker` database login (`WORKER_DATABASE_URL`, `mw worker-credentials`), never the control plane's own
 - `manyworlds/deploy/enforce.py` — deadline / spend cap / idle / never-started / stuck / daily-budget checks (autoscaler and GitHub backstop)
 - `manyworlds/deploy/scoring.py` — ranks pools by measured cost per accepted output; `report.py` — billed vs finished work per machine; `reconcile.py` — providers' itemised charges (Vast bandwidth/disk) into the ledger
 - `manyworlds/brain/portfolio.py`, `agents/strategist.py` — daily portfolio cycle; `launches.py`, `agents/creator_lab.py` — creator launches; `events.py` — breakout/drop/QA-surge events
 - `manyworlds/publish/instagram.py`, `metrics.py` — Instagram Graph API publishing (AI label always) and real insights
-- `scripts/build-worker.sh` — build, smoke-test and push a worker image
+- `fly.toml` — the control plane on Fly.io (app `manyworlds-mw`: autoscaler, brain, producer, reviewer); `.github/workflows/deploy.yml` deploys it after tests pass on `main`
+- `.github/workflows/build-worker.yml` — build a worker image on Depot, smoke-test, push (tag `worker-<family>-vN`); `scripts/build-worker.sh` is the local-Docker equivalent
 - `manyworlds/migrations/` — forward-only SQL; add a new numbered file, never edit an applied one
 - `policy/default.yaml` — every tunable number (budgets, GPU pools/prices, models, scope, limits)
 
@@ -43,7 +47,10 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - **Creator guardrails:** adults only (policy `creator_min_age`), original people (never based on a real person), nothing in `scope.excluded_topics`.
 - **Research privacy:** logged-out public data only; author handles stored only as salted hashes; raw items purged after 30 days (`research.apify.purge_expired`); store derived features, not dossiers.
 - **No cross-account engagement** between our creators, ever (platforms ban coordinated networks).
-- **Secrets live only in `.env`** (gitignored). Never print, log or commit them. Pass them to containers with `--env-file`.
+- **Secrets live only in `.env`** (gitignored), Fly secrets and GitHub Actions secrets. Never print, log or commit them. Pass them to containers with `--env-file`; to Fly by piping (`... | fly secrets import`), never through a terminal.
+- **Rented GPU machines are untrusted hosts.** They get only scoped credentials (`deploy/credentials.py`); the autoscaler refuses to launch without them (policy `security`).
+- **Nothing runs on its own until the owner says so.** `operations.mode` stays `paused` and `brain.strategist.launches_per_week` stays 0 unless the owner changes them; agents and benchmarks run only as tests.
+- **Tell the owner through `notify.owner_event`**, not ad-hoc inserts into `events`.
 - Brain/creator/judge roles use the models set in `policy.llm.roles`; change models there, not in code.
 
 ## Run it
@@ -54,13 +61,18 @@ docker compose run --rm --entrypoint pytest mw -q     # tests (stub Claude/Apify
 docker compose run --rm mw migrate
 ```
 
-Against real services (Neon, R2, Claude, Apify, SaladCloud), run the `mw` image with `--env-file .env`:
-`mw migrate`, `mw discover`, `mw choose`, `mw launch-creator`, `mw anchors <handle>`,
-`mw train-lora <handle>`, `mw bench <kind> --jobs N`, `mw report <batch>`, `mw status`, `mw machines`, `mw posts <handle>`.
-Live services: `docker compose --profile live up -d --build` (autoscaler, reviewer, producer; rebuild after code changes, compose doesn't mount code).
-GPU machines: `mw autoscale` (loop) or `mw autoscale --once`; always-on: `docker compose --profile live up -d autoscaler`.
+Tests also run on GitHub Actions on every push (no local Python or Docker needed); read failures from the
+check-run annotations.
 
-## Status (2026-11-14)
+Against real services (Neon, R2, Claude, Apify, GPU providers), on the Fly control plane:
+`fly ssh console -a manyworlds-mw -C "mw status"` (flyctl at `~/.fly/bin/flyctl.exe` on the owner's laptop).
+Commands: `mw migrate`, `mw discover`, `mw choose`, `mw launch-creator`, `mw anchors <handle>`,
+`mw train-lora <handle>`, `mw bench <kind> --jobs N`, `mw report <batch>`, `mw status`, `mw machines`, `mw posts <handle>`,
+`mw brain approvals`, `mw llm shadow-report <role>`, `mw worker-credentials` (pipe its output to `fly secrets import`).
+Live services run on Fly only (`fly deploy --remote-only --ha=false`, or the deploy workflow); the autoscaler
+applies migrations at start. Never start a second autoscaler anywhere else.
+
+## Status (2026-11-21)
 
 - Done: queue, workers, ledger, storage, policy, benchmark (day 1); research → theses → creator bible → reference pack → LoRA → voice (day 2); planner + production for photo, carousel, narrated edit and story clip (day 3); review gates for images and clips (day 4).
 - One creator live (Maren), sandbox until her Instagram account is connected (her ready posts wait for it). Publishing is autonomous with a kill switch (`autonomy.publish: paused`).
@@ -77,5 +89,10 @@ GPU machines: `mw autoscale` (loop) or `mw autoscale --once`; always-on: `docker
   approval while `brain.strategist.launch_requires_approval`); Brain M4 built (Instagram publisher with
   `is_ai_generated` on every post, real metrics collector, `mw account connect <handle> --token-env NAME`),
   idle until an account is connected. First strategist run proposed 2 launches (pending in `mw brain approvals`).
-- Next: connect Maren's account (M4 live), M9 portfolio allocation, talking video via the 8-step distill LoRA
-  (needs a >48 GB-RAM host), Sand.ai Gaga-avatar pricing (docs/research/2026-11-20-sand-ai.md).
+- 2026-11-21: master switch (`operations.mode: paused`), launches off, both pending launches rejected by the owner.
+  Cloud-native: control plane on Fly (`manyworlds-mw`, iad), tests and image builds (Depot) in GitHub Actions; the
+  laptop runs nothing. Hardening: scoped worker database login, owner alerts (ntfy), open-weight LLM routing with
+  fallback and shadow tests, long talking videos in segments (cut or chain) joined by the producer.
+- Next: owner sets `NTFY_TOPIC`, `FLY_API_TOKEN` (GitHub), `WORKER_DATABASE_URL` (via `mw worker-credentials`), an
+  inference account for open models; benchmark talking video (8-step distill LoRA, >48 GB-RAM host) only on the
+  owner's go; connect Maren's account (M4 live); M9 portfolio allocation; Brain chat (needs the web layer).

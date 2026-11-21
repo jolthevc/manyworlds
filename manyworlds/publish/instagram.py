@@ -28,6 +28,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from .. import notify
 from ..policy import Policy
 
 VIDEO_FORMATS = ("story_clip", "talking_video", "narrated_edit", "reel")
@@ -193,10 +194,8 @@ class InstagramPublisher:
         body["hold_reason"] = why
         conn.execute("UPDATE posts SET status = 'held', body = %s, updated_at = now() WHERE id = %s",
                      (Jsonb(body), post["id"]))
-        conn.execute("INSERT INTO events (type, subject, payload, routed_to, creator_id, dedupe_key) VALUES "
-                     "('publish_held', %s, %s, 'owner', %s, %s) ON CONFLICT DO NOTHING",
-                     (Jsonb({"post_id": str(post["id"])}), Jsonb({"why": why[:500]}), post["creator_id"],
-                      f"publish_held:{post['id']}"))
+        notify.owner_event(conn, "publish_held", subject={"post_id": str(post["id"])}, payload={"why": why[:500]},
+                           creator_id=post["creator_id"], dedupe_key=f"publish_held:{post['id']}")
         raise Held(why)
 
     def publish(self, conn, policy: Policy, post: dict) -> dict:
