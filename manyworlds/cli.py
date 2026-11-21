@@ -66,9 +66,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="create or rotate the GPU machines' scoped database login; prints "
                              "WORKER_DATABASE_URL=... for piping into `fly secrets import` (never into a terminal)")
     wc.add_argument("--force", action="store_true", help="rotate even while GPU machines are up (they lose access)")
-    lm = sub.add_parser("llm", help="LLM models: compare a candidate model with a role's model (shadow tests)")
-    lm.add_argument("action", choices=["shadow-report"])
-    lm.add_argument("role")
+    lm = sub.add_parser("llm", help="LLM models: compare candidates with a role's model, choose the best per job")
+    lm.add_argument("action", choices=["shadow-report", "recommend", "judge"],
+                    help="shadow-report: the comparisons; recommend: which candidate qualifies (--propose files it as "
+                         "an approval); judge: score a generative role's answers blind (spends up to --usd)")
+    lm.add_argument("role", help="a role, or `all` for recommend")
+    lm.add_argument("--propose", action="store_true")
+    lm.add_argument("--usd", type=float, default=1.0, help="judge: most to spend")
     lm.add_argument("--days", type=float, default=30)
     lm.add_argument("--tolerance", type=float, default=1.0, help="numeric difference counted as agreeing")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
@@ -191,8 +195,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
     elif args.cmd == "llm":
-        from . import shadow
-        _print(shadow.report(conn, args.role, days=args.days, tolerance=args.tolerance))
+        from . import selection, shadow
+        if args.action == "shadow-report":
+            _print(shadow.report(conn, args.role, days=args.days, tolerance=args.tolerance))
+        elif args.action == "judge":
+            from .llm import LLM
+            _print(selection.judge(conn, pol, LLM(conn, pol), args.role, usd=args.usd))
+        else:
+            roles = list(pol.get("llm", "selection", "roles", default={}) or {}) if args.role == "all" else [args.role]
+            recs = [selection.recommend(conn, pol, r) for r in roles]
+            _print([selection.propose(conn, pol, r["role"], r) for r in recs] if args.propose else recs)
     elif args.cmd == "worker-credentials":
         from .deploy import credentials
         up = conn.execute("SELECT count(*) AS n FROM gpu_groups WHERE stopped_at IS NULL").fetchone()["n"]

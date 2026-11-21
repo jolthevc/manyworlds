@@ -81,7 +81,8 @@ def _apply(conn, path: str, value, *, author: str, reason: str, decision_id=None
 
 def propose(conn, policy: Policy, path: str, value, *, author: str, reason: str, decision_id=None) -> dict:
     observed = policy.get("brain", "authority", "observed_sections", default=[]) or []
-    if path.split(".")[0] not in observed:
+    paths = policy.get("brain", "authority", "observed_paths", default=[]) or []
+    if path.split(".")[0] not in observed and not any(_matches(p, path) for p in paths):
         return {"applied": False, "not_observed": True,
                 "reason": f"{path.split('.')[0]}.* is not read by any service through the effective policy yet"}
     if within_authority(policy, path, value):

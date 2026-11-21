@@ -404,6 +404,21 @@ def housekeeping(conn) -> list[dict]:
         return [{"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
 
 
+def model_selection(conn, policy: Policy, now: datetime | None = None) -> list[dict]:
+    """Once every llm.selection.every_hours: propose model switches the shadow evidence supports (approvals, which
+    notify_owner then pushes). Stored evidence only, so it spends nothing and runs while operations are paused."""
+    from .. import selection
+    try:
+        if not selection.due(conn, policy, now=now):
+            return []
+        results = selection.run(conn, policy, now=now)
+        selection.record(conn, policy, results)
+        proposed = [r["role"] for r in results if r.get("proposed")]
+        return [{"action": "model_selection", "proposed": proposed}] if proposed else []
+    except Exception as e:  # noqa: BLE001 - selection must never stop the loop that stops machines
+        return [{"action": "model_selection_failed", "error": str(e)[:200]}]
+
+
 def notify_owner(conn, policy: Policy, actions: list[dict], now: datetime | None = None) -> list[dict]:
     """Record the actions that need the owner and push everything they haven't been told (manyworlds.notify).
     Runs on every loop, paused or not; a failure here never stops enforcement."""
@@ -440,6 +455,7 @@ def main(argv=None) -> int:
             conn = db.connect()
         if not a.dry_run:
             actions += housekeeping(conn)
+            actions += model_selection(conn, pol)
             actions += notify_owner(conn, pol, actions)
         # Names, states, prices and errors only: GitHub Actions logs are public.
         interesting = [x for x in actions if x.get("action") != "ok"] if not a.once else actions

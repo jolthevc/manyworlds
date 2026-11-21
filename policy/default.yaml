@@ -405,6 +405,9 @@ brain:
     # Sections read through the effective policy. Only Brain agents do so today; the producer, reviewer
     # and autoscaler read this file, so overrides elsewhere are refused rather than silently ignored.
     observed_sections: [brain]
+    # Single paths read through overrides outside those sections: llm.roles.<role> by every service's LLM router
+    # (an approved model switch from manyworlds.selection). Never autonomous: a switch always waits for the owner.
+    observed_paths: ["llm.roles.*"]
     autonomous:
       - {path: "brain.exploration_share", min: 0.1, max: 0.6}
       - {path: "brain.llm_usd_per_day.*", min: 0, max: 5}
@@ -564,6 +567,23 @@ llm:
     review:     {candidates: [nemotron-3.5-vl, qwen3.8-flash], share: 0.2}
     judge:      {candidates: [kimi-k3.1-pro], share: 1.0}
   shadow_usd_per_day: 1.0
+  # Model selection (manyworlds.selection): once a day the autoscaler's loop turns shadow evidence into proposals
+  # (approvals): switch a role to the cheapest candidate that qualifies. It reads stored evidence only; judging
+  # generative answers (quality mode) spends and runs with `mw llm judge <role> --usd N`. The owner approves.
+  override_cache_seconds: 60   # how often each service re-reads approved role switches
+  selection:
+    every_hours: 24
+    days: 14                    # evidence window
+    rejected_cooldown_days: 14  # a rejected switch is not proposed again for this long
+    max_cost_ratio: 0.7         # at least 30% cheaper per call, or it isn't worth a switch
+    min_valid: 0.95
+    roles:
+      evaluator:  {mode: agreement, min_calls: 30, max_mean_abs_diff: 1.0}
+      review:     {mode: agreement, min_calls: 30, max_mean_abs_diff: 1.0, min_agreement: 0.9}
+      judge:      {mode: agreement, min_calls: 20, max_mean_abs_diff: 1.0, min_agreement: 0.9}
+      brain:      {mode: agreement, min_calls: 20, min_agreement: 0.85}
+      showrunner: {mode: quality, min_calls: 10, min_judged: 8, items: ideas, rubric: idea, max_items: 6,
+                   max_score_drop: 0.3}
 
 queue:
   lease_seconds: 120           # a worker that stops heartbeating loses its job after this

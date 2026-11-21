@@ -139,6 +139,9 @@ class LLM:
         self._tag: dict = {}   # agent and job the current calls are charged to (Brain runtime)
         self.trial_usd: float | None = None   # set for a test run: every call goes to every shadow candidate
         self.trial_spent = 0.0
+        self.shadowing = True   # off while model selection judges shadow answers (no shadows of the judging)
+        self._overrides: dict | None = None   # approved role switches, re-read every llm.override_cache_seconds
+        self._overrides_at = 0.0
 
     @property
     def client(self):
@@ -149,6 +152,10 @@ class LLM:
 
     # --- routing -------------------------------------------------------------------------------------------
     def route(self, role: str) -> tuple[str, str | None]:
+        """(model, fallback) for a role: an approved switch (`llm.roles.<role>` in policy_overrides, from model
+        selection) wins over the policy file, in every service that calls models, not only the Brain."""
+        spec = self._role_override(role) or self.policy.get("llm", "roles", role)
+| None]:
         """(model, fallback) for a role."""
         spec = self.policy.get("llm", "roles", role)
         if not spec:
@@ -156,6 +163,22 @@ class LLM:
         if isinstance(spec, dict):
             return str(spec["model"]), (str(spec["fallback"]) if spec.get("fallback") else None)
         return str(spec), None
+
+    def _role_override(self, role: str):
+        if self.conn is None:
+            return None
+        ttl = float(self.policy.get("llm", "override_cache_seconds", default=60))
+        if self._overrides is None or time.monotonic() - self._overrides_at > ttl:
+            try:
+                rows = self.conn.execute(
+                    "SELECT DISTINCT ON (path) path, value FROM policy_overrides WHERE path LIKE 'llm.roles.%%' "
+                    "ORDER BY path, version DESC").fetchall()
+                self._overrides = {r["path"].removeprefix("llm.roles."): r["value"] for r in rows}
+            except Exception as e:  # noqa: BLE001 - no override table or connection: the policy file decides
+                log.warning("role overrides unreadable (%s); using the policy file", type(e).__name__)
+                self._overrides = {}
+            self._overrides_at = time.monotonic()
+        return self._overrides.get(role)
 
     def model_for(self, role: str) -> str:
         return self.route(role)[0]
@@ -279,7 +302,7 @@ class LLM:
     # --- shadow testing ------------------------------------------------------------------------------------
     def _shadow(self, role: str, model: str, out: BaseModel, primary_usd: float, **call) -> None:
         cfg = self.policy.get("llm", "shadow", role)
-        if not cfg:
+        if not cfg or not self.shadowing:
             return
         # One candidate or several (`candidates`): each sampled call goes to one of them, so a role can try
         # several models side by side against the same primary. In a trial (`self.trial_usd`, set for a test
@@ -315,10 +338,11 @@ class LLM:
             self.trial_spent += usd
             self.conn.execute(
                 "INSERT INTO llm_shadow (role, primary_model, candidate_model, primary_output, candidate_output, "
-                "candidate_error, primary_usd, candidate_usd, candidate_seconds, agent) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "candidate_error, primary_usd, candidate_usd, candidate_seconds, agent, creator_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (role, model, candidate, Jsonb(out.model_dump(mode="json")), Jsonb(got) if got is not None else None,
-                 error, primary_usd, usd, round(time.monotonic() - t0, 3), self._tag.get("agent")))
+                 error, primary_usd, usd, round(time.monotonic() - t0, 3), self._tag.get("agent"),
+                 call.get("creator_id")))
         except Exception as e:  # noqa: BLE001 - shadow bookkeeping must never fail the real call
             log.warning("shadow call for %s failed: %s", role, type(e).__name__)
 
