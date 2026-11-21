@@ -319,7 +319,7 @@ brain:
     approval_moves: [retired]          # the owner confirms retirements
     launch_requires_approval: true     # until the owner says otherwise, launches wait in mw brain approvals
     max_active_creators: 5             # incl. launching and pending launch approvals
-    launches_per_week: 2
+    launches_per_week: 0               # owner 2026-11-21: no new creator launches for now (was 2)
     est_launch_usd: 3.0                # reference pack + voice + LoRA + Claude steps, roughly
     thesis_candidates: 8
     # Conviction: belief about weekly log growth of reach (real data only), prior N(prior_mean, prior_sd).
