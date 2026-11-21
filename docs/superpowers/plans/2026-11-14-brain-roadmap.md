@@ -199,7 +199,7 @@ From the model review (`docs/research/2026-11-21-model-landscape.md`):
   shadow report shows a cheaper candidate holds up (`llm.shadow`, `mw llm shadow-report <role>`). Candidates are on
   Together: Kimi K3.1 Pro (text and vision, same price as Sonnet 5.5, half Opus), GLM-5.3, the Flash tier
   (GLM-5.3-Flash, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, ~$0.15/$0.5 per Mtok) and Nemotron 3.5 VL (vision);
-  Claude Haiku 5.5 competes on the cheap end. Qwen models are off on Together (it forwards them to a third party).
+  Claude Haiku 5.5 competes on the cheap end. Qwen runs on Together through a third party (owner enabled data sharing), streamed only.
 - **Next benchmarks, in order, each on the owner's go:** lip-sync score in the video gate; InfiniteTalk with the 4-step
   lightx2v LoRA; distilled Wan 2.2 and LTX-2.5 vs hosted Wan Turbo / MiniMax H3 Turbo / Kling 2.6 for story clips;
   designed voices (Qwen3-TTS VoiceDesign, VoxCPM2) cloned per creator and voiced in one pass; SoulX-FlashTalk and

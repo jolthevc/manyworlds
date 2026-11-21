@@ -79,12 +79,27 @@ def _post_json(url: str, body: dict, key: str, timeout: float) -> dict:
                                           "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
+            return _read_stream(r) if body.get("stream") else json.loads(r.read())
     except urllib.error.HTTPError as e:
         text = e.read().decode(errors="replace")[:500]
         raise OpenModelError(redact(f"{url} -> {e.code}: {text}").replace(key, "<key>")) from None
     except (urllib.error.URLError, TimeoutError, ValueError) as e:
         raise OpenModelError(redact(f"{url} -> {type(e).__name__}: {e}").replace(key, "<key>")) from None
+
+
+def _read_stream(lines) -> dict:
+    """A streamed (server-sent events) chat completion as the one-piece response shape: some hosted models
+    (Qwen on Together) only answer streamed. Usage comes in the last event (`stream_options.include_usage`)."""
+    text, usage = [], {}
+    for raw in lines:
+        line = raw.decode(errors="replace").strip() if isinstance(raw, bytes) else str(raw).strip()
+        if not line.startswith("data:") or line == "data: [DONE]":
+            continue
+        event = json.loads(line[5:])
+        for choice in event.get("choices") or []:
+            text.append((choice.get("delta") or {}).get("content") or "")
+        usage = event.get("usage") or usage
+    return {"choices": [{"message": {"content": "".join(text)}}], "usage": usage}
 
 
 def _openai_content(content: Any, vision: bool) -> Any:
@@ -245,6 +260,8 @@ class LLM:
                 "max_tokens": int(spec.get("max_tokens", self.policy.get("llm", "max_output_tokens", default=16000))),
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": schema.__name__, "schema": schema.model_json_schema(), "strict": False}}}
+        if spec.get("stream"):
+            body.update(stream=True, stream_options={"include_usage": True})
         prices = spec.get("usd_per_mtok") or [0, 0]
         timeout = float(spec.get("timeout_seconds", host.get("timeout_seconds", 120)))   # slow thinkers need more
         last = None

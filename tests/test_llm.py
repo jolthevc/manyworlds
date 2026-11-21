@@ -238,3 +238,19 @@ def test_a_trial_sends_every_call_to_every_candidate_until_its_budget_is_spent(c
     rows = [r["candidate_model"] for r in conn.execute("SELECT candidate_model FROM llm_shadow ORDER BY id")]
     assert rows[:2] == ["open-small", "open-vision"]            # both, on the same call, though share is 0
     assert llm.trial_spent >= llm.trial_usd and len(rows) < 8     # stopped once the trial budget was spent
+
+
+def test_a_streamed_answer_is_read_like_a_whole_one(conn, open_policy):
+    # Qwen on Together only answers streamed (found live 2026-11-21).
+    from manyworlds import llm as llm_mod
+    events = [b'data: {"choices":[{"delta":{"content":"{\\"score\\": 6, "}}]}\n', b"\n",
+              b'data: {"choices":[{"delta":{"content":"\\"passed\\": true, \\"label\\": \\"x\\"}"}}]}\n',
+              b'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20}}\n', b"data: [DONE]\n"]
+    r = llm_mod._read_stream(events)
+    assert r["usage"]["completion_tokens"] == 20 and Verdict.model_validate_json(r["choices"][0]["message"]["content"])
+    llm_cfg = {**open_policy.body["llm"], "open_models": {**open_policy.body["llm"]["open_models"],
+               "open-small": {**open_policy.body["llm"]["open_models"]["open-small"], "stream": True}}}
+    host = FakeHost({"score": 6, "passed": True, "label": "x"})
+    LLM(conn, policy_mod.from_dict({**open_policy.body, "llm": llm_cfg}), client=FakeAnthropic(), post=host) \
+        .structured("evaluator", system="s", content="c", schema=Verdict)
+    assert host.requests[0]["body"]["stream"] is True and host.requests[0]["body"]["stream_options"]["include_usage"]

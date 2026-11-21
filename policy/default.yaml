@@ -524,8 +524,8 @@ llm:
   hosts:
     together:  {base_url: https://api.together.xyz/v1, key_env: TOGETHER_API_KEY, timeout_seconds: 120}
     deepinfra: {base_url: https://api.deepinfra.com/v1/openai, key_env: DEEPINFRA_API_KEY, timeout_seconds: 120}
-  # Probed live on Together 2026-11-21 (JSON schema valid; vision where marked). Qwen models are refused there:
-  # Together forwards them to a third-party provider unless the account opts in, so they stay out.
+  # Probed live on Together 2026-11-21 (JSON schema valid; vision where marked). Qwen runs through a third-party
+  # provider (the owner enabled data sharing in Together's privacy settings) and only answers streamed (`stream`).
   open_models:
     # Kimi thinks before it answers: long outputs timed out at 120 s, and it spent 2.5x Sonnet on one evaluation.
     kimi-k3.1-pro:       {host: together, id: moonshotai/Kimi-K3.1-Pro, usd_per_mtok: [2.00, 10.00], vision: true,
@@ -535,16 +535,19 @@ llm:
     deepseek-v4.1-flash: {host: together, id: deepseek-ai/DeepSeek-V4.1-Flash, usd_per_mtok: [0.30, 1.20]}
     minimax-m3.1-flash:  {host: together, id: MiniMaxAI/MiniMax-M3.1-Flash, usd_per_mtok: [0.15, 0.60]}
     nemotron-3.5-vl:     {host: together, id: nvidia/NVIDIA-Nemotron-3.5-Super-VL, usd_per_mtok: [0.15, 0.50], vision: true}
+    qwen3.8-flash:       {host: together, id: Qwen/Qwen3.8-Flash, usd_per_mtok: [0.15, 0.47], vision: true, stream: true}
+    qwen3.7-plus:        {host: together, id: Qwen/Qwen3.7-Plus, usd_per_mtok: [0.32, 1.28], vision: true, stream: true}
+    qwen4-max:           {host: together, id: Qwen/Qwen4-Max, usd_per_mtok: [1.05, 3.15], vision: true, stream: true}
   #   shape: {host: deepinfra, id: <host model id>, usd_per_mtok: [0.0, 0.0], vision: false, attempts: 2}
   # Shadow tests: a share of a role's calls also go to one of its candidates (open or Claude); compared by
   # `mw llm shadow-report <role>`. No role switches model until its report shows it holds up (owner 2026-11-21:
   # the best model per job at the lowest cost). Candidates were picked from the 2026-11-21 model review.
   shadow:
-    showrunner: {candidates: [kimi-k3.1-pro, glm-5.3, claude-sonnet-5-5], share: 0.5}
-    brain:      {candidates: [kimi-k3.1-pro, glm-5.3], share: 0.5}          # strategist, analyst
+    showrunner: {candidates: [kimi-k3.1-pro, glm-5.3, qwen4-max, claude-sonnet-5-5], share: 0.5}
+    brain:      {candidates: [kimi-k3.1-pro, glm-5.3, qwen4-max], share: 0.5}   # strategist, analyst
     creator:    {candidates: [kimi-k3.1-pro], share: 1.0}                   # creator bibles and profiles (rare)
-    evaluator:  {candidates: [claude-haiku-5-5, nemotron-3.5-vl, kimi-k3.1-pro], share: 0.3}
-    review:     {candidates: [nemotron-3.5-vl], share: 0.2}
+    evaluator:  {candidates: [claude-haiku-5-5, nemotron-3.5-vl, qwen3.8-flash, qwen4-max, kimi-k3.1-pro], share: 0.3}
+    review:     {candidates: [nemotron-3.5-vl, qwen3.8-flash], share: 0.2}
     judge:      {candidates: [kimi-k3.1-pro], share: 1.0}
   shadow_usd_per_day: 1.0
 
