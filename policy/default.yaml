@@ -295,6 +295,10 @@ generation:
     # stays a list: "'list' object has no attribute 'dtype'", 2026-11-22); the whole model fits a 48 GB card at 480p.
     fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: ["--offload_model", "False", "--max_frame_num", "1525"],
            lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}}
+    # ComfyUI talk at more steps (2026-11-22: at 6 steps 1 of 3 passed; the 2 rejected scored realism or motion 5,
+    # a hair clip doubling and the face softening late in the clip; lip sync 0.61-0.70, speech WER 0).
+    steps8: {steps: 8}
+    steps10: {steps: 10}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
   # 16 fps (5 s), 9:16 at 480p. Cards under swap_below_gb swap blocks_to_swap blocks to the CPU.
