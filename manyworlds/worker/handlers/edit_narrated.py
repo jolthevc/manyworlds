@@ -10,6 +10,11 @@ pull-out each and hard cuts, the way phone edits look.
 With `audio_uri` (a creator's designed voice, already spoken by voice.speak), that wav is the voice instead of
 Kokoro, and `cues` [{text, start_s, end_s}] (the voice job's line timings) time the captions; without cues the
 script's chunks share the line's length by word count.
+
+With `captions: false` (production sets it when the post's captions are burned in at the finish stage,
+manyworlds.captions), no captions are drawn here; the on-screen hook still is. Either way the video's meta keeps the
+caption cues ([{text, start_s, end_s}] in the video's time) and the voice's lead and tail, so the finish stage can time
+its captions. *Emphasis* asterisks in the script are never spoken or drawn.
 """
 
 from __future__ import annotations
@@ -23,7 +28,8 @@ from typing import Any
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 
 SAMPLE_RATE = 24000
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+LEAD_S, TAIL_S = 0.4, 0.6   # silence before and after the voice (production's finish stage reads them too)
+FONT ="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _state: dict[str, Any] = {}
 
 
@@ -94,8 +100,10 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
     import numpy as np
     import soundfile as sf
 
-    images, script = payload.get("images") or [], (payload.get("script") or "").strip()
+    images = payload.get("images") or []
+    script = (payload.get("script") or "").replace("*", "").strip()   # *emphasis* is for burned captions only
     audio_uri = payload.get("audio_uri")
+    draw_captions = payload.get("captions", True) is not False
     if not images or not (script or audio_uri):
         raise NonRetryable("payload needs images and script (or audio_uri)")
     if not shutil.which("ffmpeg"):
@@ -104,7 +112,7 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
     w, h, fps = int(payload.get("width", 1080)), int(payload.get("height", 1920)), int(payload.get("fps", 30))
     work = ctx.workdir
 
-    lead, tail = 0.4, 0.6
+    lead, tail = LEAD_S, TAIL_S
     wav = work / "voice.wav"
     if audio_uri:
         # The designed voice's finished line: padded like a Kokoro read, captions on its line timings.
@@ -142,9 +150,9 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
                        f"setsar=1[v{i}]")
     filters.append("".join(f"[v{i}]" for i in range(len(paths))) + f"concat=n={len(paths)}:v=1:a=0[base]")
 
-    # Captions while each chunk is spoken; the on-screen hook at the top for the first seconds.
+    # Captions while each chunk is spoken (unless burned in later); the on-screen hook at the top for the first seconds.
     draws = []
-    for i, (text, a, b) in enumerate(cues):
+    for i, (text, a, b) in enumerate(cues if draw_captions else []):
         f = work / f"cap_{i}.txt"
         f.write_text(wrap(text))
         draws.append(_drawtext(f, a, b, "h*0.68", int(h * 0.032), box=False))
@@ -166,11 +174,13 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
     if proc.returncode != 0 or not out.exists():
         raise RuntimeError(f"ffmpeg exited {proc.returncode}: {proc.stderr[-2000:]}")
     seconds = round(total, 2)
-    return HandlerResult([OutputFile(out, "video", {"seconds": seconds, "width": w, "height": h})],
+    timed = [{"text": text, "start_s": round(a, 3), "end_s": round(b, 3)} for text, a, b in cues]
+    return HandlerResult([OutputFile(out, "video", {"seconds": seconds, "width": w, "height": h, "lead_s": lead,
+                                                    "tail_s": tail, "cues": timed, "captions": draw_captions})],
                          recipe={"kind": "narrated_edit", "voice": voice, "speed": speed, "script": script,
                                  "images": images, "on_screen_text": hook,
                                  **({"audio_uri": audio_uri} if audio_uri else {"tts": "hexgrad/Kokoro-82M"})},
-                         meta={"output_seconds": seconds, "captions": len(cues)})
+                         meta={"output_seconds": seconds, "captions": len(cues) if draw_captions else 0})
 
 
 HANDLERS = {"image.narrated": render}

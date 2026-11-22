@@ -133,3 +133,101 @@ def test_a_shot_needs_the_policy():
 def test_clip_without_blocking_falls_back_to_the_motion(policy):
     p = lab.clip_prompt(BIBLE, "at a bus stop", "she waves", shot={"framing": {"shot_size": "wide"}}, policy=policy)
     assert "she waves" in p and "at a bus stop" in p and "wide" in p
+
+
+# --- Wave 2: natural eyes and idle movement ---
+
+def kitchen_talk(**performance) -> ShotSheet:
+    return ShotSheet(set=SetSpec(location="her galley kitchen", props="a chipped mug, a spoon"),
+                     blocking=[Beat(at_s=0, action="leans on the counter", eyeline="lens"),
+                               Beat(at_s=2.5, action="stirs her tea", eyeline="prop"),
+                               Beat(at_s=5, action="checks her phone", eyeline="screen"),
+                               Beat(at_s=7, action="hears the door", eyeline="off")],
+                     performance=PerformanceSpec(**performance))
+
+
+def test_talk_prompt_has_natural_eyes_tied_to_the_beats(policy):
+    p = direction.compile_prompt(kitchen_talk(), BIBLE, "talk", policy)
+    assert policy.get("direction", "eyes", "talk") in p
+    assert "looks at a chipped mug at 2.5s" in p                   # a prop glance names the shot's first prop
+    assert "looks at the screen at 5s" in p and "looks at something off-camera at 7s" in p
+    assert "at 0s" not in p                                        # a beat on the lens is no glance
+    # eyes and idle are part of the action, before the set
+    assert p.index("Action:") < p.index("blinks naturally") < p.index("Set:")
+    # a prop glance without props on the set names the object in her hands
+    bare = kitchen_talk()
+    bare.set.props = ""
+    assert "looks at the object in her hands at 2.5s" in direction.compile_prompt(bare, BIBLE, "talk", policy)
+
+
+def test_idle_line_follows_energy_then_body_language(policy):
+    idle = policy.get("direction", "idle", "by_energy")
+    talk = lambda **perf: direction.compile_prompt(kitchen_talk(**perf), BIBLE, "talk", policy)  # noqa: E731
+    assert idle["low"] in talk(energy="low") and idle["high"] not in talk(energy="low")
+    assert idle["high"] in talk(energy="high")
+    # no energy: the body language decides (a word start: 'slouch' matches 'slouched')
+    assert idle["high"] in talk(body_language="leaning in, animated hands")
+    assert idle["low"] in talk(body_language="slouched on the sofa")
+    # nothing to go on: talk's default energy ('fast' is not found inside 'breakfast')
+    assert idle["medium"] in talk(body_language="eating breakfast") and idle["high"] not in talk(
+        body_language="eating breakfast")
+    assert idle["medium"] in talk()
+
+
+def test_eyes_only_in_video_with_the_creator_in_shot(policy):
+    idle = policy.get("direction", "idle", "by_energy")
+    clip = direction.compile_prompt(kitchen_talk(), BIBLE, "i2v", policy)
+    assert policy.get("direction", "eyes", "i2v") in clip and "looks at the screen at 5s" in clip
+    assert policy.get("direction", "eyes", "talk") not in clip     # 'returns to the lens' is for talking clips
+    assert not any(line in clip for line in idle.values())         # i2v has no default energy
+    assert idle["high"] in direction.compile_prompt(kitchen_talk(energy="high"), BIBLE, "i2v", policy)
+    # a cutaway shows something else: no eyes, no idle
+    away = kitchen_talk(energy="high")
+    away.cutaway = True
+    q = direction.compile_prompt(away, BIBLE, "i2v", policy)
+    assert "blinks" not in q and "looks at" not in q and idle["high"] not in q
+    # a photo is one moment: no blinks, glances or idle movement
+    photo = direction.compile_prompt(kitchen_talk(energy="high"), BIBLE, "photo", policy)
+    assert "blinks" not in photo and "looks at" not in photo and idle["high"] not in photo
+    # undirected prompts are untouched
+    assert "blinks" not in lab.talk_prompt(BIBLE, "at a bus stop") and "blinks" not in lab.clip_prompt(
+        BIBLE, "at a bus stop", "she waves")
+
+
+def test_without_eye_and_idle_policy_the_action_is_unchanged(policy):
+    bare = {"direction": {k: v for k, v in policy.get("direction").items() if k not in ("eyes", "idle")}}
+    shot = kitchen_talk(energy="high")
+    p = direction.compile_prompt(shot, BIBLE, "talk", bare)
+    assert "blinks" not in p and "looks at" not in p
+    assert "Action: talking; at 0 s: leans on the counter, looking into the lens; " in p
+    assert "at 7 s: hears the door, looking off-camera, high energy." in p
+
+
+# --- Wave 2: 720p close-ups ---
+
+def hd_policy(policy, on: bool = True) -> dict:
+    return {"direction": {**policy.get("direction"), "hd_close_ups": on},
+            "generation": {"talk_profiles": policy.get("generation", "talk_profiles")}}
+
+
+def test_hd720_profile_keeps_the_talk_steps(policy):
+    hd = policy.get("generation", "talk_profiles", "hd720")
+    assert (hd["width"], hd["height"]) == (720, 1280)
+    assert hd["steps"] == policy.get("generation", "talk", "steps") == 10
+    assert policy.get("direction", "hd_close_ups") is False        # off until benchmarked
+
+
+def test_talk_profile_for_close_ups(policy):
+    shot = lambda size: ShotSheet(framing=FramingSpec(shot_size=size))  # noqa: E731
+    # shipped: off
+    assert direction.talk_profile_for(shot("close-up"), policy) is None
+    on = hd_policy(policy)
+    for size in ("close-up", "Close Up", "closeup", "extreme close-up", "Extreme_Close-Up"):
+        assert direction.talk_profile_for(shot(size), on) == "hd720", size
+    for size in ("medium close-up", "medium shot", "wide", ""):
+        assert direction.talk_profile_for(shot(size), on) is None, size
+    assert direction.talk_profile_for(None, on) is None
+    assert direction.talk_profile_for({"framing": {"shot_size": "close-up"}}, on) == "hd720"
+    # a profile name that is not in generation.talk_profiles is never returned
+    missing = {**on, "generation": {"talk_profiles": {}}}
+    assert direction.talk_profile_for(shot("close-up"), missing) is None

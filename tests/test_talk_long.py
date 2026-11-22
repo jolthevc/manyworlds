@@ -507,3 +507,196 @@ def test_a_single_walking_take_is_voiced_and_moved_at_once_and_lip_synced_once_b
     clip_uri = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'video'", (retry["id"],)).fetchone()["uri"]
     assert talk["payload"]["video_uri"] == clip_uri and talk["payload"]["audio_uri"] == uri
     assert talk["payload"]["params"]["steps"] == policy.get("generation", "talk_motion", "v2v", "steps")
+
+
+# --- walk-and-talk: chained motion clips, and only on the ComfyUI talk engine -----------------------------------
+STROLL = "Okay, walking you to the bakery, the long way round because the light is good."   # 15 words
+LONG_WALK = _says(STROLL, STROLL,                                                             # 12 s at 2.5 words/s
+                  set={"location": "a quiet street at dawn"}, framing={"shot_size": "medium shot", "device": "selfie"},
+                  blocking=[{"at_s": 0, "action": "walks toward the camera along the street", "eyeline": "lens"}])
+
+
+def _motion(policy, **cfg):
+    gen = policy.body["generation"]
+    return policy_mod.from_dict({**policy.body, "generation": {**gen, "talk_motion": {**gen["talk_motion"], **cfg}}})
+
+
+def _key_of(conn, job_id):
+    return conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'keyframe' ORDER BY uri DESC LIMIT 1",
+                        (job_id,)).fetchone()["uri"]
+
+
+def test_motion_lengths_chain_up_to_the_cap_and_skip_a_tiny_remainder(policy):
+    p = _motion(policy, max_motion_seconds=5, max_motion_chain=3, chain_min_seconds=1.5)
+    assert production.motion_lengths(p, 3.0) == [3.0]
+    assert production.motion_lengths(p, 12.0) == [5.0, 5.0, 2.0]
+    assert production.motion_lengths(p, 10.5) == [5.0, 5.0]            # 0.5 s left: a hold, not a clip
+    assert production.motion_lengths(p, 30.0) == [5.0, 5.0, 5.0]       # capped: the rest ends on a hold
+    assert production.motion_lengths(_motion(p, max_motion_chain=1), 12.0) == [5.0]
+    assert production.motion_lengths(p, 0.0) == [0.0]
+
+
+def test_a_long_walking_take_chains_motion_clips_from_each_last_frame_then_joins_them(conn, policy, store, tmp_path,
+                                                                                        joined):
+    policy = _motion(_talking(policy), max_motion_seconds=5, max_motion_chain=3, chain_min_seconds=1.5)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [LONG_WALK])
+    assert body["talk_segments"] == []                                               # one take
+    fps = policy.get("generation", "comfy_video", "fps")
+    [first] = _motion_jobs(conn, pid, policy)
+    assert first["idempotency_key"] == f"post:{pid}:motion:0"
+    assert first["payload"]["frames"] == production._wan_frames(5.0, fps) and "chain" not in first["payload"]
+    rendered(conn, store, tmp_path, first["id"], keyframes=1)
+    production.advance(conn, policy, now=NOW, store=store)
+    second = next(j for j in _motion_jobs(conn, pid, policy) if j["id"] != first["id"])
+    assert second["idempotency_key"] == f"post:{pid}:motion:c1:0" and second["payload"]["chain"] == {"index": 1}
+    assert second["payload"]["image_uri"] == _key_of(conn, first["id"])             # continues from its last frame
+    assert second["payload"]["seed"] != first["payload"]["seed"] and second["payload"]["intermediate"] is True
+    assert _segment_jobs(conn, pid) == []                                            # the take waits for its chain
+    rendered(conn, store, tmp_path, second["id"], keyframes=1)
+    production.advance(conn, policy, now=NOW, store=store)
+    third = next(j for j in _motion_jobs(conn, pid, policy) if j["id"] not in (first["id"], second["id"]))
+    assert third["idempotency_key"] == f"post:{pid}:motion:c2:0"
+    assert third["payload"]["frames"] == production._wan_frames(2.0, fps)
+    assert third["payload"]["image_uri"] == _key_of(conn, second["id"])
+    rendered(conn, store, tmp_path, third["id"], keyframes=1)
+    production.advance(conn, policy, now=NOW, store=store)
+    [talk] = _segment_jobs(conn, pid)
+    joined_uri = conn.execute("SELECT uri FROM assets WHERE meta ? 'motion_chain'").fetchone()["uri"]
+    assert talk["payload"]["video_uri"] == joined_uri and len(joined) == 1 and len(joined[0]) == 3
+    production.advance(conn, policy, now=NOW, store=store)                           # idempotent: nothing new
+    assert len(_motion_jobs(conn, pid, policy)) == 3 and len(_segment_jobs(conn, pid)) == 1 and len(joined) == 1
+
+
+def test_a_capped_chain_ends_the_take_on_a_hold(conn, policy, store, tmp_path, joined):
+    policy = _motion(_talking(policy), max_motion_chain=1)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [LONG_WALK])
+    [first] = _motion_jobs(conn, pid, policy)
+    rendered(conn, store, tmp_path, first["id"], keyframes=1)
+    production.advance(conn, policy, now=NOW, store=store)
+    [talk] = _segment_jobs(conn, pid)
+    clip_uri = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'video'", (first["id"],)).fetchone()["uri"]
+    assert talk["payload"]["video_uri"] == clip_uri and len(_motion_jobs(conn, pid, policy)) == 1 and joined == []
+
+
+def _talk_image(policy, image, env=None):
+    images = policy.body["worker_images"]
+    talk = {**images["talk"], "image": image}
+    if env:
+        talk["env"] = {**(images["talk"].get("env") or {}), **env}
+    return policy_mod.from_dict({**policy.body, "worker_images": {**images, "talk": talk}})
+
+
+def test_only_the_comfyui_talk_engine_lip_syncs_a_motion_clip(conn, policy, store, tmp_path, joined):
+    assert production.talk_v2v(policy)                                               # mw-worker-talkcomfy
+    script_engine = _talk_image(_talking(policy), "mw-worker-talk")                  # the research-script image
+    assert not production.talk_v2v(script_engine)
+    assert production.talk_v2v(_talk_image(policy, "mw-worker-talk", {"MW_TALK_ENGINE": "comfy"}))
+    assert not production.talk_v2v(_talk_image(policy, "mw-worker-talkcomfy", {"MW_TALK_ENGINE": "script"}))
+    pid, body = _directed_post(conn, script_engine, store, tmp_path, [WALK])
+    [talk] = _segment_jobs(conn, pid)                                                # lip-synced from its photo
+    assert _motion_jobs(conn, pid, script_engine) == []
+    assert "video_uri" not in talk["payload"] and talk["payload"]["image_uri"] == body["images"][0]["uri"]
+
+
+def test_emphasis_marks_are_never_spoken(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    marked = _says("The samosas are *back*, and I am *not okay*.",
+                   set={"location": "outside the corner shop at night"},
+                   framing={"shot_size": "medium close-up", "device": "selfie"})
+    assert production.unmarked("*so* good") == "so good"
+    pid, body = _directed_post(conn, policy, store, tmp_path, [marked], voice=DESIGNED)
+    [voice_job] = _voice_jobs(conn, pid)
+    assert voice_job["payload"]["lines"] == [{"text": "The samosas are back, and I am not okay.",
+                                              "delivery": "dry, quick"}]
+    _spoken(conn, voice_job)
+    production.advance(conn, policy, now=NOW, store=store)
+    [talk] = _segment_jobs(conn, pid)
+    assert "*" not in talk["payload"]["script"] and "*" not in talk["payload"]["scene"]
+    assert body["talk_script"] == "The samosas are *back*, and I am *not okay*."     # kept for the captions
+
+
+# --- captions timed across the joined video ---------------------------------------------------------------------
+def _piece(conn, cid, kind="talk.infinitetalk", *, seconds=None, voice=None, own_audio=None):
+    """A made piece of a talking video: its job (with its designed voice line, or its own Kokoro audio) and video."""
+    payload = {}
+    if voice is not None:
+        vj = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('voice.speak', 'done', %s, %s) "
+                          "RETURNING id", (cid, Jsonb({}))).fetchone()["id"]
+        payload["audio_uri"] = f"s3://b/voice/{vj}.wav"
+        conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                     "VALUES (%s, %s, 'audio', %s, 'x', 1, %s)", (vj, cid, payload["audio_uri"], Jsonb(voice)))
+    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES (%s, 'done', %s, %s) RETURNING id",
+                       (kind, cid, Jsonb(payload))).fetchone()["id"]
+    if own_audio is not None:
+        conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                     "VALUES (%s, %s, 'audio', %s, 'x', 1, %s)", (job, cid, f"s3://b/{job}.wav",
+                                                                Jsonb({"seconds": own_audio})))
+    meta = {"seconds": seconds} if seconds is not None else {}
+    return conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                        "VALUES (%s, %s, 'video', %s, 'x', 1, %s) RETURNING id, uri",
+                        (job, cid, f"s3://b/{job}.mp4", Jsonb(meta))).fetchone()
+
+
+def _joined_of(conn, cid, pieces, measured):
+    return conn.execute("INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta) "
+                        "VALUES (%s, 'video', %s, 'x', 1, %s) RETURNING id, uri",
+                        (cid, f"s3://b/joined-{pieces[0]['id']}-{len(measured)}-{measured[0]}.mp4",
+                         Jsonb({"segments": [str(p["id"]) for p in pieces], "segment_seconds": measured}))).fetchone()
+
+
+def test_a_cutaway_draws_no_captions_when_the_joined_video_gets_them(conn, policy, store, tmp_path, joined):
+    talking = _talking(policy)
+    burned = policy_mod.from_dict({**talking.body, "burned_captions": {**talking.body["burned_captions"],
+                                                                       "enabled": True}})
+    pid, body = _directed_post(conn, burned, store, tmp_path, [SHOP, WINDOW, DOORWAY])
+    [cut] = conn.execute("SELECT payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
+    assert cut["payload"]["captions"] is False
+    pid, body = _directed_post(conn, talking, store, tmp_path, [SHOP, WINDOW, DOORWAY])   # burned captions off
+    [cut] = conn.execute("SELECT payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
+    assert "captions" not in cut["payload"]
+
+
+HOOK = "Right, quick one from *outside* the corner shop."
+SIGN_OFF = "Anyway. Going in. Wish me luck."
+
+
+def test_captions_follow_each_take_in_the_joined_video_with_clauses_and_no_fillers(conn, policy):
+    cid = creator(conn)
+    first = _piece(conn, cid, seconds=4.0, voice={"seconds": 3.5, "lines": [
+        {"index": 0, "text": production.unmarked(HOOK), "start_s": 0.2, "end_s": 3.4}]})
+    # The second line was spoken clause by clause, with a filler ("um") before the second clause.
+    second = _piece(conn, cid, seconds=3.2, voice={"seconds": 3.0, "lines": [
+        {"index": 0, "text": SIGN_OFF, "start_s": 0.0, "end_s": 3.0, "clauses": [0, 1, 2]}], "clauses": [
+        {"index": 0, "line": 0, "text": "Anyway.", "start_s": 0.0, "end_s": 0.8, "filler": None},
+        {"index": 1, "line": 0, "text": "Going in.", "start_s": 1.0, "end_s": 2.0, "filler": "um"},
+        {"index": 2, "line": 0, "text": "Wish me luck.", "start_s": 2.3, "end_s": 3.0, "filler": None}],
+        "fillers": [{"clause": 1, "line": 0, "word": "um"}]})
+    body = {"scenes": ["a", "b"], "talk_segments": [HOOK, SIGN_OFF]}
+    words = production.caption_words(conn, policy, body, _joined_of(conn, cid, [first, second], [None, None]))
+    n = len(HOOK.split())
+    assert [w.text for w in words] == production.unmarked(f"{HOOK} {SIGN_OFF}").split()   # no "um"
+    assert words[0].start == pytest.approx(0.2) and words[n - 1].end == pytest.approx(3.4)
+    assert [w.text for w in words if w.emphasis] == ["outside"]                           # *emphasis* from the script
+    later = words[n:]
+    assert later[0].start == pytest.approx(4.0)                                           # after the first take's 4 s
+    assert later[1].text == "Going" and later[1].start > 5.0                              # the filler kept its time
+    assert later[2].end <= 6.0 + 1e-6 and later[-1].end == pytest.approx(7.0)
+    # The join's measured lengths win over each take's own.
+    words = production.caption_words(conn, policy, body, _joined_of(conn, cid, [first, second], [4.5, None]))
+    assert words[n].start == pytest.approx(4.5)
+
+
+def test_a_cutaway_is_captioned_after_its_lead_and_a_kokoro_take_over_its_own_audio(conn, policy):
+    from manyworlds.worker.handlers import edit_narrated
+    cid = creator(conn)
+    talk = _piece(conn, cid, seconds=2.5, own_audio=2.0)                                   # Kokoro on the talk worker
+    cut = _piece(conn, cid, "image.narrated", seconds=3.0, voice={"seconds": 2.0, "lines": [
+        {"index": 0, "text": "They still haven't cleaned that window.", "start_s": 0.0, "end_s": 2.0}]})
+    body = {"scenes": ["a", "b"], "talk_segments": ["Hi there. Bye now.", "They still haven't cleaned that window."],
+            "talk_modes": ["talk", "narrated"]}
+    words = production.caption_words(conn, policy, body, _joined_of(conn, cid, [talk, cut], [None, None]))
+    assert words[0].start == 0 and words[3].end == pytest.approx(2.0)                      # the script over its audio
+    assert words[4].text == "They" and words[4].start == pytest.approx(2.5 + edit_narrated.LEAD_S)
+    # A piece whose length is unknown: later captions can't be placed.
+    blind = _piece(conn, cid)
+    assert production.caption_words(conn, policy, body, _joined_of(conn, cid, [blind, cut], [None, None])) is None

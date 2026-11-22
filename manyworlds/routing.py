@@ -26,17 +26,25 @@ def _family(kind: str) -> str:
     return kind.split(".")[0]
 
 
+_INTERMEDIATE = "coalesce(j.payload->>'intermediate', '') = 'true'"
+
+
 def kind_costs(conn, kinds: list[str], *, since: datetime) -> dict[str, dict]:
+    """Cost, accepted outputs and cost per accepted output of each kind. Intermediate jobs (payload.intermediate:
+    walk-and-talk's motion clips, made on a story-clip kind but never a post's output) are left out: their cost is
+    the talking video's, not the kind's, and their machine time is kept apart when the family's bill is shared."""
     out = {}
     for kind in kinds:
         direct = float(conn.execute(
             "SELECT coalesce(sum(e.usd), 0) AS u FROM cost_entries e JOIN jobs j ON j.id = e.job_id "
-            "WHERE j.kind = %s AND j.created_at >= %s AND e.category IN ('hosted_api', 'llm')",
+            f"WHERE j.kind = %s AND j.created_at >= %s AND e.category IN ('hosted_api', 'llm') AND NOT {_INTERMEDIATE}",
             (kind, since)).fetchone()["u"])
-        # The family's machines, billed in full, shared between its kinds by the GPU time each used.
+        # The family's machines, billed in full, shared between its kinds by the GPU time each used (an intermediate
+        # job's time counts as a kind of its own).
         fam = conn.execute(
-            """WITH g AS (SELECT name, cost_usd FROM gpu_groups WHERE family = %(f)s AND started_at >= %(s)s),
-                    w AS (SELECT a.gpu_group, j.kind, sum(coalesce(a.gpu_seconds, 0)) AS sec
+            f"""WITH g AS (SELECT name, cost_usd FROM gpu_groups WHERE family = %(f)s AND started_at >= %(s)s),
+                    w AS (SELECT a.gpu_group, CASE WHEN {_INTERMEDIATE} THEN j.kind || ':intermediate' ELSE j.kind END
+                                 AS kind, sum(coalesce(a.gpu_seconds, 0)) AS sec
                           FROM attempts a JOIN jobs j ON j.id = a.job_id
                           WHERE a.gpu_group IN (SELECT name FROM g) GROUP BY 1, 2)
                SELECT coalesce(sum(g.cost_usd * coalesce(
@@ -44,9 +52,9 @@ def kind_costs(conn, kinds: list[str], *, since: datetime) -> dict[str, dict]:
                         / nullif((SELECT sum(sec) FROM w WHERE w.gpu_group = g.name), 0)), 0) AS u
                FROM g""", {"f": _family(kind), "s": since, "k": kind}).fetchone()["u"]
         accepted = int(conn.execute(
-            """SELECT count(*) AS n FROM (
+            f"""SELECT count(*) AS n FROM (
                  SELECT a.id FROM assets a JOIN jobs j ON j.id = a.job_id JOIN reviews r ON r.asset_id = a.id
-                 WHERE j.kind = %s AND j.created_at >= %s AND a.kind IN ('video', 'image')
+                 WHERE j.kind = %s AND j.created_at >= %s AND a.kind IN ('video', 'image') AND NOT {_INTERMEDIATE}
                  GROUP BY a.id
                  HAVING bool_and(r.passed)
                     AND bool_or(r.details->>'stage' = 'confirm' OR r.details->>'clear_pass' = 'true')) x""",

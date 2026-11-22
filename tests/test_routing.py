@@ -15,15 +15,16 @@ NOW = datetime.now(timezone.utc)
 
 
 
-def _clips(conn, cid, kind, n, *, usd, accepted, group=None, gpu_usd=0.0):
+def _clips(conn, cid, kind, n, *, usd, accepted, group=None, gpu_usd=0.0, new_group=True, intermediate=False):
     """n finished clip jobs of `kind`, `accepted` of them passing review, each with `usd` of direct cost."""
-    if group:
+    if group and new_group:
         conn.execute("INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, family, "
                      "billed_usd) VALUES (%s, 'runpod', 'runpod_secure_l40s', 1.09, %s, %s, 3, %s, %s)",
                      (group, [kind], NOW + timedelta(hours=1), kind.split(".")[0], gpu_usd))
+    payload = Jsonb({"intermediate": True} if intermediate else {})
     for i in range(n):
-        job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES (%s, 'done', %s, '{}') RETURNING id",
-                           (kind, cid)).fetchone()["id"]
+        job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES (%s, 'done', %s, %s) RETURNING id",
+                           (kind, cid, payload)).fetchone()["id"]
         conn.execute("INSERT INTO cost_entries (job_id, category, provider, quantity, unit, usd) "
                      "VALUES (%s, 'hosted_api', 'x', 1, 'clip', %s)", (job, usd))
         if group:
@@ -51,6 +52,16 @@ def test_the_cheapest_per_accepted_clip_wins_counting_its_machines(conn, raw_pol
     explore = raw_policy.get("production", "routing", "story_clip", "explore")
     assert 1 - explore - 0.08 < share < 1 - explore + 0.08                          # the rest explores
     assert routing.choose(conn, raw_policy, "story_clip", key="post-7", now=NOW)[0] == picks[7]   # same post, same kind
+
+
+def test_motion_clips_do_not_count_in_a_kinds_cost_per_accepted_clip(conn, raw_policy):
+    cid = creator(conn)
+    _clips(conn, cid, "comfy.wan_i2v", 4, usd=0.0, accepted=4, group="g1", gpu_usd=0.40)   # story clips
+    # Walk-and-talk's motion clips on the same kind and machine: never a post's output, never reviewed as one.
+    _clips(conn, cid, "comfy.wan_i2v", 4, usd=0.05, accepted=0, group="g1", new_group=False, intermediate=True)
+    costs = routing.kind_costs(conn, ["comfy.wan_i2v"], since=NOW - timedelta(days=1))["comfy.wan_i2v"]
+    # half the machine's time (and none of the motion clips' direct cost) is the story clips': $0.20 / 4
+    assert costs["accepted"] == 4 and costs["usd"] == 0.2 and costs["usd_per_accepted"] == 0.05
 
 
 def test_production_routes_a_story_clip_when_routing_is_on(conn, raw_policy, monkeypatch):

@@ -88,6 +88,10 @@ gpu_pools:
 job_kinds:
   # salad_batch_3090 is out (2026-11-21): its machines never finished a job (attempt timeouts, never started).
   image.zimage:    {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 4}
+  # Reference-conditioned scene photos (Qwen-Image-Edit-2511 bf16 + 4-step Lightning LoRA, handlers/image_qwen_edit.py,
+  # policy `sets.edit`): ~58 GB of weights, so 48-80 GB cards only. Its jobs are pinned to these pools (creator.sets),
+  # so the 24 GB image machines, which list every image kind, never take one. Not benchmarked yet.
+  image.qwen_edit: {pools: [runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 4}
   image.mirror:    {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 0}   # copies model weights into R2 once
   image.narrated:  {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # CPU edit (voice + ffmpeg) on image machines
   # Wan 2.2 TI2V-5B. RunPod 3090 measured 2026-11-14: 720p x 5 s in 859 s (cpu offload + tiled VAE), ~$0.05.
@@ -366,6 +370,11 @@ generation:
     longcat15: {model: longcat, longcat_version: "1.5", steps: 10, cfg: 1.0, shift: 12.0, audio_cfg: 3.0,
                 frame_window: 93, overlap: 13, scheduler: longcat_distill_euler, lora_strength: 0.9, attention: sdpa,
                 blocks_to_swap: 25}
+    # 720p close-ups (plan 2026-11-22 wave 2; direction.talk_profile_for picks it for direction.hd_for_shot_sizes
+    # while direction.hd_close_ups is on). 720x1280 is ~2.3x the pixels of 480x832, so InfiniteTalk needs more VRAM
+    # (latents and attention grow with it; small cards swap more blocks) and roughly 2.2-2.5x the time per clip.
+    # Same 10 steps as `talk`. Not benchmarked yet: mw bench talk.infinitetalk --profile hd720 before turning it on.
+    hd720: {width: 720, height: 1280, steps: 10}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
   # 16 fps (5 s), 9:16 at 480p. Cards under swap_below_gb swap blocks_to_swap blocks to the CPU.
@@ -415,6 +424,16 @@ generation:
                    head towards, turn around, turn away, spin, spinning, twirl, dance, dancing, stand up, standing up,
                    get up, getting up, sit down, sitting down, lie down, lying down, climb]
     max_motion_seconds: 5          # Wan 2.2 I2V's trained length (81 frames at 16 fps); longer clips loop and drift
+    # A take longer than one clip gets a chain: each next clip starts from the last frame of the one before (its
+    # keyframe), all joined on the control plane before the lip sync; at most max_motion_chain clips, and a remainder
+    # under chain_min_seconds gets none. What the chain doesn't cover ends on a hold (the talk continues from the last
+    # frame). Each clip is a GPU job (~5 s of Wan 2.2 I2V A14B): 3 caps a take's motion at 15 s.
+    max_motion_chain: 3
+    chain_min_seconds: 1.5
+    # V2V lip sync needs the ComfyUI talk engine (handlers/talk_comfy.py). The worker image chooses the engine
+    # (MW_TALK_ENGINE); production reads it from worker_images.<talk family>.env.MW_TALK_ENGINE when set, else
+    # treats these images as ComfyUI. With any other talk image a moving take is lip-synced from its photo.
+    v2v_images: [mw-worker-talkcomfy]
     kind: comfy.wan_i2v
     keyframes: 1
     v2v: {steps: 4, start_step: 2, clip_vision: false}
@@ -787,11 +806,17 @@ captions:
 # in a style preset, inside the Reels/TikTok safe zones, burned in by ffmpeg (libass, fonts in manyworlds/fonts).
 # Not the post caption above (that is `captions`). A creator's default is a style name; an unknown name gets
 # default_style. Sizes and spacings in a style are shares of the em (`size` is the em as a share of the frame
-# height, so 1080x1920 and 720x1280 look the same). Off until production's join uses it (plan wave 2, item 6).
+# height, so 1080x1920 and 720x1280 look the same). Burned in by production's finish stage (production.finish_video)
+# for the formats listed, timed from the voice lines (clauses when the voice has them; fillers never shown); story
+# clips say nothing, so they get none. With these on, narrated edits and cutaways draw no captions of their own.
+# A creator's style is the profile dial `caption_style`; placement by the first shot's shot size
+# (placement_by_shot_size: words found in it -> placement), else default_placement.
 burned_captions:
-  enabled: false
+  enabled: true
+  formats: [talking_video, narrated_edit]
   default_style: clean
   default_placement: lower
+  placement_by_shot_size: {close: lower, wide: lower, full: lower}
   # Shares of the frame kept clear of platform UI: top bar, bottom account/caption/audio rows, right-side
   # buttons; left matches right so centred text clears the buttons.
   safe_zone: {top: 0.14, bottom: 0.25, left: 0.12, right: 0.12}
@@ -958,6 +983,30 @@ direction:
     solo: ["no extra people"]
   camera_moves: [static, handheld, push_in, pull_out, pan_left, pan_right, tilt_up, tilt_down, follow, orbit_slow]
   offer_readiness: [ready, partial]
+  # Natural eyes (plan 2026-11-22 wave 2): added to the action of talk prompts, and of i2v prompts unless the shot is
+  # a cutaway. A beat whose eyeline is off, prop or screen adds one `glance` ({target}, {t} in seconds); a prop
+  # glance names the shot's first prop, else glance_targets.prop. Not used for photos or undirected prompts.
+  eyes:
+    talk: "blinks naturally and irregularly, glances away between thoughts, returns to the lens"
+    i2v: "blinks naturally and irregularly, eyes alive"
+    glance: "looks at {target} at {t}s"
+    glance_targets: {off: "something off-camera", prop: "the object in her hands", screen: "the screen"}
+  # Micro-expressions and idle movement, by the shot's performance energy; without one, the first level whose word
+  # appears in performance.body_language; else default_energy for the target (talk only).
+  idle:
+    by_energy:
+      low: "slow, small movements, soft micro-expressions, a relaxed jaw between words"
+      medium: "easy natural gestures, small nods and brow lifts, a faint smile between lines"
+      high: "animated hands near the chest, quick head tilts, bright brow raises"
+    keywords:
+      high: [animated, excited, energetic, lively, bouncy, gesturing, fast]
+      low: [slouch, tired, sleepy, calm, still, relaxed, quiet, deadpan, low-key]
+    default_energy: {talk: medium}
+  # 720p for close talking shots: direction.talk_profile_for returns hd_profile (generation.talk_profiles) for these
+  # shot sizes. Off until the hd720 profile passes the talk benchmark (owner's go).
+  hd_close_ups: false
+  hd_for_shot_sizes: [close-up, extreme close-up]
+  hd_profile: hd720
   # The director (manyworlds.brain.director): when an accepted idea becomes a post, one LLM call writes a shot sheet
   # per scene (body.shots) for the formats below. A failed call never drops the post: it is made undirected.
   enabled: true
@@ -966,6 +1015,42 @@ direction:
   effort: medium
   memory_facts: 40             # creator memory facts shown to the director
   recent_posts: 20             # recent directed posts whose named sets and outfits are shown for reuse
+
+# Set and wardrobe bibles (manyworlds.creator.sets, plan 2026-11-22 wave 2 item 5): a set or outfit the director names
+# for the first time is registered on the creator (anchors.sets / anchors.outfits) with its canonical description
+# (the first shot's set_dressing / outfit), and gets one image of the empty room (plate) or the clothes alone
+# (outfit reference), judged by the image gate against the `*_scene` text. The gate's identity row always fails for
+# them (nobody to match), so a plate is chosen from its realism, safety and scene rows at the bars below.
+# Every later scene in that set gets the canonical description in its prompt and the plate and outfit reference as
+# `references` for the consistency check (review.detail.consistency).
+sets:
+  enabled: true
+  generate_plates: true
+  # Scene images made by sets.edit.kind from [creator anchor, set plate, outfit reference] instead of text-only
+  # Z-Image. Off until `mw bench image.qwen_edit` passes the image gate (owner rule: no unbenchmarked switch-over).
+  reference_conditioning: false
+  plate_kind: image.zimage
+  plate_candidates: 4
+  max_plate_attempts: 3        # plate jobs per set or outfit before giving up (it then has text only)
+  min_plate_scene: 7           # the gate's scene score (matches the description, nobody in it)
+  min_plate_realism: 6
+  prompts:                     # {name}, {description}
+    set: "Candid smartphone photo of an empty room with nobody in it: {name}. {description}. Natural light, realistic, no people, no text, no logos."
+    set_scene: "{name} with nobody in it, no people at all, matching: {description}"
+    outfit: "Smartphone photo of clothes on a hanger against a plain wall, nobody wearing them: {description}. Soft daylight, realistic, no people, no text, no logos."
+    outfit_scene: "clothes on a hanger with nobody wearing them, no people at all: {description}"
+  # Qwen-Image-Edit-2511 (Apache-2.0) with lightx2v's 4-step Lightning LoRA (Apache-2.0): 4 steps, true CFG 1.0. bf16
+  # only (fp8 base + Lightning gave grid artifacts). Each input picture is named by its words below ({n}: 1-based).
+  edit:
+    kind: image.qwen_edit
+    candidates: 4
+    steps: 4
+    true_cfg: 1.0
+    negative_prompt: " "
+    lightning: true
+    person: "Picture {n} is the person: keep their face, hair, skin and build exactly as in it."
+    set: "Place them in the room from picture {n}, keeping its layout, furniture, colours and light fittings."
+    outfit: "Dress them in the clothes from picture {n}."
 
 # Production (manyworlds.production): planned posts -> image jobs -> reviewed images.
 # On Maren with the full appearance prompt, 12 of 12 images passed review, so 4 candidates
@@ -991,10 +1076,14 @@ production:
   edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
 
 # Finishing (manyworlds.finishing, 2026-11-22): grade, grain, hook text, loudness and the cover frame of a finished
-# video, on the control plane. Not yet called by production (wave 2 integration); `enabled` is that switch.
+# video, on the control plane: production's finish stage (production.finish_video) runs it once per video post of
+# the formats listed, with the burned-in captions in the same ffmpeg pass where ffmpeg has libass. A finish that fails
+# max_failures times ships the unfinished video and tells the owner.
 # Looks are gentle and natural: every value is clamped to `limits`, so no look can oversaturate.
 finishing:
-  enabled: false
+  enabled: true
+  formats: [talking_video, narrated_edit, story_clip]
+  max_failures: 3
   default_look: neutral
   look_by_creator: {}          # handle -> look
   look_by_set: {}              # shot set.set_id -> look (wins over the creator's)

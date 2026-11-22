@@ -38,6 +38,10 @@ Rules:
   age or ethnicity, only what changes per scene (outfit, hair state, makeup, skin state).
 - Recurring sets and outfits are named (`set.set_id`, `wardrobe.outfit_id`, short snake_case) and reused with
   the same name and description; reuse the known sets and outfits you are given when a scene is in one.
+- A new named set's `set.set_dressing` is its canonical look, kept for every later post: the fixed layout,
+  materials, colours, furniture and fixed props, and its light sources (windows, lamps), with no people. A new
+  named outfit's `wardrobe.outfit` is its canonical description: garments, colours, fabrics, cut. For a known
+  set the canonical look is added for you: leave `set_dressing` empty or name only what differs in this scene.
 - Hands are relaxed or out of frame unless the action needs them.
 - Text belongs in `edit.on_screen_text` (added in post), never on signs, screens, packaging or other surfaces.
 - `framing.camera_move` is one of the allowed camera moves, or empty.
@@ -79,6 +83,16 @@ def known_sets(conn, creator_id, n: int) -> dict:
     return {"sets": sets, "outfits": outfits}
 
 
+def _known(conn, policy, creator_id, n: int) -> dict:
+    """Named sets and outfits for reuse: those of recent posts, with the registered canon (creator.sets) winning."""
+    from ..creator import sets
+    out = known_sets(conn, creator_id, n)
+    if sets.enabled(policy):
+        canon = sets.known(conn, creator_id)
+        out = {k: {**out[k], **canon[k]} for k in ("sets", "outfits")}
+    return out
+
+
 def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], move_name: str,
             move: dict | None) -> str:
     cfg = _cfg(policy)
@@ -96,7 +110,7 @@ def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], m
     return (f"The creator (appearance for reference only): {json.dumps(creator, default=str)}\n"
             f"What is known about their life: {json.dumps(facts)}\n"
             f"Known sets and outfits (reuse the names): "
-            f"{json.dumps(known_sets(conn, creator_id, int(cfg.get('recent_posts', 20))))}\n"
+            f"{json.dumps(_known(conn, policy, creator_id, int(cfg.get('recent_posts', 20))))}\n"
             f"Allowed camera moves: {json.dumps(list(cfg.get('camera_moves') or []))}\n\n"
             f"The accepted idea: {json.dumps(idea, default=str)}\n\n"
             f"Write exactly {len(scenes)} shot sheet(s), one per scene, in order.")
@@ -126,9 +140,10 @@ def _words(text: str) -> list[str]:
     return _WORDS.findall((text or "").lower().replace("’", "'"))
 
 
-def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None) -> list[dict]:
+def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None, post_id=None) -> list[dict]:
     """One shot sheet per scene of a post or idea body, as plain dicts (validated through ShotSheet). Raises when
-    there is nothing usable; the caller keeps the post undirected."""
+    there is nothing usable; the caller keeps the post undirected. Sets and outfits named for the first time are
+    registered in the creator's set and wardrobe bibles (creator.sets), with their plates queued."""
     fmt = fmt or body.get("format") or ""
     scenes = [s.strip() for s in body.get("scenes") or [] if isinstance(s, str) and s.strip()]
     if not scenes:
@@ -164,4 +179,16 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None)
             log.warning("director's lines are not the script's words; lines cleared, the script is split as before")
             for s in shots:
                 s["performance"]["lines"] = []
+    _register(conn, policy, creator_id, shots, post_id)
     return shots
+
+
+def _register(conn, policy, creator_id, shots: list[dict], post_id) -> None:
+    from ..creator import sets
+    if not sets.enabled(policy):
+        return
+    try:
+        sets.register(conn, policy, creator_id, shots, post_id=post_id)
+    except Exception as e:  # noqa: BLE001 - a set not registered now is registered by its next post
+        log.warning("set and wardrobe registration failed for creator %s (%s: %s)", creator_id,
+                    type(e).__name__, str(e)[:300])

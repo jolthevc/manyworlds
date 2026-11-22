@@ -63,3 +63,23 @@ scene, LongCat, direction gate). This plan turns the direction into what is actu
   MediaPipe is in the control-plane image, or on the worker. Line straightness is not built yet.
 - (wave 1) The worker files changed (tts_voxcpm, comfy, talk_comfy, lipsync), so the next GPU run needs image
   talkcomfy v10.
+- (wave 2, eyes/720p) Wire `direction.talk_profile_for(shot, policy)` into the talk job in production (merge
+  `generation.talk_profiles[prof]` into params before the V2V update). It stays off (`direction.hd_close_ups`)
+  until `hd720` is benchmarked.
+- (wave 2) The glance fallback says "the object in her hands". Make it follow the creator's gender presentation
+  (or "their hands").
+- (wave 2, sets) Give `image.qwen_edit` its own worker family (`edit`, with disk and RAM sized for ~58 GB of
+  weights), so the no-output guard can't stop all image work.
+- (wave 2, sets) The image gate skips identity for set and outfit plates (`payload.plate`), so plates don't drag
+  down Z-Image's measured acceptance.
+- (wave 2, sets) `mw bench image.qwen_edit` needs an images option. `ideas.direct_posts` should pass `post_id` to
+  `director.direct`.
+- (wave 2, sets) Plates are picked up lazily. Refresh pending plates in the producer tick, so the first post in a
+  new set gets references.
+- (wave 2, integration) Narrated edits and cutaways need image worker v26 for `captions: false` (until then they
+  would get both drawn and burned captions; no live impact while those formats are off).
+- (wave 2, integration) Cut-joined talk segments are 480x832, so captions burn at 480p. Upscale to 720x1280 in
+  the finish stage (a finishing scale hook) for every video.
+- (wave 2, integration) Instagram publishing should use `body.cover` as `cover_url`. `finishing.py`'s docstring
+  and CLAUDE.md need the finish stage.
+- (wave 2, integration) Trim the repeated first frame at each motion-chain join.

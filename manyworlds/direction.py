@@ -7,6 +7,10 @@ field falls back to the creator's or the format's default, and a post without sh
     camera/lens -> subject (the full appearance) -> wardrobe and look -> action/blocking -> set and lighting
     -> style -> sound cues (talk only) -> negatives
 
+In video with the creator in shot (talk, and i2v unless the shot is a cutaway), the action also gets natural eye
+behaviour (blinks, glances tied to the beats whose eyeline leaves the lens) and an idle/micro-expression line from
+her energy or body language, both worded in policy `direction.eyes` and `direction.idle`.
+
 Words, defaults and the allowed camera moves come from policy `direction`. Text never goes on a generated
 surface: `edit.on_screen_text` is an overlay added in post and never reaches an image or video prompt.
 """
@@ -272,6 +276,72 @@ def _sentence(label: str, body: str) -> str:
     return f"{label}: {body}." if body else ""
 
 
+_GLANCING = ("off", "prop", "screen")
+
+
+def _eyes(s: ShotSheet, target: Target, policy: Any) -> str:
+    """Natural eye behaviour for a video with the creator in shot (not a photo, not a cutaway): the target's
+    policy line (`direction.eyes.<target>`), then one glance per beat whose eyeline leaves the lens, at its time
+    ("looks at the mug at 4s"). A prop glance names the shot's first prop when it has one."""
+    if target == "photo" or s.cutaway:
+        return ""
+    eyes = _policy(policy, "direction", "eyes", default={}) or {}
+    template = eyes.get("glance", "") or ""
+    names = eyes.get("glance_targets", {}) or {}
+    prop = s.set.props.split(",")[0].strip()
+    glances = []
+    if template:
+        for b in sorted(s.blocking, key=lambda b: b.at_s):
+            if b.eyeline not in _GLANCING:
+                continue
+            what = prop if b.eyeline == "prop" and prop else names.get(b.eyeline, "")
+            if what:
+                glances.append(template.format(target=what, t=f"{b.at_s:g}"))
+    return _join([eyes.get(target, "") or "", *glances])
+
+
+def _idle(s: ShotSheet, target: Target, policy: Any) -> str:
+    """The micro-expression and idle-movement line for a video with the creator in shot, from her energy; with
+    no energy set, from the first `direction.idle.keywords` energy whose word appears in her body language; else
+    the target's `idle.default_energy` (talk only, as shipped)."""
+    if target == "photo" or s.cutaway:
+        return ""
+    idle = _policy(policy, "direction", "idle", default={}) or {}
+    energy = s.performance.energy or ""
+    if not energy:
+        body = s.performance.body_language.lower()
+        for level, words in (idle.get("keywords") or {}).items():
+            # a word start: 'slouch' matches 'slouched', 'fast' does not match 'breakfast'
+            if body and any(re.search(rf"\b{re.escape(str(w).lower())}", body) for w in (words or [])):
+                energy = level
+                break
+    if not energy:
+        energy = (idle.get("default_energy") or {}).get(target, "") or ""
+    if not energy:
+        return ""
+    return (idle.get("by_energy") or {}).get(energy, "") or ""
+
+
+def _shot_size_key(size: str) -> str:
+    return re.sub(r"[\s_\-]+", "", size.strip().lower())
+
+
+def talk_profile_for(shot: "ShotSheet | dict | None", policy: Any) -> str | None:
+    """The talk settings profile (policy generation.talk_profiles) a shot should render with, or None for the
+    default `generation.talk`. While `direction.hd_close_ups` is on, a shot framed at one of
+    `direction.hd_for_shot_sizes` (spelling-tolerant: 'close up', 'Close-Up', 'closeup') gets
+    `direction.hd_profile` (720p), when that profile exists. Off as shipped until 720p is benchmarked."""
+    if shot is None or not _policy(policy, "direction", "hd_close_ups", default=False):
+        return None
+    size = _shot_size_key(_coerce(shot).framing.shot_size)
+    sizes = {_shot_size_key(str(x)) for x in (_policy(policy, "direction", "hd_for_shot_sizes", default=[]) or [])}
+    if not size or size not in sizes:
+        return None
+    name = _policy(policy, "direction", "hd_profile", default="hd720") or "hd720"
+    profiles = _policy(policy, "generation", "talk_profiles", default={}) or {}
+    return name if name in profiles else None
+
+
 def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target, policy: Any, *,
                    trigger: str | None = None, scene: str = "", motion: str = "") -> str:
     """The prompt for one shot on one target model (photo, image-to-video, or lip-synced talk).
@@ -308,7 +378,8 @@ def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target,
         beats = _join(["talking to the camera naturally" if not beats else "talking", beats], "; ")
     perf = _join([f"{p.energy} energy" if p.energy else "", p.body_language,
                   f"mood {p.emotion_arc}" if video and p.emotion_arc.strip() else ""])
-    action = _join([beats, perf])
+    # eyes and idle movement only in video with the creator in shot; both empty leave the action as it was
+    action = _join([_join([beats, perf]), _eyes(s, target, policy), _idle(s, target, policy)], "; ")
 
     st = s.set
     people = (f"{st.background_people} {'person' if st.background_people == 1 else 'people'} in the background"

@@ -383,6 +383,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import edit_narrated as mod
         elif kind == "image.voice":      # Kokoro voice line, also on image machines
             from .handlers import tts_kokoro as mod
+        elif kind == "image.qwen_edit":  # reference-conditioned scene photos (creator.sets), same image worker
+            from .handlers import image_qwen_edit as mod
         elif family == "image":
             from .handlers import image_zimage as mod
         elif family == "video":

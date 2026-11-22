@@ -110,6 +110,17 @@ def test_only_finished_clips_with_keyframes_await_review(conn, policy, store, tm
     assert out["accepted"] == 1 and video.pending_jobs(conn, policy) == []
 
 
+def test_an_intermediate_motion_clip_is_not_reviewed(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    story = clip_job(conn, store, tmp_path, cid, kind="comfy.wan_i2v")
+    motion = clip_job(conn, store, tmp_path, cid, kind="comfy.wan_i2v")
+    conn.execute("UPDATE jobs SET payload = payload || %s WHERE id = %s", (Jsonb({"intermediate": True}), motion))
+    for job in (story, motion):
+        rendered(conn, store, tmp_path, job, keyframes=1)
+    assert video.pending_jobs(conn, policy) == [story]   # walk-and-talk's source clip: the take is judged instead
+
+
 def _story_post(conn, policy, store, tmp_path):
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
@@ -145,6 +156,37 @@ def test_a_story_clip_post_is_ready_once_its_clip_passes_review(conn, policy, st
     assert production.advance(conn, policy, now=NOW)["ready"] == 1
     row = conn.execute("SELECT body, asset_ids FROM posts WHERE id = %s", (pid,)).fetchone()
     assert row["body"]["video"]["uri"].endswith(".mp4") and len(row["asset_ids"]) == 2
+
+
+def test_a_story_clip_is_graded_with_no_captions_and_gets_a_cover_from_its_keyframes(conn, policy, store, tmp_path,
+                                                                                      monkeypatch):
+    import dataclasses
+
+    from manyworlds import captions, finishing
+    calls = []
+
+    def fake_finish(video, out, *, look, grain=None, hook_ass=None, policy, timeout=None):
+        calls.append(hook_ass)
+        out.write_bytes(b"graded")
+        return out
+    monkeypatch.setattr(finishing, "finish", fake_finish)
+    monkeypatch.setattr(captions, "burn", lambda *a, **k: calls.append("burn"))
+    shipped = dataclasses.replace(policy, body={
+        **policy.body, "finishing": {**policy.body["finishing"], "enabled": True},
+        "burned_captions": {**policy.body["burned_captions"], "enabled": True}})   # as in policy/default.yaml
+    pid = _story_post(conn, shipped, store, tmp_path)
+    [job] = _clip_jobs(conn, pid)
+    rendered(conn, store, tmp_path, job["id"])
+    video.run_pending(conn, shipped, ClipStub(clip()), store, tmp_path)
+    assert production.advance(conn, shipped, now=NOW, store=store)["ready"] == 1
+    body = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
+    raw = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'video'", (job["id"],)).fetchone()["uri"]
+    assert calls == [None]                                       # graded once; a story clip says nothing
+    assert body["video"]["uri"].endswith("final.mp4") and body["video_raw"]["uri"] == raw
+    assert body["finish"]["captions"] is None and body["finish"]["passes"] == 1
+    keys = [r["uri"] for r in conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'keyframe'",
+                                           (job["id"],)).fetchall()]
+    assert body["cover"]["uri"] in keys
 
 
 def test_rejected_clips_get_new_seeds_then_the_post_is_dropped(conn, policy, store, tmp_path):

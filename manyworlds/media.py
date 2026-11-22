@@ -1,4 +1,5 @@
-"""Small media edits on the control plane (no GPU): joining rendered video segments.
+"""Small media edits on the control plane (no GPU): joining rendered video segments, reading a file's length and
+size, burning captions.
 
 ffmpeg comes from the imageio-ffmpeg wheel (a static build), so the control plane image needs no system
 package. Segments rendered with the same settings share their codecs and are joined without re-encoding;
@@ -59,6 +60,42 @@ def normalize(path: Path, out: Path, *, width: int, height: int, fps: int, lufs:
     return out
 
 
+def probe(path: Path, *, timeout: float = 60) -> dict:
+    """{seconds, width, height, audio} of a media file, read from ffmpeg's banner (no decode); a field it can't
+    read is None (audio: False)."""
+    import re
+    r = subprocess.run([ffmpeg(), "-hide_banner", "-i", str(path)], capture_output=True, text=True, timeout=timeout)
+    err = r.stderr or ""
+    out: dict = {"seconds": None, "width": None, "height": None, "audio": bool(re.search(r"Stream #.*Audio:", err))}
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", err)
+    if m:
+        out["seconds"] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    m = re.search(r"Stream #.*Video:.*?\b(\d{2,5})x(\d{2,5})\b", err)
+    if m:
+        out["width"], out["height"] = int(m.group(1)), int(m.group(2))
+    return out
+
+
+def duration(path: Path, *, timeout: float = 60) -> float | None:
+    """A media file's length in seconds, or None when ffmpeg can't read it."""
+    try:
+        return probe(path, timeout=timeout)["seconds"]
+    except (OSError, subprocess.SubprocessError, RuntimeError):
+        return None
+
+
+_LIBASS: dict = {}
+
+
+def has_libass(*, timeout: float = 60) -> bool:
+    """Whether this ffmpeg has the `ass` filter (libass), asked once per process."""
+    if "ass" not in _LIBASS:
+        import re
+        r = subprocess.run([ffmpeg(), "-hide_banner", "-filters"], capture_output=True, text=True, timeout=timeout)
+        _LIBASS["ass"] = bool(re.search(r"^\s*\S+\s+ass\s+V->V", r.stdout or "", re.M))
+    return _LIBASS["ass"]
+
+
 def frame_count(path: Path) -> int:
     import imageio_ffmpeg
     return int(imageio_ffmpeg.count_frames_and_secs(str(path))[0])
@@ -88,12 +125,9 @@ def burn_captions(video: Path, ass: Path, out: Path, fontsdir: Path | None = Non
     `ass` filter; `use_ass=None` asks ffmpeg), the ASS script is rendered with the fonts in `fontsdir`. Without
     it, `overlay` (an ffconcat listing of transparent PNGs, or a function that makes one) is laid over the video.
     Paths go into the filter graph quoted, with ':' escaped; a path with a quote in it is refused."""
-    import re
-
     exe = ffmpeg()
     if use_ass is None:
-        r = subprocess.run([exe, "-hide_banner", "-filters"], capture_output=True, text=True, timeout=60)
-        use_ass = bool(re.search(r"^\s*\S+\s+ass\s+V->V", r.stdout or "", re.M))
+        use_ass = has_libass()
 
     def arg(p: Path) -> str:
         s = Path(p).resolve().as_posix()

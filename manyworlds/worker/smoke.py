@@ -37,6 +37,16 @@ def check_image() -> list[str]:
     handlers_for(kinds)
     done.append(f"handlers: {', '.join(kinds)}")
 
+    # Qwen-Image-Edit-2511 (image.qwen_edit): its pipeline class, a diffusers new enough for its config
+    # (zero_cond_t, 0.37+), the Lightning sampler built from its config, and the payload checks.
+    from diffusers import QwenImageEditPlusPipeline  # noqa: F401
+    from .handlers import image_qwen_edit as edit
+    edit.check_diffusers()
+    if edit.lightning_scheduler().config.time_shift_type != "exponential":
+        raise RuntimeError("the Lightning scheduler config was not applied")
+    edit.settings({"prompt": "p", "images": ["s3://b/a.png"], "n": 1, "width": 896, "height": 1152})
+    done.append("Qwen image edit pipeline and Lightning sampler")
+
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg missing (narrated edits need it)")
     from diffusers.pipelines.wan.pipeline_wan import prompt_clean   # uses ftfy, as the Wan pipeline does

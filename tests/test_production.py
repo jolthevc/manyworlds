@@ -4,6 +4,7 @@ only when repairs run out."""
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -198,3 +199,39 @@ def test_story_images_are_vertical(conn, policy, store, tmp_path):
     p = conn.execute("SELECT payload FROM jobs WHERE kind = 'image.zimage'").fetchone()["payload"]
     size = policy.get("generation", "image_by_format", "story")
     assert (p["width"], p["height"]) == (size["width"], size["height"]) and p["height"] > p["width"]
+
+
+# --- the finish stage (grade, grain, loudness, burned-in captions) ---------------------------------------------
+def test_the_shipped_policy_finishes_every_video_and_captions_the_spoken_ones(raw_policy, policy):
+    for fmt in ("talking_video", "narrated_edit", "story_clip"):
+        assert production.finishes(raw_policy, fmt)
+    assert production.captions_burned(raw_policy, "talking_video") and production.captions_burned(raw_policy,
+                                                                                                  "narrated_edit")
+    assert not production.captions_burned(raw_policy, "story_clip")                 # nothing is said in a story clip
+    assert not production.finishes(raw_policy, "photo") and not production.captions_burned(raw_policy, "carousel")
+    # Tests run with both off (conftest), so the stand-in videos are never put through ffmpeg.
+    assert not production.finishes(policy, "talking_video") and not production.captions_burned(policy, "talking_video")
+
+
+def test_caption_lines_prefer_clauses_and_give_a_filler_its_time_to_drop():
+    meta = {"lines": [{"index": 0, "text": "Okay, so here it is.", "start_s": 0.0, "end_s": 2.0}],
+            "clauses": [{"index": 0, "line": 0, "text": "Okay,", "start_s": 0.0, "end_s": 0.5, "filler": None},
+                        {"index": 1, "line": 0, "text": "so here it is.", "start_s": 0.7, "end_s": 2.0, "filler": "um"}],
+            "fillers": [{"clause": 1, "line": 0, "word": "um"}]}
+    assert production.caption_lines(meta) == [({"text": "Okay,", "start_s": 0.0, "end_s": 0.5}, 0),
+                                              ({"text": "um, so here it is.", "start_s": 0.7, "end_s": 2.0}, 1)]
+    assert production.caption_lines({"lines": meta["lines"]}) == [
+        ({"text": "Okay, so here it is.", "start_s": 0.0, "end_s": 2.0}, 0)]
+    assert production.caption_lines({"seconds": 2.0}) == []
+
+
+def test_caption_placement_follows_the_shot_size(raw_policy):
+    table = raw_policy.get("burned_captions", "placement_by_shot_size")
+    default = raw_policy.get("burned_captions", "default_placement")
+    assert production.caption_placement(raw_policy, None) == default
+    assert production.caption_placement(raw_policy, {"framing": {"shot_size": "close-up"}}) == table["close"]
+    assert production.caption_placement(raw_policy, {"framing": {"shot_size": "Full body"}}) == table["full"]
+    upper = dataclasses.replace(raw_policy, body={**raw_policy.body, "burned_captions": {
+        **raw_policy.body["burned_captions"], "placement_by_shot_size": {"wide": "upper"}}})
+    assert production.caption_placement(upper, {"framing": {"shot_size": "wide shot"}}) == "upper"
+    assert production.caption_placement(upper, {"framing": {"shot_size": "medium shot"}}) == default
