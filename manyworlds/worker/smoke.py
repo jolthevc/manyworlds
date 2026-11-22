@@ -185,6 +185,28 @@ def check_talkcomfy() -> list[str]:
     handlers_for(["comfy.wan_i2v"])
     done.append("ComfyUI + WanVideoWrapper nodes match the talk and story-clip graphs")
 
+    # The wrapper's own wav2vec encoder, as MultiTalkWav2VecEmbeds calls it, on a tiny random model: it must return
+    # hidden states (with transformers 5 it returned None, after the weights had downloaded; 2026-11-22).
+    import subprocess
+    probe = """
+import sys, tempfile, torch
+sys.path.insert(0, 'custom_nodes/ComfyUI-WanVideoWrapper')
+from transformers import Wav2Vec2Config
+from multitalk.wav2vec2 import Wav2Vec2Model
+d = tempfile.mkdtemp()
+cfg = Wav2Vec2Config(hidden_size=32, num_hidden_layers=2, num_attention_heads=2, intermediate_size=64,
+                     conv_dim=(32, 32), conv_stride=(5, 2), conv_kernel=(10, 3), num_feat_extract_layers=2)
+Wav2Vec2Model(cfg).save_pretrained(d)
+m = Wav2Vec2Model.from_pretrained(d, local_files_only=True)
+out = m(torch.zeros(1, 16000), seq_len=25, output_hidden_states=True)
+assert out.hidden_states is not None and len(out.hidden_states) == 3, out.hidden_states
+"""
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=os.environ.get("MW_COMFY_DIR", "/opt/ComfyUI"),
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"the wrapper's wav2vec encoder returned no hidden states: {(proc.stderr or proc.stdout)[-1500:]}")
+    done.append("wav2vec encoder returns hidden states")
+
     from . import lipsync
     import imageio.v3 as iio
     d = Path(tempfile.mkdtemp())

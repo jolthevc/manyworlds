@@ -17,7 +17,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HF_HOME=/models/hf \
 RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg espeak-ng libgl1 libglib2.0-0 gcc libc6-dev \
  && rm -rf /var/lib/apt/lists/*
 # Keep the base image's torch: a constraint stops ComfyUI's or the wrapper's requirements from replacing it.
+# transformers stays on 4.x: the wrapper's wav2vec subclass passes output_hidden_states to the encoder itself,
+# which transformers 5 ignores, so MultiTalkWav2VecEmbeds got hidden_states None (2026-11-22, v4 benchmark).
+# 4.57.6 is what the research-script image ran 3/3 with.
 RUN python -c "import torch; print(f'torch=={torch.__version__.split(\"+\")[0]}')" > /tmp/constraints.txt \
+ && echo "transformers==4.57.6" >> /tmp/constraints.txt \
  && git clone https://github.com/comfyanonymous/ComfyUI.git /opt/ComfyUI \
  && git -C /opt/ComfyUI checkout ${COMFYUI_REF} \
  && git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git /opt/ComfyUI/custom_nodes/ComfyUI-WanVideoWrapper \
