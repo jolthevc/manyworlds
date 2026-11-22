@@ -147,7 +147,7 @@ def test_a_talk_benchmark_can_run_settings_under_test(conn, policy):
     p = conn.execute("SELECT payload FROM jobs WHERE batch = %s", (batch,)).fetchone()["payload"]
     fast = policy.get("generation", "talk_profiles", "fast")
     assert p["params"]["steps"] == fast["steps"] == 4 and p["params"]["lora"]["repo"] == fast["lora"]["repo"]
-    assert p["params"]["extra"] == fast["extra"] and p["params"]["size"] == policy.get("generation", "talk", "size")
+    assert p["params"]["extra"] == fast["extra"] and p["params"]["width"] == policy.get("generation", "talk", "width")
     assert "--offload_model" in fast["extra"]       # the model stays on the GPU (2026-11-22: offloading cost ~10x)
     with pytest.raises(ValueError, match="talk_profiles"):
         bench.enqueue(conn, policy, "talk.infinitetalk", 1, extra={"image_uri": "s3://b/x.png"}, profile="nope")
