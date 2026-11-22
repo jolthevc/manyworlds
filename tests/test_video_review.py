@@ -253,3 +253,19 @@ def test_word_error_rate_ignores_case_and_punctuation():
     assert speech.wer("it\u2019s fine honestly", "it's fine honestly") == 0.0
     assert speech.wer("one two three four", "one two four") == 0.25
     assert speech.wer("", "") == 0.0
+
+
+def test_a_clip_the_screen_clears_by_the_margin_skips_the_paid_confirm(conn, policy, store, tmp_path):
+    m = policy.get("review", "video", "clear_pass_margin")
+    lo = {k: policy.get("review", "video", f"min_{k}") for k in ("identity", "motion", "realism")}
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    clear, close = clip_job(conn, store, tmp_path, cid), clip_job(conn, store, tmp_path, cid)
+    rendered(conn, store, tmp_path, clear)
+    rendered(conn, store, tmp_path, close)
+    llm = ClipStub(clip(**{k: v + m for k, v in lo.items()}))
+    [r] = video.review_job(conn, policy, llm, store, clear, tmp_path)
+    assert r["accepted"] and r["confirmed"] and r.get("clear_pass") and len(llm.calls) == 1
+    llm = ClipStub(clip(**lo), clip(**lo))                                   # just over the bars: confirm it
+    [r] = video.review_job(conn, policy, llm, store, close, tmp_path)
+    assert r["accepted"] and r["confirmed"] and not r.get("clear_pass") and len(llm.calls) == 2

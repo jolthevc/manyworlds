@@ -72,6 +72,17 @@ def decide(r: ClipReview, cfg: dict, scene: str | None = None) -> dict[str, bool
     return verdict
 
 
+def clear_pass(r: ClipReview, cfg: dict) -> bool:
+    """The screen passed the clip on every scored bar by at least `clear_pass_margin` points: the paid confirm
+    (about $0.05 a clip, as much as or more than a render) only checks the close calls. Off when unset."""
+    margin = cfg.get("clear_pass_margin")
+    if margin is None:
+        return False
+    m = int(margin)
+    return (r.identity >= int(cfg.get("min_identity", 7)) + m and r.motion >= int(cfg.get("min_motion", 6)) + m
+            and r.realism >= int(cfg.get("min_realism", 6)) + m)
+
+
 def _media_type(uri: str) -> str:
     return "image/jpeg" if uri.lower().endswith((".jpg", ".jpeg")) else "image/png"
 
@@ -150,7 +161,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                 r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene)
             verdict = decide(r, cfg, scene)
             scores = {"identity": r.identity, "motion": r.motion, "realism": r.realism, "scene": r.scene}
-            details = {**r.model_dump(), "model": llm.model_for(role), "stage": stage}
+            clear = stage == "screen" and len(stages) > 1 and all(verdict.values()) and clear_pass(r, cfg)
+            details = {**r.model_dump(), "model": llm.model_for(role), "stage": stage, "clear_pass": clear}
             rows += [(v["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
             res["stages"].append({"stage": stage, "model": details["model"], **scores, "drift_from": r.drift_from,
                                   "defects": r.defects, "passed": all(verdict.values())})
@@ -158,7 +170,10 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             res["accepted"] = all(res[g] for g in gates)
             if not res["accepted"]:
                 break   # rejects stay cheap: no confirm for a clip the screen failed
-        res["confirmed"] = res["accepted"] and len(res["stages"]) == len(stages)
+            if clear:
+                res["clear_pass"] = True
+                break   # passes cheaply: the screen cleared every bar by the margin, so no paid confirm
+        res["confirmed"] = res["accepted"] and (len(res["stages"]) == len(stages) or bool(res.get("clear_pass")))
         out.append(res)
     if write:
         common.write_rows(conn, rows)

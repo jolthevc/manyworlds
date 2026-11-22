@@ -48,19 +48,15 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
             payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage", "seed": 2000 + i,
                        "keyframes": 4, "params": dict(gen.get("hosted_video", {}))}
         elif kind.endswith("video") or kind.startswith("video."):
-            vid = gen.get("video", {})
+            vid = {**gen.get("video", {}), **_profile(gen, "video_profiles", profile)}
             payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage",
                        "width": vid.get("width", 480), "height": vid.get("height", 832),
-                       "frames": vid.get("frames", 81), "seed": 2000 + i,
+                       "frames": vid.get("frames", 81), "seed": 2000 + i, "keyframes": 4,
                        "params": {"steps": vid.get("steps", 4), "guidance": vid.get("guidance", 1.0),
-                                  "fps": vid.get("fps", 16)}}
+                                  "fps": vid.get("fps", 16), **({"model": vid["model"]} if vid.get("model") else {})}}
         elif kind.startswith("talk."):
             # The start photo is the creator's: pass it with --extra '{"image_uri": "..."}'.
-            talk = dict(gen.get("talk", {}))
-            if profile:   # settings under test (generation.talk_profiles), merged over the production ones
-                if profile not in (gen.get("talk_profiles") or {}):
-                    raise ValueError(f"no generation.talk_profiles.{profile}")
-                talk.update(gen["talk_profiles"][profile])
+            talk = {**gen.get("talk", {}), **_profile(gen, "talk_profiles", profile)}
             payload = {"script": SPEECH_LINES[i % len(SPEECH_LINES)], "voice": talk.pop("voice", "af_heart"),
                        "prompt": "a young woman talks casually to her phone camera, natural head movement",
                        "seed": 3000 + i, "keyframes": 4, "params": talk}
@@ -106,3 +102,12 @@ def report(conn, policy: Policy, batch: str) -> dict[str, Any]:
             "usd_per_1k_outputs_by_pool": projections,
         })
     return out
+
+
+def _profile(gen: dict, section: str, profile: str | None) -> dict:
+    """Settings under test (generation.<section>.<profile>), merged over the production ones; {} for none."""
+    if not profile:
+        return {}
+    if profile not in (gen.get(section) or {}):
+        raise ValueError(f"no generation.{section}.{profile}")
+    return dict(gen[section][profile])

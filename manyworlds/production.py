@@ -188,7 +188,7 @@ def _clip_state(conn, job_ids: list[str]) -> tuple[str, Any]:
         return "waiting", None
     video = conn.execute(
         """SELECT a.id, a.uri, count(r.id) AS n, bool_and(r.passed) AS passed,
-                  bool_or(r.details->>'stage' = 'confirm') AS confirmed
+                  bool_or(r.details->>'stage' = 'confirm' OR r.details->>'clear_pass' = 'true') AS confirmed
            FROM assets a LEFT JOIN reviews r ON r.asset_id = a.id
            WHERE a.job_id = %s AND a.kind = 'video' GROUP BY a.id, a.uri LIMIT 1""", (job_ids[-1],)).fetchone()
     keyframes = conn.execute("SELECT count(*) n FROM assets WHERE job_id = %s AND kind = 'keyframe'",

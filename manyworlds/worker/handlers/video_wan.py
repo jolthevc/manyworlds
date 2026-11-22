@@ -25,16 +25,20 @@ from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 
 MODEL_ID = os.environ.get("MW_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 OFFLOAD_BELOW_GB = float(os.environ.get("MW_VIDEO_OFFLOAD_BELOW_GB", "40"))
-_state: dict[str, Any] = {"pipe": None}
+_state: dict[str, Any] = {"pipe": None, "model": None}
 log = logging.getLogger("manyworlds.video")
 
 
-def _diffusers_pipe(ctx: JobContext):
-    if _state["pipe"] is None:
+def _diffusers_pipe(ctx: JobContext, model_id: str = MODEL_ID):
+    """The loaded pipeline for `model_id` (a job may name another model, e.g. a few-step distillation under
+    benchmark: params.model); one model stays loaded at a time."""
+    if _state["pipe"] is None or _state["model"] != model_id:
         import torch
         from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
 
-        source = models.ensure(MODEL_ID, ctx.store, ctx.workdir)
+        _state.update(pipe=None)
+        torch.cuda.empty_cache()
+        source = models.ensure(model_id, ctx.store, ctx.workdir)
         free, total = torch.cuda.mem_get_info()
         offload = free / 1e9 < OFFLOAD_BELOW_GB
         log.info("GPU %s: %.1f GB free of %.1f GB; cpu offload=%s", torch.cuda.get_device_name(0),
@@ -49,15 +53,16 @@ def _diffusers_pipe(ctx: JobContext):
             pipe.vae.enable_tiling()
         else:
             pipe.to("cuda")
-        _state.update(pipe=pipe, offload=offload, gpu=torch.cuda.get_device_name(0), free_gb=round(free / 1e9, 1))
+        _state.update(pipe=pipe, model=model_id, offload=offload, gpu=torch.cuda.get_device_name(0),
+                      free_gb=round(free / 1e9, 1))
     return _state["pipe"]
 
 
-def _run_diffusers(ctx, image_path, out_path, prompt, w, h, frames, steps, guidance, fps, seed):
+def _run_diffusers(ctx, image_path, out_path, prompt, w, h, frames, steps, guidance, fps, seed, model_id=MODEL_ID):
     import torch
     from diffusers.utils import export_to_video, load_image
 
-    pipe = _diffusers_pipe(ctx)
+    pipe = _diffusers_pipe(ctx, model_id)
     image = load_image(str(image_path)).resize((w, h))
     frames_out = pipe(image=image, prompt=prompt, height=h, width=w, num_frames=frames,
                       num_inference_steps=steps, guidance_scale=guidance,
@@ -104,12 +109,13 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     image_path = ctx.fetch(payload["image_uri"], "start_frame.png")
     out_path = ctx.workdir / "clip.mp4"
     t0 = time.monotonic()
-    _run_diffusers(ctx, image_path, out_path, payload["prompt"], w, h, frames, steps, guidance, fps, seed)
+    model_id = params.get("model") or MODEL_ID
+    _run_diffusers(ctx, image_path, out_path, payload["prompt"], w, h, frames, steps, guidance, fps, seed, model_id)
     render_s = round(time.monotonic() - t0, 1)
 
     keyframes = extract_keyframes(out_path, ctx.workdir, int(payload.get("keyframes", 4)))
     seconds = round(frames / fps, 2)
-    recipe = {"model": MODEL_ID,
+    recipe = {"model": model_id,
               "prompt": payload["prompt"], "image_uri": payload["image_uri"], "seed": seed, "width": w, "height": h,
               "frames": frames, "steps": steps, "guidance": guidance, "fps": fps}
     return HandlerResult([OutputFile(out_path, "video", {"seconds": seconds, "width": w, "height": h}), *keyframes],

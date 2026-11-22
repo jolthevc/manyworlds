@@ -195,6 +195,9 @@ review:
     min_identity: 6            # in the worst keyframe (video drift compounds; a notch stricter than photos)
     min_motion: 6
     min_realism: 6
+    # A clip the screen passes on identity, motion and realism by this many points skips the paid confirm (Opus,
+    # ~$0.05 a clip, as much as the render; 2026-11-22). Rows record clear_pass, so the share can be audited.
+    clear_pass_margin: 1
     min_scene: 0               # ranks only, as for photos
     reference_images: 3
     max_jobs_per_run: 10
@@ -224,6 +227,11 @@ generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
   image_by_format: {story: {width: 720, height: 1280}}   # 9:16 Stories; other formats use image (4:5)
   video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; measured 2026-11-14
+  # Settings to benchmark against `video` (mw bench video.wan_i2v --profile NAME). fast: FastWan2.2-TI2V-5B
+  # (FastVideo, Apache-2.0), the same model DMD-distilled to 3 steps with no guidance: one pass per step instead of
+  # two, 3 steps instead of 30, so ~20x less compute per clip on paper.
+  video_profiles:
+    fast: {model: FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers, steps: 3, guidance: 1.0}
   # Lip-sync (talk.infinitetalk): InfiniteTalk's fp8 single-person build at the README's settings (40 steps, text cfg
   # 5, audio cfg 4). 2026-11-20: the full-precision 14B model was OOM-killed loading on a 48 GB-RAM A40 host; the
   # int8 LoRA build needs a t5_int8 file its repo doesn't have; there is no single-person fp8 LoRA build, so the
@@ -246,7 +254,7 @@ generation:
     # 2026-11-22 benchmark (L40S, 3 clips of 4.8-6.3 s): 684-902 s each, ~145 s of compute per output second, all three
     # passed the gate (lip-sync corr 0.41-0.56). The script offloads the model to CPU after every forward on one GPU
     # (offload_model defaults to True): keep it on the card, with the text encoder (used once) on the CPU.
-    fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: ["--offload_model", "False", "--t5_cpu"],
+    fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: ["--offload_model", "False", "--t5_cpu", "--max_frame_num", "1525"],
            lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}}
   # Story clips on a hosted API (production.video_kind: hosted.video): Wan 2.7 i2v on Together, $0.10 per 5 s clip
   # (catalog 2026-11-21; the job records the host's own cost). Same approved photo as first frame, 9:16 720P.
@@ -256,7 +264,9 @@ generation:
   # sentence boundaries, each segment rendered and judged as its own talk job, then joined by the producer.
   # join: cut = every segment from the approved photo, in parallel, joined with jump cuts (talking-head style);
   #       chain = each segment starts from the last frame of the one before (continuous, one at a time).
-  talk_long: {max_segment_seconds: 25, words_per_second: 2.5, join: cut, join_timeout_s: 600}
+  # 60 s (was 25, 2026-11-22): InfiniteTalk's streaming mode makes one continuous take, clean to about a minute
+  # (model review); longer scripts are cut at sentences into ~60 s takes. One take, one voice line, no seams.
+  talk_long: {max_segment_seconds: 60, words_per_second: 2.5, join: cut, join_timeout_s: 600}
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:
