@@ -134,9 +134,10 @@ def test_a_full_volume_is_pruned_of_weights_the_worker_no_longer_uses(tmp_path):
 
 def test_torch_compile_is_wired_into_every_model_loader_only_when_asked():
     from manyworlds.worker import comfy
-    plain = comfy.graph_i2v(image="a.png", prompt="p", seed=1, params={}, blocks_to_swap=0)
+    plain = comfy.graph_i2v(image="a.png", prompt="p", seed=1, params={"width": 480, "height": 832}, blocks_to_swap=0)
     assert "compile" not in plain
-    g = comfy.graph_i2v(image="a.png", prompt="p", seed=1, params={"compile": True}, blocks_to_swap=0)
+    g = comfy.graph_i2v(image="a.png", prompt="p", seed=1, params={"width": 480, "height": 832, "compile": True}, blocks_to_swap=0)
     assert g["high_model"]["inputs"]["compile_args"] == ["compile", 0] == g["low_model"]["inputs"]["compile_args"]
-    t = comfy.graph(image="a.png", audio="a.wav", prompt="p", frames=81, seed=1, params={"compile": True}, blocks_to_swap=0)
+    t = comfy.graph(image="a.png", audio="a.wav", prompt="p", frames=81, seed=1,
+                    params={"width": 480, "height": 832, "steps": 6, "compile": True}, blocks_to_swap=0)
     assert t["compile"]["class_type"] == "WanVideoTorchCompileSettings" and t["model"]["inputs"]["compile_args"]
