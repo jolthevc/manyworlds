@@ -44,7 +44,8 @@ def policy(raw_policy):
         **(raw_policy.body.get("operations") or {}), "mode": "live"},
         "llm": {**raw_policy.body["llm"], "shadow": {}},
         # output routing off: tests use production.video_kind (test_routing.py covers routing)
-        "production": {**raw_policy.body["production"], "routing": {}}})
+        # the clip flow is the same whichever engine renders; tests use the video.wan_i2v kind
+        "production": {**raw_policy.body["production"], "routing": {}, "video_kind": "video.wan_i2v"}})
 
 
 @pytest.fixture()
