@@ -1,0 +1,25 @@
+rubric: direction
+version: 1
+applies_to: >-
+  A generated photo, or a clip's keyframes, made from a shot sheet (manyworlds.direction) for a fictional,
+  openly AI lifestyle creator. The review gates (manyworlds.review) score it as `direction`, 1-10; below
+  policy review.direction.min_score the output is rejected.
+guidance: >-
+  Compare what you see with the SHOT and its BEATS. A photo is one moment: judge the first beat only.
+  Keyframes can't show timing, so judge whether each beat is visible somewhere in order, not exactly when.
+  Odd numbers are anchors, even numbers sit between them; 10 is reserved for a shot that matches every
+  directed detail. Text overlays are added later and never count against or for the shot.
+dimensions:
+  - key: direction
+    name: Follows the direction
+    definition: >-
+      How faithfully the output carries out the shot sheet - framing and camera, the set and its light,
+      wardrobe and look, the blocking (actions, eyeline, hands) and, for video, the camera move and the
+      performance.
+    not: Image quality, identity or whether the direction was a good idea; those are judged elsewhere.
+    anchors:
+      1: A different shot - wrong place, framing or action.
+      3: Right kind of place, but the framing or the main action is wrong or missing.
+      5: The main points are there (place, framing, first action); several directed details are off.
+      7: Follows the sheet with only small departures (a prop, the light direction, one beat).
+      9: Every directed detail is visible; beats happen in order, eyeline and hands as written.

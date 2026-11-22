@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 
 
 def parse(spec: str) -> list[tuple[str, float]]:
@@ -59,3 +60,51 @@ def voice_arg(pipe, spec: str):
     if len(parts) == 1:
         return parts[0][0]
     return sum(pipe.load_single_voice(name) * w for name, w in parts)
+
+
+# --- designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, creator/voice_lab.py) -------------------------------
+# VoxCPM2 reads an instruction in parentheses at the start of the text: a voice description when designing, a
+# delivery ("slightly faster, cheerful tone") on a cloned voice. The instruction is never spoken, so it never
+# belongs in the text a transcript is checked against.
+_LEADING_INSTRUCTION = re.compile(r"^\s*(?:\([^()]*\)\s*)+")
+
+
+def split_instruction(text: str) -> tuple[str, str]:
+    """'(softly, amused) I knew it.' -> ('softly, amused', 'I knew it.'): leading parenthetical instructions and
+    the words to be spoken."""
+    text = text or ""
+    m = _LEADING_INSTRUCTION.match(text)
+    if not m:
+        return "", text.strip()
+    inner = [p.strip() for p in re.findall(r"\(([^()]*)\)", m.group(0)) if p.strip()]
+    return ", ".join(inner), text[m.end():].strip()
+
+
+def strip_delivery(text: str) -> str:
+    """The words to be spoken: `text` without leading parenthetical instructions."""
+    return split_instruction(text)[1]
+
+
+def with_instruction(instruction: str | None, text: str) -> str:
+    """What VoxCPM2 is given: '(instruction)text', or the bare words when there is no instruction. Parentheses
+    inside the instruction would end it early, so they become commas."""
+    words = strip_delivery(text)
+    instruction = re.sub(r"\s*[()]\s*", ", ", (instruction or "").strip().strip("()")).strip(" ,")
+    return f"({instruction}){words}" if instruction else words
+
+
+def engine(anchors: dict | None) -> str:
+    """The creator's voice engine: 'voxcpm' once a designed voice is stored (anchors.voice with a reference clip),
+    otherwise 'kokoro' (a stock voice or blend), so creators made before designed voices keep speaking."""
+    v = (anchors or {}).get("voice") or {}
+    return "voxcpm" if v.get("engine") == "voxcpm" and v.get("ref_uri") and v.get("ref_text") else "kokoro"
+
+
+def cosine_distance(a: list[float], b: list[float]) -> float:
+    """1 - cosine similarity of two speaker embeddings (0 = same voice, 1 = unrelated, up to 2)."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if not na or not nb:
+        return 1.0
+    return round(1.0 - dot / (na * nb), 4)

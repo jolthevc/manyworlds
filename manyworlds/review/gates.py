@@ -8,6 +8,8 @@ asset gets one `reviews` row per gate:
   realism   reads as an ordinary phone photo; no anatomical, text or rendering defects
   safety    looks at least policy creator_min_age, not sexualized, no real brand marks
   scene     (post images only) shows the scene the planner wrote: setting, action, styling
+  direction (directed scenes: the job carries a shot sheet, manyworlds.direction) follows the shot and its first
+            beat, on rubric policy/rubrics/direction-v<n>.yaml; below review.direction.min_score it is rejected
 
 An asset is accepted only if every gate passes. Thresholds, the model role and limits
 are in policy `review`. Cost per accepted output (manyworlds.deploy.scoring) counts
@@ -48,6 +50,9 @@ class CandidateReview(BaseModel):
     scene: int | None = Field(default=None, description="only when an INTENDED SCENE is given: 10 = shows it "
                               "(setting, action, clothing and props as written); 5 = right setting, details wrong; "
                               "0 = a different scene. null when no scene is given")
+    direction: int | None = Field(default=None, description="only when a DIRECTED SHOT is given: 1-10 on the "
+                                  "DIRECTION rubric given with it (does the photo follow the shot and its first "
+                                  "beat); null when no directed shot is given")
     notes: str = Field(description="one sentence")
 
 
@@ -55,21 +60,25 @@ class ImageReviews(BaseModel):
     reviews: list[CandidateReview]
 
 
-def gates_for(scene: str | None) -> tuple[str, ...]:
-    return GATES + ("scene",) if scene else GATES
+def gates_for(scene: str | None, shot: dict | None = None) -> tuple[str, ...]:
+    return GATES + (("scene",) if scene else ()) + (("direction",) if shot else ())
 
 
-def decide(r: CandidateReview, cfg: dict, scene: str | None = None) -> dict[str, bool]:
+def decide(r: CandidateReview, cfg: dict, scene: str | None = None, *, shot: dict | None = None,
+           policy: Policy | None = None) -> dict[str, bool]:
     verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
                "realism": r.realism >= int(cfg.get("min_realism", 6)),
                "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
     if scene:  # a judge that leaves it out passes: fit is a preference, not a safety line
         verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))
+    if shot:
+        verdict["direction"] = common.direction_passes(r.direction, policy)
     return verdict
 
 
 def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str, creator, refs: list[bytes],
-           candidates: list[bytes], scene: str | None = None) -> tuple[str, list[CandidateReview | None]]:
+           candidates: list[bytes], scene: str | None = None,
+           shot: dict | None = None) -> tuple[str, list[CandidateReview | None]]:
     """One vision call: the creator's references (cached prefix), then the candidates."""
     min_age = int(policy.get("scope", "creator_min_age", default=21))
     content: list = [{"type": "text", "text": f"The person: {appearance_prompt(creator['bible'])}. "
@@ -81,6 +90,9 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
         content += [{"type": "text", "text": f"Candidate {i}:"}, image_block(b)]
     if scene:
         content.append({"type": "text", "text": f"INTENDED SCENE (score `scene` against it): {scene}"})
+    if shot:
+        content.append({"type": "text", "text": "DIRECTED SHOT (score `direction` 1-10 against it, per candidate): "
+                                                + common.direction_brief(shot, policy, still=True)})
     content.append({"type": "text", "text": f"Review all {len(candidates)} candidates, one entry each."})
     out = llm.structured(role, system=SYSTEM, content=content, schema=ImageReviews, effort=effort,
                          creator_id=creator["id"])
@@ -91,6 +103,7 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
         if r is not None:
             r.identity, r.realism = max(0, min(10, r.identity)), max(0, min(10, r.realism))
             r.scene = max(0, min(10, r.scene)) if (scene and r.scene is not None) else None
+            r.direction = max(1, min(10, r.direction)) if (shot and r.direction is not None) else None
         reviews.append(r)
     return llm.model_for(role), reviews
 
@@ -105,8 +118,10 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     asset is accepted only when no row failed."""
     cfg = policy.get("review", "image", default={})
     stages = common.stages(cfg, role)
-    job = conn.execute("SELECT creator_id, payload->>'scene' AS scene FROM jobs WHERE id = %s", (job_id,)).fetchone()
-    scene, gates = job["scene"], gates_for(job["scene"])
+    job = conn.execute("SELECT creator_id, payload->>'scene' AS scene, payload->'shot' AS shot FROM jobs WHERE id = %s",
+                       (job_id,)).fetchone()
+    shot = job["shot"] if isinstance(job["shot"], dict) else None   # a directed scene (manyworlds.direction)
+    scene, gates = job["scene"], gates_for(job["scene"], shot)
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
     assets = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'image' ORDER BY uri",
                           (job_id,)).fetchall()
@@ -126,14 +141,17 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             break
         with common.charged_to(llm, job_id):   # review counts in this output's cost
             model, reviews = _judge(llm, policy, cfg, stage_role, effort, creator, refs,
-                                    [images[a["id"]] for a in remaining], scene)
+                                    [images[a["id"]] for a in remaining], scene, shot)
         still = []
         for a, r in zip(remaining, reviews):
             if r is None:  # the judge skipped it: fail closed, it can be re-reviewed
                 verdict, details, scores = {g: False for g in gates}, {"error": "no review returned"}, {}
             else:
-                verdict, details = decide(r, cfg, scene), r.model_dump()
+                verdict = decide(r, cfg, scene, shot=shot, policy=policy)
+                details = r.model_dump(exclude=None if shot else {"direction"})
                 scores = {"identity": r.identity, "realism": r.realism, "scene": r.scene}
+                if shot:
+                    scores["direction"] = r.direction
             details.update(model=model, stage=stage)
             rows += [(a["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
             res = results[a["id"]]

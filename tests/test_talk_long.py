@@ -214,3 +214,94 @@ def _tmp(tmp_path, name):
     p = tmp_path / f"{name}.mp4"
     p.write_bytes(b"cut")
     return p
+
+
+# --- directed: one take per shot, cut only at scene changes ----------------------------------------------
+def _says(*lines, **shot):
+    return {**shot, "performance": {"lines": [{"text": t, "delivery": "dry, quick"} for t in lines]}}
+
+
+SHOP = _says("Right, quick one from outside the corner shop.", "The samosas are back, and I am not okay.",
+             set={"location": "outside the corner shop at night"}, framing={"shot_size": "medium close-up",
+                                                                            "device": "selfie"},
+             blocking=[{"at_s": 0, "action": "talks to the phone", "eyeline": "lens"}])
+WINDOW = _says("They still haven't cleaned that window, by the way.", cutaway=True,
+               set={"location": "the shop's fogged window"}, framing={"shot_size": "close-up"})
+DOORWAY = _says("Anyway. Going in. Wish me luck.",
+                set={"location": "the shop doorway"}, framing={"shot_size": "medium shot", "device": "selfie"},
+                blocking=[{"at_s": 0, "action": "turns back to the phone and grins", "eyeline": "lens"}])
+
+
+def test_overlong_take_splits_at_sentence(policy):
+    long_take = _says(*[SENTENCE] * 7)                                      # 210 words, ~84 s at 2.5 words/s
+    takes = production.shot_takes(policy, [long_take])
+    limit = policy.get("generation", "talk", "max_take_seconds") * policy.get("generation", "talk_long",
+                                                                              "words_per_second")
+    assert len(takes) == 2 and all(len(text.split()) <= limit for text, _, _ in takes)
+    assert all(text.endswith("now.") for text, _, _ in takes)               # cut at a sentence end
+    assert [(mode, i) for _, mode, i in takes] == [("talk", 0), ("talk", 0)]
+    assert " ".join(text for text, _, _ in takes) == " ".join([SENTENCE] * 7)
+    assert "dry, quick" not in takes[0][0]                                  # deliveries are never spoken
+
+
+def test_cutaway_shot_is_narrated(policy):
+    takes = production.shot_takes(policy, [SHOP, WINDOW, DOORWAY])
+    assert [(mode, i) for _, mode, i in takes] == [("talk", 0), ("narrated", 1), ("talk", 2)]
+    assert takes[1][0] == "They still haven't cleaned that window, by the way."
+    # Without cutaways (hybrid off, or one photo) the cutaway's lines join the take before it.
+    merged = production.shot_takes(policy, [SHOP, WINDOW, DOORWAY], cutaways=False)
+    assert [(mode, i) for _, mode, i in merged] == [("talk", 0), ("talk", 2)]
+    assert merged[0][0].endswith("by the way.")
+    # A silent shot has no take; when only a cutaway speaks, the lines go to the on-camera shot.
+    silent = {**SHOP, "performance": {}}
+    assert production.shot_takes(policy, [silent, WINDOW]) == [(WINDOW["performance"]["lines"][0]["text"], "talk", 0)]
+    assert production.shot_takes(policy, [silent]) == []
+
+
+def _directed_post(conn, policy, store, tmp_path, shots):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    from manyworlds.brain import planner
+    from manyworlds.direction import summary
+    planner.plan_period(conn, policy, PlanStub([post(0, "talking_video", [summary(s) for s in shots])]), cid,
+                        start=START)
+    pid = conn.execute("SELECT id FROM posts WHERE creator_id = %s", (cid,)).fetchone()["id"]
+    # The director (manyworlds.brain.director) writes the shots onto the scheduled post.
+    conn.execute("UPDATE posts SET body = body || %s WHERE id = %s", (Jsonb({"shots": shots}), pid))
+    production.advance(conn, policy, now=NOW, store=store)
+    scene_jobs = conn.execute("SELECT payload FROM jobs WHERE post_id = %s ORDER BY idempotency_key", (pid,)).fetchall()
+    assert [j["payload"]["shot"]["set"]["location"] for j in scene_jobs] == [s["set"]["location"] for s in shots]
+    finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok()] * 4), pid)       # one photo per shot chosen
+    production.advance(conn, policy, now=NOW, store=store)
+    return pid, conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
+
+
+def test_one_take_per_shot(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, DOORWAY])
+    assert body["talk_shots"] == [0, 1] and "talk_modes" not in body                # both on camera
+    jobs = _segment_jobs(conn, pid)
+    assert len(jobs) == 2
+    for i, (j, shot) in enumerate(zip(jobs, (SHOP, DOORWAY))):
+        p = j["payload"]
+        assert p["script"] == " ".join(line["text"] for line in shot["performance"]["lines"])
+        assert p["image_uri"] == body["images"][i]["uri"]                            # this shot's own photo
+        assert p["shot"] == body["shots"][i] and p["prompt"].startswith("Camera: smartphone video")
+        assert shot["set"]["location"] in p["prompt"] and "dry, quick" not in p["script"]
+        assert "max_take_seconds" not in p["params"]
+    for j in jobs:
+        rendered(conn, store, tmp_path, j["id"])
+    video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
+    assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
+    assert len(joined[0]) == 2
+
+
+def test_a_directed_cutaway_is_narrated_over_its_own_photo(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, WINDOW, DOORWAY])
+    assert body["talk_modes"] == ["talk", "narrated", "talk"] and body["talk_shots"] == [0, 1, 2]
+    talks = _segment_jobs(conn, pid)
+    [cut] = conn.execute("SELECT payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
+    assert [j["payload"]["image_uri"] for j in talks] == [body["images"][0]["uri"], body["images"][2]["uri"]]
+    assert cut["payload"]["images"] == [body["images"][1]["uri"]]
+    assert cut["payload"]["script"] == "They still haven't cleaned that window, by the way."

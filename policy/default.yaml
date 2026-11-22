@@ -35,7 +35,7 @@ gpu_runs:
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
-  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60}   # talk: first boot downloads ~90 GB of weights
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB
   max_attempt_minutes_by_kind: {image.mirror: 120, video.mirror: 120}  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
   serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
@@ -102,6 +102,9 @@ job_kinds:
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   comfy.wan_i2v:   {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_comm_3090, vast_4090, vast_5090, runpod_secure_a40], outputs_per_job: 1}
+  # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
+  voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
+  voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -133,6 +136,10 @@ worker_images:
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
   comfy: {image: mw-worker-talkcomfy, tag: v8, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
+  # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
+  # voxcpm in it (v9 and later).
+  voice: {image: mw-worker-talkcomfy, tag: v8, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+          env: {HF_HUB_DISABLE_XET: 1}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
 
@@ -242,6 +249,12 @@ review:
     # Voices are judged automatically, never by ear (owner 2026-11-21).
     intelligibility: {enforce: true, host: together, model: openai/whisper-large-v3, language: en, max_wer: 0.15,
                       usd_per_minute: 0.0015, timeout_seconds: 120}
+  # Directed outputs (a job payload with a `shot`, manyworlds.direction): the judge also sees the shot's summary and
+  # beats and scores `direction` 1-10 on rubric policy/rubrics/direction-v<n>.yaml; below min_score it is rejected
+  # (gate `direction`). Undirected outputs are judged as before.
+  direction:
+    min_score: 6
+    rubric: direction
   max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
@@ -288,6 +301,9 @@ generation:
     swap_below_gb: 40
     blocks_to_swap: 20
     timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
+    # One take per shot (manyworlds.direction): a take longer than this (words / talk_long.words_per_second) is split
+    # at the nearest sentence end, as a safety net. Production only; not sent to the worker.
+    max_take_seconds: 60
     voice: af_heart
   # Settings to benchmark against `talk` (mw bench talk.infinitetalk --profile NAME), merged over it. fast: the
   # README's lightx2v recipe (4 steps, text cfg 1, audio cfg 2, shift 2), ~15-30x less compute than 40 steps x 3
@@ -313,6 +329,19 @@ generation:
     # but ~607 s for 6.3 s, since audio cfg adds a pass: not worth it.
     s8audio: {steps: 8, audio_scale: 1.5}
     s8audiocfg: {steps: 8, audio_cfg: 2.0}
+    # Second lip-sync model (worker/comfy.py graph_longcat): LongCat-Video-Avatar (MIT) at Kijai's example settings
+    # (distill LoRA 0.9, longcat_distill_euler, shift 12, cfg 1, 93-frame windows overlapping 13; the example runs 12
+    # steps, 10 here per the plan; audio cfg 3, the bottom of the example note's 3-5 range). sdpa attention: the
+    # example says SageAttention 1.0.6 (our image) fails with LongCat. 48 blocks: 25 swapped on small cards.
+    # longcat_version 1.0 (Kijai's fp8 avatar model, wav2vec audio, 16 fps): no 1.5 checkpoint in the wrapper's
+    # format exists from Kijai or Comfy-Org (2026-11-22). longcat15: the v1.5 Whisper path on a community GGUF,
+    # untested and without 1.5's own distillation LoRA: benchmark before trusting it.
+    longcat: {model: longcat, longcat_version: "1.0", steps: 10, cfg: 1.0, shift: 12.0, audio_cfg: 3.0,
+              frame_window: 93, overlap: 13, scheduler: longcat_distill_euler, lora_strength: 0.9, attention: sdpa,
+              blocks_to_swap: 25}
+    longcat15: {model: longcat, longcat_version: "1.5", steps: 10, cfg: 1.0, shift: 12.0, audio_cfg: 3.0,
+                frame_window: 93, overlap: 13, scheduler: longcat_distill_euler, lora_strength: 0.9, attention: sdpa,
+                blocks_to_swap: 25}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
   # 16 fps (5 s), 9:16 at 480p. Cards under swap_below_gb swap blocks_to_swap blocks to the CPU.
@@ -333,7 +362,37 @@ generation:
   # the hook, the sign-off and enough of the middle to reach on_camera_share are lip-synced, the rest are the cutaway
   # photos moving under the same voice (image.narrated). All segments are brought to `output` and joined. Only the
   # on-camera part pays for the lip-sync render (about a third of a 30 s reel costs a third as much).
-  talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4, output: {width: 720, height: 1280, fps: 30, lufs: -14}}
+  # segment_by: scene = a post with shot sheets (body.shots) is cut only at scene changes: one take per shot that
+  # speaks, on camera unless the shot is a cutaway (narrated over that shot's photo); seconds = always the length-based
+  # split above. Posts without shots always use the length-based split.
+  talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4, segment_by: scene,
+                output: {width: 720, height: 1280, fps: 30, lufs: -14}}
+
+# Designed voices (manyworlds/creator/voice_lab.py, worker/handlers/tts_voxcpm.py; owner 2026-11-22: a voice of
+# their own). VoxCPM2 (Apache-2.0) designs `candidates` voices from the bible's voice notes and appearance, each
+# reading anchor_text (~15 s); one is picked automatically, never by ear: word error rate within max_wer (the speech
+# gate's Whisper, run on the GPU worker), speaker-embedding cosine distance at least min_distance from every other
+# creator's voice (SpeechBrain ECAPA, Apache-2.0), then the lowest WER, then the highest pitch variance (least
+# monotone). Speech is generated line by line (long text degrades), `takes` per line, the lowest WER kept, lines
+# joined with pause_s unless a line says otherwise. cfg_value / inference_timesteps are VoxCPM2's README values.
+# optimize: torch.compile on load (slower start, untested here). pitch_hz: the pitch tracker's range.
+# Creators without a designed voice keep Kokoro (anchors.voice.engine: kokoro).
+voice:
+  engine: voxcpm
+  model: openbmb/VoxCPM2
+  candidates: 4
+  takes: 2
+  anchor_text: "Okay, so this morning did not go to plan. I missed the early train, spilled half my coffee, and still
+    made it on time somehow. Honestly, I think the trick is just not panicking. Anyway, here's what I learned."
+  pause_s: 0.25
+  max_wer: 0.1
+  min_distance: 0.35
+  cfg_value: 2.0
+  inference_timesteps: 10
+  optimize: false
+  embedding: speechbrain/spkrec-ecapa-voxceleb
+  pitch_hz: [65, 500]
+  kinds: {design: voice.design, speak: voice.speak}
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:
@@ -467,11 +526,11 @@ budget: {master_usd_per_month: 750, reserve_share: 0.15}
 
 brain:
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
-                    creator_lab: 5.0}   # creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    creator_lab: 5.0, director: 2.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
-  llm_usd_per_creator_day: {showrunner: 0.10, evaluator: 0.10}
+  llm_usd_per_creator_day: {showrunner: 0.10, evaluator: 0.10, director: 0.20}
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
   # Experiments (manyworlds.brain.experiments): a tentative finding becomes a randomised two-arm test. Slots are
   # assigned per batch; the result is read once, when each arm has its sample (no peeking). The sample per arm
@@ -600,6 +659,20 @@ stagings:
     walk_and_talk: {formats: [talking_video], setting: "walking down a street or a path", framing: "selfie-held phone at arm's length", wardrobe: "the creator's usual outfit", script: "talking to the phone like to a friend: a story, an opinion, an update"}
     asmr: {formats: [talking_video], setting: "a quiet, softly lit room", framing: "close-up, soft focus behind", wardrobe: "cosy", script: "very softly spoken, slow, describing small things"}
 
+# Moves (owner 2026-11-22, manyworlds.direction): influencer actions a scene can perform, offered by the showrunner
+# like stagings (set `move`; recorded as an idea attribute) only when production makes one of their formats AND their
+# readiness is in direction.offer_readiness. readiness: ready (the models do it well), partial (short and slow only),
+# not_yet (hand-object work such as makeup or cooking, gym; not listed until a model carries it). `shot` holds the
+# shot-sheet defaults for the scene that performs the move (any ShotSheet field).
+moves:
+  library:
+    phone_down_reveal: {formats: [talking_video, story_clip], readiness: partial, note: "she lowers the phone she was holding in front of her face, revealing her expression; one slow motion, then still", shot: {framing: {shot_size: medium close-up, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "holds her phone up in front of her face", eyeline: screen, hands: "both hands on the phone"}, {at_s: 1.5, action: "slowly lowers the phone and looks into the lens", eyeline: lens}]}}
+    walk_to_camera: {formats: [talking_video, story_clip], readiness: partial, note: "she walks a few slow steps toward the propped phone and stops at medium shot; short, steady, no turns", shot: {framing: {shot_size: medium shot, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "walks slowly toward the camera", eyeline: lens, hands: "relaxed at her sides"}, {at_s: 3, action: "stops and settles", eyeline: lens}]}}
+    point_at_caption: {formats: [talking_video, story_clip], readiness: ready, note: "she points to the empty space where the on-screen text overlay goes; the text itself is edit.on_screen_text, never in the image", shot: {framing: {shot_size: medium close-up, device: propped, headroom: generous}, blocking: [{at_s: 0, action: "points up to the empty space above her head", eyeline: lens, hands: "one hand pointing, the other out of frame"}]}}
+    storytime_to_camera: {formats: [talking_video], readiness: ready, note: "seated, talking to the camera like to a friend; one continuous take", shot: {framing: {shot_size: medium close-up, angle: eye level, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "sits and talks to the camera", eyeline: lens, hands: "relaxed in her lap"}]}}
+    outfit_change_cut: {formats: [talking_video, carousel], readiness: partial, note: "the same spot and framing in two shots, a different outfit_id in each, joined by a hard cut; never the change itself", shot: {framing: {shot_size: full body, device: propped, camera_move: static}, edit: {transition_in: hard cut}}}
+    b_roll_detail: {formats: [talking_video, story_clip, carousel], readiness: ready, note: "a close detail of the place or the thing she talks about, no face; in a talking video a cutaway under her voice", shot: {cutaway: true, framing: {shot_size: close-up, camera_move: push_in}, set: {depth_of_field: shallow}}}
+
 # Captions, on-screen text and scripts (manyworlds.brain.planner): the rules go into the planner's and the
 # showrunner's prompts (`voice_rules`), and anything that still breaks them is dropped (`caption_issues`).
 # Owner 2026-11-21: never cringy or "too AI"; every creator should read as a real, cool person worth following.
@@ -650,6 +723,14 @@ direction:
     solo: ["no extra people"]
   camera_moves: [static, handheld, push_in, pull_out, pan_left, pan_right, tilt_up, tilt_down, follow, orbit_slow]
   offer_readiness: [ready, partial]
+  # The director (manyworlds.brain.director): when an accepted idea becomes a post, one LLM call writes a shot sheet
+  # per scene (body.shots) for the formats below. A failed call never drops the post: it is made undirected.
+  enabled: true
+  direct_formats: [talking_video, story_clip, narrated_edit, photo, carousel]
+  role: director
+  effort: medium
+  memory_facts: 40             # creator memory facts shown to the director
+  recent_posts: 20             # recent directed posts whose named sets and outfits are shown for reuse
 
 # Production (manyworlds.production): planned posts -> image jobs -> reviewed images.
 # On Maren with the full appearance prompt, 12 of 12 images passed review, so 4 candidates
@@ -693,6 +774,8 @@ llm:
     comment_reply: {model: qwen4-max, fallback: claude-sonnet-5-5}   # replies in the creator's voice (publish/comments.py); same writing as the showrunner
     trend_features: {model: qwen3.8-flash, fallback: claude-haiku-5-5}   # describes public posts from cover, caption, speech (research/trends.py)
     trend_analyst: {model: qwen4-max, fallback: claude-sonnet-5-5}      # the daily niche brief
+    # Shot sheets for accepted ideas (manyworlds.brain.director), asked with a strict schema (llm.strict_json_schema).
+    director: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

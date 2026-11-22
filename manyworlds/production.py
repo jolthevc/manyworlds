@@ -62,16 +62,33 @@ class DropPost(Exception):
     """Raised by a step's job maker when the post must not be retried (e.g. unsafe output)."""
 
 
+def _shot(body: dict, i: int) -> dict | None:
+    """Scene i's shot sheet (manyworlds.direction; body.shots is aligned with body.scenes), or None for a post
+    planned without shots, which keeps today's prompts exactly."""
+    shots = body.get("shots") or []
+    return shots[i] if 0 <= i < len(shots) and isinstance(shots[i], dict) else None
+
+
+def _with_shot(payload: dict, shot: dict | None) -> dict:
+    """The job carries its shot, so the review gate can judge the direction (manyworlds.review)."""
+    if shot is not None:
+        payload["shot"] = shot
+    return payload
+
+
 def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None, scene_i: int, attempt: int,
                adjust=None):
     cfg, img = _cfg(policy), policy.get("generation", "image", default={})
     img = {**img, **(policy.get("generation", "image_by_format", post["format"], default={}) or {})}   # Stories are 9:16
-    payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=lora and lora.get("trigger")),
+    shot = _shot(post["body"], scene_i)
+    payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=lora and lora.get("trigger"),
+                                      shot=shot, policy=policy),
                "scene": post["body"]["scenes"][scene_i],   # the reviewer scores the image against it
                "n": int(cfg.get("candidates_per_scene", 4)),
                "seed": _seed(post, scene_i * 1000, attempt),
                "width": img.get("width", 896), "height": img.get("height", 1152),
                "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}
+    _with_shot(payload, shot)
     if lora:
         payload.update(lora_uri=lora["uri"], lora_scale=lora.get("scale", 1.0))
     if adjust:   # a targeted repair (manyworlds.review.repair)
@@ -215,12 +232,14 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     """A story clip from the post's approved first photo: the scene, moving as the planner wrote."""
     bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
     vid, scene, motion = policy.get("generation", "video", default={}), body["scenes"][0], body.get("script", "")
-    payload = {"image_uri": chosen[0]["uri"], "prompt": clip_prompt(bible, scene, motion),
+    shot = _shot(body, 0)   # a story clip is one shot, from scene 0's photo
+    payload = {"image_uri": chosen[0]["uri"], "prompt": clip_prompt(bible, scene, motion, shot=shot, policy=policy),
                "scene": f"{scene} Movement: {motion}" if motion else scene,   # the video judge scores against it
                "width": vid.get("width", 704), "height": vid.get("height", 1280), "frames": vid.get("frames", 121),
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)),
                "seed": _seed(post, 500, attempt),
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
+    _with_shot(payload, shot)
     kind = _cfg(policy).get("video_kind", "video.wan_i2v")
     if (_cfg(policy).get("routing") or {}).get("story_clip"):   # the cheapest per accepted clip (manyworlds.routing)
         from . import routing
@@ -235,18 +254,25 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
 def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *,
               segment: int | None = None, start_uri: str | None = None):
     """A talking video: the creator says the script to camera from the approved photo, lip-synced,
-    in their own voice (Kokoro on the talk worker). For a long script, one segment of it."""
+    in their own voice (Kokoro on the talk worker). For a long script, one segment of it. A directed post's take
+    (body.talk_shots) uses its shot's scene, prompt and, when every shot has its own photo, that photo."""
     row = conn.execute("SELECT bible, anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
     voice = (row["anchors"] or {}).get("voice") or {}
     params = dict(policy.get("generation", "talk", default={}) or {})
     default_voice = params.pop("voice", "af_heart")
-    scene = body["scenes"][0]
-    script = body["talk_segments"][segment] if segment is not None else body.get("script", "")
+    params.pop("max_take_seconds", None)   # production's take limit, not a render setting
+    i = _take_shot(body, segment)
+    i = i if i < len(body["scenes"]) else 0
+    scene, shot = body["scenes"][i], _shot(body, i)
+    script = (body["talk_segments"][segment] if segment is not None
+              else body.get("talk_script") or body.get("script", ""))
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
-    payload = {"image_uri": start_uri or chosen[0]["uri"], "script": script, "voice": voice.get("voice", default_voice),
-               "speed": float(voice.get("speed", 1.0)), "prompt": talk_prompt(row["bible"], scene),
+    payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"], "script": script,
+               "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),
+               "prompt": talk_prompt(row["bible"], scene, shot=shot, policy=policy),
                "scene": f"{scene} Speaking to camera: {script}",   # the video judge scores against it
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)), "seed": seed, "params": params}
+    _with_shot(payload, shot)
     if segment is not None:
         payload["segment"] = {"index": segment, "of": len(body["talk_segments"])}
     key = f"post:{post['id']}:talk:{attempt}" if segment is None else f"post:{post['id']}:talk:{segment}:{attempt}"
@@ -288,12 +314,77 @@ def hybrid_modes(segments: list[str], on_camera_share: float) -> list[str]:
     return modes
 
 
+def shot_takes(policy: Policy, shots: list, *, cutaways: bool = True) -> list[tuple[str, str, int]]:
+    """A directed talking video's takes, one per shot that speaks: (text, mode, shot index), in order. The text is
+    what the shot's lines say (`direction.spoken`, deliveries never included); mode is 'talk' (lip-synced on camera)
+    or 'narrated' for a `cutaway` shot (its photo under the same voice). Without `cutaways` (hybrid off, or one
+    photo), a cutaway's lines join the on-camera take before it (or after it, for a leading cutaway); when only
+    cutaways speak, their lines become one on-camera take on the first shot that isn't a cutaway. A take longer than generation.talk.max_take_seconds is split at sentence ends, as a safety
+    net: the scene changes only where the shots do. [] when no shot speaks."""
+    from .direction import ShotSheet, spoken
+    from .talk_segments import split_script
+    sheets = [ShotSheet.model_validate(s) if isinstance(s, dict) else s for s in shots]
+    takes = [(spoken(s), s.cutaway, i) for i, s in enumerate(sheets)]
+    takes = [t for t in takes if t[0]]
+    if not takes:
+        return []
+    if all(cut for _, cut, _ in takes):
+        # Only cutaways speak: a talking video needs her face, so the lines go to the first on-camera shot.
+        anchor = next((i for i, s in enumerate(sheets) if not s.cutaway), None)
+        takes = ([(" ".join(text for text, _, _ in takes), False, anchor)] if anchor is not None
+                 else [(text, False, i) for text, _, i in takes])
+    elif not cutaways:
+        merged: list[tuple[str, bool, int]] = []
+        lead = ""   # cutaway lines before the first on-camera take
+        for text, cut, i in takes:
+            if cut:
+                if merged:
+                    merged[-1] = (f"{merged[-1][0]} {text}", False, merged[-1][2])
+                else:
+                    lead = f"{lead} {text}".strip()
+                continue
+            merged.append((f"{lead} {text}".strip(), False, i))
+            lead = ""
+        takes = merged
+    max_take = float(policy.get("generation", "talk", "max_take_seconds", default=60))
+    wps = float(_talk_long_cfg(policy).get("words_per_second", 2.5))
+    return [(part, "narrated" if cut else "talk", i) for text, cut, i in takes
+            for part in split_script(text, max_seconds=max_take, words_per_second=wps)]
+
+
+def _directed(policy: Policy, body: dict) -> bool:
+    """Whether a talking video's segments follow its shots (generation.talk_hybrid.segment_by: scene)."""
+    return bool(body.get("shots")) and _hybrid_cfg(policy).get("segment_by", "scene") == "scene"
+
+
+def _take_shot(body: dict, segment: int | None) -> int:
+    """The shot (and scene) a talk segment belongs to: from body.talk_shots for a directed post, else scene 0."""
+    shots = body.get("talk_shots") or []
+    k = segment or 0
+    return int(shots[k]) if k < len(shots) else 0
+
+
+def _photo_per_shot(body: dict, chosen: list[dict]) -> bool:
+    """Whether every shot has its own chosen photo (chosen photos follow the scenes in order)."""
+    n_shots = len(body.get("shots") or [])
+    return bool(n_shots) and len(chosen) >= n_shots
+
+
+def _take_photo(body: dict, chosen: list[dict], i: int) -> dict:
+    """The chosen photo for shot i when the post has one per shot, else the first."""
+    return chosen[i] if _photo_per_shot(body, chosen) and i < len(chosen) else chosen[0]
+
+
 def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, segment: int):
     """A cutaway segment of a hybrid talking video: the post's other photos, moving gently, under the creator's
     voice saying this part of the script (the narrated-edit worker; no lip-sync render)."""
     anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
     out = _hybrid_cfg(policy).get("output", {}) or {}
-    payload = {"images": [a["uri"] for a in chosen[1:]], "script": body["talk_segments"][segment],
+    if body.get("talk_shots") and _photo_per_shot(body, chosen):   # a directed cutaway: its own shot's photo
+        images = [chosen[_take_shot(body, segment)]]
+    else:
+        images = chosen[1:] or chosen
+    payload = {"images": [a["uri"] for a in images], "script": body["talk_segments"][segment],
                "voice": (anchors.get("voice") or {}).get("voice", "af_heart"), "on_screen_text": "",
                **(_cfg(policy).get("edit", {}) or {}), **{k: out[k] for k in ("width", "height", "fps") if k in out}}
     return queue.enqueue(conn, "image.narrated", payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
@@ -360,10 +451,12 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
             if results[-1][0] == "dropped":
                 return "dropped", None
             continue
-        if chain and i > 0 and modes[i - 1] == "talk" and results[-1][0] != "chosen":
+        # A directed post chains only within one shot (a take split for length): a new shot is a new scene.
+        follows = chain and i > 0 and modes[i - 1] == "talk" and _take_shot(body, i) == _take_shot(body, i - 1)
+        if follows and results[-1][0] != "chosen":
             results.append(("waiting", None))   # starts from the previous segment's last frame
             continue
-        start_uri = _last_frame(conn, results[-1][1]) if chain and i > 0 and modes[i - 1] == "talk" else None
+        start_uri = _last_frame(conn, results[-1][1]) if follows else None
         step = Step(jobs[i], lambda j: _clip_state(conn, j),
                     lambda attempt, i=i, s=start_uri: _talk_job(conn, policy, post, body, chosen, attempt,
                                                                  segment=i, start_uri=s),
@@ -430,13 +523,27 @@ def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
         body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
         if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
             if post["format"] == "talking_video" and "talk_segments" not in body:
-                # Hybrid (generation.talk_hybrid): with cutaway photos, short segments, only some on camera.
                 hybrid = bool(_hybrid_cfg(policy).get("enabled")) and len(chosen) >= 2
-                segments = talk_segments(policy, body.get("script", ""), hybrid=hybrid)
-                body["talk_segments"] = segments if len(segments) > 1 else []   # [] = one clip
-                if hybrid and len(segments) > 2:
-                    body["talk_modes"] = hybrid_modes(segments, float(_hybrid_cfg(policy).get("on_camera_share", 0.4)))
+                takes = shot_takes(policy, body["shots"], cutaways=hybrid) if _directed(policy, body) else []
+                if takes:
+                    # Directed: one take per shot that speaks, cut only where the shots change; cutaway shots are
+                    # narrated over their own photo (hybrid), the rest lip-synced from theirs.
+                    body["talk_shots"] = [i for _, _, i in takes]
+                    if len(takes) > 1:
+                        body["talk_segments"] = [text for text, _, _ in takes]
+                        if any(mode == "narrated" for _, mode, _ in takes):
+                            body["talk_modes"] = [mode for _, mode, _ in takes]
+                    else:
+                        body["talk_segments"], body["talk_script"] = [], takes[0][0]   # [] = one clip
                     post = {**post, "body": body}
+                else:
+                    # Hybrid (generation.talk_hybrid): with cutaway photos, short segments, only some on camera.
+                    segments = talk_segments(policy, body.get("script", ""), hybrid=hybrid)
+                    body["talk_segments"] = segments if len(segments) > 1 else []   # [] = one clip
+                    if hybrid and len(segments) > 2:
+                        body["talk_modes"] = hybrid_modes(segments,
+                                                          float(_hybrid_cfg(policy).get("on_camera_share", 0.4)))
+                        post = {**post, "body": body}
             if body.get("talk_segments"):   # a long script: one job per segment, then joined
                 state, video = _advance_long_talk(conn, policy, post, body, chosen, store)
             else:

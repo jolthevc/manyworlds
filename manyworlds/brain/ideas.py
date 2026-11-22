@@ -6,12 +6,15 @@ into an idea, so existing plans can be scored and calibrated before the showrunn
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from psycopg.types.json import Jsonb
 
+log = logging.getLogger("manyworlds.ideas")
+
 # Plan fields that describe the idea; anything else in a post body is bookkeeping.
-_PLAN_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series")
+_PLAN_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series", "shots")
 
 
 def concept_text(fmt: str, body: dict, caption: str | None) -> str:
@@ -43,19 +46,48 @@ def from_post(conn, post_id) -> uuid.UUID:
 
 # Plan fields a scheduled post carries (the reasoning stays on the idea, never on the post).
 _POST_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series", "staging", "flavor")
+# Direction (manyworlds.direction), carried only when the idea has it: an undirected post's body stays as before.
+_DIRECTED_FIELDS = ("shots", "move")
 
 
-def schedule_ready(conn, policy, *, now) -> dict:
+def direct_posts(conn, policy, llm, creator_id, posts) -> int:
+    """Shot sheets for newly scheduled posts (manyworlds.brain.director), for the formats in policy
+    `direction.direct_formats` while `direction.enabled`. `posts` is [(post_id, format, body)]. A director
+    failure never drops a post: it is logged, nothing is recorded, and the post is made undirected."""
+    from . import budget, director
+    if llm is None or not posts or not policy.get("direction", "enabled", default=True):
+        return 0
+    if budget.tag_for(conn, director.AGENT, creator_id).startswith(budget.SANDBOX):
+        return 0   # sandbox test creators are never rendered: directing them would only spend
+    formats = set(policy.get("direction", "direct_formats", default=[]) or [])
+    directed = 0
+    for post_id, fmt, body in posts:
+        if fmt not in formats or body.get("shots"):
+            continue
+        try:
+            shots = director.direct(conn, policy, llm, {**body, "format": fmt}, creator_id, fmt=fmt)
+        except Exception as e:  # noqa: BLE001 - an undirected post is made exactly as before
+            log.warning("director failed for post %s (%s: %s); the post proceeds undirected", post_id,
+                        type(e).__name__, str(e)[:300])
+            continue
+        conn.execute("UPDATE posts SET body = body || %s, updated_at = now() WHERE id = %s AND status = 'planned'",
+                     (Jsonb({"shots": shots}), post_id))
+        directed += 1
+    return directed
+
+
+def schedule_ready(conn, policy, *, now, llm=None) -> dict:
     """Turn showrunner batches into planned posts once every idea has a volume-evaluator evaluation.
     After `brain.showrunner.max_wait_hours` a batch is scheduled anyway and its unevaluated ideas are
-    dropped: no idea becomes a post without an evaluation."""
+    dropped: no idea becomes a post without an evaluation. With an `llm`, each new post is then directed
+    (`direct_posts`), outside the scheduling transaction so a slow or failed call never holds or undoes it."""
     from datetime import date, timedelta
 
     from psycopg.types.json import Jsonb
 
     from . import feed_qa, memory, planner
     max_wait = timedelta(hours=float(policy.get("brain", "showrunner", "max_wait_hours", default=6)))
-    out = {"scheduled": 0, "dropped": 0, "batches": 0}
+    out = {"scheduled": 0, "dropped": 0, "batches": 0, "directed": 0}
     for b in conn.execute("SELECT batch, creator_id, min(created_at) AS oldest FROM ideas WHERE status = 'proposed' "
                           "AND batch IS NOT NULL GROUP BY batch, creator_id ORDER BY 3").fetchall():
         rows = conn.execute(
@@ -97,8 +129,10 @@ def schedule_ready(conn, policy, *, now) -> dict:
             pairs = [(r, when) for r, when in zip(ready, times) if r["id"] in claimed]
             if not pairs:
                 continue
+            created = []
             for r, when in pairs:
                 body = {k: r["body"].get(k) for k in _POST_FIELDS}
+                body.update({k: r["body"][k] for k in _DIRECTED_FIELDS if r["body"].get(k)})
                 body.update(platform_ai_label=True, idea_id=str(r["id"]))   # disclosure: every post sets the AI flag
                 post = conn.execute(
                     "INSERT INTO posts (creator_id, platform, format, status, caption, body, scheduled_for, "
@@ -107,6 +141,7 @@ def schedule_ready(conn, policy, *, now) -> dict:
                      Jsonb(body), when, version["profile_version"])).fetchone()["id"]
                 conn.execute("UPDATE ideas SET status = 'scheduled', post_id = %s, updated_at = now() WHERE id = %s",
                              (post, r["id"]))
+                created.append((post, r["format"], {**body, "caption": r["body"].get("caption")}))
                 if r["body"].get("canon"):
                     memory.add(conn, b["creator_id"], "canon", r["body"]["canon"], source_post=post,
                                key=r["body"].get("canon_key") or None)
@@ -115,5 +150,6 @@ def schedule_ready(conn, policy, *, now) -> dict:
                          "VALUES ('batch_scheduled', %s, %s, %s, %s)",
                          (b["creator_id"], Jsonb({"batch": b["batch"]}),
                           Jsonb({"scheduled": len(ready), "dropped": len(rows) - len(ready)}), policy.version))
+        out["directed"] += direct_posts(conn, policy, llm, b["creator_id"], created)
         out["batches"] += 1
     return out

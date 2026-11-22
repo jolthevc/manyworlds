@@ -18,6 +18,47 @@ def stages(cfg: dict, role: str | None = None) -> list[tuple[str, str, str]]:
     return out
 
 
+def direction_cfg(policy) -> dict:
+    return (policy.get("review", "direction", default={}) or {}) if policy is not None else {}
+
+
+def direction_passes(score: int | None, policy) -> bool:
+    """The `direction` gate: a score below review.direction.min_score rejects. A judge that leaves it out passes,
+    as for `scene` (the output is still judged on identity, realism and safety)."""
+    return score is None or int(score) >= int(direction_cfg(policy).get("min_score", 6))
+
+
+def direction_brief(shot: dict, policy, *, still: bool) -> str:
+    """What the judge scores `direction` against: the shot's one-line summary, its beats (a photo is one moment:
+    the first beat only) and, for video, the camera move and the performance; then the rubric's anchors
+    (policy/rubrics/direction-v<n>.yaml), so scores mean the same thing on every judge."""
+    from .. import direction
+    from ..brain import rubrics
+    s = direction.ShotSheet.model_validate(shot)
+    beats = s.blocking[:1] if still else sorted(s.blocking, key=lambda b: b.at_s)
+    looks = {"lens": "into the lens", "off": "off-camera", "prop": "at the object in hand", "screen": "at a screen"}
+
+    def beat(b) -> str:
+        text = ", ".join(x for x in (b.action.strip(), f"looking {looks[b.eyeline]}" if b.eyeline else "",
+                                     f"hands {b.hands.strip()}" if b.hands.strip() else "") if x)
+        return text if still or not text else f"at {b.at_s:g} s: {text}"
+
+    lines = [f"Shot: {direction.summary(s) or 'no summary'}."]
+    beat_text = "; then ".join(t for t in (beat(b) for b in beats) if t)
+    if beat_text:
+        lines.append(f"Beats: {beat_text}.")
+    if not still:
+        move = direction.camera_move(s, policy)
+        perf = ", ".join(x for x in (f"camera {move.replace('_', ' ')}" if move else "",
+                                     f"{s.performance.energy} energy" if s.performance.energy else "",
+                                     f"mood {s.performance.emotion_arc}" if s.performance.emotion_arc.strip() else "",
+                                     s.performance.body_language.strip()) if x)
+        if perf:
+            lines.append(f"Camera and performance: {perf}.")
+    rubric = rubrics.load(str(direction_cfg(policy).get("rubric", "direction")))
+    return " ".join(lines) + "\n" + rubric.as_text()
+
+
 def reference_images(creator: dict, store: ObjectStore, workdir: Path, n: int) -> list[bytes]:
     refs = (creator["anchors"] or {}).get("reference_images", [])[:n]
     if not refs:

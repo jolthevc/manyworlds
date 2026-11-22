@@ -396,6 +396,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
                 from .handlers import talk_infinitetalk as mod
         elif family == "comfy":          # ComfyUI + WanVideoWrapper graphs on the talk worker image (story clips)
             from .handlers import comfy_video as mod
+        elif family == "voice":          # designed voices (VoxCPM2), also on the talk worker image
+            from .handlers import tts_voxcpm as mod
         elif family == "hosted":         # hosted APIs, on the control plane: no GPU machine
             from .handlers import hosted_video as mod
         else:

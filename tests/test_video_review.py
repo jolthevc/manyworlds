@@ -272,3 +272,62 @@ def test_a_clip_the_screen_clears_by_the_margin_skips_the_paid_confirm(conn, pol
     llm = ClipStub(clip(**lo), clip(**lo))                                   # just over the bars: confirm it
     [r] = video.review_job(conn, policy, llm, store, close, tmp_path)
     assert r["accepted"] and r["confirmed"] and not r.get("clear_pass") and len(llm.calls) == 2
+
+
+# --- direction: a directed clip or photo is also scored on how well it follows its shot sheet -------------
+SHOT = {"set": {"location": "a rainy bus stop"}, "framing": {"shot_size": "medium shot", "camera_move": "push_in"},
+        "blocking": [{"at_s": 0, "action": "checks the timetable", "eyeline": "prop"},
+                     {"at_s": 2.5, "action": "turns to the lens and shrugs", "eyeline": "lens"}]}
+
+
+def _directed_clip(conn, store, tmp_path, cid):
+    payload = {"image_uri": _put(store, tmp_path, b"\x89PNG start"), "scene": "at a rainy bus stop", "shot": SHOT}
+    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('video.wan_i2v', 'queued', %s, %s) "
+                       "RETURNING id", (cid, Jsonb(payload))).fetchone()["id"]
+    rendered(conn, store, tmp_path, job)
+    return job
+
+
+def test_a_directed_clip_is_judged_on_its_beats_and_rejected_below_the_direction_minimum(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    low, good = _directed_clip(conn, store, tmp_path, cid), _directed_clip(conn, store, tmp_path, cid)
+    minimum = policy.get("review", "direction", "min_score")
+    llm = ClipStub(clip(direction=minimum - 2))
+    [r] = video.review_job(conn, policy, llm, store, low, tmp_path)
+    assert not r["accepted"] and r["direction"] is False and r["identity"] and len(llm.calls) == 1
+    texts = [b.get("text", "") for b in llm.calls[0]["content"]]
+    brief = next(t for t in texts if t.startswith("DIRECTED SHOT"))
+    assert "checks the timetable" in brief and "at 2.5 s: turns to the lens and shrugs" in brief
+    assert "camera push in" in brief and "RUBRIC direction v1" in brief
+    rows = {x["gate"]: (x["passed"], x["score"]) for x in conn.execute(
+        "SELECT gate, passed, score FROM reviews WHERE asset_id = %s", (r["asset_id"],))}
+    assert rows["direction"] == (False, minimum - 2) and rows["identity"][0] is True
+    [r] = video.review_job(conn, policy, ClipStub(clip(direction=minimum + 2)), store, good, tmp_path)
+    assert r["accepted"] and r["direction"] is True
+
+
+def test_a_clip_without_a_shot_has_no_direction_gate(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    job = clip_job(conn, store, tmp_path, cid)
+    rendered(conn, store, tmp_path, job)
+    llm = ClipStub(clip(direction=1))                       # ignored: nothing was directed
+    [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
+    assert r["accepted"] and "direction" not in r
+    assert not any(str(b.get("text", "")).startswith("DIRECTED SHOT") for b in llm.calls[0]["content"])
+    gates = {x["gate"] for x in conn.execute("SELECT gate FROM reviews WHERE asset_id = %s", (r["asset_id"],))}
+    assert "direction" not in gates
+
+
+def test_a_directed_photo_is_rejected_below_the_direction_minimum(conn, policy, store, tmp_path):
+    from manyworlds.review import gates
+    from test_review import creator_with_job
+    _, job = creator_with_job(conn, store, tmp_path, n_images=2)
+    conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"scene": "at a rainy bus stop", "shot": SHOT}), job))
+    minimum = policy.get("review", "direction", "min_score")
+    judge = JudgeStub([ok(direction=minimum - 1), ok(direction=minimum + 3)])
+    results = gates.review_job(conn, policy, judge, store, job, tmp_path)
+    assert [r["accepted"] for r in results] == [False, True] and [r["direction"] for r in results] == [False, True]
+    brief = next(b["text"] for b in judge.calls[0]["content"] if str(b.get("text", "")).startswith("DIRECTED SHOT"))
+    assert "checks the timetable" in brief and "shrugs" not in brief                # a photo is its first beat

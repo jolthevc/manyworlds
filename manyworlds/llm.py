@@ -120,6 +120,65 @@ def _openai_content(content: Any, vision: bool) -> Any:
     return out
 
 
+_DROPPED_KEYS = ("default", "title", "$defs")
+
+
+def strict_json_schema(model: type[BaseModel]) -> dict:
+    """A model's JSON schema in the strict shape structured outputs compile cheaply: `$ref`s inlined, every
+    object's properties all required with `additionalProperties: false` (dict-typed fields too, which become
+    empty objects), `anyOf [X, null]` collapsed to X, "" added to every string enum for "unset", and `default`
+    and `title` dropped. Measured 2026-11-22: ShotSheet's ordinary schema fails with "The compiled grammar is
+    too large"; this shape works. Models read back from it turn "" into None (manyworlds.direction._Sheet)."""
+    raw = model.model_json_schema()
+    defs = raw.get("$defs") or {}
+
+    def conv(node: Any) -> Any:
+        if isinstance(node, list):
+            return [conv(n) for n in node]
+        if not isinstance(node, dict):
+            return node
+        node = dict(node)
+        keep = {k: node[k] for k in ("description",) if k in node}
+        if "$ref" in node:
+            return {**conv(defs[node["$ref"].rsplit("/", 1)[-1]]), **keep}
+        if isinstance(node.get("allOf"), list) and len(node["allOf"]) == 1:
+            return {**conv(node["allOf"][0]), **keep}
+        if isinstance(node.get("anyOf"), list):
+            options = [o for o in node["anyOf"] if not (isinstance(o, dict) and o.get("type") == "null")]
+            if len(options) == 1:
+                return {**conv(options[0]), **keep}
+        out: dict = {}
+        for k, v in node.items():
+            if k in _DROPPED_KEYS:
+                continue
+            if k == "properties":
+                out[k] = {name: conv(sub) for name, sub in v.items()}
+            elif k in ("items", "anyOf", "oneOf", "prefixItems"):
+                out[k] = conv(v)
+            elif k == "additionalProperties":
+                continue   # set below for every object
+            else:
+                out[k] = v
+        if isinstance(out.get("enum"), list) and all(isinstance(e, str) for e in out["enum"]) and "" not in out["enum"]:
+            out["enum"] = [*out["enum"], ""]
+        if out.get("type") == "object" or "properties" in out:
+            out.setdefault("type", "object")
+            out["properties"] = out.get("properties") or {}
+            out["required"] = list(out["properties"])
+            out["additionalProperties"] = False
+        return out
+
+    return conv({k: v for k, v in raw.items() if k != "$defs"})
+
+
+def _first_text(response) -> str:
+    """The answer's text: the first text block (a thinking block may come first)."""
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    return ""
+
+
 def _json_text(text: str) -> str:
     """Model output as bare JSON (some hosts wrap it in a ``` fence)."""
     t = (text or "").strip()
@@ -248,6 +307,25 @@ class LLM:
         fallback = {}
         if model in (self.policy.get("llm", "server_fallback_models", default=[]) or []):
             fallback = {"extra_headers": {"anthropic-beta": FALLBACK_BETA}, "extra_body": {"fallbacks": "default"}}
+        if getattr(schema, "strict_required", False):
+            # A schema too large for messages.parse (manyworlds.direction.DirectedShots): the strict shape, sent as
+            # a JSON-schema output format, validated here.
+            response = self.client.messages.create(
+                model=model,
+                max_tokens=int(self.policy.get("llm", "max_output_tokens", default=16000)),
+                system=system,
+                messages=[{"role": "user", "content": content}],
+                output_config={"effort": effort,
+                               "format": {"type": "json_schema", "schema": strict_json_schema(schema)}},
+                **fallback,
+            )
+            self._charge(response.model, response.usage, creator_id, agent)
+            self._raise_if_refused(model, response)
+            try:
+                return schema.model_validate_json(_json_text(_first_text(response)))
+            except ValidationError as e:
+                raise RuntimeError(f"{model} returned no valid {schema.__name__} "
+                                   f"(stop_reason={response.stop_reason}): {str(e)[:300]}") from None
         response = self.client.messages.parse(
             model=model,
             max_tokens=int(self.policy.get("llm", "max_output_tokens", default=16000)),
@@ -258,13 +336,17 @@ class LLM:
             **fallback,
         )
         self._charge(response.model, response.usage, creator_id, agent)
+        self._raise_if_refused(model, response)
+        if response.parsed_output is None:
+            raise RuntimeError(f"{model} returned no parsable output (stop_reason={response.stop_reason})")
+        return response.parsed_output
+
+    @staticmethod
+    def _raise_if_refused(model: str, response) -> None:
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
             raise Refused(f"{model} declined ({getattr(details, 'category', None)}): "
                           f"{getattr(details, 'explanation', '')}")
-        if response.parsed_output is None:
-            raise RuntimeError(f"{model} returned no parsable output (stop_reason={response.stop_reason})")
-        return response.parsed_output
 
     def _open(self, model: str, *, system, content, schema: type[T], creator_id, agent: str | None = None) -> T:
         spec = self.policy.get("llm", "open_models", model)
@@ -279,7 +361,9 @@ class LLM:
                              {"role": "user", "content": _openai_content(content, bool(spec.get("vision")))}],
                 "max_tokens": int(spec.get("max_tokens", self.policy.get("llm", "max_output_tokens", default=16000))),
                 "response_format": {"type": "json_schema", "json_schema": {
-                    "name": schema.__name__, "schema": schema.model_json_schema(), "strict": False}}}
+                    "name": schema.__name__, "strict": False,
+                    "schema": strict_json_schema(schema) if getattr(schema, "strict_required", False)
+                    else schema.model_json_schema()}}}
         if spec.get("stream"):
             body.update(stream=True, stream_options={"include_usage": True})
         prices = spec.get("usd_per_mtok") or [0, 0]

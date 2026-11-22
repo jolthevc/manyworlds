@@ -189,3 +189,86 @@ def test_torch_compile_is_wired_into_every_model_loader_only_when_asked():
     t = comfy.graph(image="a.png", audio="a.wav", prompt="p", frames=81, seed=1,
                     params={"width": 480, "height": 832, "steps": 6, "compile": True}, blocks_to_swap=0)
     assert t["compile"]["class_type"] == "WanVideoTorchCompileSettings" and t["model"]["inputs"]["compile_args"]
+
+
+# LongCat-Video-Avatar (comfy.graph_longcat): node classes of Kijai's example workflow
+# (example_workflows/LongCatAvatar_audio_image_to_video_example_01.json at the pinned commit), minus the vocal
+# separator, audio trim, KJNodes and VideoHelperSuite helpers our image doesn't have; core nodes stand in for those.
+LONGCAT_EXAMPLE_NODES = {"LoadImage", "LoadAudio", "WanVideoVAELoader", "WanVideoTextEncodeCached", "WanVideoEncode",
+                         "WanVideoDecode", "WanVideoSamplerv2", "WanVideoSchedulerv2",
+                         "WanVideoLongCatAvatarExtendEmbeds", "DownloadAndLoadWav2VecModel", "MultiTalkWav2VecEmbeds",
+                         "WanVideoBlockSwap", "WanVideoModelLoader", "WanVideoLoraSelect", "WanVideoTorchCompileSettings"}
+CORE_STAND_INS = {"ImageFromBatch", "CreateVideo", "SaveVideo"}          # for GetImageRangeFromBatch, VHS_VideoCombine
+LONGCAT_15_AUDIO = {"WhisperModelLoader", "LongCatAvatarWhisperEmbeds"}  # the wrapper's v1.5 audio nodes
+
+
+def _lc(frames=250, **p):
+    return comfy.graph_longcat(image="a.png", audio="a.wav", prompt="she talks", frames=frames, seed=5,
+                               params={"width": 480, "height": 832, "steps": 10, "frame_window": 93, "overlap": 13, **p},
+                               blocks_to_swap=0)
+
+
+def _links_resolve(g):
+    for node in g.values():
+        for v in node["inputs"].values():
+            if isinstance(v, list) and len(v) == 2 and isinstance(v[0], str):
+                assert v[0] in g, v
+
+
+def test_the_longcat_graph_uses_the_examples_nodes_and_wires_image_audio_embeds_and_sampler():
+    g = _lc()                                   # 250 frames: 93, then 80 new per window -> 3 windows
+    assert {n["class_type"] for n in g.values()} <= LONGCAT_EXAMPLE_NODES | CORE_STAND_INS
+    assert sorted(k for k in g if k.startswith("sample")) == ["sample0", "sample1", "sample2"]
+    assert g["ref"]["inputs"]["image"] == ["image", 0] and g["ref"]["inputs"]["vae"] == ["vae", 0]
+    assert g["embeds"]["class_type"] == "MultiTalkWav2VecEmbeds" and g["embeds"]["inputs"]["audio_1"] == ["audio", 0]
+    assert g["embeds"]["inputs"]["num_frames"] == 500 and g["embeds"]["inputs"]["fps"] == 32.0   # audio stride 2
+    for k in range(3):
+        assert g[f"ext{k}"]["inputs"]["audio_embeds"] == ["embeds", 0]
+        s = g[f"sample{k}"]["inputs"]
+        assert (s["model"], s["image_embeds"], s["scheduler"], s["text_embeds"]) == (
+            ["model", 0], [f"ext{k}", 0], ["scheduler", 0], ["text", 0])
+        assert g[f"save{k}"]["inputs"]["filename_prefix"] == f"mw_longcat_w{k:02d}"
+    e0, e1, e2 = (g[f"ext{k}"]["inputs"] for k in range(3))
+    assert e0["prev_latents"] == ["ref", 0] and e0["overlap"] == 1 and "ref_latent" not in e0   # starts from the photo
+    assert e1["prev_latents"] == ["sample0", 0] and e1["ref_latent"] == ["ref", 0] and e1["overlap"] == 13
+    assert (e0["frames_processed"], e1["frames_processed"], e2["frames_processed"]) == (0, 93, 173)
+    assert "new0" not in g and g["new1"]["inputs"]["batch_index"] == 13   # each later window drops its overlap
+    assert g["video0"]["inputs"]["images"] == ["decode0", 0] and g["video1"]["inputs"]["images"] == ["new1", 0]
+    m = g["model"]["inputs"]
+    assert (m["base_precision"], m["attention_mode"], m["lora"]) == ("bf16", "sdpa", ["lora", 0])   # example's note
+    assert g["scheduler"]["inputs"]["scheduler"] == "longcat_distill_euler" and g["video0"]["inputs"]["fps"] == 16.0
+    _links_resolve(g)
+
+
+def test_the_longcat_15_graph_takes_whisper_audio_and_re_encodes_the_overlap():
+    g = _lc(frames=100, longcat_version="1.5")
+    assert {n["class_type"] for n in g.values()} <= LONGCAT_EXAMPLE_NODES | CORE_STAND_INS | LONGCAT_15_AUDIO
+    assert g["embeds"]["class_type"] == "LongCatAvatarWhisperEmbeds" and g["embeds"]["inputs"]["whisper_model"] == ["whisper", 0]
+    assert g["embeds"]["inputs"]["num_frames"] == 100 and g["video0"]["inputs"]["fps"] == 25.0
+    assert g["ext1"]["inputs"]["prev_images"] == ["decode0", 0] and g["ext1"]["inputs"]["vae"] == ["vae", 0]
+    assert g["model"]["inputs"]["quantization"] == "disabled"           # a GGUF model loads unquantized
+    _links_resolve(g)
+
+
+def test_longcat_window_counts():
+    assert [comfy.longcat_windows(f, 93, 13) for f in (1, 93, 94, 173, 174)] == [1, 1, 2, 2, 3]
+
+
+def test_longcat_weights_are_their_own_and_the_talk_model_is_chosen_by_params(tmp_path, monkeypatch):
+    import pytest
+    from manyworlds.worker.runner import NonRetryable
+    assert comfy.WEIGHTS_LONGCAT["diffusion_models"] != comfy.WEIGHTS["diffusion_models"]
+    assert not any("LongCat" in f for files in comfy.WEIGHTS.values() for _, f in files)   # InfiniteTalk never downloads them
+    assert talk_comfy.model_of({}) == "infinitetalk" and talk_comfy.model_of({"model": "longcat"}) == "longcat"
+    with pytest.raises(NonRetryable):
+        talk_comfy.model_of({"model": "flashtalk"})
+    monkeypatch.setattr(comfy, "COMFY_DIR", tmp_path)
+    assert "audio_encoders: audio_encoders" in comfy.write_model_paths(tmp_path / "cache").read_text()
+
+
+def test_the_longcat_talk_profile_reaches_a_bench_job(conn, policy):
+    from manyworlds import bench
+    batch = bench.enqueue(conn, policy, "talk.infinitetalk", 1, extra={"image_uri": "s3://b/x.png"}, profile="longcat")
+    p = conn.execute("SELECT payload FROM jobs WHERE batch = %s", (batch,)).fetchone()["payload"]["params"]
+    assert (p["model"], p["frame_window"], p["overlap"], p["scheduler"], p["attention"]) == (
+        "longcat", 93, 13, "longcat_distill_euler", "sdpa")

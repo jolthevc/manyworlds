@@ -15,6 +15,7 @@ CI); the server helpers run inside the talk worker image, where ComfyUI is insta
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -144,7 +145,8 @@ def write_model_paths(models_dir: Path) -> Path:
     """ComfyUI reads model folders from extra_model_paths.yaml: point them at the weights cache (a network volume
     where the pool has one), so weights are downloaded once."""
     cfg = COMFY_DIR / "extra_model_paths.yaml"
-    lines = ["mw:", f"  base_path: {models_dir}"] + [f"  {folder}: {folder}" for folder in WEIGHTS]
+    folders = dict.fromkeys([*WEIGHTS, *I2V_WEIGHTS, *(f for w in LONGCAT_WEIGHTS.values() for f in w)])
+    lines = ["mw:", f"  base_path: {models_dir}"] + [f"  {folder}: {folder}" for folder in folders]
     cfg.write_text("\n".join(lines) + "\n")
     return cfg
 
@@ -286,15 +288,48 @@ def stop() -> None:
     _server["proc"] = None
 
 
-def run(g: dict, *, timeout_s: float, poll_s: float = 3) -> Path:
-    """Queue the graph, wait for it, return the saved video's path."""
+def _submit(g: dict) -> str:
     req = urllib.request.Request(URL + "/prompt", data=json.dumps({"prompt": g}).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
-            prompt_id = json.loads(r.read())["prompt_id"]
+            return json.loads(r.read())["prompt_id"]
     except urllib.error.HTTPError as e:   # 400: the graph was rejected (node_errors say why)
         raise RuntimeError(f"ComfyUI rejected the graph: {e.read().decode(errors='replace')[:1500]}") from None
+
+
+def saved_videos(outputs: dict) -> list[Path]:
+    """Every .mp4 a finished prompt saved, by file name (a graph that saves several names them in order)."""
+    found = [COMFY_DIR / (f.get("type") or "output") / f.get("subfolder", "") / f["filename"]
+             for out in (outputs or {}).values() for key in ("videos", "images", "gifs") for f in out.get(key) or []
+             if str(f.get("filename", "")).endswith(".mp4")]
+    return sorted(found, key=lambda p: p.name)
+
+
+def run_all(g: dict, *, timeout_s: float, poll_s: float = 3) -> list[Path]:
+    """Queue the graph, wait until it has finished, return every saved video (LongCat saves one per window)."""
+    prompt_id = _submit(g)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        h = _get(f"/history/{prompt_id}").get(prompt_id)
+        if h:
+            status = h.get("status") or {}
+            if status.get("status_str") == "error":
+                raise RuntimeError(f"ComfyUI failed: {execution_error(status)}")
+            if status.get("completed"):
+                videos = saved_videos(h.get("outputs"))
+                if not videos:
+                    raise RuntimeError(f"ComfyUI finished with no video: {json.dumps(h.get('outputs'))[:800]}")
+                return videos
+        if _server["proc"] is not None and _server["proc"].poll() is not None:
+            raise RuntimeError("ComfyUI exited while rendering (out of memory?); see its log")
+        time.sleep(poll_s)
+    raise RuntimeError(f"ComfyUI render not done after {timeout_s:.0f} s")
+
+
+def run(g: dict, *, timeout_s: float, poll_s: float = 3) -> Path:
+    """Queue the graph, wait for it, return the saved video's path."""
+    prompt_id = _submit(g)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         h = _get(f"/history/{prompt_id}").get(prompt_id)
@@ -395,6 +430,153 @@ def _i2v_graph(*, image: str, prompt: str, seed: int, params: dict, blocks_to_sw
         "save": {"class_type": "SaveVideo",
                  "inputs": {"video": ["video", 0], "filename_prefix": "mw_clip", "format": "mp4", "codec": "h264"}},
     }
+
+
+# --- talking video, second model: LongCat-Video-Avatar (MIT) ---------------------------------------------------------
+# Kijai's example (example_workflows/LongCatAvatar_audio_image_to_video_example_01.json at the pinned commit): the
+# avatar model with the LongCat distillation LoRA (strength 0.9), bf16 base precision ("LongCat models only run with
+# bf16 base precision"), longcat_distill_euler at 12 steps / shift 12 and cfg 1 via WanVideoSchedulerv2 +
+# WanVideoSamplerv2, 93-frame windows overlapping by 13. The first window starts from the photo's latent (overlap 1,
+# no reference latent); each later one continues from the previous window's latents, with the photo's latent as the
+# reference (WanVideoLongCatAvatarExtendEmbeds, frames_processed = frames made so far). The example's note says
+# SageAttention 1.0.6 (our image) does not work with LongCat, so attention is sdpa unless params say otherwise.
+#
+# Left out, as in the InfiniteTalk graph: the vocal separator (our audio is a clean voice line), audio trimming, and
+# the editor-only nodes. The example's KJNodes / VideoHelperSuite nodes (constants, resize, frame-range and
+# overlap-join helpers, VHS_VideoCombine) are not in our image: the photo is cover-cropped by the handler, frame counts
+# are computed here, and each window's new frames (its first `overlap` frames dropped with core ImageFromBatch) are
+# saved as their own clip by CreateVideo/SaveVideo, joined with the voice by the handler. Saving per window also keeps
+# ComfyUI from holding every growing concatenation of a one-minute take in memory.
+#
+# Versions (params.longcat_version):
+#   1.0  Kijai/LongCat-Video_comfy Avatar fp8-scaled (the example's model; wav2vec audio, MultiTalkWav2VecEmbeds at
+#        32 audio frames/s, stride 2: video at 16 fps). The default.
+#   1.5  Whisper-large-v3 audio (LongCatAvatarWhisperEmbeds, 25 fps, stride 1; ExtendEmbeds re-encodes the overlap
+#        from the previous window's frames, the v1.5 path). No Kijai or Comfy-Org 1.5 checkpoint in the wrapper's key
+#        format exists (2026-11-22: meituan's 1.5 is sharded original-format weights and its DMD LoRA uses keys the
+#        wrapper does not convert); the only one found is a community GGUF conversion, and without 1.5's own
+#        distillation LoRA it is untested. Benchmark before use (talk profile longcat15).
+LONGCAT_WEIGHTS = {
+    "1.0": {"diffusion_models": [("Kijai/LongCat-Video_comfy",
+                                  "Avatar/LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors")],
+            "loras": [("Kijai/LongCat-Video_comfy", "LongCat_distill_lora_alpha64_bf16.safetensors")],
+            "vae": WEIGHTS["vae"], "text_encoders": WEIGHTS["text_encoders"]},
+    "1.5": {"diffusion_models": [("vantagewithai/LongCat-Video-Avatar-1.5-GGUF-ComfyUI",
+                                  "LongCat-Avatar-15_comfy-Q8_0.gguf")],
+            "audio_encoders": [("Comfy-Org/LongCat-Video-Avatar", "audio_encoders/whisper_large_v3_encoder_fp16.safetensors")],
+            "loras": [("Kijai/LongCat-Video_comfy", "LongCat_distill_lora_alpha64_bf16.safetensors")],
+            "vae": WEIGHTS["vae"], "text_encoders": WEIGHTS["text_encoders"]},
+}
+WEIGHTS_LONGCAT = LONGCAT_WEIGHTS["1.0"]
+LONGCAT_FPS = {"1.0": 16, "1.5": 25}          # the model's video rate (v1.0: audio stride 2 at 32 audio frames/s)
+LONGCAT_QUANTIZATION = {"1.0": "fp8_e4m3fn_scaled", "1.5": "disabled"}   # a GGUF model must load with "disabled"
+
+
+def longcat_version(params: dict) -> str:
+    v = str(params.get("longcat_version", "1.0"))
+    if v not in LONGCAT_WEIGHTS:
+        raise ValueError(f"unknown LongCat version {v!r}; known: {sorted(LONGCAT_WEIGHTS)}")
+    return v
+
+
+def longcat_windows(frames: int, window: int, overlap: int) -> int:
+    """How many windows make `frames` frames: the first gives `window`, each later one `window - overlap` more."""
+    if frames <= window:
+        return 1
+    return 1 + math.ceil((frames - window) / (window - overlap))
+
+
+def graph_longcat(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict,
+                  blocks_to_swap: int) -> dict:
+    """The LongCat-Video-Avatar graph in ComfyUI's API format (torch.compile when the params ask). `frames` is the
+    clip length at the model's frame rate (LONGCAT_FPS); one SaveVideo per window, prefixed mw_longcat_wNN."""
+    return with_compile(_longcat_graph(image=image, audio=audio, prompt=prompt, frames=frames, seed=seed,
+                                       params=params, blocks_to_swap=blocks_to_swap), params, ["model"])
+
+
+def _longcat_graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict,
+                   blocks_to_swap: int) -> dict:
+    p, v = params, longcat_version(params)
+    weights = LONGCAT_WEIGHTS[v]
+    window, overlap = int(p.get("frame_window", 93)), int(p.get("overlap", 13))
+    if not 0 < overlap < window:
+        raise ValueError(f"overlap {overlap} must be between 0 and the window ({window})")
+    fps = LONGCAT_FPS[v]
+    n = longcat_windows(int(frames), window, overlap)
+    tiles = {"enable_vae_tiling": False, "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128}
+    g = {
+        "vae": {"class_type": "WanVideoVAELoader", "inputs": {"model_name": VAE, "precision": "bf16"}},
+        "lora": {"class_type": "WanVideoLoraSelect",
+                 "inputs": {"lora": weights["loras"][0][1], "strength": float(p.get("lora_strength", 0.9)),
+                            "low_mem_load": False, "merge_loras": False}},
+        "swap": {"class_type": "WanVideoBlockSwap",
+                 "inputs": {"blocks_to_swap": int(blocks_to_swap), "offload_img_emb": False, "offload_txt_emb": False,
+                            "use_non_blocking": True, "vace_blocks_to_swap": 0, "prefetch_blocks": 1,
+                            "block_swap_debug": False}},
+        "model": {"class_type": "WanVideoModelLoader",
+                  "inputs": {"model": weights["diffusion_models"][0][1], "base_precision": "bf16",
+                             "quantization": p.get("longcat_quantization", LONGCAT_QUANTIZATION[v]),
+                             "load_device": "offload_device", "attention_mode": p.get("attention", "sdpa"),
+                             "block_swap_args": ["swap", 0], "lora": ["lora", 0]}},
+        "text": {"class_type": "WanVideoTextEncodeCached",
+                 "inputs": {"model_name": TEXT_ENCODER, "precision": "bf16", "positive_prompt": prompt,
+                            "negative_prompt": p.get("negative_prompt", NEGATIVE), "quantization": "disabled",
+                            "use_disk_cache": False, "device": "gpu"}},
+        "image": {"class_type": "LoadImage", "inputs": {"image": image}},
+        "ref": {"class_type": "WanVideoEncode",
+                "inputs": {"vae": ["vae", 0], "image": ["image", 0], **tiles, "noise_aug_strength": 0.0,
+                           "latent_strength": 1.0}},
+        "audio": {"class_type": "LoadAudio", "inputs": {"audio": audio}},
+        "scheduler": {"class_type": "WanVideoSchedulerv2",
+                      "inputs": {"scheduler": p.get("scheduler", "longcat_distill_euler"), "steps": int(p["steps"]),
+                                 "shift": float(p.get("shift", 12.0)), "start_step": 0, "end_step": -1,
+                                 "enhance_hf": False}},
+    }
+    embeds = {"audio_1": ["audio", 0], "normalize_loudness": True, "audio_scale": float(p.get("audio_scale", 1.0)),
+              "audio_cfg_scale": float(p.get("audio_cfg", 1.0)), "multi_audio_type": "para"}
+    if v == "1.0":
+        g["wav2vec"] = {"class_type": "DownloadAndLoadWav2VecModel",
+                        "inputs": {"model": WAV2VEC, "base_precision": "fp16", "load_device": "main_device"}}
+        g["embeds"] = {"class_type": "MultiTalkWav2VecEmbeds",   # audio stride 2: two audio frames per video frame
+                       "inputs": {"wav2vec_model": ["wav2vec", 0], **embeds, "num_frames": 2 * int(frames),
+                                  "fps": float(2 * fps)}}
+    else:
+        g["whisper"] = {"class_type": "WhisperModelLoader",
+                        "inputs": {"model": weights["audio_encoders"][0][1], "base_precision": "fp16",
+                                   "load_device": "main_device"}}
+        g["embeds"] = {"class_type": "LongCatAvatarWhisperEmbeds",
+                       "inputs": {"whisper_model": ["whisper", 0], **embeds, "num_frames": int(frames),
+                                  "fps": float(fps)}}
+    for k in range(n):
+        first = k == 0
+        ext = {"prev_latents": ["ref", 0] if first else [f"sample{k - 1}", 0], "audio_embeds": ["embeds", 0],
+               "num_frames": window, "overlap": 1 if first else overlap,
+               "frames_processed": 0 if first else window + (window - overlap) * (k - 1),
+               "if_not_enough_audio": "pad_with_start", "ref_frame_index": int(p.get("ref_frame_index", 10)),
+               "ref_mask_frame_range": int(p.get("ref_mask_frame_range", 3))}
+        if not first:
+            ext["ref_latent"] = ["ref", 0]
+            if v == "1.5":   # v1.5 re-encodes the overlap from the previous window's frames
+                ext.update(prev_images=[f"decode{k - 1}", 0], vae=["vae", 0])
+        g[f"ext{k}"] = {"class_type": "WanVideoLongCatAvatarExtendEmbeds", "inputs": ext}
+        g[f"sample{k}"] = {"class_type": "WanVideoSamplerv2",
+                           "inputs": {"model": ["model", 0], "image_embeds": [f"ext{k}", 0],
+                                      "cfg": float(p.get("cfg", 1.0)), "seed": int(seed) % (2**63),
+                                      "force_offload": True, "scheduler": ["scheduler", 0],
+                                      "text_embeds": ["text", 0], "add_noise_to_samples": False}}
+        g[f"decode{k}"] = {"class_type": "WanVideoDecode",
+                           "inputs": {"vae": ["vae", 0], "samples": [f"sample{k}", 0], **tiles,
+                                      "normalization": "default"}}
+        frames_in = [f"decode{k}", 0]
+        if not first:   # the first `overlap` frames repeat the end of the previous window
+            g[f"new{k}"] = {"class_type": "ImageFromBatch",
+                            "inputs": {"image": [f"decode{k}", 0], "batch_index": overlap, "length": window}}
+            frames_in = [f"new{k}", 0]
+        g[f"video{k}"] = {"class_type": "CreateVideo", "inputs": {"images": frames_in, "fps": float(fps)}}
+        g[f"save{k}"] = {"class_type": "SaveVideo",
+                         "inputs": {"video": [f"video{k}", 0], "filename_prefix": f"mw_longcat_w{k:02d}",
+                                    "format": "mp4", "codec": "h264"}}
+    return g
 
 
 def execution_error(status: dict) -> str:

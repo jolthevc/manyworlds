@@ -340,9 +340,10 @@ def _review(args, conn, pol, llm) -> int:
         pol = policy_mod.load()
 
 
-def brain_steps(conn, pol) -> dict:
+def brain_steps(conn, pol, llm=None) -> dict:
     """The Brain's part of each producer tick. Each step is isolated: one that fails is reported (an owner event,
-    once a day per step) and the others, and production and publishing after them, still run."""
+    once a day per step) and the others, and production and publishing after them, still run. With an `llm`, newly scheduled posts are
+    directed (shot sheets, manyworlds.brain.director)."""
     from datetime import datetime, timezone
 
     from . import notify
@@ -353,7 +354,7 @@ def brain_steps(conn, pol) -> dict:
     out: dict = {"planned": [], "errors": []}
 
     def scheduled():
-        r = ideas.schedule_ready(conn, pol, now=now)
+        r = ideas.schedule_ready(conn, pol, now=now, llm=llm)
         return [r] if r["batches"] else []
 
     def raised():
@@ -396,7 +397,7 @@ def produce_tick(conn, pol, llm=None) -> dict:
         return {"operations": "paused"}
     if pol.get("brain", "showrunner", "enabled", default=False):
         # The showrunner plans (brain worker); here: ask for batches, schedule evaluated ones, events, launches.
-        steps = brain_steps(conn, pol)
+        steps = brain_steps(conn, pol, llm)
         planned = steps["planned"] + ([{"brain_errors": steps["errors"]}] if steps["errors"] else [])
     else:
         planned = planner.ensure_plans(conn, pol, llm)

@@ -187,10 +187,20 @@ def check_talkcomfy() -> list[str]:
                                                          blocks_to_swap=20), info)
         if problems:
             raise RuntimeError("the compiled / fp8-fast graphs don't match ComfyUI's nodes: " + "; ".join(problems))
+        # LongCat-Video-Avatar, both audio paths (v1.0 wav2vec, v1.5 Whisper), over three windows so the
+        # continuation nodes are checked too.
+        for version in comfy.LONGCAT_WEIGHTS:
+            lc = {"width": 480, "height": 832, "steps": 10, "frame_window": 93, "overlap": 13,
+                  "longcat_version": version}
+            g = comfy.graph_longcat(image="x.png", audio="x.wav", prompt="a person talks", frames=250, seed=1,
+                                    params=lc, blocks_to_swap=25)
+            problems = comfy.missing_inputs(g, info)
+            if problems:
+                raise RuntimeError(f"LongCat {version} graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
     finally:
         comfy.stop()
     handlers_for(["comfy.wan_i2v"])
-    done.append("ComfyUI + WanVideoWrapper nodes match the talk and story-clip graphs")
+    done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, LongCat) and story-clip graphs")
 
     # The wrapper's own wav2vec encoder, as MultiTalkWav2VecEmbeds calls it, on a tiny random model: it must return
     # hidden states (with transformers 5 it returned None, after the weights had downloaded; 2026-11-22).
@@ -223,10 +233,82 @@ assert out.hidden_states is not None and len(out.hidden_states) == 3, out.hidden
     if "error" in s or s.get("face_share") != 0.0:
         raise RuntimeError(f"lip-sync score failed: {s}")
     done.append("lip-sync score")
+    return done + check_voice()
+
+
+def check_voice() -> list[str]:
+    """Designed voices on the talk image (handlers/tts_voxcpm.py): VoxCPM2 and its documented arguments, the
+    transcriber and speaker embedding importable, transformers still on the wrapper's pin, the pitch tracker and the
+    line joining run for real on the CPU. A real design run needs a GPU and the model download: on a build machine
+    without one it is skipped and said so."""
+    import inspect
+
+    import numpy as np
+    import transformers
+
+    _imports(["voxcpm", "speechbrain.inference.speaker", "librosa", "einops"])
+    from voxcpm import VoxCPM
+    from .runner import JobContext, handlers_for
+    from .handlers import tts_voxcpm as tts
+    handlers_for(["voice.design", "voice.speak"])
+    done = ["imports, handlers: voice.design, voice.speak"]
+    if transformers.__version__ != "4.57.6":
+        raise RuntimeError(f"voxcpm moved transformers to {transformers.__version__} (the wrapper needs 4.57.6)")
+    args = set(inspect.signature(VoxCPM._generate).parameters)
+    need = {"text", "prompt_wav_path", "prompt_text", "reference_wav_path", "cfg_value", "inference_timesteps"}
+    if need - args:
+        raise RuntimeError(f"VoxCPM.generate lacks {sorted(need - args)}")
+    done.append("VoxCPM generate() takes the documented arguments")
+
+    sr = 48000
+    t = np.arange(sr) / sr
+    tone = (0.3 * np.sin(2 * np.pi * (180 + 40 * np.sin(2 * np.pi * 2 * t)) * t)).astype(np.float32)
+    if not tts._pitch_variance(tone, sr, {"pitch_hz": [65, 500]}) > 0:
+        raise RuntimeError("pitch tracker found no pitch movement in a vibrato tone")
+    done.append("pitch variance")
+
+    class Fake:   # the model's place, so joining, timings and the 48 kHz file are checked without weights
+        sample_rate = sr
+
+        def generate(self, *, seed, text, **kw):
+            return tone[: sr // 2]
+
+    d = Path(tempfile.mkdtemp())
+    ref = tts.write_wav(d / "ref.wav", tone, sr)
+
+    class Store:
+        def get_file(self, uri, local):
+            local.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ref, local)
+            return local
+
+    saved = (tts._tts, tts._asr)
+    tts._tts, tts._asr = (lambda params: Fake()), (lambda params: (lambda wav, rate: "hello there"))
+    try:
+        res = tts.speak({"ref_uri": "x://ref.wav", "ref_text": "hello there", "takes": 2, "seed": 1,
+                         "lines": [{"text": "hello there", "delivery": "softly", "pause_after_s": 0.5},
+                                   {"text": "hello there"}]}, JobContext(job=None, workdir=d, store=Store()))
+    finally:
+        tts._tts, tts._asr = saved
+    meta = res.outputs[0].meta
+    if meta["sample_rate"] != sr or meta["seconds"] != 1.5 or [line["wer"] for line in meta["lines"]] != [0.0, 0.0]:
+        raise RuntimeError(f"voice lines joined wrongly: {meta}")
+    done.append("voice lines joined with pauses at 48 kHz")
+
+    import torch
+    if not torch.cuda.is_available():
+        done.append("VoxCPM2 design run skipped: no GPU here (the first voice.design job is the real test)")
+        return done
+    model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False, optimize=False)
+    wav = model.generate(text="(A calm adult voice)Hi.", cfg_value=2.0, inference_timesteps=4)
+    if len(wav) < model.tts_model.sample_rate // 10:
+        raise RuntimeError("VoxCPM2 made no audio")
+    done.append(f"VoxCPM2 design run ({len(wav) / model.tts_model.sample_rate:.1f} s)")
     return done
 
 
-CHECKS = {"image": check_image, "train": check_train, "talk": check_talk, "talkcomfy": check_talkcomfy}
+CHECKS = {"image": check_image, "train": check_train, "talk": check_talk, "talkcomfy": check_talkcomfy,
+          "voice": check_voice}
 
 
 def main(argv=None) -> int:

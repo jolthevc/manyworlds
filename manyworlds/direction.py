@@ -12,14 +12,43 @@ surface: `edit.on_screen_text` is an overlay added in post and never reaches an 
 """
 
 import re
-from typing import Any, Literal
+import types
+import typing
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Target = Literal["photo", "i2v", "talk"]
 
 
-class SetSpec(BaseModel):
+def _union_args(annotation) -> tuple:
+    origin = typing.get_origin(annotation)
+    return typing.get_args(annotation) if origin in (typing.Union, types.UnionType) else (annotation,)
+
+
+class _Sheet(BaseModel):
+    """A part of a shot sheet. Read back from a strict schema (manyworlds.llm.strict_json_schema: every field
+    required, no nulls, "" added to every enum for "unset"), an empty string means "not set": it becomes None
+    where the field may be None, and is ignored (the default stays) where the field is a number or a bool."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unset_empty_strings(cls, data):
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for name, field in cls.model_fields.items():
+            if name not in out or out[name] != "":
+                continue
+            args = _union_args(field.annotation)
+            if type(None) in args:
+                out[name] = None
+            elif any(a in (int, float, bool) for a in args):
+                del out[name]
+        return out
+
+
+class SetSpec(_Sheet):
     location: str = Field(default="", description="where the scene happens, concretely: 'her small galley kitchen', "
                                                   "'a bus stop on a wet side street'")
     set_id: str = Field(default="", description="a short name for a recurring set, reused across posts "
@@ -43,7 +72,7 @@ class SetSpec(BaseModel):
     depth_of_field: str = Field(default="", description="shallow (soft background) or deep (everything sharp)")
 
 
-class WardrobeSpec(BaseModel):
+class WardrobeSpec(_Sheet):
     outfit_id: str = Field(default="", description="a short name for a recurring outfit, reused across posts "
                                                    "(e.g. 'grey_hoodie'); empty for a one-off")
     outfit: str = Field(default="", description="what she wears, visually: colours, fabrics, fit; no logos")
@@ -51,14 +80,14 @@ class WardrobeSpec(BaseModel):
     state: str = Field(default="", description="the clothes' condition: crisp, creased, rain-damp, sleeves rolled up")
 
 
-class LookSpec(BaseModel):
+class LookSpec(_Sheet):
     hair_style: str = Field(default="", description="only if it differs from her usual hair: e.g. 'in a low bun'")
     hair_state: str = Field(default="", description="e.g. freshly washed, windswept, a bit messy")
     makeup: str = Field(default="", description="e.g. none, light everyday, a bold lip")
     skin_state: str = Field(default="", description="e.g. a little flushed, post-run sheen, tired under the eyes")
 
 
-class FramingSpec(BaseModel):
+class FramingSpec(_Sheet):
     shot_size: str = Field(default="", description="close-up, medium close-up, medium shot, full body, wide")
     angle: str = Field(default="", description="eye level, slightly high, low angle, over the shoulder")
     lens_mm: float | None = Field(default=None, description="equivalent focal length in mm; a phone's main "
@@ -76,7 +105,7 @@ class FramingSpec(BaseModel):
     headroom: str = Field(default="", description="space above her head: tight, normal, generous")
 
 
-class Beat(BaseModel):
+class Beat(_Sheet):
     at_s: float = Field(default=0.0, description="seconds from the start of the shot when this beat begins")
     action: str = Field(default="", description="what she does, in a few plain words: 'sips her coffee', "
                                                 "'looks up and laughs'")
@@ -87,7 +116,7 @@ class Beat(BaseModel):
                                                "needs them")
 
 
-class Line(BaseModel):
+class Line(_Sheet):
     text: str = Field(default="", description="exactly what she says, as spoken; no stage directions")
     delivery: str = Field(default="", description="how she says it, never spoken aloud: 'dry, under her breath', "
                                                   "'excited, fast'")
@@ -95,7 +124,7 @@ class Line(BaseModel):
                                                                   "the default pause")
 
 
-class PerformanceSpec(BaseModel):
+class PerformanceSpec(_Sheet):
     emotion_arc: str = Field(default="", description="how her mood moves through the shot: 'bored to amused'")
     energy: Literal["low", "medium", "high"] | None = Field(default=None, description="overall energy: low, "
                                                                                        "medium or high")
@@ -105,7 +134,7 @@ class PerformanceSpec(BaseModel):
                                                                 "for a silent shot")
 
 
-class SoundSpec(BaseModel):
+class SoundSpec(_Sheet):
     mic: Literal["phone", "lav", "room"] | None = Field(default=None, description="how it sounds recorded: phone "
                                                                                   "(built-in mic), lav (clip-on), "
                                                                                   "room (distant, roomy)")
@@ -114,7 +143,7 @@ class SoundSpec(BaseModel):
     music: str = Field(default="", description="music in the scene or under it; empty for none")
 
 
-class EditSpec(BaseModel):
+class EditSpec(_Sheet):
     hook: str = Field(default="", description="what grabs attention in the first second")
     on_screen_text: str = Field(default="", description="text overlaid in post; the only place text may appear, "
                                                         "never on surfaces in the image")
@@ -125,14 +154,14 @@ class EditSpec(BaseModel):
     cover: bool = Field(default=False, description="true if this shot's frame should be the post's cover")
 
 
-class ContinuitySpec(BaseModel):
+class ContinuitySpec(_Sheet):
     carry_over: str = Field(default="", description="what must match the previous shot: 'same mug, half full', "
                                                     "'hair still wet'")
     story_time: str = Field(default="", description="when this happens in the story: 'ten minutes later', "
                                                     "'the next morning'")
 
 
-class ShotSheet(BaseModel):
+class ShotSheet(_Sheet):
     set: SetSpec = Field(default_factory=SetSpec, description="the place and its light")
     wardrobe: WardrobeSpec = Field(default_factory=WardrobeSpec, description="what she wears")
     look: LookSpec = Field(default_factory=LookSpec, description="hair, makeup and skin for this scene")
@@ -144,6 +173,17 @@ class ShotSheet(BaseModel):
     continuity: ContinuitySpec = Field(default_factory=ContinuitySpec, description="what carries over between shots")
     cutaway: bool = Field(default=False, description="true for a shot that shows something else (b-roll) while "
                                                      "her voice continues over it")
+
+
+# What the director answers (manyworlds.brain.director). It is asked with a strict schema (`strict_required`,
+# manyworlds.llm.strict_json_schema): ShotSheet's own schema, with its optional fields, compiles to a grammar too
+# large for structured outputs (HTTP 400, measured 2026-11-22). The docstring is the schema's description.
+class DirectedShots(BaseModel):
+    """One shot sheet per scene of an accepted post idea, in the scenes' order."""
+    strict_required: ClassVar[bool] = True
+    shots: list[ShotSheet] = Field(description="one shot sheet per scene, in the same order as the scenes")
+    move_shot: int = Field(default=-1, description="the index (from 0) of the shot that performs the move; "
+                                                   "-1 when there is no move")
 
 
 def _join(parts, sep: str = ", ") -> str:

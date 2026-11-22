@@ -20,6 +20,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ..creator import profile as profile_mod
+from ..direction import ShotSheet, spoken, summary
 from ..llm import StructuredLLM
 from ..policy import Policy
 
@@ -31,6 +32,18 @@ virtues, no inspirational lines, no calls to action, no hashtag stuffing. No cla
 first-hand experience with products or services. Every image is a single candid smartphone photo;
 describe what the camera sees. Every video must say something that adds to the creator's arc,
 the audience's trust in them, or their world, never filler."""
+
+# Direction (manyworlds.direction): the planner and the showrunner write scenes; the director
+# (manyworlds.brain.director) turns an accepted idea's scenes into shot sheets (`body.shots`). Shot sheets are
+# not in these schemas: ShotSheet inside a structured output is too large a grammar (HTTP 400, 2026-11-22).
+DIRECTION = """
+
+DIRECTION: once an idea is accepted, a director turns each scene into a full shot sheet, so write every
+scene concretely: the place and its light, what they wear, the framing, what they do. Name recurring sets
+and outfits the same way every time, reusing what is known about the creator's life (the director files
+them as `set_id` and `outfit_id`: 'her galley kitchen' stays 'her galley kitchen'). Hands are relaxed or
+out of frame unless the action needs them. Text belongs in `on_screen_text` (added in post), never on
+signs, screens, packaging or other surfaces in a scene."""
 
 ANALYSIS_FIELDS = ("look", "persona", "audience", "content", "arc", "places", "home_and_places", "interests",
                    "opinions_and_running_jokes", "display_name", "one_line", "niche")
@@ -106,7 +119,39 @@ def voice_rules(policy: Policy) -> str:
 
 
 def system_prompt(policy: Policy) -> str:
-    return SYSTEM + voice_rules(policy)
+    return SYSTEM + DIRECTION + voice_rules(policy)
+
+
+def align_shots(p) -> None:
+    """Pair an item's scenes with its shots (`p.shots`, ShotSheets or dicts), one each, in order. Without shots,
+    empty scenes are dropped as before. With shots, a scene left empty is written from its shot
+    (`direction.summary`), a missing shot is an empty sheet, and a pair with neither is dropped, so `scenes[i]`
+    always describes `shots[i]`. Used by the director (manyworlds.brain.director) on what it answers."""
+    shots = [s if isinstance(s, ShotSheet) else ShotSheet.model_validate(s)
+             for s in (getattr(p, "shots", None) or [])]
+    if not shots:
+        p.scenes = [s.strip() for s in p.scenes if s.strip()]
+        return
+    n = max(len(shots), len(p.scenes))
+    scenes = [s.strip() for s in p.scenes] + [""] * (n - len(p.scenes))
+    shots += [ShotSheet() for _ in range(n - len(shots))]
+    pairs = [(scene or summary(shot), shot) for scene, shot in zip(scenes, shots)]
+    pairs = [(scene, shot) for scene, shot in pairs if scene.strip()]
+    p.scenes, p.shots = [scene for scene, _ in pairs], [shot for _, shot in pairs]
+
+
+def shots_body(p) -> list[dict]:
+    """The item's shot sheets as the post body stores them (plain dicts); [] without shots."""
+    return [s.model_dump(mode="json") if isinstance(s, ShotSheet) else dict(s)
+            for s in (getattr(p, "shots", None) or [])]
+
+
+def shot_voice_issues(policy: Policy, shots) -> list[str]:
+    """The voice rules (`caption_issues`) applied to what shots say and show as text: a shot's lines are spoken
+    and its overlay is read."""
+    sheets = [s if isinstance(s, ShotSheet) else ShotSheet.model_validate(s) for s in shots or []]
+    text = " ".join(f"{spoken(s)} {s.edit.on_screen_text}".strip() for s in sheets)
+    return caption_issues(policy, text) if text.strip() else []
 
 
 def _recent(conn, creator_id, n: int) -> list[dict]:

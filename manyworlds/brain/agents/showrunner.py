@@ -29,7 +29,7 @@ You are the creator's showrunner. Plan the next few days as a natural feed: ever
 outfits, food, places, small opinions, the occasional trend or arc, and Stories for throwaway
 moments. Not every post needs a hook or a purpose; a lovely ordinary moment is a good post. Keep the
 creator's life coherent with what is known about them, and learn from how recent ideas scored and
-from any findings, without turning the feed into a formula."""
+from any findings, without turning the feed into a formula.""" + planner.DIRECTION
 
 
 class PlannedIdea(planner.PlannedPost):
@@ -41,6 +41,7 @@ class PlannedIdea(planner.PlannedPost):
                                                    "employer), that fact's name; otherwise empty")
     staging: str = Field(default="", description="the name of a staging from the library, or empty (most posts)")
     flavor: str = Field(default="", description="the name of a flavor from the library, or empty (most posts)")
+    move: str = Field(default="", description="the name of a move from the library, or empty (most posts)")
     experiment: str = Field(default="", description="the slot id when this idea fills an experiment slot, else empty")
 
 
@@ -64,6 +65,13 @@ def stagings_for(policy, formats, section: str = "stagings") -> dict:
     """The stagings (or flavors) whose formats production makes now."""
     lib = policy.get(section, "library", default={}) or {}
     return {k: v for k, v in lib.items() if set(v.get("formats") or []) & set(formats)}
+
+
+def moves_for(policy, formats) -> dict:
+    """The moves (policy `moves`) whose formats production makes now and whose readiness the models can carry
+    (policy `direction.offer_readiness`): a move the models can't do yet is never offered."""
+    offered = set(policy.get("direction", "offer_readiness", default=[]) or [])
+    return {k: v for k, v in stagings_for(policy, formats, "moves").items() if v.get("readiness") in offered}
 
 
 def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str, dict]:
@@ -97,6 +105,10 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     flavors = stagings_for(policy, formats, "flavors")
     flavor_text = (f"Flavors you may give an idea (set `flavor` to its name; most posts need none): "
                    f"{json.dumps(flavors)}. " if flavors else "")
+    moves = moves_for(policy, formats)
+    move_text = (f"Moves you may give an idea (set `move` to its name; most posts need none; only in a format the "
+                 f"move lists; the scene that performs it starts from the move's `shot` and stays short and simple "
+                 f"where its readiness is partial): {json.dumps(moves)}. " if moves else "")
     staging_text = (f"Stagings you may give an idea (set `staging` to its name; most posts need none; the scene must "
                     f"show its setting, framing and wardrobe and the script follow its conventions): "
                     f"{json.dumps(stagings)}. {policy.get('stagings', 'rules', default='')} " if stagings else "")
@@ -140,7 +152,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"({planner._video_formats(policy)}), each in one of the creator's video series. "
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
         f"What each format is: {json.dumps({f: n for f, n in notes.items() if f in formats})}. "
-        f"{staging_text}{flavor_text}"
+        f"{staging_text}{flavor_text}{move_text}"
         f"About {round(share * 100)}% of the ideas should try something this creator hasn't done yet (mark them "
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
         f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "
@@ -150,7 +162,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
             "analysis_decision_id": str(last["id"]) if last else None,
             "finding_ids": [str(f["id"]) for f in evidence.findings(conn, mode=mode, creator_id=creator_id)],
             "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings, "flavors": flavors,
-            "slots": {s["slot"]: s for s in slots}, "exploration": explore}
+            "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore}
     return prompt, meta
 
 
@@ -198,18 +210,23 @@ class Showrunner:
                     used.add(slot["slot"])
                 staging = q.staging if q.staging in meta["stagings"] else ""   # unknown names are dropped
                 flavor = q.flavor if q.flavor in meta["flavors"] else ""
+                offered = meta["moves"].get(q.move) or {}
+                move = q.move if q.format in (offered.get("formats") or []) else ""   # unknown or off-format: dropped
                 body = {"scenes": q.scenes, "script": q.script, "on_screen_text": q.on_screen_text,
                         "hashtags": q.hashtags, "canon": q.canon, "pillar": q.pillar, "tone": q.tone,
                         "series": q.series, "caption": q.caption, "day": q.day, "platform": q.platform,
                         "exploratory": q.exploratory, "reasoning": q.reasoning, "canon_key": q.canon_key,
                         "staging": staging, "flavor": flavor}
+                if move:   # the director (manyworlds.brain.director) starts that scene from the move's shot
+                    body["move"] = move
                 concept = " | ".join(q.scenes) + (f" | script: {q.script}" if q.script else "") + f" | caption: {q.caption}"
                 iid = ctx.conn.execute(
                     "INSERT INTO ideas (creator_id, batch, concept, format, body, attributes, status, experiment_id, arm) "
                     "VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s) RETURNING id",
                     (creator_id, batch, f"{q.format}: {concept}", q.format, Jsonb(body),
                      Jsonb({**q.attributes, **({"exploratory": "yes"} if q.exploratory else {}),
-                            **({"staging": staging} if staging else {}), **({"flavor": flavor} if flavor else {})}),
+                            **({"staging": staging} if staging else {}), **({"flavor": flavor} if flavor else {}),
+                            **({"move": move} if move else {})}),
                      slot["experiment_id"] if slot else None, slot["arm"] if slot else None)).fetchone()["id"]
                 commission(ctx, "evaluator", {"idea_id": str(iid)}, reason="score before scheduling", key=f"eval:{iid}")
                 ids.append(str(iid))

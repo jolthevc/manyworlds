@@ -12,6 +12,8 @@ per gate, written against the video asset:
   realism   each frame reads as phone video, not a render
   safety    as for images: adult-looking, not sexualized, no real brand marks
   scene     (when the planner wrote one) the shot shows the scene and the movement intended
+  direction (when the job carries a shot sheet, manyworlds.direction) the clip follows the shot and its beats,
+            on rubric policy/rubrics/direction-v<n>.yaml; below review.direction.min_score it is rejected
 
 Keyframes can't show smoothness or timing; they catch the failures seen so far (face drift,
 warping), which is what a viewer notices first. Like images there are two stages: a cheap
@@ -55,20 +57,26 @@ class ClipReview(BaseModel):
     real_brand_marks: bool = Field(description="a legible real-world brand logo or trademark is visible")
     scene: int | None = Field(default=None, description="only when an INTENDED SHOT is given: 10 = shows that "
                               "setting and that movement; 5 = right setting, movement wrong or absent; 0 = different")
+    direction: int | None = Field(default=None, description="only when a DIRECTED SHOT is given: 1-10 on the "
+                                  "DIRECTION rubric given with it (does the clip follow the shot and its beats); "
+                                  "null when no directed shot is given")
     notes: str = Field(description="one sentence")
 
 
-def gates_for(scene: str | None) -> tuple[str, ...]:
-    return GATES + ("scene",) if scene else GATES
+def gates_for(scene: str | None, shot: dict | None = None) -> tuple[str, ...]:
+    return GATES + (("scene",) if scene else ()) + (("direction",) if shot else ())
 
 
-def decide(r: ClipReview, cfg: dict, scene: str | None = None) -> dict[str, bool]:
+def decide(r: ClipReview, cfg: dict, scene: str | None = None, *, shot: dict | None = None,
+           policy: Policy | None = None) -> dict[str, bool]:
     verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
                "motion": r.motion >= int(cfg.get("min_motion", 6)),
                "realism": r.realism >= int(cfg.get("min_realism", 6)),
                "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
     if scene:
         verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))
+    if shot:
+        verdict["direction"] = common.direction_passes(r.direction, policy)
     return verdict
 
 
@@ -88,7 +96,8 @@ def _media_type(uri: str) -> str:
 
 
 def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, refs: list[bytes],
-           start: bytes | None, frames: list[tuple[bytes, str]], scene: str | None) -> ClipReview:
+           start: bytes | None, frames: list[tuple[bytes, str]], scene: str | None,
+           shot: dict | None = None) -> ClipReview:
     min_age = int(policy.get("scope", "creator_min_age", default=21))
     content: list = [{"type": "text", "text": f"The person: {appearance_prompt(creator['bible'])}. "
                                               f"Minimum age for this creator: {min_age}."}]
@@ -101,12 +110,16 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
         content += [{"type": "text", "text": f"KEYFRAME {k + 1} of {len(frames)}:"}, image_block(b, media)]
     if scene:
         content.append({"type": "text", "text": f"INTENDED SHOT (score `scene` against it): {scene}"})
+    if shot:
+        content.append({"type": "text", "text": "DIRECTED SHOT (score `direction` 1-10 against it): "
+                                                + common.direction_brief(shot, policy, still=False)})
     content.append({"type": "text", "text": "Review the clip as a whole from these keyframes."})
     r = llm.structured(role, system=SYSTEM, content=content, schema=ClipReview, effort=effort,
                        creator_id=creator["id"])
     for k in ("identity", "motion", "realism"):
         setattr(r, k, max(0, min(10, getattr(r, k))))
     r.scene = max(0, min(10, r.scene)) if (scene and r.scene is not None) else None
+    r.direction = max(1, min(10, r.direction)) if (shot and r.direction is not None) else None
     return r
 
 
@@ -118,7 +131,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     job = conn.execute("SELECT creator_id, payload FROM jobs WHERE id = %s", (job_id,)).fetchone()
     payload = job["payload"] or {}
     scene = payload.get("scene")
-    gates = gates_for(scene)
+    shot = payload.get("shot") if isinstance(payload.get("shot"), dict) else None   # a directed clip
+    gates = gates_for(scene, shot)
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
     videos = conn.execute("SELECT id, uri, meta FROM assets WHERE job_id = %s AND kind = 'video' ORDER BY uri",
                           (job_id,)).fetchall()
@@ -158,11 +172,14 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                 continue
         for role, effort, stage in stages:
             with common.charged_to(llm, job_id):   # review counts in this clip's cost
-                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene)
-            verdict = decide(r, cfg, scene)
+                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene, shot)
+            verdict = decide(r, cfg, scene, shot=shot, policy=policy)
             scores = {"identity": r.identity, "motion": r.motion, "realism": r.realism, "scene": r.scene}
+            if shot:
+                scores["direction"] = r.direction
             clear = stage == "screen" and len(stages) > 1 and all(verdict.values()) and clear_pass(r, cfg)
-            details = {**r.model_dump(), "model": llm.model_for(role), "stage": stage, "clear_pass": clear}
+            details = {**r.model_dump(exclude=None if shot else {"direction"}), "model": llm.model_for(role),
+                       "stage": stage, "clear_pass": clear}
             rows += [(v["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
             res["stages"].append({"stage": stage, "model": details["model"], **scores, "drift_from": r.drift_from,
                                   "defects": r.defects, "passed": all(verdict.values())})
