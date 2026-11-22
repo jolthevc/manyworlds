@@ -61,6 +61,9 @@ gpu_pools:
   # The same card with the weights volume (mw-weights-us-nc-1, 150 GB standard, ~$10.50/month, created 2026-11-22):
   # talk weights are downloaded once onto it, then every machine loads them. Only in US-NC-1 (volume's data centre;
   # L40S capacity there was LOW on 2026-11-22), so the pool without the volume stays behind it as a fallback.
+  # Secure H100 SXM (80 GB): the full-precision talk model on the card with no offloading, which ran out of memory
+  # on a 48 GB L40S (2026-11-22). Ceiling $3/h: a pod RunPod prices above it is destroyed at once.
+  runpod_secure_h100: {provider: runpod, gpu: h100, usd_per_hour: 3.00, interruptible: false, cloud: SECURE}
   runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                            network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
@@ -87,7 +90,7 @@ job_kinds:
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
-  talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_comm_3090], outputs_per_job: 1}
+  talk.infinitetalk: {pools: [runpod_secure_h100, runpod_secure_l40s_vol, runpod_secure_l40s, vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_comm_3090], outputs_per_job: 1}
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
@@ -107,10 +110,10 @@ worker_images:
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
   # download_gb: what a machine downloads at boot (compressed image + model weights), priced per GB on Vast.
-  image: {image: mw-worker-image, tag: v23, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80, download_gb: 30,
+  image: {image: mw-worker-image, tag: v24, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80, download_gb: 30,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v23, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
+  video: {image: mw-worker-image, tag: v24, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # talk: Wan2.1-I2V-14B-480P (~82 GB) + adapter (10 GB) + wav2vec, all on the rented machine; 64 GB RAM / 200 GB disk
@@ -129,6 +132,7 @@ gpu_names:
   rtxa5000: {salad: "RTX A5000", vast: "RTX A5000", runpod: "NVIDIA RTX A5000"}
   a40:      {vast: "A40", runpod: "NVIDIA A40"}
   l40s:     {vast: "L40S", runpod: "NVIDIA L40S"}
+  h100:     {vast: "H100 SXM", runpod: "NVIDIA H100 80GB HBM3"}
 
 # The autoscaler starts machines when jobs are waiting and stops them when the queue
 # drains. A provider is skipped when its API key isn't configured.
