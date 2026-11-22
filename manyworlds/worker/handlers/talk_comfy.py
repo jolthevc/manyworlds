@@ -10,6 +10,11 @@ frame_window, motion_frame, overlap, longcat_version, lora_strength, attention, 
 timeout_s}. params.model picks the graph: infinitetalk (the default) or longcat (comfy.graph_longcat, LongCat-Video-
 Avatar; its weights download only when a LongCat job runs). LongCat saves one clip per window; they are joined
 here, trimmed to the voice line and muxed with it.
+
+Walk-and-talk: with `video_uri` (a silent motion clip of the take, made by a comfy.wan_i2v job first; see
+manyworlds.production) the clip is resampled to 25 fps and lip-synced by InfiniteTalk video-to-video
+(comfy.graph_v2v; params.start_step is how much of the clip is redrawn, params.clip_vision adds CLIP vision embeds).
+InfiniteTalk only.
 """
 
 from __future__ import annotations
@@ -78,6 +83,20 @@ def join_windows(clips: list[Path], audio: Path, seconds: float, dest: Path) -> 
     return dest
 
 
+def at_fps(src: Path, dest: Path, fps: int, timeout: float = 600) -> Path:
+    """The motion clip at the talk's frame rate, silent: Wan 2.2 makes 16 fps, InfiniteTalk reads every frame as one
+    of 25 per second (its audio embeds), so without this she would move about 1.5x too fast."""
+    import subprocess
+
+    from ...media import ffmpeg
+    cmd = [ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), "-vf", f"fps={int(fps)}", "-an", "-c:v", "libx264",
+           "-pix_fmt", "yuv420p", "-crf", "16", str(dest)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"resampling the motion clip failed: {proc.stderr[-800:]}")
+    return dest
+
+
 def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     if not payload.get("image_uri"):
         raise NonRetryable("payload needs image_uri")
@@ -90,6 +109,14 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     if missing:
         raise NonRetryable(f"params missing {missing}")
     model = model_of(params)
+    video_uri = payload.get("video_uri")
+    if video_uri and model != "infinitetalk":
+        raise NonRetryable(f"video-to-video lip sync (video_uri) runs on InfiniteTalk only, not {model}")
+    if video_uri:
+        try:
+            comfy.v2v_start(params)
+        except ValueError as e:
+            raise NonRetryable(str(e)) from None
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else random.randrange(1 << 31)
     work = Path(ctx.workdir)
@@ -107,9 +134,12 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         comfy.write_model_paths(models)
         comfy.ensure_weights(models, weights, prune=True)
         _ready[ready_key] = True
+    if video_uri and params.get("clip_vision") and not _ready.get("weights:clip_vision"):
+        comfy.write_model_paths(models)
+        comfy.ensure_weights(models, comfy.CLIP_VISION_WEIGHTS, prune=True)
+        _ready["weights:clip_vision"] = True
     comfy.start()
 
-    start = ctx.fetch(payload["image_uri"], "start_frame.png")
     spoken = None
     if payload.get("audio_uri"):
         audio = ctx.fetch(payload["audio_uri"], "voice.wav")
@@ -120,13 +150,23 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     inp = comfy.COMFY_DIR / "input"
     inp.mkdir(parents=True, exist_ok=True)
     image_name, audio_name = f"mw_{tag}.png", f"mw_{tag}{audio.suffix or '.wav'}"
-    _prepare_image(start, inp / image_name, int(params["width"]), int(params["height"]))
+    video_name = f"mw_{tag}_motion.mp4"
+    if video_uri:   # the clip's first frame starts the talk; the photo isn't used
+        at_fps(ctx.fetch(video_uri, "motion.mp4"), inp / video_name, comfy.TALK_FPS)
+    else:
+        start = ctx.fetch(payload["image_uri"], "start_frame.png")
+        _prepare_image(start, inp / image_name, int(params["width"]), int(params["height"]))
     shutil.copy(audio, inp / audio_name)
 
     prompt = payload.get("prompt") or "a person talks to the camera"
     clip = work / "talk.mp4"
     t0 = time.monotonic()
-    if model == "longcat":
+    if video_uri:
+        g = comfy.graph_v2v(video=video_name, audio=audio_name, prompt=prompt,
+                            frames=math.ceil(seconds * comfy.TALK_FPS), seed=seed, params=params,
+                            blocks_to_swap=_blocks_to_swap(params))
+        shutil.move(str(comfy.run(g, timeout_s=float(params["timeout_s"]))), clip)
+    elif model == "longcat":
         g = comfy.graph_longcat(image=image_name, audio=audio_name, prompt=prompt,
                                 frames=math.ceil(seconds * comfy.LONGCAT_FPS[version]), seed=seed, params=params,
                                 blocks_to_swap=_blocks_to_swap(params))
@@ -139,12 +179,13 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
                         params=params, blocks_to_swap=_blocks_to_swap(params))
         shutil.move(str(comfy.run(g, timeout_s=float(params["timeout_s"]))), clip)
     render_s = round(time.monotonic() - t0, 1)
-    for f in (inp / image_name, inp / audio_name):
+    for f in (inp / image_name, inp / audio_name, inp / video_name):
         f.unlink(missing_ok=True)
 
     sync = lipsync.score_in_venv(clip, audio, max_offset_frames=int(params.get("sync_max_offset_frames", 5)))
     outputs = [OutputFile(clip, "video", {"seconds": seconds, "width": params["width"], "height": params["height"],
-                                          "lip_sync": True, "sync": sync, "engine": "comfy", "model": model}),
+                                          "lip_sync": True, "sync": sync, "engine": "comfy", "model": model,
+                                          "v2v": bool(video_uri)}),
                *extract_keyframes(clip, work, int(payload["keyframes"]))]
     if spoken is not None:
         outputs.append(OutputFile(spoken, "audio", {"seconds": seconds}))
@@ -154,7 +195,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     else:
         names = {"model": comfy.MODEL, "adapter": comfy.ADAPTER, "lora": comfy.LORA}
     recipe = {**names, "engine": "comfy+WanVideoWrapper", "talk_model": model, "prompt": payload.get("prompt"),
-              "image_uri": payload["image_uri"], "audio_uri": payload.get("audio_uri"), "script": payload.get("script"), "voice": payload.get("voice"), "seed": seed, "params": params}
+              "image_uri": payload["image_uri"], "audio_uri": payload.get("audio_uri"), "script": payload.get("script"), "voice": payload.get("voice"), "video_uri": video_uri, "seed": seed,
+              "params": params}
     return HandlerResult(outputs, recipe=recipe, meta={"output_seconds": seconds, "render_seconds": render_s,
                                                         "seconds_per_output_second": round(render_s / max(seconds, 0.1), 1)})
 

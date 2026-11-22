@@ -65,6 +65,7 @@ def plan(policy: Policy, cause: str, *, scene: str, identity_repairs: int):
     if cause == "scene":
         lead = hints.get("scene", "").format(scene=scene)
         return (lambda p: {**p, "prompt": lead + p["prompt"]}), "prompt leads with the scene"
-    if cause == "realism":
-        return (lambda p: {**p, "prompt": p["prompt"] + hints.get("realism", "")}), "anatomy and text hints"
+    if cause in ("realism", "hands", "teeth"):   # hands / teeth: the finer checks (review.detail), when enforced
+        hint = hints.get(cause, hints.get("realism", ""))
+        return (lambda p: {**p, "prompt": p["prompt"] + hint}), "anatomy and text hints"
     return None, "new seed"

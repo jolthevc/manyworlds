@@ -197,10 +197,31 @@ def check_talkcomfy() -> list[str]:
             problems = comfy.missing_inputs(g, info)
             if problems:
                 raise RuntimeError(f"LongCat {version} graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
+        # Walk-and-talk: InfiniteTalk video-to-video over a motion clip (core LoadVideo / GetVideoComponents /
+        # ImageScale in place of the example's VideoHelperSuite and KJNodes), with and without CLIP vision.
+        for clip_vision in (False, True):
+            v2v = {"width": 480, "height": 832, "steps": 4, "start_step": 2, "clip_vision": clip_vision}
+            problems = comfy.missing_inputs(comfy.graph_v2v(video="x.mp4", audio="x.wav", prompt="she walks and talks",
+                                                            frames=125, seed=1, params=v2v, blocks_to_swap=20), info)
+            if problems:
+                raise RuntimeError(f"InfiniteTalk V2V graph (clip_vision={clip_vision}) doesn't match ComfyUI's "
+                                   "nodes: " + "; ".join(problems))
     finally:
         comfy.stop()
     handlers_for(["comfy.wan_i2v"])
-    done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, LongCat) and story-clip graphs")
+    done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat) and story-clip graphs")
+
+    # The motion clip is resampled to the talk's 25 fps before V2V (talk_comfy.at_fps), with the image's ffmpeg.
+    import imageio.v3 as iio
+
+    from .handlers import talk_comfy
+    d = Path(tempfile.mkdtemp())
+    iio.imwrite(str(d / "m16.mp4"), np.zeros((16, 64, 64, 3), dtype=np.uint8), fps=16)
+    talk_comfy.at_fps(d / "m16.mp4", d / "m25.mp4", comfy.TALK_FPS)
+    n = sum(1 for _ in iio.imiter(str(d / "m25.mp4")))
+    if abs(n - comfy.TALK_FPS) > 1:
+        raise RuntimeError(f"a 1 s motion clip came out as {n} frames at {comfy.TALK_FPS} fps")
+    done.append("motion clip resampled to the talk frame rate")
 
     # The wrapper's own wav2vec encoder, as MultiTalkWav2VecEmbeds calls it, on a tiny random model: it must return
     # hidden states (with transformers 5 it returned None, after the weights had downloaded; 2026-11-22).

@@ -116,6 +116,68 @@ def _talk_graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, 
     }
 
 
+# --- walk-and-talk: InfiniteTalk video-to-video over a silent motion clip --------------------------------------------
+# Kijai's example (example_workflows/wanvideo_2_1_14B_V2V_InfiniteTalk_example_02.json at the pinned commit): the clip's
+# frames, resized, are VAE-encoded (WanVideoEncode) into the sampler's `samples`; its first frame is the start image of
+# WanVideoImageToVideoMultiTalk (infinitetalk mode, 81-frame windows, 9 motion frames) and, optionally, CLIP-vision
+# encoded; the sampler runs 4 steps from step 2 with noise added to the clip's latents (cfg 1, shift 11, dpm++_sde).
+# Audio longer than the clip continues from its last frame (the wrapper pads the latents with it). The example's
+# VideoHelperSuite and KJNodes nodes are not in our image: core LoadVideo + GetVideoComponents load the clip, core
+# ImageScale (centre crop) stands in for ImageResizeKJv2 and ImageFromBatch for GetImageRangeFromBatch. The example's
+# vocal separator is left out (our voice line is clean), as in the image-to-video graph. The clip must already be at
+# TALK_FPS (the handler resamples it): the audio embeds are 25 per second, and nothing in core retimes frames.
+TALK_FPS = 25
+CLIP_VISION_WEIGHTS = {"clip_vision": [("Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+                                        "split_files/clip_vision/clip_vision_h.safetensors")]}
+CLIP_VISION = CLIP_VISION_WEIGHTS["clip_vision"][0][1]
+
+
+def v2v_start(params: dict) -> int:
+    """The video-to-video start step, checked: from 0 to below params.steps."""
+    steps, start = int(params["steps"]), int(params.get("start_step", 2))
+    if not 0 <= start < steps:
+        raise ValueError(f"start_step {start} must be from 0 to below steps ({steps})")
+    return start
+
+
+def graph_v2v(*, video: str, audio: str, prompt: str, frames: int, seed: int, params: dict,
+              blocks_to_swap: int) -> dict:
+    """Lip sync onto an existing clip (`video`, a file name in ComfyUI's input folder, at TALK_FPS) in ComfyUI's API
+    format. `frames` is the talk length at 25 fps (the audio's). params.start_step (of params.steps) is the denoise
+    strength: how much of the clip is redrawn (lower redraws more; the example: 2 of 4). params.clip_vision adds the
+    example's CLIP vision embeds of the first frame."""
+    p = params
+    start = v2v_start(p)
+    g = _talk_graph(image="", audio=audio, prompt=prompt, frames=frames, seed=seed, params=params,
+                    blocks_to_swap=blocks_to_swap)
+    del g["image"]
+    w, h = int(p["width"]), int(p["height"])
+    g.update({
+        "motion": {"class_type": "LoadVideo", "inputs": {"file": video}},
+        "motion_frames": {"class_type": "GetVideoComponents", "inputs": {"video": ["motion", 0]}},
+        "motion_resized": {"class_type": "ImageScale",
+                           "inputs": {"image": ["motion_frames", 0], "upscale_method": "lanczos", "width": w,
+                                      "height": h, "crop": "center"}},
+        "motion_first": {"class_type": "ImageFromBatch",
+                         "inputs": {"image": ["motion_resized", 0], "batch_index": 0, "length": 1}},
+        "motion_latents": {"class_type": "WanVideoEncode",
+                           "inputs": {"vae": ["vae", 0], "image": ["motion_resized", 0], "enable_vae_tiling": False,
+                                      "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128,
+                                      "noise_aug_strength": 0.0, "latent_strength": 1.0}},
+    })
+    g["i2v"]["inputs"]["start_image"] = ["motion_first", 0]
+    if p.get("clip_vision"):
+        g["clip_vision"] = {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": CLIP_VISION}}
+        g["clip_embeds"] = {"class_type": "WanVideoClipVisionEncode",
+                            "inputs": {"clip_vision": ["clip_vision", 0], "image_1": ["motion_first", 0],
+                                       "strength_1": 1.0, "strength_2": 1.0, "crop": "center",
+                                       "combine_embeds": "average", "force_offload": True, "tiles": 0, "ratio": 0.5}}
+        g["i2v"]["inputs"]["clip_embeds"] = ["clip_embeds", 0]
+    g["sampler"]["inputs"].update(samples=["motion_latents", 0], start_step=start, add_noise_to_samples=True)
+    g["save"]["inputs"]["filename_prefix"] = "mw_talk_v2v"
+    return with_compile(g, params, ["model"])
+
+
 def missing_inputs(g: dict, object_info: dict) -> list[str]:
     """Every node class the graph uses exists, and every required input is given: what ComfyUI would reject."""
     problems = []
@@ -145,7 +207,8 @@ def write_model_paths(models_dir: Path) -> Path:
     """ComfyUI reads model folders from extra_model_paths.yaml: point them at the weights cache (a network volume
     where the pool has one), so weights are downloaded once."""
     cfg = COMFY_DIR / "extra_model_paths.yaml"
-    folders = dict.fromkeys([*WEIGHTS, *I2V_WEIGHTS, *(f for w in LONGCAT_WEIGHTS.values() for f in w)])
+    folders = dict.fromkeys([*WEIGHTS, *I2V_WEIGHTS, *(f for w in LONGCAT_WEIGHTS.values() for f in w),
+                             *CLIP_VISION_WEIGHTS])
     lines = ["mw:", f"  base_path: {models_dir}"] + [f"  {folder}: {folder}" for folder in folders]
     cfg.write_text("\n".join(lines) + "\n")
     return cfg

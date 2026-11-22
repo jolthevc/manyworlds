@@ -15,6 +15,10 @@ new seeds before the post is dropped.
 A creator with a designed voice (voices.engine: voxcpm) has every spoken piece (a talk take or segment, a cutaway,
 a narrated edit's script) voiced first by a voice.speak job; the piece's job starts once that is done, with its wav
 as `audio_uri`. A Kokoro creator's pieces are voiced on their own workers, as before.
+Walk-and-talk (generation.talk_motion): a talking take whose shot moves (a walking or standing-up beat, a camera
+move) gets a silent motion clip first, from the take's photo on the story-clip path, alongside its voice line; the
+talk job then lip-syncs that clip (`video_uri`, InfiniteTalk video-to-video). Production waits for no review of
+the motion clip; the take is judged.
 `ready` posts are published by manyworlds.publish.scheduler per policy autonomy.publish (autonomous, or held).
 Only formats listed in production.formats are made; video posts wait as 'planned' until their
 format is added there.
@@ -22,6 +26,8 @@ format is added there.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -57,7 +63,8 @@ def ensure_lora(conn, policy: Policy, creator_id) -> dict | None:
 
 def _seed(post: dict, offset: int, attempt: int) -> int:
     """A deterministic seed per post, piece and attempt: a rerun asks for the same output, a retry for a new one.
-    Offsets keep pieces apart (scenes: i*1000, story clip: 500, talk: 700 + segment*1000, voice: 800 + segment*1000)."""
+    Offsets keep pieces apart (scenes: i*1000, story clip: 500, talk: 700 + segment*1000, voice: 800 + segment*1000,
+    motion clip: 900 + segment*1000)."""
     return int(str(post["id"]).replace("-", "")[:7], 16) + offset + attempt * 10
 
 
@@ -246,33 +253,47 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                "seed": _seed(post, 500, attempt),
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
     _with_shot(payload, shot)
+    kind = _story_clip_kind(conn, policy, post)
+    _clip_params(policy, kind, payload)
+    return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
+                         batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
+
+
+def _story_clip_kind(conn, policy: Policy, post: dict) -> str:
     kind = _cfg(policy).get("video_kind", "video.wan_i2v")
     if (_cfg(policy).get("routing") or {}).get("story_clip"):   # the cheapest per accepted clip (manyworlds.routing)
         from . import routing
         kind, _ = routing.choose(conn, policy, "story_clip", key=str(post["id"]))
+    return kind
+
+
+def _clip_params(policy: Policy, kind: str, payload: dict) -> dict:
+    """A clip job's render settings for its kind (a video.* job keeps the payload's own)."""
     if kind.startswith("hosted."):   # a hosted API renders it (generation.hosted_video): no GPU machine
         payload["params"] = dict(policy.get("generation", "hosted_video", default={}) or {})
     elif kind.startswith("comfy."):  # the ComfyUI worker's Wan 2.2 graph (generation.comfy_video)
         payload["params"] = dict(policy.get("generation", "comfy_video", default={}) or {})
-    return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
-                         batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
+    return payload
 
 def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *,
-              segment: int | None = None, start_uri: str | None = None, audio: dict | None = None):
+              segment: int | None = None, start_uri: str | None = None, audio: dict | None = None,
+              motion: dict | None = None):
     """A talking video: the creator says the script to camera from the approved photo, lip-synced,
     in their own voice (Kokoro on the talk worker, or the designed voice's finished line, `audio`: the worker then
     speaks nothing, and `script` stays for the judge). For a long script, one segment of it. A directed post's take
-    (body.talk_shots) uses its shot's scene, prompt and, when every shot has its own photo, that photo."""
+    (body.talk_shots) uses its shot's scene, prompt and, when every shot has its own photo, that photo. With
+    `motion` (the take's silent motion clip, walk-and-talk), the clip is lip-synced instead of the photo
+    (`video_uri`, generation.talk_motion.v2v settings)."""
     row = conn.execute("SELECT bible, anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
     voice = (row["anchors"] or {}).get("voice") or {}
     params = dict(policy.get("generation", "talk", default={}) or {})
     default_voice = params.pop("voice", "af_heart")
     params.pop("max_take_seconds", None)   # production's take limit, not a render setting
-    i = _take_shot(body, segment)
-    i = i if i < len(body["scenes"]) else 0
+    if motion:
+        params.update(_motion_cfg(policy).get("v2v") or {})
+    i = _take_index(body, segment)
     scene, shot = body["scenes"][i], _shot(body, i)
-    script = (body["talk_segments"][segment] if segment is not None
-              else body.get("talk_script") or body.get("script", ""))
+    script = _take_script(body, segment)
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"], "script": script,
                "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),
@@ -281,6 +302,8 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)), "seed": seed, "params": params}
     _with_shot(payload, shot)
     _with_audio(payload, audio)
+    if motion:
+        payload["video_uri"] = motion["uri"]
     if segment is not None:
         payload["segment"] = {"index": segment, "of": len(body["talk_segments"])}
     key = f"post:{post['id']}:talk:{attempt}" if segment is None else f"post:{post['id']}:talk:{segment}:{attempt}"
@@ -381,6 +404,110 @@ def _photo_per_shot(body: dict, chosen: list[dict]) -> bool:
 def _take_photo(body: dict, chosen: list[dict], i: int) -> dict:
     """The chosen photo for shot i when the post has one per shot, else the first."""
     return chosen[i] if _photo_per_shot(body, chosen) and i < len(chosen) else chosen[0]
+
+
+def _take_index(body: dict, segment: int | None) -> int:
+    """The scene (and shot) a talk take is made from: its shot, or scene 0 when that is out of range."""
+    i = _take_shot(body, segment)
+    return i if i < len(body["scenes"]) else 0
+
+
+def _take_script(body: dict, segment: int | None) -> str:
+    return (body["talk_segments"][segment] if segment is not None
+            else body.get("talk_script") or body.get("script", ""))
+
+
+# Walk-and-talk (generation.talk_motion): a take whose shot moves is a silent motion clip first (the story-clip path,
+# from the take's photo, prompted from the shot for image-to-video), then the talk job lip-syncs that clip. The clip is
+# a Step of its own, made alongside the voice line; production does not wait for a review of it (done with a video is
+# enough: the lip-synced take is judged; the job is marked payload.intermediate), and a rejected take is remade over
+# the same clip.
+def _motion_cfg(policy: Policy) -> dict:
+    return policy.get("generation", "talk_motion", default={}) or {}
+
+
+def _motion_pattern(words: str) -> str:
+    """A trigger phrase as a whole-word pattern; its first word may also end in s/es/ed/ing."""
+    first, *rest = words.lower().split()
+    return r"\b" + re.escape(first) + r"(?:s|es|ed|ing)?" + "".join(r"\s+" + re.escape(w) for w in rest) + r"\b"
+
+
+def moves(policy: Policy, shot: dict | None) -> bool:
+    """Whether a shot has movement a talking photo can't give (generation.talk_motion.trigger): a camera move in
+    camera_moves, or a beat whose action says one of beat_words. False when walk-and-talk is off or there's no shot."""
+    cfg = _motion_cfg(policy)
+    if shot is None or not cfg.get("enabled"):
+        return False
+    from .direction import ShotSheet, camera_move
+    s = shot if isinstance(shot, ShotSheet) else ShotSheet.model_validate(shot)
+    trigger = cfg.get("trigger") or {}
+    move = camera_move(s, policy)
+    if move and move in (trigger.get("camera_moves") or []):
+        return True
+    patterns = [_motion_pattern(str(w)) for w in trigger.get("beat_words") or [] if str(w).strip()]
+    return any(re.search(p, b.action.lower()) for b in s.blocking for p in patterns)
+
+
+def _needs_motion(policy: Policy, post: dict, body: dict, segment: int | None) -> bool:
+    """Whether this talk take is walk-and-talk: a talking video on InfiniteTalk (the only V2V talk model) whose
+    take's shot moves."""
+    if post["format"] != "talking_video":
+        return False
+    talk = policy.get("generation", "talk", default={}) or {}
+    if str(talk.get("model") or "infinitetalk") != "infinitetalk":
+        return False
+    return moves(policy, _shot(body, _take_index(body, segment)))
+
+
+def _wan_frames(seconds: float, fps: float) -> int:
+    """At least `seconds` of frames, as Wan's 4k+1 frame counts."""
+    n = max(1, math.ceil(seconds * fps))
+    return 4 * math.ceil((n - 1) / 4) + 1
+
+
+def _motion_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *,
+                segment: int | None = None, start_uri: str | None = None, audio: dict | None = None):
+    """The take's silent motion clip: its photo (or, chained, the frame it starts from) moving as its shot's blocking
+    and camera say, as long as its voice line (the finished line's length once voiced, else estimated from the words)
+    up to max_motion_seconds."""
+    from .talk_segments import estimate_seconds
+    cfg = _motion_cfg(policy)
+    bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
+    i = _take_index(body, segment)
+    scene, shot = body["scenes"][i], _shot(body, i)
+    seconds = ((audio or {}).get("meta") or {}).get("seconds") or estimate_seconds(
+        _take_script(body, segment), float(_talk_long_cfg(policy).get("words_per_second", 2.5)))
+    seconds = min(float(seconds), float(cfg.get("max_motion_seconds", 5)))
+    vid = policy.get("generation", "video", default={})
+    kind = cfg.get("kind") or _story_clip_kind(conn, policy, post)
+    payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"],
+               "prompt": clip_prompt(bible, scene, "", shot=shot, policy=policy),   # compile_prompt(shot, ..., "i2v")
+               "scene": scene, "width": vid.get("width", 704), "height": vid.get("height", 1280),
+               "keyframes": int(cfg.get("keyframes", 1)),
+               "seed": _seed(post, 900 + (segment or 0) * 1000, attempt),
+               "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)},
+               "intermediate": True}   # walk-and-talk's source clip, not a post's output: the take is reviewed
+    _clip_params(policy, kind, payload)
+    frames = _wan_frames(seconds, float(payload["params"].get("fps") or vid.get("fps", 24)))
+    payload["frames"] = frames
+    if kind.startswith("comfy."):   # the ComfyUI graph reads its length from params
+        payload["params"]["frames"] = frames
+    _with_shot(payload, shot)
+    key = f"post:{post['id']}:motion:{attempt}" if segment is None else f"post:{post['id']}:motion:{segment}:{attempt}"
+    return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
+                         post_id=post["id"], idempotency_key=key)
+
+
+def _advance_motion(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], jobs: list[str], *,
+                    segment: int | None = None, start_uri: str | None = None, audio: dict | None = None,
+                    label: str = "") -> tuple[str, Any]:
+    """('chosen', the motion clip's video asset) once it is made; retried on failure like any other step."""
+    step = Step(jobs, lambda j: _edit_state(conn, j),
+                lambda attempt: _motion_job(conn, policy, post, body, chosen, attempt, segment=segment,
+                                            start_uri=start_uri, audio=audio),
+                ("motion_repairs", 0), ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))),
+                "motion clip", label)
+    return advance_step(body, step)
 
 
 def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, segment: int,
@@ -549,7 +676,12 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
                                        voice_lines(body, i) if voiced else [], segment=i, label=f"segment {i}: ")
         if vstate == "dropped":
             return "dropped", None
-        if vstate != "chosen":
+        # Walk-and-talk: the take's motion clip is made alongside its voice line. A segment started without one
+        # keeps going as it began.
+        motion_jobs = body.get("motion_segment_jobs")
+        wants_motion = modes[i] != "narrated" and (bool(motion_jobs and motion_jobs[i])
+                                                    or (not jobs[i] and _needs_motion(policy, post, body, i)))
+        if vstate != "chosen" and not wants_motion:
             results.append(("waiting", None))
             continue
         if modes[i] == "narrated":   # a cutaway over the other photos (hybrid): not a lip-sync render
@@ -567,9 +699,19 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
             results.append(("waiting", None))   # starts from the previous segment's last frame
             continue
         start_uri = _last_frame(conn, results[-1][1]) if follows else None
+        mstate, motion = "chosen", None
+        if wants_motion:
+            motion_jobs = body.setdefault("motion_segment_jobs", [[] for _ in body["talk_segments"]])
+            mstate, motion = _advance_motion(conn, policy, post, body, chosen, motion_jobs[i], segment=i,
+                                             start_uri=start_uri, audio=audio, label=f"segment {i}: ")
+            if mstate == "dropped":
+                return "dropped", None
+        if vstate != "chosen" or mstate != "chosen":
+            results.append(("waiting", None))   # the take needs its voice line and its motion clip
+            continue
         step = Step(jobs[i], lambda j: _clip_state(conn, j),
-                    lambda attempt, i=i, s=start_uri, a=audio: _talk_job(conn, policy, post, body, chosen, attempt,
-                                                                         segment=i, start_uri=s, audio=a),
+                    lambda attempt, i=i, s=start_uri, a=audio, m=motion: _talk_job(
+                        conn, policy, post, body, chosen, attempt, segment=i, start_uri=s, audio=a, motion=m),
                     (f"segment_repairs_{i}", repairs), ("follow_up_failures", failures), "clip", f"segment {i}: ")
         results.append(advance_step(body, step))
         if results[-1][0] == "dropped":
@@ -613,9 +755,12 @@ def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:
                  "image", f"scene {i}: ") for i, jobs in enumerate(body["scene_jobs"])]
 
 
-def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], audio: dict | None = None) -> Step:
+def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], audio: dict | None = None,
+               motion: dict | None = None) -> Step:
     key, make, state, thing = FOLLOW_UPS[post["format"]]
     voiced = {"audio": audio} if audio else {}
+    if motion:   # walk-and-talk: only a talk job is made with a motion clip
+        voiced["motion"] = motion
     return Step(body.setdefault(key, []), lambda j: state(conn, j),
                 lambda attempt: make(conn, policy, post, body, chosen, attempt, **voiced),
                 ("clip_repairs", int(policy.get("review", "video", "max_repairs_per_post", default=2))),
@@ -627,15 +772,23 @@ SPOKEN = ("narrated_edit", "talking_video")
 
 
 def _advance_follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]) -> tuple[str, Any]:
-    audio = None
+    audio, vstate = None, "chosen"
+    started = bool(body.get(FOLLOW_UPS[post["format"]][0]))
     voice = _designed_voice(conn, post) if post["format"] in SPOKEN else None
-    # A piece started before the voice was designed keeps going as it began.
-    if voice and (body.get("voice_jobs") or not body.get(FOLLOW_UPS[post["format"]][0])):
-        state, audio = _advance_voice(conn, policy, post, body, voice, body.setdefault("voice_jobs", []),
-                                      voice_lines(body))
-        if state != "chosen":
-            return state, None
-    return advance_step(body, _follow_up(conn, policy, post, body, chosen, audio))
+    # A piece started before the voice was designed (or before walk-and-talk) keeps going as it began.
+    if voice and (body.get("voice_jobs") or not started):
+        vstate, audio = _advance_voice(conn, policy, post, body, voice, body.setdefault("voice_jobs", []),
+                                       voice_lines(body))
+        if vstate == "dropped":
+            return vstate, None
+    mstate, motion = "chosen", None   # walk-and-talk: the motion clip, made alongside the voice line
+    if body.get("motion_jobs") or (not started and _needs_motion(policy, post, body, None)):
+        mstate, motion = _advance_motion(conn, policy, post, body, chosen, body.setdefault("motion_jobs", []))
+        if mstate == "dropped":
+            return mstate, None
+    if vstate != "chosen" or mstate != "chosen":
+        return "waiting", None
+    return advance_step(body, _follow_up(conn, policy, post, body, chosen, audio, motion))
 
 
 def advance_post(conn, policy: Policy, post: dict, store=None) -> str:

@@ -79,3 +79,42 @@ def keyframes(video: Path, workdir: Path, n: int, *, timeout: float = 120) -> li
             raise RuntimeError(f"keyframe {idx} of {video.name}: {r.stderr[-300:]}")
         out.append((p, idx, total))
     return out
+
+
+def burn_captions(video: Path, ass: Path, out: Path, fontsdir: Path | None = None, *, overlay=None,
+                  use_ass: bool | None = None, crf: int = 18, preset: str = "veryfast",
+                  timeout: float = 900) -> Path:
+    """Burn captions (manyworlds.captions) into `video` -> `out`, audio copied. With libass in this ffmpeg (its
+    `ass` filter; `use_ass=None` asks ffmpeg), the ASS script is rendered with the fonts in `fontsdir`. Without
+    it, `overlay` (an ffconcat listing of transparent PNGs, or a function that makes one) is laid over the video.
+    Paths go into the filter graph quoted, with ':' escaped; a path with a quote in it is refused."""
+    import re
+
+    exe = ffmpeg()
+    if use_ass is None:
+        r = subprocess.run([exe, "-hide_banner", "-filters"], capture_output=True, text=True, timeout=60)
+        use_ass = bool(re.search(r"^\s*\S+\s+ass\s+V->V", r.stdout or "", re.M))
+
+    def arg(p: Path) -> str:
+        s = Path(p).resolve().as_posix()
+        if "'" in s:
+            raise ValueError(f"caption path has a quote: {s}")
+        return "'" + s.replace(":", "\:") + "'"
+
+    encode = ["-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p", "-c:a", "copy",
+              "-movflags", "+faststart", str(out)]
+    if use_ass:
+        vf = f"ass=filename={arg(ass)}" + (f":fontsdir={arg(fontsdir)}" if fontsdir else "")
+        cmd = [exe, "-y", "-v", "error", "-i", str(video), "-vf", vf, "-map", "0:v:0", "-map", "0:a?"] + encode
+    else:
+        if overlay is None:
+            raise RuntimeError("this ffmpeg has no libass (no `ass` filter) and no caption overlay was given")
+        listing = overlay() if callable(overlay) else Path(overlay)
+        cmd = [exe, "-y", "-v", "error", "-i", str(video), "-f", "concat", "-safe", "0", "-i", str(listing),
+               "-filter_complex", "[0:v][1:v]overlay=0:0:format=auto:eof_action=pass,format=yuv420p[v]",
+               "-map", "[v]", "-map", "0:a?"] + encode
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0 or not Path(out).exists() or Path(out).stat().st_size == 0:
+        how = "libass" if use_ass else "overlay"
+        raise RuntimeError(f"ffmpeg could not burn captions ({how}) into {Path(video).name}: {(r.stderr or '')[-500:]}")
+    return Path(out)

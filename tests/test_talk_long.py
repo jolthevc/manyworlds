@@ -406,3 +406,104 @@ def test_voice_lines_follow_the_shots_and_a_split_take_gets_only_its_part(policy
     assert [line["text"] for line in production.voice_lines(single)] == [
         line["text"] for line in SHOP["performance"]["lines"]]
     assert production.voice_lines({"script": "Hi there. Bye now."}) == [{"text": "Hi there."}, {"text": "Bye now."}]
+
+
+# --- walk-and-talk: a moving take is a silent motion clip first, then lip-synced video-to-video --------------------
+WALK = _says("Okay, walking you to the bakery.",
+             set={"location": "a quiet street at dawn"}, framing={"shot_size": "medium shot", "device": "selfie"},
+             blocking=[{"at_s": 0, "action": "walks toward the camera along the street", "eyeline": "lens"}])
+
+
+def _motion_jobs(conn, pid, policy):
+    return conn.execute("SELECT id, status, payload, idempotency_key FROM jobs WHERE post_id = %s AND kind = %s "
+                        "ORDER BY idempotency_key", (pid, policy.get("generation", "talk_motion", "kind"))).fetchall()
+
+
+def _without_motion(policy):
+    gen = policy.body["generation"]
+    return policy_mod.from_dict({**policy.body, "generation": {**gen, "talk_motion": {**gen["talk_motion"],
+                                                                                       "enabled": False}}})
+
+
+def test_which_shots_move(policy):
+    assert production.moves(policy, WALK) and not production.moves(policy, SHOP)
+    assert not production.moves(policy, DOORWAY)                 # turning back to the phone is not walking
+    stands = {"blocking": [{"action": "puts the mug down"}, {"at_s": 2, "action": "stands up from the sofa"}]}
+    assert production.moves(policy, stands)
+    assert production.moves(policy, {"framing": {"camera_move": "push in"}})        # a camera move
+    assert not production.moves(policy, {"framing": {"camera_move": "static"}})
+    assert not production.moves(policy, {"framing": {"camera_move": "handheld"}})   # a held phone's sway is not one
+    assert production.moves(policy, {"blocking": [{"action": "steps back and laughs"}]})     # whole words, inflected
+    assert not production.moves(policy, {"blocking": [{"action": "eats a walkable snack"}]})
+    assert not production.moves(policy, None) and not production.moves(_without_motion(policy), WALK)
+
+
+def test_a_walking_take_is_a_motion_clip_first_then_lip_synced_onto_it(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [WALK, DOORWAY])
+    assert body["talk_shots"] == [0, 1]
+    [motion] = _motion_jobs(conn, pid, policy)
+    p = motion["payload"]
+    assert motion["idempotency_key"] == f"post:{pid}:motion:0:0"
+    assert p["image_uri"] == body["images"][0]["uri"] and p["shot"] == body["shots"][0]
+    assert "walks toward the camera along the street" in p["prompt"] and "a quiet street at dawn" in p["prompt"]
+    assert p["intermediate"] is True and p["keyframes"] == policy.get("generation", "talk_motion", "keyframes")
+    fps = policy.get("generation", "comfy_video", "fps")
+    seconds = len(WALK["performance"]["lines"][0]["text"].split()) / policy.get("generation", "talk_long",
+                                                                                   "words_per_second")
+    assert p["params"]["frames"] == p["frames"] == production._wan_frames(seconds, fps)
+    assert (p["frames"] - 1) % 4 == 0 and p["frames"] >= seconds * fps
+    # The static take is lip-synced from its photo as before; the walking one waits for its motion clip.
+    [doorway] = _segment_jobs(conn, pid)
+    assert doorway["payload"]["segment"]["index"] == 1 and "video_uri" not in doorway["payload"]
+    rendered(conn, store, tmp_path, motion["id"], keyframes=0)     # the motion clip is made, and not reviewed
+    production.advance(conn, policy, now=NOW, store=store)
+    talks = _segment_jobs(conn, pid)
+    walk = next(t for t in talks if t["payload"]["segment"]["index"] == 0)
+    clip_uri = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'video'", (motion["id"],)).fetchone()["uri"]
+    assert walk["payload"]["video_uri"] == clip_uri and walk["payload"]["image_uri"] == body["images"][0]["uri"]
+    v2v = policy.get("generation", "talk_motion", "v2v")
+    assert all(walk["payload"]["params"][k] == v for k, v in v2v.items())
+    production.advance(conn, policy, now=NOW, store=store)                           # idempotent: nothing new
+    assert len(_motion_jobs(conn, pid, policy)) == 1 and len(_segment_jobs(conn, pid)) == 2
+    for t in talks:
+        rendered(conn, store, tmp_path, t["id"])
+    video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
+    assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
+    assert len(joined[0]) == 2
+
+
+def test_a_static_take_gets_no_motion_clip(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, DOORWAY])
+    assert _motion_jobs(conn, pid, policy) == [] and "motion_segment_jobs" not in body
+    assert all("video_uri" not in j["payload"] for j in _segment_jobs(conn, pid))
+    # Switched off, a walking take is lip-synced from its photo too.
+    off = _without_motion(policy)
+    pid, body = _directed_post(conn, off, store, tmp_path, [WALK])
+    [talk] = _segment_jobs(conn, pid)
+    assert _motion_jobs(conn, pid, off) == [] and "video_uri" not in talk["payload"]
+
+
+def test_a_single_walking_take_is_voiced_and_moved_at_once_and_lip_synced_once_both_are_done(conn, policy, store,
+                                                                                            tmp_path, joined):
+    policy = _talking(policy)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [WALK], voice=DESIGNED)
+    assert body["talk_segments"] == []                                               # one take: one clip
+    [voice_job] = _voice_jobs(conn, pid)
+    [motion] = _motion_jobs(conn, pid, policy)                                       # in parallel with the voice
+    assert motion["idempotency_key"] == f"post:{pid}:motion:0"
+    assert _segment_jobs(conn, pid) == []
+    uri, _ = _spoken(conn, voice_job)
+    production.advance(conn, policy, now=NOW, store=store)
+    assert _segment_jobs(conn, pid) == []                                            # still waits for the clip
+    conn.execute("UPDATE jobs SET status = 'failed' WHERE id = %s", (motion["id"],))  # a machine vanished
+    production.advance(conn, policy, now=NOW, store=store)
+    first, retry = _motion_jobs(conn, pid, policy)
+    assert retry["idempotency_key"] == f"post:{pid}:motion:1" and retry["payload"]["seed"] != motion["payload"]["seed"]
+    rendered(conn, store, tmp_path, retry["id"], keyframes=0)
+    production.advance(conn, policy, now=NOW, store=store)
+    [talk] = _segment_jobs(conn, pid)
+    clip_uri = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'video'", (retry["id"],)).fetchone()["uri"]
+    assert talk["payload"]["video_uri"] == clip_uri and talk["payload"]["audio_uri"] == uri
+    assert talk["payload"]["params"]["steps"] == policy.get("generation", "talk_motion", "v2v", "steps")

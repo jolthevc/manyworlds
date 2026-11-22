@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 include = ["manyworlds*"]
 
 [tool.setuptools.package-data]
-manyworlds = ["migrations/*.sql"]
+manyworlds = ["migrations/*.sql", "fonts/*.ttf", "fonts/*.txt", "fonts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

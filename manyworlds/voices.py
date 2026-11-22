@@ -93,6 +93,104 @@ def with_instruction(instruction: str | None, text: str) -> str:
     return f"({instruction}){words}" if instruction else words
 
 
+# --- natural speech: clauses and the pauses between them (plan 2026-11-22-video-quality-autonomous, item 7) ---------
+# The model's own pauses are not relied on (docs/research/2026-11-22-video-quality-wave2-3.md section 6): a line is
+# spoken clause by clause and the silences between them are ours. Split points: a comma, semicolon or colon (so a
+# clause that opens with "and", "but" or "so" after a comma starts its own piece), a dash, an ellipsis, and a
+# sentence end. Never inside a number ("1,000", "3.5", "5:30", "10–20": no space after the mark) or after an
+# abbreviation ("Dr.", "e.g.", "U.S.", "a.m.", an initial, or a full stop followed by a lower-case word).
+_CLOSERS = "\"'”’)\\]"
+_BOUNDARY = re.compile(
+    rf"(?P<ellipsis>(?:\.{{3,}}|…)[{_CLOSERS}]*)(?=\s|$)"
+    rf"|(?P<sentence>[.!?]+[{_CLOSERS}]*)(?=\s|$)"
+    rf"|(?P<clause>[,;:][{_CLOSERS}]*)(?=\s|$)"
+    r"|(?P<dash>\s+(?:--?|[–—])\s+|\s*(?:--|[–—])\s*)")
+_ABBREVIATIONS = frozenset({"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "approx", "inc", "ltd",
+                            "dept", "mt", "ft", "e.g", "i.e", "a.m", "p.m"})
+_WORD = re.compile(r"[A-Za-z0-9'’]+")
+
+
+def _word_count(text: str) -> int:
+    return len(_WORD.findall(text or ""))
+
+
+def _after_abbreviation(text: str, m: re.Match) -> bool:
+    """Is this full stop part of an abbreviation rather than a sentence end?"""
+    if m.group(0).rstrip(_CLOSERS.replace("\\", "")) != ".":
+        return False                           # "!", "?" or "?!" always end a sentence
+    if text[m.end():].lstrip()[:1].islower():
+        return True                            # "approx. five", "etc. and then"
+    before = re.search(r"(\S+)$", text[:m.start()])
+    token = (before.group(1) if before else "").lstrip("(\"'“‘[")
+    return (token.lower() in _ABBREVIATIONS or bool(re.fullmatch(r"[A-Z]", token))
+            or bool(re.fullmatch(r"(?:[A-Za-z]\.)+[A-Za-z]", token)))
+
+
+def _number_range(text: str, m: re.Match) -> bool:
+    """An unspaced dash between digits ("10–20") is a range, not a break."""
+    return (m.group(0) == m.group(0).strip() and m.start() > 0 and m.end() < len(text)
+            and text[m.start() - 1].isdigit() and text[m.end()].isdigit())
+
+
+def segments(text: str, *, min_words: int = 1) -> list[tuple[str, str]]:
+    """A line's clauses with the boundary after each: [(clause, kind)], kind 'clause' (a short pause follows),
+    'sentence' (a longer one) or 'end' (the line's own pause follows). Clause text keeps its punctuation, so a
+    model still hears a comma as a continuation; a dash is kept as " —". A clause under `min_words` words joins
+    the next one (or the one before, at a sentence end), since a one-word take is hard to voice and to score."""
+    text = (text or "").strip()
+    raw: list[list[str]] = []
+    start = 0
+    for m in _BOUNDARY.finditer(text):
+        kind = m.lastgroup
+        if kind == "sentence" and _after_abbreviation(text, m):
+            continue
+        if kind == "dash" and _number_range(text, m):
+            continue
+        if kind == "ellipsis":
+            kind = "clause" if text[m.end():].lstrip()[:1].islower() else "sentence"
+        piece = (text[start:m.start()].rstrip() + " —") if kind == "dash" else text[start:m.end()]
+        start = m.end()
+        kind = "clause" if kind == "dash" else kind
+        if _word_count(piece):
+            raw.append([piece.strip(), kind])
+        elif raw and kind == "sentence":
+            raw[-1][1] = "sentence"            # a stray mark ends the clause before it
+    tail = text[start:].strip()
+    if _word_count(tail):
+        raw.append([tail, "end"])
+    if not raw:
+        return []
+    raw[-1][1] = "end"
+    merged: list[list[str]] = []
+    carry = ""
+    for piece, kind in raw:                    # a short clause joins the next one
+        piece = f"{carry} {piece}" if carry else piece
+        carry = ""
+        if kind == "clause" and _word_count(piece) < min_words:
+            carry = piece
+            continue
+        merged.append([piece, kind])
+    out: list[list[str]] = []
+    for piece, kind in merged:                 # a short clause at a sentence end joins the one before
+        if out and out[-1][1] == "clause" and _word_count(piece) < min_words:
+            out[-1] = [f"{out[-1][0]} {piece}", kind]
+        else:
+            out.append([piece, kind])
+    return [(p, k) for p, k in out]
+
+
+def clauses(text: str, *, min_words: int = 1) -> list[str]:
+    """'Okay, so I went — and it rained.' -> ['Okay,', 'so I went —', 'and it rained.'] (see `segments`)."""
+    return [p for p, _ in segments(text, min_words=min_words)]
+
+
+def gap_s(rng, span: tuple[float, float]) -> float:
+    """One pause length in seconds, drawn from [lo, hi] with the caller's seeded RNG: reproducible for a seed, but
+    never the same length every time (a metronomic pause sounds read, not spoken)."""
+    lo, hi = span
+    return round(lo if hi <= lo else rng.uniform(lo, hi), 4)
+
+
 def engine(anchors: dict | None) -> str:
     """The creator's voice engine: 'voxcpm' once a designed voice is stored (anchors.voice with a reference clip),
     otherwise 'kokoro' (a stock voice or blend), so creators made before designed voices keep speaking."""

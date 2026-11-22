@@ -118,3 +118,19 @@ def test_a_speak_payload_carries_the_designed_voice_and_the_takes(policy):
                                                                     policy.get("voice", "takes"), 3)
     assert p["lines"] == [{"text": "Hi.", "delivery": "softly"}, {"text": "Bye."}]
     assert p["params"]["pause_s"] == policy.get("voice", "pause_s")
+
+
+def test_the_speak_payload_carries_natural_speech_as_policy_sets_it(policy):
+    """Item 7 (plan 2026-11-22-video-quality-autonomous): clause splitting, the gap ranges and the line ceiling reach
+    the worker from policy and parse there; breaths and fillers are experimental and ship off."""
+    from manyworlds.worker.handlers import tts_voxcpm
+
+    voice = {"ref_uri": "s3://b/v.wav", "ref_text": "Hi."}
+    params = voice_lab.speak_payload(policy, voice, [{"text": "Hi."}])["params"]
+    for key in ("split_clauses", "clause_gap_s", "sentence_gap_s", "trim", "fade_ms", "line_max_wer", "breaths",
+                "disfluency"):
+        assert params[key] == policy.get("voice", key)
+    cfg = tts_voxcpm.speech_config(params)
+    assert cfg["split"] is True and cfg["clause_gap"][1] < cfg["sentence_gap"][0]   # clause pauses shorter
+    assert cfg["breaths"] is None and cfg["disfluency"] is None
+    assert cfg["max_wer"] == policy.get("voice", "max_wer") and cfg["retry_factor"] >= 1

@@ -31,11 +31,18 @@ def _kind(policy: Policy, what: str) -> str:
     return (_cfg(policy).get("kinds") or {}).get(what, f"voice.{what}")
 
 
+# Natural speech (worker/handlers/tts_voxcpm.speech_config): clause splitting, the gaps between clauses and
+# sentences, trimming and fades, per-clause WER retries, the line ceiling, and the experimental breaths and fillers.
+NATURAL_KEYS = ("split_clauses", "clause_min_words", "clause_gap_s", "sentence_gap_s", "trim", "fade_ms", "max_wer",
+                "clause_retry_wer_factor", "line_max_wer", "breaths", "disfluency")
+
+
 def worker_params(policy: Policy) -> dict:
-    """What the voice worker needs from policy: the model, its sampling, and the speech gate's transcriber."""
+    """What the voice worker needs from policy: the model, its sampling, how lines become natural speech, and the
+    speech gate's transcriber."""
     cfg, heard = _cfg(policy), policy.get("review", "video", "intelligibility", default={}) or {}
     params = {k: cfg[k] for k in ("model", "cfg_value", "inference_timesteps", "optimize", "embedding", "pitch_hz",
-                                  "pause_s") if k in cfg}
+                                  "pause_s", *NATURAL_KEYS) if k in cfg}
     params.update(asr_model=heard.get("model", "openai/whisper-large-v3"), language=heard.get("language", "en"))
     return params
 

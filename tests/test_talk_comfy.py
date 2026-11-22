@@ -272,3 +272,120 @@ def test_the_longcat_talk_profile_reaches_a_bench_job(conn, policy):
     p = conn.execute("SELECT payload FROM jobs WHERE batch = %s", (batch,)).fetchone()["payload"]["params"]
     assert (p["model"], p["frame_window"], p["overlap"], p["scheduler"], p["attention"]) == (
         "longcat", 93, 13, "longcat_distill_euler", "sdpa")
+
+
+# Walk-and-talk (comfy.graph_v2v): InfiniteTalk video-to-video as Kijai's example
+# (example_workflows/wanvideo_2_1_14B_V2V_InfiniteTalk_example_02.json at the pinned commit), with core ComfyUI nodes in
+# place of its VideoHelperSuite / KJNodes ones (VHS_LoadVideo, ImageResizeKJv2, GetImageRangeFromBatch, VHS_VideoCombine).
+V2V_EXAMPLE_NODES = {"WanVideoVAELoader", "WanVideoLoraSelect", "WanVideoBlockSwap", "MultiTalkModelLoader",
+                     "WanVideoModelLoader", "DownloadAndLoadWav2VecModel", "LoadAudio", "MultiTalkWav2VecEmbeds",
+                     "WanVideoTextEncodeCached", "WanVideoImageToVideoMultiTalk", "WanVideoSampler",
+                     "WanVideoEncode", "WanVideoClipVisionEncode", "CLIPVisionLoader", "WanVideoTorchCompileSettings"}
+V2V_CORE = {"LoadVideo", "GetVideoComponents", "ImageScale", "ImageFromBatch", "WanVideoPassImagesFromSamples",
+            "CreateVideo", "SaveVideo"}
+# The inputs of the nodes the V2V graph adds or rewires, as declared at the pins (wrapper a7439db, ComfyUI core):
+# what the real catalogue check in the talkcomfy smoke test sees for them.
+V2V_CATALOGUE = {
+    "LoadVideo": {"input": {"required": {"file": []}}},
+    "GetVideoComponents": {"input": {"required": {"video": []}}},
+    "ImageScale": {"input": {"required": {"image": [], "upscale_method": [], "width": [], "height": [], "crop": []}}},
+    "ImageFromBatch": {"input": {"required": {"image": [], "batch_index": [], "length": []}}},
+    "WanVideoEncode": {"input": {"required": {k: [] for k in ("vae", "image", "enable_vae_tiling", "tile_x", "tile_y",
+                                                              "tile_stride_x", "tile_stride_y")},
+                                 "optional": {"noise_aug_strength": [], "latent_strength": [], "mask": []}}},
+    "CLIPVisionLoader": {"input": {"required": {"clip_name": []}}},
+    "WanVideoClipVisionEncode": {"input": {"required": {k: [] for k in ("clip_vision", "image_1", "strength_1",
+                                                                        "strength_2", "crop", "combine_embeds",
+                                                                        "force_offload")},
+                                           "optional": {"image_2": [], "negative_image": [], "tiles": [], "ratio": []}}},
+    "WanVideoImageToVideoMultiTalk": {"input": {"required": {k: [] for k in ("vae", "width", "height",
+                                                                             "frame_window_size", "motion_frame",
+                                                                             "force_offload", "colormatch")},
+                                                "optional": {k: [] for k in ("start_image", "tiled_vae", "clip_embeds",
+                                                                             "mode", "output_path")}}},
+    "WanVideoSampler": {"input": {"required": {k: [] for k in ("model", "image_embeds", "steps", "cfg", "shift", "seed",
+                                                               "force_offload", "scheduler", "riflex_freq_index")},
+                                  "optional": {k: [] for k in ("text_embeds", "samples", "denoise_strength",
+                                                               "feta_args", "context_options", "cache_args",
+                                                               "flowedit_args", "batched_cfg", "slg_args",
+                                                               "rope_function", "loop_args", "experimental_args",
+                                                               "sigmas", "unianimate_poses", "fantasytalking_embeds",
+                                                               "uni3c_embeds", "multitalk_embeds", "freeinit_args",
+                                                               "start_step", "end_step", "add_noise_to_samples")}}},
+}
+
+
+def _v2v(**p):
+    return comfy.graph_v2v(video="m.mp4", audio="a.wav", prompt="she walks and talks", frames=150, seed=7,
+                           params={"width": 480, "height": 832, "steps": 4, "start_step": 2, **p}, blocks_to_swap=0)
+
+
+def test_the_v2v_graph_encodes_the_motion_clip_into_the_samplers_samples():
+    g = _v2v()
+    assert {n["class_type"] for n in g.values()} <= V2V_EXAMPLE_NODES | V2V_CORE
+    assert "LoadImage" not in {n["class_type"] for n in g.values()}             # the clip, not the photo
+    assert g["motion"]["inputs"]["file"] == "m.mp4"
+    assert g["motion_frames"]["inputs"]["video"] == ["motion", 0]
+    r = g["motion_resized"]["inputs"]
+    assert (r["image"], r["width"], r["height"], r["crop"]) == (["motion_frames", 0], 480, 832, "center")
+    enc = g["motion_latents"]["inputs"]
+    assert enc["image"] == ["motion_resized", 0] and enc["vae"] == ["vae", 0]
+    first = g["motion_first"]["inputs"]
+    assert (first["image"], first["batch_index"], first["length"]) == (["motion_resized", 0], 0, 1)
+    i2v = g["i2v"]["inputs"]
+    assert i2v["start_image"] == ["motion_first", 0] and i2v["mode"] == "infinitetalk"
+    assert (i2v["frame_window_size"], i2v["motion_frame"]) == (81, 9) and "clip_embeds" not in i2v
+    s = g["sampler"]["inputs"]
+    assert s["samples"] == ["motion_latents", 0] and s["image_embeds"] == ["i2v", 0]
+    assert (s["steps"], s["start_step"], s["add_noise_to_samples"], s["denoise_strength"]) == (4, 2, True, 1.0)
+    assert (s["cfg"], s["shift"], s["scheduler"]) == (1.0, 11.0, "dpm++_sde")   # the example's settings
+    assert s["multitalk_embeds"] == ["embeds", 0] and g["embeds"]["inputs"]["num_frames"] == 150
+    assert g["video"]["inputs"]["audio"] == ["audio", 0] and g["video"]["inputs"]["fps"] == float(comfy.TALK_FPS)
+    _links_resolve(g)
+    # The nodes it adds or rewires take exactly the inputs their classes declare.
+    changed = {k: g[k] for k in ("motion", "motion_frames", "motion_resized", "motion_first", "motion_latents",
+                                 "i2v", "sampler")}
+    assert comfy.missing_inputs(changed, V2V_CATALOGUE) == []
+
+
+def test_the_v2v_graph_adds_clip_vision_of_the_first_frame_only_when_asked():
+    g = _v2v(clip_vision=True)
+    assert g["clip_vision"]["inputs"]["clip_name"] == comfy.CLIP_VISION
+    assert g["clip_embeds"]["inputs"]["image_1"] == ["motion_first", 0]
+    assert g["i2v"]["inputs"]["clip_embeds"] == ["clip_embeds", 0]
+    assert comfy.missing_inputs({k: g[k] for k in ("clip_vision", "clip_embeds", "i2v")}, V2V_CATALOGUE) == []
+    _links_resolve(g)
+    assert "clip_vision" not in comfy.WEIGHTS                                     # only a CLIP-vision job fetches it
+
+
+def test_the_v2v_start_step_must_leave_steps_to_sample():
+    import pytest
+    for bad in (4, 5, -1):
+        with pytest.raises(ValueError):
+            _v2v(start_step=bad)
+    assert _v2v(start_step=0)["sampler"]["inputs"]["start_step"] == 0
+
+
+def test_a_v2v_talk_job_needs_infinitetalk_and_a_valid_start_step():
+    import pytest
+    from manyworlds.worker.runner import NonRetryable
+    base = {"image_uri": "s3://b/p.png", "audio_uri": "s3://b/a.wav", "keyframes": 4, "video_uri": "s3://b/m.mp4"}
+    params = {"width": 480, "height": 832, "steps": 4, "timeout_s": 60}
+    with pytest.raises(NonRetryable, match="InfiniteTalk only"):
+        talk_comfy.generate({**base, "params": {**params, "model": "longcat"}}, None)
+    with pytest.raises(NonRetryable, match="start_step"):
+        talk_comfy.generate({**base, "params": {**params, "start_step": 4}}, None)
+
+
+def test_the_motion_clip_is_resampled_to_the_talk_frame_rate(tmp_path):
+    import subprocess
+
+    import imageio_ffmpeg
+
+    from manyworlds import media
+    src = tmp_path / "m16.mp4"
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x288:rate=16:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
+    out = talk_comfy.at_fps(src, tmp_path / "m25.mp4", comfy.TALK_FPS)
+    frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
+    assert abs(frames - 2 * comfy.TALK_FPS) <= 1 and abs(seconds - 2.0) < 0.1      # same length, 25 fps

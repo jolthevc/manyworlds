@@ -14,6 +14,10 @@ per gate, written against the video asset:
   scene     (when the planner wrote one) the shot shows the scene and the movement intended
   direction (when the job carries a shot sheet, manyworlds.direction) the clip follows the shot and its beats,
             on rubric policy/rubrics/direction-v<n>.yaml; below review.direction.min_score it is rejected
+  finer checks (manyworlds.review.detail, policy review.detail; each rejects only when enforced):
+    lip_closure, background  free, before the judge: lips closing on b/p/m (talking clips with a mouth series),
+                             background edge flicker across the keyframes
+    hands, teeth, consistency  scored by the judge when visible / when set or outfit references are given
 
 Keyframes can't show smoothness or timing; they catch the failures seen so far (face drift,
 warping), which is what a viewer notices first. Like images there are two stages: a cheap
@@ -32,7 +36,7 @@ from ..creator.lab import appearance_prompt
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
 from ..storage import ObjectStore
-from . import common
+from . import common, detail
 
 SYSTEM = """You are the quality gate for an AI creator studio whose creators are openly labeled as AI.
 You review short image-to-video clips of one fictional person from keyframes, strictly. A clip is only
@@ -60,6 +64,12 @@ class ClipReview(BaseModel):
     direction: int | None = Field(default=None, description="only when a DIRECTED SHOT is given: 1-10 on the "
                                   "DIRECTION rubric given with it (does the clip follow the shot and its beats); "
                                   "null when no directed shot is given")
+    hands: int | None = Field(default=None, description="only when DETAIL CHECKS ask for it: 1-10 for visible "
+                              "hands in the worst keyframe; null when no hand is visible")
+    teeth: int | None = Field(default=None, description="only when DETAIL CHECKS ask for it: 1-10 for visible "
+                              "teeth in the worst keyframe; null when no teeth show")
+    consistency: int | None = Field(default=None, description="only when SET / OUTFIT REFERENCE images are given: "
+                                    "1-10, the same set and clothes as the references; null otherwise")
     notes: str = Field(description="one sentence")
 
 
@@ -97,7 +107,7 @@ def _media_type(uri: str) -> str:
 
 def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, refs: list[bytes],
            start: bytes | None, frames: list[tuple[bytes, str]], scene: str | None,
-           shot: dict | None = None) -> ClipReview:
+           shot: dict | None = None, extra: tuple[list, list[str]] = ([], [])) -> ClipReview:
     min_age = int(policy.get("scope", "creator_min_age", default=21))
     content: list = [{"type": "text", "text": f"The person: {appearance_prompt(creator['bible'])}. "
                                               f"Minimum age for this creator: {min_age}."}]
@@ -113,6 +123,11 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
     if shot:
         content.append({"type": "text", "text": "DIRECTED SHOT (score `direction` 1-10 against it): "
                                                 + common.direction_brief(shot, policy, still=False)})
+    ref_content, ref_labels = extra   # set / outfit references (review.detail consistency)
+    content += ref_content
+    ask = detail.judge_prompt(policy, consistency=ref_labels, still=False)
+    if ask:
+        content.append({"type": "text", "text": ask})
     content.append({"type": "text", "text": "Review the clip as a whole from these keyframes."})
     r = llm.structured(role, system=SYSTEM, content=content, schema=ClipReview, effort=effort,
                        creator_id=creator["id"])
@@ -120,6 +135,7 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
         setattr(r, k, max(0, min(10, getattr(r, k))))
     r.scene = max(0, min(10, r.scene)) if (scene and r.scene is not None) else None
     r.direction = max(1, min(10, r.direction)) if (shot and r.direction is not None) else None
+    detail.clamp_scores(r, policy, consistency=bool(ref_labels))
     return r
 
 
@@ -148,6 +164,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
               for i, k in enumerate(keys)]
 
     heard = _intelligibility(conn, policy, store, job_id, payload, job["creator_id"], workdir)
+    extra = detail.reference_blocks(detail.references_for(payload, shot, policy), store, workdir, image_block)
+    warp = detail.background_flicker([b for b, _ in frames], policy)   # free, so measured before any paid judge
 
     rows, out = [], []
     for v in videos:
@@ -164,27 +182,41 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             res["sync"] = sync
         synced = lip_sync_ok(cfg, sync)
         if synced is not None:   # checked first: it is free, and a clip out of sync never needs a paid judge
-            rows.append((v["id"], "lip_sync", synced, sync.get("corr"), Jsonb(sync)))
+            rows.append((v["id"], "lip_sync", synced, sync.get("corr"), Jsonb(_without_series(sync))))
             res["lip_sync"] = synced
             if not synced:
                 res.update(accepted=False, confirmed=False)
                 out.append(res)
                 continue
+        # Free finer checks (review.detail): lip closure on b/p/m, background flicker. Enforced, a fail rejects here.
+        free = _free_checks(conn, policy, payload, sync, warp)
+        for g, (ok, value, info) in free.items():
+            rows.append((v["id"], g, ok, value, Jsonb(info)))
+            res[g] = ok
+        if not all(ok for ok, _, _ in free.values()):
+            res.update(accepted=False, confirmed=False)
+            out.append(res)
+            continue
         for role, effort, stage in stages:
             with common.charged_to(llm, job_id):   # review counts in this clip's cost
-                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene, shot)
+                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene, shot, extra)
             verdict = decide(r, cfg, scene, shot=shot, policy=policy)
+            checks = detail.judged_verdicts(policy, r, consistency=bool(extra[1]))   # hands, teeth, consistency
             scores = {"identity": r.identity, "motion": r.motion, "realism": r.realism, "scene": r.scene}
             if shot:
                 scores["direction"] = r.direction
-            clear = stage == "screen" and len(stages) > 1 and all(verdict.values()) and clear_pass(r, cfg)
-            details = {**r.model_dump(exclude=None if shot else {"direction"}), "model": llm.model_for(role),
+            passed = all(verdict.values()) and all(ok for ok, _ in checks.values())
+            clear = stage == "screen" and len(stages) > 1 and passed and clear_pass(r, cfg)
+            details = {**r.model_dump(exclude=detail.unasked(r, shot)), "model": llm.model_for(role),
                        "stage": stage, "clear_pass": clear}
             rows += [(v["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
-            res["stages"].append({"stage": stage, "model": details["model"], **scores, "drift_from": r.drift_from,
-                                  "defects": r.defects, "passed": all(verdict.values())})
+            rows += [(v["id"], g, ok, getattr(r, g), Jsonb({**details, **info})) for g, (ok, info) in checks.items()]
+            res["stages"].append({"stage": stage, "model": details["model"], **scores,
+                                  **{g: getattr(r, g) for g in checks}, "drift_from": r.drift_from,
+                                  "defects": r.defects, "passed": passed})
             res.update({g: res[g] and verdict[g] for g in gates})
-            res["accepted"] = all(res[g] for g in gates)
+            res.update({g: res.get(g, True) and ok for g, (ok, _) in checks.items()})
+            res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True) for g in detail.JUDGED)
             if not res["accepted"]:
                 break   # rejects stay cheap: no confirm for a clip the screen failed
             if clear:
@@ -214,6 +246,43 @@ def _intelligibility(conn, policy: Policy, store: ObjectStore, job_id, payload: 
     path = store.get_file(audio["uri"], workdir / f"voice{Path(audio['uri']).suffix or '.wav'}")
     return speech.check(conn, policy, path, payload["script"], float((audio["meta"] or {}).get("seconds") or 0),
                         job_id=job_id, creator_id=creator_id)
+
+
+def _without_series(sync: dict) -> dict:
+    """A sync score for a review row: the per-frame mouth series stays on the asset, not in every row."""
+    return {k: v for k, v in sync.items() if k != "openness"}
+
+
+def _voice_lines(conn, payload: dict, script: str) -> list[dict] | None:
+    """The designed voice's per-line timings (voice.speak meta `lines`) when that line is this clip's own audio
+    and says this clip's script; else None (word times are then spread over the script)."""
+    if not payload.get("audio_uri"):
+        return None
+    row = conn.execute("SELECT meta FROM assets WHERE uri = %s AND kind = 'audio' LIMIT 1",
+                       (payload["audio_uri"],)).fetchone()
+    lines = ((row or {}).get("meta") or {}).get("lines") if row else None
+    if not lines or not all(isinstance(ln, dict) and "start_s" in ln and "end_s" in ln for ln in lines):
+        return None
+    said = " ".join(str(ln.get("text", "")) for ln in lines).split()
+    return lines if said == script.split() else None
+
+
+def _free_checks(conn, policy: Policy, payload: dict, sync, warp) -> dict[str, tuple[bool, float, dict]]:
+    """{gate: (passed, score, details)} for the finer checks that cost nothing (review.detail): lip closure on
+    b/p/m for a talking clip with a mouth series, and background flicker across the keyframes. Off, or without
+    the signal: no entry."""
+    out = {}
+    script = (payload.get("script") or "").strip()
+    if script and isinstance(sync, dict):
+        m = detail.lip_closure(sync, policy, script=script, lines=_voice_lines(conn, payload, script))
+        v = detail.verdict(policy, "lip_closure", m.get("share")) if m else None
+        if v is not None:
+            out["lip_closure"] = (v[0], m["share"], {**m, **v[1]})
+    if warp is not None:
+        v = detail.verdict(policy, "background", warp["flicker"], lower_is_better=True)
+        if v is not None:
+            out["background"] = (v[0], warp["flicker"], {**warp, **v[1]})
+    return out
 
 
 def lip_sync_ok(cfg: dict, sync: dict | None) -> bool | None:

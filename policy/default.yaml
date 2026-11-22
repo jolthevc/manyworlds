@@ -255,7 +255,27 @@ review:
   direction:
     min_score: 6
     rubric: direction
-  max_repairs_per_post: 4      # day 5: regenerations allowed before a post is dropped
+  # Finer checks (manyworlds.review.detail, 2026-11-22). Each has a switch (`enabled`: measured and recorded as its
+  # own review row) and `enforce` (only then can it reject; a row that isn't enforced is written passed, with
+  # details.would_pass). All report-only until calibrated against clips judged by eye. Outputs without the signal
+  # (no hands in frame, no references, no mouth series) get no row and behave as before.
+  #   hands, teeth  the judge rates them 1-10 when visible (null otherwise) and names defects
+  #   lip_closure   talking clips: the lips close (inner-lip gap / mouth width at most closed_max_openness, or
+  #                 relative_to_p90 x the clip's 90th-percentile openness) within tolerance frames of each b/p/m;
+  #                 the share closed must be min_share. Word times are estimated from the voice's line timings or
+  #                 the script, so the wider estimated_tolerance_frames applies until word timestamps exist
+  #   background    keyframes' edges outside the subject box (exclude_box, fractions x0 y0 x1 y1) compared
+  #                 frame to frame: flicker 0 = identical, 1 = unrelated; camera moves raise it too, so report only
+  #   consistency   a shot with set.set_id / wardrobe.outfit_id and payload `references` [{kind: set|outfit, uri}]:
+  #                 the judge compares against those images, 1-10
+  detail:
+    hands: {enabled: true, enforce: false, min_score: 5}
+    teeth: {enabled: true, enforce: false, min_score: 5}
+    lip_closure: {enabled: true, enforce: false, min_share: 0.6, closed_max_openness: 0.05, relative_to_p90: 0.25,
+                  tolerance_frames: 2, estimated_tolerance_frames: 4, min_bilabials: 3}
+    background: {enabled: true, enforce: false, max_flicker: 0.45, exclude_box: [0.2, 0.0, 0.8, 0.9], width: 160}
+    consistency: {enabled: true, enforce: false, min_score: 6, max_references: 2}
+  max_repairs_per_post: 4     # day 5: regenerations allowed before a post is dropped
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
   # regenerated. {scene} is the scene text; `scene` leads the prompt, the others follow it.
@@ -371,14 +391,41 @@ generation:
   # split above. Posts without shots always use the length-based split.
   talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4, segment_by: scene,
                 output: {width: 720, height: 1280, fps: 30, lufs: -14}}
+  # Walk-and-talk (plan 2026-11-22-video-quality-autonomous item 1; production, worker/comfy.py graph_v2v): a talking
+  # take whose shot moves is made in two stages. First a silent motion clip from the take's photo (the story-clip
+  # path, prompt compiled from the shot for i2v, as long as the take's voice line up to max_motion_seconds), then
+  # InfiniteTalk video-to-video lip sync of that clip with the voice line, so she moves and talks. Static takes keep
+  # image-to-video talk. Audio longer than the clip continues from its last frame (she stops and keeps talking).
+  # trigger: a shot moves when its camera move is in camera_moves (static and handheld are not: InfiniteTalk's own
+  # image-to-video already sways like a held phone) or one of its beats' actions contains one of beat_words, matched
+  # as whole words, the first word also with s/es/ed/ing ("walk" matches "walks", "walking"; "stand up" matches
+  # "stands up", "standing up"). A small turn of the head is not movement; "turn around" is.
+  # kind: the motion clip's job kind; comfy.wan_i2v runs on the talk worker image, so both stages share a machine
+  # (null = the story clip's kind and routing). Production does not wait for a review of it (an intermediate, marked
+  # payload.intermediate; `keyframes` is the fewest a clip job makes); the lip-synced take is judged. v2v: merged over generation.talk for the talk job: Kijai's V2V example
+  # (4 steps, sampling from step 2, so about half of the motion clip is redrawn: lower start_step redraws more, which
+  # helps the mouth but can alter details when the camera moves; research 2026-11-22). clip_vision: the example's CLIP
+  # vision embeds of the first frame (one more ~1.3 GB download); off, as in our image-to-video talk graph.
+  # Unproven: benchmark before trusting; enabled because a moving take without it is a still photo that talks.
+  talk_motion:
+    enabled: true
+    trigger:
+      camera_moves: [push_in, pull_out, pan_left, pan_right, tilt_up, tilt_down, follow, orbit_slow]
+      beat_words: [walk, stroll, wander, pace, pacing, step, stepping, jog, jogging, approach, enter, head toward,
+                   head towards, turn around, turn away, spin, spinning, twirl, dance, dancing, stand up, standing up,
+                   get up, getting up, sit down, sitting down, lie down, lying down, climb]
+    max_motion_seconds: 5          # Wan 2.2 I2V's trained length (81 frames at 16 fps); longer clips loop and drift
+    kind: comfy.wan_i2v
+    keyframes: 1
+    v2v: {steps: 4, start_step: 2, clip_vision: false}
 
 # Designed voices (manyworlds/creator/voice_lab.py, worker/handlers/tts_voxcpm.py; owner 2026-11-22: a voice of
 # their own). VoxCPM2 (Apache-2.0) designs `candidates` voices from the bible's voice notes and appearance, each
 # reading anchor_text (~15 s); one is picked automatically, never by ear: word error rate within max_wer (the speech
 # gate's Whisper, run on the GPU worker), speaker-embedding cosine distance at least min_distance from every other
 # creator's voice (SpeechBrain ECAPA, Apache-2.0), then the lowest WER, then the highest pitch variance (least
-# monotone). Speech is generated line by line (long text degrades), `takes` per line, the lowest WER kept, lines
-# joined with pause_s unless a line says otherwise. cfg_value / inference_timesteps are VoxCPM2's README values.
+# monotone). Speech is generated piece by piece (long text degrades), `takes` per piece, the lowest WER kept, pieces
+# joined as set out under "Natural speech" below. cfg_value / inference_timesteps are VoxCPM2's README values.
 # optimize: torch.compile on load (slower start, untested here). pitch_hz: the pitch tracker's range.
 # Creators without a designed voice keep Kokoro (anchors.voice.engine: kokoro).
 voice:
@@ -397,6 +444,31 @@ voice:
   embedding: speechbrain/spkrec-ecapa-voxceleb
   pitch_hz: [65, 500]
   kinds: {design: voice.design, speak: voice.speak}
+  # Natural speech (plan 2026-11-22-video-quality-autonomous item 7; research 2026-11-22-video-quality-wave2-3 §6).
+  # The model's own pauses are not relied on: each line is spoken clause by clause (commas, semicolons, colons,
+  # dashes, ellipses, sentence ends; never inside numbers or after abbreviations; a clause under clause_min_words
+  # joins its neighbour) and joined with our silences, each drawn from its range with the job's seeded RNG
+  # (spontaneous English: clause pauses mostly under 0.5 s, sentence pauses mostly over). A line's explicit
+  # pause_after_s replaces the gap after it; pause_s above is only the fallback for payloads without these keys.
+  # Each take is trimmed of its own silence (frames more than threshold_db below its loudest, keeping pad_ms) and
+  # faded over fade_ms at both edges (no clicks), so the gaps are exactly what we chose. Takes are scored per
+  # clause; a clause whose every take is above max_wer x clause_retry_wer_factor gets one more round of seeds; a
+  # line still above line_max_wer after assembly fails the job (retried with new seeds).
+  split_clauses: true
+  clause_min_words: 2
+  clause_gap_s: [0.18, 0.30]
+  sentence_gap_s: [0.45, 0.70]
+  trim: {threshold_db: -40, frame_ms: 10, pad_ms: 30}
+  fade_ms: 8
+  clause_retry_wer_factor: 3.0
+  line_max_wer: 0.25
+  # EXPERIMENTAL, off: a quiet synthetic in-breath (numpy pink noise, band-limited, Hann envelope; nothing sampled)
+  # in the gap before every n-th sentence, ending lead_s before it; skipped when the gap is shorter than the breath.
+  breaths: {enabled: false, every_n_sentences: 3, gain_db: -42, seconds: [0.12, 0.22], band_hz: [500, 4000],
+            lead_s: 0.05}
+  # EXPERIMENTAL, off: now and then (rate per clause, at most max_per_line) a filler before a clause. Changes what is
+  # spoken, never the scripted words: meta.clauses keeps the script and meta.fillers lists what captions must drop.
+  disfluency: {enabled: false, rate: 0.06, max_per_line: 1, fillers: [so, um, like]}
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:
@@ -711,6 +783,165 @@ captions:
     contractions, short sentences, an aside or a restart is fine, no lists, no intros. If a line would make a
     stylish 25-year-old cringe, cut it. Cool comes from taste and restraint, not adjectives.
 
+# Burned-in captions (manyworlds.captions, owner 2026-11-22): the spoken words on the video itself, word-timed,
+# in a style preset, inside the Reels/TikTok safe zones, burned in by ffmpeg (libass, fonts in manyworlds/fonts).
+# Not the post caption above (that is `captions`). A creator's default is a style name; an unknown name gets
+# default_style. Sizes and spacings in a style are shares of the em (`size` is the em as a share of the frame
+# height, so 1080x1920 and 720x1280 look the same). Off until production's join uses it (plan wave 2, item 6).
+burned_captions:
+  enabled: false
+  default_style: clean
+  default_placement: lower
+  # Shares of the frame kept clear of platform UI: top bar, bottom account/caption/audio rows, right-side
+  # buttons; left matches right so centred text clears the buttons.
+  safe_zone: {top: 0.14, bottom: 0.25, left: 0.12, right: 0.12}
+  # anchor: which edge of the text block sits at y (share of the frame height). lower = lower third, just above
+  # the bottom safe zone; upper = upper-middle, for shots where the face is low (placement_for).
+  placements:
+    lower: {anchor: bottom, y: 0.74}
+    upper: {anchor: top, y: 0.24}
+    center: {anchor: middle, y: 0.5}
+  face_band: 0.14              # a face reaching this far above `lower`'s y moves captions up
+  chunking:
+    max_words: 6               # a style may lower it
+    target_words: 4
+    max_lines: 2
+    max_duration_s: 2.8
+    gap_break_s: 0.6           # never one chunk across a longer silence
+    pause_s: 0.3               # a silence this long is a free break, and makes a lone word an utterance
+    costs: {after_clause: 1.0, before_starter: 2.0, mid_phrase: 5.0, after_sticky: 12.0, internal_sentence: 6.0,
+            size: 0.6, over_duration_per_s: 8.0, orphan: 100.0, line_balance: 0.15, line_break_factor: 0.5,
+            two_lines: 1.0, single_word_line: 2.0}
+    # Breaking before these is natural; breaking after sticky words ("the | bodega") never is.
+    phrase_starters: [and, but, so, or, because, cause, when, while, if, then, that, which, who, where, until,
+                      before, after, like, just, with, without, to, for, from, in, "on", at, of, about]
+    sticky_words: [a, an, the, my, your, his, her, our, their, its, this, "that's", to, of, in, "on", at, for, with,
+                   from, by, i, "i'm", "i've", "i'd", "i'll", "you're", "it's", is, was, very,
+                   so, too, not, "no", and, but, or]
+  timing:
+    syllable_weight: 1.0       # estimate_timings: a word's share of its line ~ syllables + letters
+    char_weight: 0.08
+    clause_pause_weight: 0.8   # room after a comma, in the same units
+    sentence_pause_weight: 1.4
+    lead_s: 0.05               # a chunk appears this long before its first word
+    hold_s: 0.25               # and stays this long after its last
+    min_display_s: 0.6
+    bridge_s: 0.35             # a shorter gap to the next chunk is closed (no flicker)
+  encode: {crf: 18, preset: veryfast}
+  style_defaults:
+    font: Poppins              # ASS font name: the TTF's family or full name (manyworlds/fonts/README.md)
+    file: Poppins-Bold.ttf     # that TTF: measures text exactly; drawn by the fallback when ffmpeg has no libass
+    bold: true
+    italic: false
+    size: 0.037                # em / frame height (71 px at 1920)
+    case: none                 # none | upper | lower | smallcaps
+    smallcaps_scale: 0.8
+    letter_spacing: 0.0
+    line_spacing: 1.18         # baseline to baseline
+    max_chars_per_line: 20
+    max_words: 6
+    color: "#FFFFFF"
+    accent: "#FFD54A"          # emphasis words (*asterisks* in the script, or a list)
+    highlight: "#FFD54A"       # the word being said (mode karaoke)
+    outline: {width: 0.0, color: "#000000", opacity: 1.0}
+    shadow: {depth: 0.0, color: "#000000", opacity: 0.0}
+    soften: 0.0                # blur of outline and shadow
+    box: {enabled: false, color: "#000000", opacity: 0.6, pad_x: 0.35, height: 1.3, radius: 0.3}
+    mode: phrase               # phrase (whole chunk) | karaoke (word highlight) | reveal (words appear as said)
+    fade_in_ms: 90
+    fade_out_ms: 70
+    pop: {from: 1.0, peak: 1.0, ms: 0}       # the chunk scales from -> peak -> 1 as it appears
+    word_pop: {from: 1.0, ms: 0}             # the highlighted word scales from -> 1 (karaoke)
+  styles:
+    # White bold sans with a soft dark halo and shadow; settles in slightly. The everyday default.
+    clean:
+      outline: {width: 0.045, opacity: 0.45}
+      shadow: {depth: 0.03, opacity: 0.45}
+      soften: 0.05
+      pop: {from: 0.96, peak: 1.0, ms: 120}
+    # Word-by-word highlight with a small pop on the word being said; heavier weight, firm outline.
+    karaoke:
+      font: Poppins ExtraBold
+      file: Poppins-ExtraBold.ttf
+      bold: false
+      size: 0.04
+      max_chars_per_line: 16
+      max_words: 4
+      highlight: "#FFD23F"
+      accent: "#FFD23F"
+      outline: {width: 0.07, opacity: 0.9}
+      shadow: {depth: 0.035, opacity: 0.4}
+      soften: 0.02
+      mode: karaoke
+      word_pop: {from: 1.1, ms: 110}
+      fade_in_ms: 60
+      fade_out_ms: 60
+    # Text on a rounded translucent box per line (no outline needed on any background).
+    boxed:
+      font: Poppins SemiBold
+      file: Poppins-SemiBold.ttf
+      bold: false
+      size: 0.033
+      max_chars_per_line: 21
+      line_spacing: 1.42
+      accent: "#FFD23F"
+      box: {enabled: true, color: "#0E0E10", opacity: 0.62, pad_x: 0.42, height: 1.32, radius: 0.34}
+      fade_in_ms: 110
+      fade_out_ms: 90
+    # Calm and literary: serif italic small caps in warm ivory, soft shadow, slow fades. For calm creators.
+    editorial:
+      font: DM Serif Display
+      file: DMSerifDisplay-Italic.ttf
+      bold: false
+      italic: true
+      size: 0.038
+      case: smallcaps
+      smallcaps_scale: 0.78
+      letter_spacing: 0.03
+      line_spacing: 1.12
+      max_chars_per_line: 18
+      max_words: 5
+      color: "#F6F1E7"
+      accent: "#F2C46D"
+      shadow: {depth: 0.03, opacity: 0.5}
+      outline: {width: 0.03, opacity: 0.25}
+      soften: 0.06
+      fade_in_ms: 180
+      fade_out_ms: 150
+    # High energy: heavy condensed capitals, thick outline, a punchy pop with overshoot. Few words at a time.
+    bold_pop:
+      font: Anton
+      file: Anton-Regular.ttf
+      bold: false
+      size: 0.052
+      case: upper
+      letter_spacing: 0.02
+      line_spacing: 1.05
+      max_chars_per_line: 16
+      max_words: 3
+      target_words: 2
+      accent: "#FFE600"
+      outline: {width: 0.08, opacity: 1.0}
+      shadow: {depth: 0.05, opacity: 0.6}
+      soften: 0.01
+      pop: {from: 0.82, peak: 1.07, ms: 150}
+      fade_in_ms: 40
+      fade_out_ms: 50
+    # Understated lower case; each word appears as it is said.
+    minimal:
+      font: Poppins SemiBold
+      file: Poppins-SemiBold.ttf
+      bold: false
+      size: 0.031
+      case: lower
+      max_chars_per_line: 23
+      outline: {width: 0.04, opacity: 0.4}
+      shadow: {depth: 0.025, opacity: 0.4}
+      soften: 0.05
+      mode: reveal
+      fade_in_ms: 80
+      fade_out_ms: 80
+
 # Direction (manyworlds.direction, owner 2026-11-22): the words the shot-sheet compiler adds to every directed
 # prompt. Moves not in camera_moves are dropped; the planner offers only moves whose readiness is offered.
 # `realism.video` is added only when the shot is handheld; `negatives.solo` only when nobody is in the background.
@@ -758,6 +989,34 @@ production:
   # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
   reroute_failed_video: {story_clip: photo, talking_video: photo}
   edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
+
+# Finishing (manyworlds.finishing, 2026-11-22): grade, grain, hook text, loudness and the cover frame of a finished
+# video, on the control plane. Not yet called by production (wave 2 integration); `enabled` is that switch.
+# Looks are gentle and natural: every value is clamped to `limits`, so no look can oversaturate.
+finishing:
+  enabled: false
+  default_look: neutral
+  look_by_creator: {}          # handle -> look
+  look_by_set: {}              # shot set.set_id -> look (wins over the creator's)
+  looks:
+    neutral: {contrast: 1.02, saturation: 1.0}
+    daylight: {contrast: 1.03, brightness: 0.01, saturation: 1.03, balance: {bh: -0.02, rh: 0.01},
+               curves: {master: "0/0 0.25/0.24 0.75/0.77 1/1"}}
+    warm_night: {contrast: 1.04, brightness: -0.01, saturation: 0.97, gamma: 0.98,
+                 balance: {rm: 0.04, bm: -0.03, rh: 0.03, bh: -0.02, bs: 0.02},
+                 curves: {master: "0/0.02 0.25/0.23 0.75/0.76 1/0.98"}}
+  limits: {contrast: [0.9, 1.12], brightness: [-0.05, 0.05], saturation: [0.85, 1.08], gamma: [0.9, 1.1],
+           balance: 0.08}
+  grain: {enabled: true, strength: 4, max_strength: 10}   # ffmpeg noise, temporal + uniform
+  sharpen: {enabled: false, amount: 0.3, size: 5}         # luma unsharp mask; size odd, 3-23
+  vignette: {enabled: false, angle: 0.35}                 # radians (PI/9 is subtle)
+  # The hook text over the first seconds: an ASS file from the captions module in its named style.
+  hook: {style: hook, seconds: 1.5, max_seconds: 2.0}
+  loudness: {lufs: -14, true_peak: -1.0, lra: 11, two_pass: true, sample_rate: 48000}
+  encode: {preset: veryfast, crf: 18, audio_bitrate: 160k, timeout_seconds: 900}
+  # Cover frame: the sharpest keyframe with the face, eyes open, mouth closed (face-mesh ratios: lid gap over eye
+  # width, inner-lip gap over mouth width). Without MediaPipe here it is the sharpest keyframe.
+  cover: {mediapipe: true, analysis_width: 512, eyes_open_min: 0.18, mouth_closed_max: 0.08}
 
 # Claude models by role. Low-volume judgement work runs on Opus; bulk roles
 # (captions, first-pass judging) come in later days and can point elsewhere.
