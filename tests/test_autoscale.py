@@ -274,3 +274,12 @@ def test_lab_work_never_waits_and_takes_waiting_production_work_along(conn, poli
     queue.enqueue(conn, "image.zimage", {}, batch="post-a")
     queue.enqueue(conn, "image.zimage", {}, batch="refpack-maren")      # someone is waiting on this
     assert len(_launched(autoscale.tick(conn, policy, providers(), now=now))) == 1
+
+
+def test_a_pinned_benchmark_gets_one_machine_however_much_work_it_has(conn, policy):
+    for _ in range(12):
+        queue.enqueue(conn, "train.lora", {}, pools=["vast_3090"])
+    ps = providers()
+    autoscale.tick(conn, policy, ps, now=T0)
+    autoscale.tick(conn, policy, ps, now=T0 + timedelta(minutes=2))
+    assert len(ps["vast"].launched) == policy.get("autoscale", "bench_machines") == 1

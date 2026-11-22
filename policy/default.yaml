@@ -137,6 +137,7 @@ autoscale:
     min_work_minutes: {default: 10, image: 20, video: 25, train: 0, talk: 25}   # start once this much work waits (median job times)...
     max_wait_minutes: {default: 180}                       # ...or once the oldest job has waited this long
     urgent_priority: 1                                     # jobs at this priority or above never wait
+  bench_machines: 1              # machines for pinned benchmark work, whatever its size (it measures one machine)
   relaunch_cooldown_minutes: 15  # after a machine for a kind stops, wait before starting another
   # The last `machines` machines of a family (current worker image, within `hours`) all tried work and finished
   # none: stop renting that family and tell the owner. A new image tag or the window passing re-arms it.

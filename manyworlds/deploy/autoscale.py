@@ -254,7 +254,11 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             continue
         # Machines follow the backlog: one per drain-target's worth of work, one more per
         # tick at most, so a burst of jobs ramps up instead of renting a fleet at once.
-        if serving and len(serving) >= machines_wanted(conn, policy, kind, int(w["n"])):
+        # A pinned benchmark measures one machine's speed and cost: a second machine only doubles the boot and
+        # download it pays (2026-11-22: 3 talk jobs started two L40S, each downloading ~82 GB).
+        wanted = int(policy.get("autoscale", "bench_machines", default=1)) if pinned \
+            else machines_wanted(conn, policy, kind, int(w["n"]))
+        if serving and len(serving) >= wanted:
             continue
         # No machine up for this work yet: wait until there is enough to be worth a boot.
         held = None if (pinned or open_groups) else batch_wait(conn, policy, _family(kind), work, now)
