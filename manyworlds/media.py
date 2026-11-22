@@ -124,7 +124,7 @@ def keyframes(video: Path, workdir: Path, n: int, *, timeout: float = 120) -> li
     out = []
     for i, idx in enumerate(keyframe_indices(total, n)):
         p = Path(workdir) / f"keyframe_{i}.jpg"
-        r = subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-vf", f"select=eq(n\,{idx})",
+        r = subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-vf", rf"select=eq(n\,{idx})",
                             "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "3", str(p)], capture_output=True, text=True,
                            timeout=timeout)
         if r.returncode != 0 or not p.exists():
@@ -148,7 +148,7 @@ def burn_captions(video: Path, ass: Path, out: Path, fontsdir: Path | None = Non
         s = Path(p).resolve().as_posix()
         if "'" in s:
             raise ValueError(f"caption path has a quote: {s}")
-        return "'" + s.replace(":", "\:") + "'"
+        return "'" + s.replace(":", r"\:") + "'"
 
     encode = ["-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p", "-c:a", "copy",
               "-movflags", "+faststart", str(out)]
