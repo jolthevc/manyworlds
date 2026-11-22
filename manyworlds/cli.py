@@ -45,10 +45,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("discover", help="Brain: plan research, pull it via Apify, propose creator theses")
     sub.add_parser("choose", help="Brain: choose the next thesis to launch")
-    ac = sub.add_parser("account", help="connect a creator's Instagram account (the token stays in .env)")
-    ac.add_argument("action", choices=["connect"])
+    ac = sub.add_parser("account", help="a creator's Instagram account: its setup sheet, or connect it once made")
+    ac.add_argument("action", choices=["sheet", "connect"])
     ac.add_argument("creator")
-    ac.add_argument("--token-env", required=True, help="name of the .env variable holding the long-lived token")
+    ac.add_argument("--username", help="the account's Instagram username (Unified Login, the system user's token)")
+    ac.add_argument("--token-env", help="Instagram Login instead: the env variable holding this account's token")
+    cm = sub.add_parser("comments", help="what a creator did with recent comments on its posts")
+    cm.add_argument("creator")
     sub.add_parser("collect-metrics", help="pull Instagram insights for published posts (real metrics)")
     rc = sub.add_parser("reconcile", help="pull providers' itemised charges into the ledger (true machine cost)")
     rc.add_argument("--days", type=int, default=None, help="window to pull (default policy autoscale.reconcile_days)")
@@ -170,7 +173,17 @@ def main(argv: list[str] | None = None) -> int:
         _print({"enqueued": ids})
     elif args.cmd == "account":
         from .publish import instagram
-        _print(instagram.connect(conn, pol, _creator_id(conn, args.creator), token_env=args.token_env))
+        cid = _creator_id(conn, args.creator)
+        if args.action == "sheet":
+            _print(instagram.setup_sheet(conn, pol, cid))
+        else:
+            try:
+                _print(instagram.connect(conn, pol, cid, username=args.username, token_env=args.token_env))
+            except instagram.AccountNotConnected as e:
+                raise SystemExit(str(e)) from None
+    elif args.cmd == "comments":
+        from .publish import comments
+        _print(comments.recent(conn, _creator_id(conn, args.creator)))
     elif args.cmd == "collect-metrics":
         from .publish import metrics
         _print(metrics.collect(conn, pol))
@@ -400,6 +413,13 @@ def produce_tick(conn, pol, llm=None) -> dict:
             result["metrics"] = collected
     except Exception as e:  # noqa: BLE001 - metrics must never stop production or publishing
         result["metrics"] = {"error": f"{type(e).__name__}: {e}"[:300]}
+    try:   # comments on our posts, answered in the creator's voice (autonomy.comment_replies; off by default)
+        from .publish import comments
+        seen, answered = comments.collect(conn, pol), comments.respond(conn, pol, llm)
+        if seen.get("new") or seen.get("errors") or any(v for k, v in answered.items() if k != "skipped"):
+            result["comments"] = {**seen, **answered}
+    except Exception as e:  # noqa: BLE001 - comments must never stop production or publishing
+        result["comments"] = {"error": f"{type(e).__name__}: {e}"[:300]}
     return result
 
 

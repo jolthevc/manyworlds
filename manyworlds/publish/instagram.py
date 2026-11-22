@@ -12,14 +12,22 @@ already PUBLISHED (a crash between publishing and recording it) is found again a
 media by caption, never published twice. ERROR / EXPIRED containers are dropped and retried next time, at most
 `instagram.max_attempts` times. The daily API quota (50 posts / 24 h) is checked before creating anything.
 
-Accounts: `accounts` row (platform instagram, status connected) with the IG user id and `token_env`, the name
-of the .env variable holding the long-lived token. Tokens never appear in errors, logs or the database.
+Accounts (policy `instagram.login`): with `unified` (Meta's recommended Instagram API with Unified Login, on
+graph.facebook.com) one Business Integration System User token, in the env variable `instagram.token_env`, covers
+every professional account assigned to our app in the business portfolio; an account row carries only its IG user
+id. Standard Access is enough because every account is our own (no App Review). The older `instagram` login keeps a
+token per account (`accounts.token_env`, on graph.instagram.com). Tokens never appear in errors, logs, reprs or the
+database.
+
+Ramp (policy `instagram.ramp`): a newly connected account publishes only a few posts a day at first, more as it
+ages; Meta's own 24 h publishing limit is read live from `content_publishing_limit`, never assumed.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass, field
 import tempfile
 import urllib.error
 import urllib.parse
@@ -50,6 +58,10 @@ class QuotaReached(Exception):
     pass
 
 
+class Ramped(QuotaReached):
+    """The account is new: today's ramp allowance is used up (policy instagram.ramp)."""
+
+
 class Held(Exception):
     """The post needs the owner: it must not be (re)published automatically."""
 
@@ -59,11 +71,29 @@ def _cfg(policy: Policy) -> dict:
 
 
 _POLICY: dict = {}
+HOSTS = {"unified": "graph.facebook.com", "instagram": "graph.instagram.com"}
 
 
-def graph(method: str, path: str, params: dict | None = None, token: str | None = None) -> dict:
+@dataclass(frozen=True)
+class Creds:
+    """An account's credentials: its IG user id, the token (never in the repr) and the Graph host for its login.
+    Unpacks as (ig_id, creds), and `graph` takes it wherever it takes a token."""
+    ig_id: str
+    token: str = field(repr=False)
+    host: str
+
+    def __iter__(self):
+        return iter((self.ig_id, self))
+
+
+def _host(login: str) -> str:
+    return (_POLICY.get("hosts") or {}).get(login) or HOSTS[login]
+
+
+def graph(method: str, path: str, params: dict | None = None, token=None) -> dict:
     """One Graph API call. The token goes in the Authorization header, never in a URL."""
-    host = _POLICY.get("host", "graph.instagram.com")
+    host = token.host if isinstance(token, Creds) else _host(_POLICY.get("login", "unified"))
+    token = token.token if isinstance(token, Creds) else token
     version = _POLICY.get("version", "v27.0")
     url = f"https://{host}/{version}{path}"
     data = None
@@ -86,6 +116,7 @@ def _clean(text: str, token: str | None) -> str:
     """No token, env secret or presigned-URL signature in any error we keep or print."""
     import re
     from ..deploy.providers import redact
+    token = token.token if isinstance(token, Creds) else token
     text = text.replace(token, "<token>") if token else text
     return re.sub(r"(X-Amz-[A-Za-z]+=)[^&\s\"']+", r"\1<redacted>", redact(text))
 
@@ -114,13 +145,8 @@ class InstagramPublisher:
             self._store = storage.from_url()
         return self._store
 
-    def account(self, conn, creator_id) -> tuple[str, str]:
-        a = conn.execute("SELECT external_id, token_env FROM accounts WHERE creator_id = %s AND platform = 'instagram' "
-                         "AND status = 'connected'", (creator_id,)).fetchone()
-        token = os.environ.get(a["token_env"]) if a and a["token_env"] else None
-        if not a or not a["external_id"] or not token:
-            raise AccountNotConnected("no connected Instagram account with a token for this creator")
-        return a["external_id"], token
+    def account(self, conn, creator_id) -> Creds:
+        return account(conn, creator_id)
 
     def _caption(self, post: dict) -> str:
         tags = " ".join((post.get("body") or {}).get("hashtags") or [])
@@ -217,9 +243,12 @@ class InstagramPublisher:
                     attempts = int(body.get("ig_attempts", 0))
                     if attempts >= int(_POLICY.get("max_attempts", 3)):
                         self._hold(conn, post, body, f"{attempts} attempts failed: " + "; ".join(body.get("publish_errors") or []))
+                    if ramp_left(conn, policy, post["creator_id"]) == 0:
+                        raise Ramped()
                     q = graph("GET", f"/{ig_id}/content_publishing_limit", {"fields": "quota_usage,config"}, token)
                     q = (q.get("data") or [{}])[0]
-                    if int(q.get("quota_usage") or 0) >= int((q.get("config") or {}).get("quota_total") or 50):
+                    total = (q.get("config") or {}).get("quota_total") or _POLICY.get("quota_fallback", 50)
+                    if int(q.get("quota_usage") or 0) >= int(total):
                         raise QuotaReached()
                     body["ig_attempts"] = attempts + 1
                     body["ig"] = ig = self._create(ig_id, token, post)
@@ -250,24 +279,178 @@ class InstagramPublisher:
             permalink = None   # cosmetic: the post is out; never retry the publish for it
         return {"external_id": media_id, "permalink": permalink, "ai_label": True, "simulated": False}
 
-def connect(conn, policy: Policy, creator_id, *, token_env: str) -> dict:
-    """Link a creator's Instagram professional account: the token (named by `token_env` in .env, never passed
-    on the command line) is checked against Meta, the account is recorded as connected, and the creator leaves
-    the sandbox (publish_mode instagram). Publishing still follows `autonomy.publish`."""
+
+def _use(policy: Policy) -> None:
     _POLICY.clear()
     _POLICY.update(_cfg(policy))
-    token = os.environ.get(token_env)
+
+
+def account(conn, creator_id) -> Creds:
+    """The connected account's credentials: its own token (Instagram Login) or the system user's (Unified Login)."""
+    a = conn.execute("SELECT external_id, token_env, meta FROM accounts WHERE creator_id = %s "
+                     "AND platform = 'instagram' AND status = 'connected'", (creator_id,)).fetchone()
+    if not a or not a["external_id"]:
+        raise AccountNotConnected("no connected Instagram account for this creator")
+    if a["token_env"]:
+        login, token = (a["meta"] or {}).get("login", "instagram"), os.environ.get(a["token_env"])
+    else:
+        login, token = "unified", os.environ.get(_POLICY.get("token_env", "META_SYSTEM_USER_TOKEN"))
     if not token:
-        raise AccountNotConnected(f"{token_env} is not set in the environment (.env)")
-    me = graph("GET", "/me", {"fields": "user_id,username,account_type"}, token)
-    ig_id = str(me.get("user_id") or me.get("id") or "")
-    if not ig_id:
-        raise GraphError("Meta returned no Instagram user id for this token")
+        raise AccountNotConnected("the Instagram token for this account is not set in the environment")
+    return Creds(a["external_id"], token, _host(login))
+
+
+def ramp_allowance(policy: Policy, age_days: float) -> int | None:
+    """Posts a day an account of this age may publish (policy instagram.ramp), or None for no ramp limit."""
+    allowed = None
+    for step in sorted(_cfg(policy).get("ramp") or [], key=lambda s: float(s["from_day"])):
+        if age_days >= float(step["from_day"]):
+            allowed = step.get("posts_per_day")
+    return None if allowed is None else int(allowed)
+
+
+def _connected(conn, creator_id):
+    return conn.execute("SELECT id, coalesce(connected_at, created_at) AS since FROM accounts WHERE creator_id = %s "
+                        "AND platform = 'instagram' AND status = 'connected'", (creator_id,)).fetchone()
+
+
+def ramp_dials(conn, policy: Policy, creator_id, dials: dict, when=None) -> dict:
+    """The creator's dials with Instagram posts a day capped by the ramp at `when`, so the planner never makes
+    posts a new account may not publish (a post made and never published is GPU time thrown away)."""
+    from datetime import datetime, timezone
+    a = _connected(conn, creator_id)
+    per = dict(dials.get("posts_per_day") or {})
+    if not a or "instagram" not in per:
+        return dials
+    when = when or datetime.now(timezone.utc)
+    allowed = ramp_allowance(policy, max(0.0, (when - a["since"]).total_seconds() / 86400))
+    if allowed is None or float(per["instagram"]) <= allowed:
+        return dials
+    return {**dials, "posts_per_day": {**per, "instagram": float(allowed)}}
+
+
+def ramp_left(conn, policy: Policy, creator_id, now=None) -> int | None:
+    """Posts this creator's account may still publish in the last 24 h under the ramp, or None for unlimited."""
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    a = _connected(conn, creator_id)
+    if not a:
+        return None
+    allowed = ramp_allowance(policy, max(0.0, (now - a["since"]).total_seconds() / 86400))
+    if allowed is None:
+        return None
+    done = conn.execute("SELECT count(*) AS n FROM publications WHERE account_id = %s AND NOT simulated "
+                        "AND published_at > %s - interval '24 hours'", (a["id"], now)).fetchone()["n"]
+    return max(0, allowed - int(done))
+
+
+def _assigned(creds: Creds) -> list[dict]:
+    """The Instagram professional accounts assigned to our app's system user (Unified Login), every page."""
+    out, after = [], None
+    for _ in range(int(_POLICY.get("max_pages", 50))):
+        params = {"fields": "id,username", "limit": 100, **({"after": after} if after else {})}
+        page = graph("GET", "/me/assigned_instagram_accounts", params, creds)
+        out += page.get("data") or []
+        paging = page.get("paging") or {}
+        after = (paging.get("cursors") or {}).get("after")
+        if not after or not paging.get("next"):
+            break
+    return out
+
+
+def setup_sheet(conn, policy: Policy, creator_id, store=None) -> dict:
+    """What a person needs to set up this creator's Instagram account by hand: names, the bio (with the AI
+    disclosure), the profile photo, and the checklist that `connect` then verifies through the API."""
+    c = conn.execute("SELECT handle, bible, anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    bible, cfg = c["bible"] or {}, _cfg(policy).get("setup", {}) or {}
+    disclosure = policy.get("scope", "disclosure_line", default="AI-generated character")
+    limit = int(cfg.get("bio_max_chars", 150))
+    line = (bible.get("one_line") or "").strip()
+    bio = disclosure if not line else f"{line[:max(0, limit - len(disclosure) - 3)].rstrip()} · {disclosure}"
+    refs = (c["anchors"] or {}).get("reference_images") or []
+    photo = None
+    if refs:
+        if store is None:
+            from .. import storage
+            store = storage.from_url()
+        photo = store.public_url(refs[0]["uri"], int(cfg.get("photo_url_seconds", 7 * 86400)))
+    return {"creator": c["handle"], "username": bible.get("handle") or c["handle"],
+            "display_name": bible.get("display_name") or c["handle"], "bio": bio[:limit],
+            "profile_photo_url": photo, "checklist": list(cfg.get("checklist") or []),
+            "then": f"mw account connect {c['handle']} --username <the username you created>"}
+
+
+def verify(policy: Policy, creator: dict, profile: dict) -> tuple[list[str], list[str]]:
+    """(problems that stop the connection, warnings) for an account's public profile against its setup sheet."""
+    disclosure = str(policy.get("scope", "disclosure_line", default="AI-generated character"))
+    problems, warnings = [], []
+    if disclosure.lower() not in (profile.get("biography") or "").lower():
+        problems.append(f"the bio must contain the disclosure '{disclosure}'")
+    if not profile.get("profile_picture_url"):
+        warnings.append("no profile photo")
+    want = (creator.get("bible") or {}).get("display_name")
+    if want and (profile.get("name") or "").strip().lower() != want.strip().lower():
+        warnings.append(f"display name is '{profile.get('name')}', the sheet says '{want}'")
+    return problems, warnings
+
+
+def connect(conn, policy: Policy, creator_id, *, username: str | None = None, token_env: str | None = None) -> dict:
+    """Link a creator's Instagram professional account and take the creator out of the sandbox (publish_mode
+    instagram); publishing still follows `autonomy.publish` and the ramp.
+
+    Unified Login (default): the account, found by `username` among those assigned to our app's system user, is
+    checked against its setup sheet (the AI disclosure in the bio is required) and for publishing permission.
+    `token_env` instead connects with the older Instagram Login, a token per account. Tokens stay in the
+    environment, never on the command line or in the database."""
+    from datetime import datetime, timezone
+    _use(policy)
+    creator = conn.execute("SELECT handle, bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    if token_env:
+        token = os.environ.get(token_env)
+        if not token:
+            raise AccountNotConnected(f"{token_env} is not set in the environment (.env)")
+        creds = Creds("", token, _host("instagram"))
+        me = graph("GET", "/me", {"fields": "user_id,username,account_type,name,biography,profile_picture_url"}, creds)
+        ig_id, login, profile = str(me.get("user_id") or me.get("id") or ""), "instagram", me
+        if not ig_id:
+            raise GraphError("Meta returned no Instagram user id for this token")
+    else:
+        if not username:
+            raise AccountNotConnected("give the account's --username (or --token-env for Instagram Login)")
+        env = _POLICY.get("token_env", "META_SYSTEM_USER_TOKEN")
+        token = os.environ.get(env)
+        if not token:
+            raise AccountNotConnected(f"{env} (the system user's token) is not set in the environment")
+        creds = Creds("", token, _host("unified"))
+        want = username.strip().lstrip("@").lower()
+        hit = next((a for a in _assigned(creds) if (a.get("username") or "").lower() == want), None)
+        if not hit:
+            raise AccountNotConnected(f"@{want} is not assigned to our app: add it to the business portfolio and "
+                                      "assign it to the app's system user (Business Settings)")
+        ig_id, login = str(hit["id"]), "unified"
+        profile = graph("GET", f"/{ig_id}", {"fields": "username,name,biography,profile_picture_url,followers_count,"
+                                                       "media_count"}, creds)
+    other = conn.execute("SELECT c.handle FROM accounts a JOIN creators c ON c.id = a.creator_id WHERE a.platform = "
+                         "'instagram' AND a.external_id = %s AND a.creator_id <> %s", (ig_id, creator_id)).fetchone()
+    if other:
+        raise AccountNotConnected(f"this Instagram account is already connected to {other['handle']}")
+    problems, warnings = verify(policy, creator, profile)
+    acct = Creds(ig_id, creds.token, creds.host)
+    try:   # publishing permission: Meta answers this only for a token that may publish to the account
+        graph("GET", f"/{ig_id}/content_publishing_limit", {"fields": "quota_usage,config"}, acct)
+    except GraphError as e:
+        problems.append("cannot read the publishing limit (is instagram_content_publish granted?): "
+                        + _clean(str(e), acct)[:200])
+    if problems:
+        raise AccountNotConnected("not connected: " + "; ".join(problems))
+    meta = {"login": login, "warnings": warnings, "verified_at": datetime.now(timezone.utc).isoformat(),
+            **{k: profile.get(k) for k in ("account_type", "followers_count", "media_count") if k in profile}}
     conn.execute(
-        """INSERT INTO accounts (creator_id, platform, handle, external_id, token_env, status, meta)
-           VALUES (%s, 'instagram', %s, %s, %s, 'connected', %s)
+        """INSERT INTO accounts (creator_id, platform, handle, external_id, token_env, status, meta, connected_at)
+           VALUES (%s, 'instagram', %s, %s, %s, 'connected', %s, now())
            ON CONFLICT (creator_id, platform) DO UPDATE SET handle = excluded.handle, external_id = excluded.external_id,
-             token_env = excluded.token_env, status = 'connected', meta = excluded.meta, updated_at = now()""",
-        (creator_id, me.get("username"), ig_id, token_env, Jsonb({"account_type": me.get("account_type")})))
+             token_env = excluded.token_env, status = 'connected', meta = excluded.meta, updated_at = now(),
+             connected_at = coalesce(accounts.connected_at, excluded.connected_at)""",
+        (creator_id, profile.get("username"), ig_id, token_env, Jsonb(meta)))
     conn.execute("UPDATE creators SET publish_mode = 'instagram' WHERE id = %s", (creator_id,))
-    return {"instagram_user_id": ig_id, "username": me.get("username"), "account_type": me.get("account_type")}
+    return {"instagram_user_id": ig_id, "username": profile.get("username"), "login": login, "warnings": warnings}

@@ -12,7 +12,7 @@ shown to the evaluator. Every idea is sent to the evaluator; only evaluated idea
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -76,6 +76,9 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     cur = profile_mod.current(conn, creator_id)
     version, prof = cur if cur else (None, None)
     dials = (prof or {}).get("dials") or policy.get("creators", "dials_default", default={})
+    from ...publish import instagram
+    dials = instagram.ramp_dials(conn, policy, creator_id, dials,
+                                 datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
     counts = planner._counts(policy, dials, days)
     formats = planner._formats(policy)
     who = {k: prof[k] for k in planner.ANALYSIS_FIELDS if k in prof} if prof else \

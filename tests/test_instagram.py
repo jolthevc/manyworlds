@@ -46,6 +46,7 @@ def ig(conn, store, tmp_path, monkeypatch):
     cid = creator(conn, publish_mode="instagram")
     conn.execute("INSERT INTO accounts (creator_id, platform, external_id, token_env, status) "
                  "VALUES (%s, 'instagram', '17841400000', 'IG_TOKEN_TEST', 'connected')", (cid,))
+    conn.execute("UPDATE accounts SET connected_at = '2026-01-01' WHERE creator_id = %s", (cid,))   # past the ramp
     monkeypatch.setenv("IG_TOKEN_TEST", "tok-secret")
     fake = FakeGraph()
     monkeypatch.setattr(instagram, "graph", fake)
@@ -162,10 +163,12 @@ def test_connecting_an_account_checks_the_token_and_leaves_the_sandbox(conn, pol
     cid = creator(conn, publish_mode="simulated")
     monkeypatch.setenv("IG_TOKEN_MAREN", "tok")
     calls = []
-    monkeypatch.setattr(instagram, "graph", lambda m, p, params=None, token=None: calls.append((m, p, token)) or
-                        {"user_id": "1784", "username": "maren.afterhours", "account_type": "MEDIA_CREATOR"})
+    monkeypatch.setattr(instagram, "graph", lambda m, p, params=None, token=None: calls.append((m, p, token.token)) or
+                        {"user_id": "1784", "username": "maren.afterhours", "account_type": "MEDIA_CREATOR",
+                         "biography": "rain, records · AI-generated character", "profile_picture_url": "https://x"})
     out = instagram.connect(conn, policy, cid, token_env="IG_TOKEN_MAREN")
-    assert out["instagram_user_id"] == "1784" and calls == [("GET", "/me", "tok")]
+    assert out["instagram_user_id"] == "1784"
+    assert calls == [("GET", "/me", "tok"), ("GET", "/1784/content_publishing_limit", "tok")]
     acc = conn.execute("SELECT external_id, token_env, status FROM accounts WHERE creator_id = %s", (cid,)).fetchone()
     assert (acc["external_id"], acc["token_env"], acc["status"]) == ("1784", "IG_TOKEN_MAREN", "connected")
     assert conn.execute("SELECT publish_mode FROM creators WHERE id = %s", (cid,)).fetchone()["publish_mode"] == "instagram"

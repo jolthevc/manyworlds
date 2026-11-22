@@ -182,6 +182,9 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
     cur = profile_mod.current(conn, creator_id)
     version, prof = cur if cur else (None, None)
     dials = (prof or {}).get("dials") or policy.get("creators", "dials_default", default={})
+    from ..publish import instagram
+    dials = instagram.ramp_dials(conn, policy, creator_id, dials,
+                                 datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
     counts = _counts(policy, dials, days)
     hashtags_max = dials.get("hashtags_max") or {}
     if prof:

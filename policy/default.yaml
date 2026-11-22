@@ -613,6 +613,7 @@ llm:
     evaluator: claude-haiku-5-5      # creative scoring at volume (manyworlds.brain.evaluation)
     evaluator_check: claude-opus-5-5 # scores a sample of the same items, to measure agreement
     review: claude-haiku-5-5     # first-pass image screen (manyworlds.review); every image
+    comment_reply: {model: qwen4-max, fallback: claude-sonnet-5-5}   # replies in the creator's voice (publish/comments.py); same writing as the showrunner
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
@@ -682,8 +683,49 @@ queue:
 publishing:
   max_late_hours: 6            # a real post later than this is left ready, not sent in a burst with others
 
-# Instagram Graph API (manyworlds.publish.instagram, metrics): Instagram Login host; Meta's docs v27.0 (2026-11-20).
-instagram: {host: graph.instagram.com, version: v27.0, url_seconds: 3600, max_attempts: 3}   # attempts per post, then held
+# Instagram (manyworlds.publish.instagram, metrics, comments), per Meta's docs v27.0 (read 2026-11-21).
+# login unified: the Instagram API with Unified Login on graph.facebook.com, one Business Integration System User
+# token (env token_env) for every professional account assigned to our app in the business portfolio; Standard
+# Access is enough for our own accounts. `instagram` login (a token per account, graph.instagram.com) still works.
+# quota_fallback: used only when Meta's content_publishing_limit doesn't say (it reads 50 a day today).
+# ramp: posts a day a newly connected account may publish, by days since it was connected (null: no ramp limit);
+# the planner plans no more than this, so nothing is made that can't go out.
+instagram:
+  login: unified
+  token_env: META_SYSTEM_USER_TOKEN
+  hosts: {unified: graph.facebook.com, instagram: graph.instagram.com}
+  version: v27.0
+  url_seconds: 3600
+  max_attempts: 3              # attempts per post, then held
+  quota_fallback: 50
+  ramp:
+    - {from_day: 0, posts_per_day: 1}
+    - {from_day: 7, posts_per_day: 2}
+    - {from_day: 21, posts_per_day: null}
+  # The setup sheet (`mw account sheet <creator>`) a person follows to make the account by hand; `mw account
+  # connect` then checks it through the API (disclosure in the bio required; photo and name warned).
+  setup:
+    bio_max_chars: 150
+    photo_url_seconds: 604800
+    checklist:
+      - "Create the Instagram account with the username, display name, bio and profile photo on this sheet."
+      - "Switch it to a professional account (Creator), and turn on Instagram's AI-generated label where the profile settings offer it."
+      - "Add the account to our Meta business portfolio (Business Settings > Accounts > Instagram accounts)."
+      - "Assign it to our app's system user with content publishing and comment permissions."
+      - "Never follow, like or comment on our other creators' accounts."
+
+# Comments on our posts (manyworlds.publish.comments), answered in the creator's voice when autonomy.comment_replies
+# is draft (stored for the owner to read, `mw comments <handle>`) or autonomous (sent).
+comments:
+  watch_days: 7                # read comments on posts this young
+  poll_minutes: 30             # per post
+  polls_per_tick: 20
+  max_age_hours: 48            # older comments are not answered
+  keep_days: 30                # comment text cleared after this (commenters are only ever salted hashes)
+  batch: 20                    # comments per LLM call (one call per creator per tick)
+  creators_per_tick: 10
+  max_replies_per_account_day: 30
+  max_chars: 220
 
 simulation:
   # Sandbox learning tests (manyworlds.brain.simulation). fast_forward also publishes planned posts
@@ -694,7 +736,7 @@ simulation:
 autonomy:
   # autonomous (approved 2026-11-14) | human_approval | sampled | paused (the kill switch: nothing is published)
   publish: autonomous
-  comment_replies: disabled
+  comment_replies: draft        # disabled | draft (replies stored for the owner to read) | autonomous (sent)
 
 limits:                        # bounds the Brain may not cross without a human
   daily_usd_max: 100.0

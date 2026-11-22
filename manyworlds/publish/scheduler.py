@@ -63,6 +63,9 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
         except instagram.Pending:
             out["pending"] += 1            # container processing at Instagram: published on a later tick
             continue
+        except instagram.Ramped:
+            out["ramp"] = out.get("ramp", 0) + 1   # a new account: today's ramp allowance is used
+            continue
         except instagram.QuotaReached:
             out["quota"] += 1
             continue
