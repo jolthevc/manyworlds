@@ -212,7 +212,8 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
     limit = limit or int(policy.get("review", "video", "max_jobs_per_run", default=10))
     return [r["id"] for r in conn.execute(
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
-           WHERE j.status = 'done' AND (j.kind LIKE 'video.%%' OR j.kind LIKE 'talk.%%' OR j.kind = 'hosted.video')
+           WHERE j.status = 'done' AND (j.kind LIKE 'video.%%' OR j.kind LIKE 'talk.%%' OR j.kind = 'hosted.video'
+                                        OR j.kind = 'comfy.wan_i2v')
              AND j.kind <> 'video.mirror'
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0
              AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)

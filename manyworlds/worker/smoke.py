@@ -173,9 +173,15 @@ def check_talkcomfy() -> list[str]:
         problems = comfy.missing_inputs(g, info)
         if problems:
             raise RuntimeError("InfiniteTalk graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
+        clip = comfy.graph_i2v(image="x.png", prompt="she smiles", seed=1,
+                               params={"width": 480, "height": 832}, blocks_to_swap=20)
+        problems = comfy.missing_inputs(clip, info)
+        if problems:
+            raise RuntimeError("Wan 2.2 story-clip graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
     finally:
         comfy.stop()
-    done.append("ComfyUI + WanVideoWrapper nodes match the graph")
+    handlers_for(["comfy.wan_i2v"])
+    done.append("ComfyUI + WanVideoWrapper nodes match the talk and story-clip graphs")
 
     from . import lipsync
     import imageio.v3 as iio

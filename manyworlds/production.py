@@ -224,6 +224,8 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     kind = _cfg(policy).get("video_kind", "video.wan_i2v")
     if kind.startswith("hosted."):   # a hosted API renders it (generation.hosted_video): no GPU machine
         payload["params"] = dict(policy.get("generation", "hosted_video", default={}) or {})
+    elif kind.startswith("comfy."):  # the ComfyUI worker's Wan 2.2 graph (generation.comfy_video)
+        payload["params"] = dict(policy.get("generation", "comfy_video", default={}) or {})
     return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
 

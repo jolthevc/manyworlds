@@ -51,3 +51,25 @@ def test_model_folders_point_at_the_weights_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(comfy, "COMFY_DIR", tmp_path)
     cfg = comfy.write_model_paths(tmp_path / "cache").read_text()
     assert f"base_path: {tmp_path / 'cache'}" in cfg and "diffusion_models: diffusion_models" in cfg
+
+
+def test_the_story_clip_graph_runs_the_two_experts_in_turn():
+    g = comfy.graph_i2v(image="a.png", prompt="steam rises", seed=3, params={"width": 480, "height": 832},
+                        blocks_to_swap=0)
+    hi, lo = g["sample_high"]["inputs"], g["sample_low"]["inputs"]
+    assert hi["model"] == ["high_lora", 0] and lo["model"] == ["low_lora", 0]
+    assert (hi["start_step"], hi["end_step"], lo["start_step"], lo["end_step"]) == (0, 3, 3, -1)
+    assert lo["samples"] == ["sample_high", 0] and hi["cfg"] == ["cfg_schedule", 0] and lo["cfg"] == 1.0
+    assert g["high_lora_pick"]["inputs"]["strength"] == 3.0 and g["low_lora_pick"]["inputs"]["strength"] == 1.0
+    assert g["high_model"]["inputs"]["model"].endswith("HIGH_fp8_e4m3fn_scaled_KJ.safetensors")
+    for node in g.values():
+        for v in node["inputs"].values():
+            if isinstance(v, list) and len(v) == 2 and isinstance(v[0], str):
+                assert v[0] in g
+
+
+def test_story_clip_settings_reach_a_comfy_job(conn, policy):
+    from manyworlds import bench
+    batch = bench.enqueue(conn, policy, "comfy.wan_i2v", 1, extra={"image_uri": "s3://b/x.png"})
+    p = conn.execute("SELECT payload FROM jobs WHERE batch = %s", (batch,)).fetchone()["payload"]
+    assert p["params"]["width"] == policy.get("generation", "comfy_video", "width") and p["keyframes"] == 4

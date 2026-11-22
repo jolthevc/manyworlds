@@ -130,9 +130,9 @@ def write_model_paths(models_dir: Path) -> Path:
     return cfg
 
 
-def ensure_weights(models_dir: Path) -> None:
+def ensure_weights(models_dir: Path, weights: dict | None = None) -> None:
     from huggingface_hub import hf_hub_download
-    for folder, files in WEIGHTS.items():
+    for folder, files in (weights or WEIGHTS).items():
         for repo, name in files:
             hf_hub_download(repo, name, local_dir=str(models_dir / folder), token=os.environ.get("HF_TOKEN") or None)
 
@@ -194,3 +194,80 @@ def run(g: dict, *, timeout_s: float, poll_s: float = 3) -> Path:
             raise RuntimeError("ComfyUI exited while rendering (out of memory?); see its log")
         time.sleep(poll_s)
     raise RuntimeError(f"ComfyUI render not done after {timeout_s:.0f} s")
+
+
+# --- story clips: Wan 2.2 I2V A14B, the two experts with the lightx2v LoRA ------------------------------------------
+# Kijai's example workflow (example_workflows/wanvideo_2_2_I2V_A14B_example_WIP.json at the pinned commit): the
+# high-noise expert takes the first steps with a short guidance schedule, the low-noise expert finishes; both carry
+# the lightx2v distillation LoRA (strength 3 on high, 1 on low), 6 steps in all, dpm++_sde, shift 8, 81 frames at 16
+# fps. fp8-scaled weights (Apache-2.0); the T5 encoder is the one the talk graph uses.
+I2V_WEIGHTS = {
+    "diffusion_models": [("Kijai/WanVideo_comfy_fp8_scaled", "I2V/Wan2_2-I2V-A14B-HIGH_fp8_e4m3fn_scaled_KJ.safetensors"),
+                         ("Kijai/WanVideo_comfy_fp8_scaled", "I2V/Wan2_2-I2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.safetensors")],
+    "vae": WEIGHTS["vae"], "text_encoders": WEIGHTS["text_encoders"], "loras": WEIGHTS["loras"],
+}
+HIGH, LOW = (f for _, f in I2V_WEIGHTS["diffusion_models"])
+
+
+def graph_i2v(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swap: int) -> dict:
+    """A story clip from one approved photo, in ComfyUI's API format."""
+    p = params
+    steps, split = int(p.get("steps", 6)), int(p.get("high_steps", 3))
+
+    def expert(name: str, weights: str, lora_strength: float) -> dict:
+        return {
+            f"{name}_model": {"class_type": "WanVideoModelLoader",
+                              "inputs": {"model": weights, "base_precision": p.get("base_precision", "fp16_fast"),
+                                         "quantization": p.get("quantization", "fp8_e4m3fn_scaled"),
+                                         "load_device": "offload_device", "attention_mode": p.get("attention", "sageattn")}},
+            f"{name}_swap": {"class_type": "WanVideoSetBlockSwap",
+                             "inputs": {"model": [f"{name}_model", 0], "block_swap_args": ["swap", 0]}},
+            f"{name}_lora_pick": {"class_type": "WanVideoLoraSelect",
+                                  "inputs": {"lora": LORA, "strength": float(lora_strength), "low_mem_load": False,
+                                             "merge_loras": False}},
+            f"{name}_lora": {"class_type": "WanVideoSetLoRAs",
+                             "inputs": {"model": [f"{name}_swap", 0], "lora": [f"{name}_lora_pick", 0]}},
+        }
+
+    def sampler(model: str, start: int, end: int, cfg, samples=None) -> dict:
+        inputs = {"model": [model, 0], "image_embeds": ["i2v", 0], "text_embeds": ["text", 0], "steps": steps,
+                  "cfg": cfg, "shift": float(p.get("shift", 8.0)), "seed": int(seed) % (2**63), "force_offload": True,
+                  "scheduler": p.get("scheduler", "dpm++_sde"), "riflex_freq_index": 0, "denoise_strength": 1.0,
+                  "batched_cfg": False, "rope_function": "comfy", "start_step": start, "end_step": end,
+                  "add_noise_to_samples": False}
+        if samples:
+            inputs["samples"] = samples
+        return {"class_type": "WanVideoSampler", "inputs": inputs}
+
+    return {
+        **expert("high", HIGH, p.get("high_lora_strength", 3.0)),
+        **expert("low", LOW, p.get("low_lora_strength", 1.0)),
+        "swap": {"class_type": "WanVideoBlockSwap",
+                 "inputs": {"blocks_to_swap": int(blocks_to_swap), "offload_img_emb": False, "offload_txt_emb": False,
+                            "use_non_blocking": True, "vace_blocks_to_swap": 0, "prefetch_blocks": 1,
+                            "block_swap_debug": False}},
+        "vae": {"class_type": "WanVideoVAELoader", "inputs": {"model_name": VAE, "precision": "bf16"}},
+        "text": {"class_type": "WanVideoTextEncodeCached",
+                 "inputs": {"model_name": TEXT_ENCODER, "precision": "bf16", "positive_prompt": prompt,
+                            "negative_prompt": p.get("negative_prompt", NEGATIVE), "quantization": "disabled",
+                            "use_disk_cache": False, "device": "gpu"}},
+        "image": {"class_type": "LoadImage", "inputs": {"image": image}},
+        "i2v": {"class_type": "WanVideoImageToVideoEncode",
+                "inputs": {"vae": ["vae", 0], "start_image": ["image", 0], "width": int(p["width"]),
+                           "height": int(p["height"]), "num_frames": int(p.get("frames", 81)),
+                           "noise_aug_strength": 0.0, "start_latent_strength": 1.0, "end_latent_strength": 1.0,
+                           "force_offload": True, "fun_or_fl2v_model": False, "tiled_vae": False}},
+        "cfg_schedule": {"class_type": "CreateCFGScheduleFloatList",
+                         "inputs": {"steps": steps, "cfg_scale_start": float(p.get("high_cfg", 2.0)),
+                                    "cfg_scale_end": float(p.get("high_cfg", 2.0)), "interpolation": "linear",
+                                    "start_percent": 0.0, "end_percent": float(p.get("cfg_end_percent", 0.01))}},
+        "sample_high": sampler("high_lora", 0, split, ["cfg_schedule", 0]),
+        "sample_low": sampler("low_lora", split, -1, 1.0, samples=["sample_high", 0]),
+        "decode": {"class_type": "WanVideoDecode",
+                   "inputs": {"vae": ["vae", 0], "samples": ["sample_low", 0], "enable_vae_tiling": False,
+                              "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128,
+                              "normalization": "default"}},
+        "video": {"class_type": "CreateVideo", "inputs": {"images": ["decode", 0], "fps": float(p.get("fps", 16))}},
+        "save": {"class_type": "SaveVideo",
+                 "inputs": {"video": ["video", 0], "filename_prefix": "mw_clip", "format": "mp4", "codec": "h264"}},
+    }

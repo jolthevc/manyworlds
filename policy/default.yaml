@@ -23,8 +23,8 @@ fixed_costs:
 gpu_runs:
   default_max_hours: 2
   default_max_usd: 1.0
-  max_hours_by_family: {train: 3, talk: 2.5}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
-  max_usd_by_family: {talk: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders)
+  max_hours_by_family: {train: 3, talk: 2.5, comfy: 2.5}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
+  max_usd_by_family: {talk: 3.0, comfy: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders)
   max_hours_limit: 12          # the launcher refuses anything longer
   idle_stop_minutes: 20        # no open jobs for this long -> stop (SaladCloud: nodes pull images slowly)
   # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
@@ -35,7 +35,7 @@ gpu_runs:
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
-  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90}   # talk: first boot downloads ~90 GB of weights
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60}   # talk: first boot downloads ~90 GB of weights
   max_attempt_minutes_by_kind: {image.mirror: 120, video.mirror: 120}  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
 
@@ -94,6 +94,8 @@ job_kinds:
   talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
+  # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
+  comfy.wan_i2v:   {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_comm_3090, vast_4090, vast_5090, runpod_secure_a40], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -122,6 +124,9 @@ worker_images:
   # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
   talk: {image: mw-worker-talkcomfy, tag: v1, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
+  # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
+  comfy: {image: mw-worker-talkcomfy, tag: v2, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
 
@@ -148,12 +153,12 @@ autoscale:
   scale:
     drain_target_minutes: {default: 30, train: 180}
     history_days: 7
-    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200, talk: 900}
+    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200, talk: 900, comfy: 180}
   # Production work (made lead_hours ahead) waits to share one machine: each machine bills a boot,
   # model load and idle tail (~7-10 min) however few jobs it runs. Lab work and benchmarks start at once.
   batch:
     # image 20: a Salad image machine bills boot + a 20-min idle tail around ~20 min of work (39% busy, 2026-11-21)
-    min_work_minutes: {default: 10, image: 20, video: 25, train: 0, talk: 25}   # start once this much work waits (median job times)...
+    min_work_minutes: {default: 10, image: 20, video: 25, train: 0, talk: 25, comfy: 25}   # start once this much work waits (median job times)...
     max_wait_minutes: {default: 180}                       # ...or once the oldest job has waited this long
     urgent_priority: 1                                     # jobs at this priority or above never wait
   bench_machines: 1              # machines for pinned benchmark work, whatever its size (it measures one machine)
@@ -284,6 +289,11 @@ generation:
     # stays a list: "'list' object has no attribute 'dtype'", 2026-11-22); the whole model fits a 48 GB card at 480p.
     fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: ["--offload_model", "False", "--max_frame_num", "1525"],
            lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}}
+  # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
+  # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
+  # 16 fps (5 s), 9:16 at 480p. Cards under swap_below_gb swap blocks_to_swap blocks to the CPU.
+  comfy_video: {width: 480, height: 832, frames: 81, fps: 16, steps: 6, high_steps: 3, shift: 8.0, high_cfg: 2.0,
+                high_lora_strength: 3.0, low_lora_strength: 1.0, swap_below_gb: 40, blocks_to_swap: 20, timeout_s: 1800}
   # Story clips on a hosted API (production.video_kind: hosted.video): Wan 2.7 i2v on Together, $0.10 per 5 s clip
   # (catalog 2026-11-21; the job records the host's own cost). Same approved photo as first frame, 9:16 720P.
   hosted_video: {host: together, model: Wan-AI/wan2.7-i2v, seconds: 5, resolution: 720P, ratio: "9:16",

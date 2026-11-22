@@ -32,7 +32,7 @@ SPEECH_LINES = [
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
             extra: dict[str, Any] | None = None, pools: list[str] | None = None,
             profile: str | None = None) -> str:
-    if kind.startswith(("talk.", "hosted.")) and not (extra or {}).get("image_uri"):
+    if kind.startswith(("talk.", "hosted.", "comfy.")) and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("this benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
     batch = batch or f"bench-{kind}-{uuid.uuid4().hex[:6]}"
@@ -44,6 +44,9 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
                 "job_kinds", kind, "outputs_per_job", default=4), "width": img.get("width", 896),
                 "height": img.get("height", 1152), "seed": 1000 + i,
                 "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}
+        elif kind == "comfy.wan_i2v":
+            payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage", "seed": 2000 + i,
+                       "keyframes": 4, "params": {**gen.get("comfy_video", {}), **_profile(gen, "comfy_video_profiles", profile)}}
         elif kind == "hosted.video":
             payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage", "seed": 2000 + i,
                        "keyframes": 4, "params": dict(gen.get("hosted_video", {}))}
