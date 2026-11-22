@@ -170,8 +170,12 @@ def _volume_lock(models_dir: Path, wait_s: float = 3600, stale_s: float = 7200):
         while True:
             try:
                 fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
-                os.close(fd)
+                try:
+                    os.write(fd, str(os.getpid()).encode())
+                    os.close(fd)
+                except OSError:   # a full volume: never leave a lock behind that blocks every machine for hours
+                    lock.unlink(missing_ok=True)
+                    raise
                 break
             except FileExistsError:
                 try:
@@ -190,7 +194,7 @@ def _volume_lock(models_dir: Path, wait_s: float = 3600, stale_s: float = 7200):
     return held()
 
 
-def prune_other_weights(models_dir: Path) -> list[str]:
+def prune_other_weights(models_dir: Path, *, partial: bool = True) -> list[str]:
     """Free the weights volume of what this worker no longer uses: the siblings of `models_dir` (the research
     script's ~82 GB under MW_MODEL_DIR/<repo>) and half-finished downloads. 2026-11-22: the 150 GB volume filled
     ("Disk quota exceeded") and every story clip failed. Public model files only; they can be fetched again."""
@@ -202,7 +206,7 @@ def prune_other_weights(models_dir: Path) -> list[str]:
             if p.name != models_dir.name and p.is_dir() and not p.name.startswith("."):
                 shutil.rmtree(p, ignore_errors=True)
                 removed.append(p.name)
-    for p in models_dir.rglob("*.incomplete") if models_dir.exists() else []:
+    for p in models_dir.rglob("*.incomplete") if partial and models_dir.exists() else []:
         p.unlink(missing_ok=True)
         removed.append(p.name)
     return removed
@@ -225,6 +229,11 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
                 todo.append((folder, repo, name))
     if not todo:
         return
+    if prune:   # before the lock: on a full volume even the lock file cannot be written (2026-11-22, image v7).
+        # Siblings are never used by this worker, so no other machine can be writing them; partial files can.
+        removed = prune_other_weights(models_dir, partial=False)
+        if removed:
+            print(f"pruned from the weights volume: {', '.join(removed[:20])}", flush=True)
     with _volume_lock(models_dir):
         if prune:
             removed = prune_other_weights(models_dir)
@@ -251,14 +260,16 @@ def start(*, args: tuple[str, ...] = (), wait_s: float = 600) -> None:
     proc = _server["proc"]
     if proc is not None and proc.poll() is None:
         return
-    log = open(Path(os.environ.get("MW_COMFY_LOG", "/tmp/comfyui.log")), "ab")
+    log_path = Path(os.environ.get("MW_COMFY_LOG", "/tmp/comfyui.log"))
+    log = open(log_path, "ab")
     _server["proc"] = subprocess.Popen(
         ["python", "main.py", "--listen", "127.0.0.1", "--port", str(PORT), "--disable-auto-launch", *args],
         cwd=str(COMFY_DIR), stdout=log, stderr=subprocess.STDOUT)
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
         if _server["proc"].poll() is not None:
-            raise RuntimeError(f"ComfyUI exited at start ({_server['proc'].returncode}); see its log")
+            tail = log_path.read_bytes()[-1500:].decode(errors="replace") if log_path.exists() else ""
+            raise RuntimeError(f"ComfyUI exited at start ({_server['proc'].returncode}): {tail}")
         try:
             _get("/system_stats")
             return

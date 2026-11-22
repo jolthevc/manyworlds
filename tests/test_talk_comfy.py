@@ -132,6 +132,55 @@ def test_a_full_volume_is_pruned_of_weights_the_worker_no_longer_uses(tmp_path):
     assert sorted(p.name for p in (root / "comfy" / "vae").iterdir()) == ["keep.safetensors", "new.safetensors"]
 
 
+def test_a_full_volume_is_pruned_before_the_lock_and_a_lock_that_cannot_be_written_is_not_left_behind(tmp_path, monkeypatch):
+    """2026-11-22, image v7: on the full volume even the lock file could not be written (Disk quota exceeded), so
+    pruning inside the lock never ran, and the half-written lock would have blocked every machine for two hours."""
+    import errno
+    import pytest
+    root = tmp_path / "mw"
+    (root / "old-research").mkdir(parents=True)
+    (root / "comfy").mkdir()
+    real_write = comfy.os.write
+    lock_fds = []
+    real_open = comfy.os.open
+    def opened(path, *a, **k):
+        fd = real_open(path, *a, **k)
+        if str(path).endswith(".mw-download.lock"):
+            lock_fds.append(fd)
+        return fd
+    def full(fd, data):
+        if fd in lock_fds:
+            comfy.os.close(fd)
+            raise OSError(errno.EDQUOT, "Disk quota exceeded")
+        return real_write(fd, data)
+    monkeypatch.setattr(comfy.os, "open", opened)
+    monkeypatch.setattr(comfy.os, "write", full)
+    with pytest.raises(OSError):
+        comfy.ensure_weights(root / "comfy", {"vae": [("r", "new.safetensors")]}, prune=True,
+                             download=lambda *a, **k: None, remote_size=lambda repo, name, token: None)
+    assert not (root / "old-research").exists()
+    assert not (root / "comfy" / ".mw-download.lock").exists()
+    monkeypatch.setattr(comfy.os, "write", real_write)
+
+
+def test_comfyui_exiting_at_start_reports_the_end_of_its_log(tmp_path, monkeypatch):
+    import pytest
+    log = tmp_path / "comfy.log"
+    monkeypatch.setenv("MW_COMFY_LOG", str(log))
+    class Dead:
+        returncode = 1
+        def __init__(self, *a, stdout=None, **k):
+            stdout.write(b"RuntimeError: CUDA driver version is insufficient
+"); stdout.flush()
+        def poll(self):
+            return 1
+    monkeypatch.setattr(comfy.subprocess, "Popen", Dead)
+    monkeypatch.setitem(comfy._server, "proc", None)
+    with pytest.raises(RuntimeError, match="CUDA driver version is insufficient"):
+        comfy.start(wait_s=5)
+    comfy._server["proc"] = None
+
+
 def test_torch_compile_is_wired_into_every_model_loader_only_when_asked():
     from manyworlds.worker import comfy
     plain = comfy.graph_i2v(image="a.png", prompt="p", seed=1, params={"width": 480, "height": 832}, blocks_to_swap=0)
