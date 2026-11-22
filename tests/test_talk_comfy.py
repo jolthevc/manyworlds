@@ -73,3 +73,12 @@ def test_story_clip_settings_reach_a_comfy_job(conn, policy):
     batch = bench.enqueue(conn, policy, "comfy.wan_i2v", 1, extra={"image_uri": "s3://b/x.png"})
     p = conn.execute("SELECT payload FROM jobs WHERE batch = %s", (batch,)).fetchone()["payload"]
     assert p["params"]["width"] == policy.get("generation", "comfy_video", "width") and p["keyframes"] == 4
+
+
+def test_an_execution_error_names_the_node_and_exception_without_the_inputs():
+    status = {"status_str": "error", "messages": [["execution_start", {}], ["execution_error", {
+        "node_id": "sampler", "node_type": "WanVideoSampler", "exception_type": "torch.OutOfMemoryError",
+        "exception_message": "CUDA out of memory", "traceback": ["  File x\n", "OutOfMemoryError\n"],
+        "current_inputs": {"model": "x" * 50000}}]]}
+    msg = comfy.execution_error(status)
+    assert "WanVideoSampler" in msg and "OutOfMemoryError: CUDA out of memory" in msg and len(msg) < 2500

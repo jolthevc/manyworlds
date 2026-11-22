@@ -42,7 +42,7 @@ def build(conn, policy: Policy, day: date) -> dict:
         "SELECT count(*) AS n FROM jobs WHERE kind LIKE 'brain.%%' AND status IN ('failed', 'dead') "
         "AND updated_at >= %(s)s AND updated_at < %(e)s", win).fetchone()["n"]
     published = conn.execute(
-        "SELECT count(*) AS n FROM publications WHERE NOT simulated AND created_at >= %(s)s AND created_at < %(e)s",
+        "SELECT count(*) AS n FROM publications WHERE NOT simulated AND published_at >= %(s)s AND published_at < %(e)s",
         win).fetchone()["n"]
     approvals = conn.execute("SELECT count(*) AS n FROM approvals WHERE status = 'pending'").fetchone()["n"]
 

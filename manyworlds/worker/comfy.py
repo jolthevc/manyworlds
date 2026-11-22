@@ -181,8 +181,7 @@ def run(g: dict, *, timeout_s: float, poll_s: float = 3) -> Path:
         if h:
             status = h.get("status") or {}
             if status.get("status_str") == "error":
-                msgs = [m for m in status.get("messages", []) if m[0] == "execution_error"]
-                raise RuntimeError(f"ComfyUI failed: {json.dumps(msgs)[-1500:]}")
+                raise RuntimeError(f"ComfyUI failed: {execution_error(status)}")
             for out in (h.get("outputs") or {}).values():
                 for key in ("videos", "images", "gifs"):
                     for f in out.get(key) or []:
@@ -271,3 +270,15 @@ def graph_i2v(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swa
         "save": {"class_type": "SaveVideo",
                  "inputs": {"video": ["video", 0], "filename_prefix": "mw_clip", "format": "mp4", "codec": "h264"}},
     }
+
+
+def execution_error(status: dict) -> str:
+    """The useful part of a ComfyUI execution error: which node, what exception, and the end of its traceback,
+    without the node's input values (tensors and models, which drown the message)."""
+    for kind, m in status.get("messages") or []:
+        if kind != "execution_error":
+            continue
+        tb = "".join(m.get("traceback") or [])[-1200:]
+        return (f"node {m.get('node_id')} ({m.get('node_type')}): {m.get('exception_type')}: "
+                f"{str(m.get('exception_message'))[:600]} | traceback: {tb}")
+    return json.dumps(status)[:800]
