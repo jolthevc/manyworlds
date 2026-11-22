@@ -88,12 +88,29 @@ def test_the_plate_is_chosen_by_the_image_gate_without_its_identity_row(conn, po
     judge = JudgeStub([ok(identity=0, scene=5), ok(identity=0, scene=9), ok(identity=0, scene=9, realism=3),
                        ok(identity=0, scene=8)])
     results = gates.review_job(conn, policy, judge, store, job, tmp_path)
-    assert not any(r["accepted"] for r in results)                 # nobody to match: the gate rejects them all
+    # Nobody to match, so no identity gate: plates are accepted or rejected on realism, safety and scene alone, and
+    # don't count as Z-Image rejects.
+    assert [r["accepted"] for r in results] == [True, True, False, True]
+    assert not conn.execute("SELECT 1 FROM reviews WHERE gate = 'identity'").fetchone()
+    assert "identity" not in results[0]
     out = sets.refresh(conn, policy, cid)
     assert out["chosen"] == ["set:home_kitchen"] and out["retried"] == []
     kitchen = sets.bibles(conn, cid)["sets"]["home_kitchen"]
     assert kitchen["plate_uri"] == uris[1]                         # best scene + realism among the good ones
     assert sets.bibles(conn, cid)["outfits"]["grey_hoodie"]["reference_uri"] is None   # its job is still queued
+
+
+def test_the_producer_tick_picks_up_reviewed_plates(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    sets.register(conn, policy, cid, [KITCHEN])
+    job = sets.bibles(conn, cid)["sets"]["home_kitchen"]["plate_jobs"][0]
+    uris = _finish(conn, store, tmp_path, job, cid, n=1)
+    assert sets.refresh_all(conn, policy) == {}                   # not reviewed yet
+    gates.review_job(conn, policy, JudgeStub([ok(identity=0, scene=9)]), store, job, tmp_path)
+    assert sets.refresh_all(conn, policy) == {str(cid): {"chosen": ["set:home_kitchen"], "retried": [], "gave_up": []}}
+    assert sets.bibles(conn, cid)["sets"]["home_kitchen"]["plate_uri"] == uris[0]
+    assert sets.refresh_all(conn, policy) == {}                   # the outfit's job is still queued
 
 
 def test_a_rejected_plate_is_made_again_up_to_the_limit(conn, policy, store, tmp_path):

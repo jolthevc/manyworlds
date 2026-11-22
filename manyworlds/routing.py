@@ -22,17 +22,20 @@ from datetime import datetime, timedelta, timezone
 from .policy import Policy
 
 
-def _family(kind: str) -> str:
-    return kind.split(".")[0]
+def _family(kind: str, policy: Policy | None = None) -> str:
+    return policy.family(kind) if policy is not None else kind.split(".")[0]
 
 
-_INTERMEDIATE = "coalesce(j.payload->>'intermediate', '') = 'true'"
+# Jobs that are never a post's output: walk-and-talk's motion clips (payload.intermediate) and set plates / outfit
+# references (payload.plate, manyworlds.creator.sets).
+_INTERMEDIATE = "(coalesce(j.payload->>'intermediate', '') = 'true' OR j.payload ? 'plate')"
 
 
-def kind_costs(conn, kinds: list[str], *, since: datetime) -> dict[str, dict]:
+def kind_costs(conn, kinds: list[str], *, since: datetime, policy: Policy | None = None) -> dict[str, dict]:
     """Cost, accepted outputs and cost per accepted output of each kind. Intermediate jobs (payload.intermediate:
-    walk-and-talk's motion clips, made on a story-clip kind but never a post's output) are left out: their cost is
-    the talking video's, not the kind's, and their machine time is kept apart when the family's bill is shared."""
+    walk-and-talk's motion clips, made on a story-clip kind but never a post's output; payload.plate: set plates and
+    outfit references) are left out: their cost is the posts', not the kind's, and their machine time is kept apart
+    when the family's bill is shared. With `policy`, a kind's family is job_kinds.<kind>.family when set."""
     out = {}
     for kind in kinds:
         direct = float(conn.execute(
@@ -50,7 +53,7 @@ def kind_costs(conn, kinds: list[str], *, since: datetime) -> dict[str, dict]:
                SELECT coalesce(sum(g.cost_usd * coalesce(
                         (SELECT sec FROM w WHERE w.gpu_group = g.name AND w.kind = %(k)s), 0)
                         / nullif((SELECT sum(sec) FROM w WHERE w.gpu_group = g.name), 0)), 0) AS u
-               FROM g""", {"f": _family(kind), "s": since, "k": kind}).fetchone()["u"]
+               FROM g""", {"f": _family(kind, policy), "s": since, "k": kind}).fetchone()["u"]
         accepted = int(conn.execute(
             f"""SELECT count(*) AS n FROM (
                  SELECT a.id FROM assets a JOIN jobs j ON j.id = a.job_id JOIN reviews r ON r.asset_id = a.id
@@ -72,7 +75,7 @@ def choose(conn, policy: Policy, output: str, *, key: str, now: datetime | None 
     if not kinds:
         raise KeyError(f"no production.routing.{output}.kinds")
     now = now or datetime.now(timezone.utc)
-    costs = kind_costs(conn, kinds, since=now - timedelta(days=float(cfg.get("days", 14))))
+    costs = kind_costs(conn, kinds, since=now - timedelta(days=float(cfg.get("days", 14))), policy=policy)
     ranked = sorted((k for k in kinds if costs[k]["accepted"] >= int(cfg.get("min_accepted", 5))),
                     key=lambda k: costs[k]["usd_per_accepted"])
     draw = int(hashlib.sha256(f"{output}:{key}".encode()).hexdigest()[:8], 16) / 2**32

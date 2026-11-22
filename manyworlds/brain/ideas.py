@@ -65,7 +65,7 @@ def direct_posts(conn, policy, llm, creator_id, posts) -> int:
         if fmt not in formats or body.get("shots"):
             continue
         try:
-            shots = director.direct(conn, policy, llm, {**body, "format": fmt}, creator_id, fmt=fmt)
+            shots = director.direct(conn, policy, llm, {**body, "format": fmt}, creator_id, fmt=fmt, post_id=post_id)
         except Exception as e:  # noqa: BLE001 - an undirected post is made exactly as before
             log.warning("director failed for post %s (%s: %s); the post proceeds undirected", post_id,
                         type(e).__name__, str(e)[:300])

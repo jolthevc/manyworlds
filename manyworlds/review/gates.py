@@ -4,7 +4,8 @@ One vision call per job reviews all of that job's images against the creator's r
 images (cached across calls, so each extra image costs only its own tokens). Every
 asset gets one `reviews` row per gate:
 
-  identity  same person as the references (face, hair, signature details such as glasses)
+  identity  same person as the references (face, hair, signature details such as glasses); not asked of set
+            plates and outfit references (payload `plate`, manyworlds.creator.sets), which have nobody in them
   realism   reads as an ordinary phone photo; no anatomical, text or rendering defects
   safety    looks at least policy creator_min_age, not sexualized, no real brand marks
   scene     (post images only) shows the scene the planner wrote: setting, action, styling
@@ -69,15 +70,20 @@ class ImageReviews(BaseModel):
     reviews: list[CandidateReview]
 
 
-def gates_for(scene: str | None, shot: dict | None = None) -> tuple[str, ...]:
-    return GATES + (("scene",) if scene else ()) + (("direction",) if shot else ())
+def gates_for(scene: str | None, shot: dict | None = None, *, plate: bool = False) -> tuple[str, ...]:
+    """The gates an image is judged on. A set plate or outfit reference (payload `plate`, manyworlds.creator.sets)
+    has nobody in it, so it has no identity gate: an identity row would always fail and count as a reject."""
+    base = tuple(g for g in GATES if not (plate and g == "identity"))
+    return base + (("scene",) if scene else ()) + (("direction",) if shot else ())
 
 
 def decide(r: CandidateReview, cfg: dict, scene: str | None = None, *, shot: dict | None = None,
-           policy: Policy | None = None) -> dict[str, bool]:
+           policy: Policy | None = None, plate: bool = False) -> dict[str, bool]:
     verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
                "realism": r.realism >= int(cfg.get("min_realism", 6)),
                "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
+    if plate:
+        del verdict["identity"]
     if scene:  # a judge that leaves it out passes: fit is a preference, not a safety line
         verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))
     if shot:
@@ -134,9 +140,11 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     cfg = policy.get("review", "image", default={})
     stages = common.stages(cfg, role)
     job = conn.execute("SELECT creator_id, payload->>'scene' AS scene, payload->'shot' AS shot, "
-                       "payload->'references' AS refs FROM jobs WHERE id = %s", (job_id,)).fetchone()
+                       "payload->'references' AS refs, payload->'plate' AS plate FROM jobs WHERE id = %s",
+                       (job_id,)).fetchone()
     shot = job["shot"] if isinstance(job["shot"], dict) else None   # a directed scene (manyworlds.direction)
-    scene, gates = job["scene"], gates_for(job["scene"], shot)
+    plate = bool(job["plate"])   # a set plate or outfit reference (creator.sets): nobody in it, no identity gate
+    scene, gates = job["scene"], gates_for(job["scene"], shot, plate=plate)
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
     assets = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'image' ORDER BY uri",
                           (job_id,)).fetchall()
@@ -166,9 +174,9 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             if r is None:  # the judge skipped it: fail closed, it can be re-reviewed
                 verdict, details, scores = {g: False for g in gates}, {"error": "no review returned"}, {}
             else:
-                verdict = decide(r, cfg, scene, shot=shot, policy=policy)
+                verdict = decide(r, cfg, scene, shot=shot, policy=policy, plate=plate)
                 details = r.model_dump(exclude=detail.unasked(r, shot))
-                scores = {"identity": r.identity, "realism": r.realism, "scene": r.scene}
+                scores = {"identity": None if plate else r.identity, "realism": r.realism, "scene": r.scene}
                 if shot:
                     scores["direction"] = r.direction
                 # finer checks: a row each when scored; they reject only when enforced (review.detail)

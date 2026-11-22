@@ -43,6 +43,21 @@ def concat(paths: list[Path], out: Path, *, timeout: float = 600) -> Path:
     raise RuntimeError(f"ffmpeg could not join {len(paths)} segments: {error}")
 
 
+def trim_start(path: Path, out: Path, *, frames: int = 1, timeout: float = 600) -> Path:
+    """A silent clip without its first `frames` frames, re-encoded (H.264, yuv420p) into `out`; 0 re-encodes it
+    whole. A chained motion clip starts on the frame the one before it ended on, so a join drops that repeat; every
+    clip of a join goes through here, so the joined clips share one encoding. Audio is not kept (motion clips have
+    none: the talk job adds the voice)."""
+    vf = f"trim=start_frame={max(0, int(frames))},setpts=PTS-STARTPTS,format=yuv420p"
+    cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(path), "-map", "0:v:0", "-vf", vf, "-an",
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+           "-movflags", "+faststart", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+        raise RuntimeError(f"ffmpeg could not trim {Path(path).name}: {(r.stderr or '')[-500:]}")
+    return out
+
+
 def normalize(path: Path, out: Path, *, width: int, height: int, fps: int, lufs: float = -14.0,
               sample_rate: int = 48000, timeout: float = 600) -> Path:
     """One segment at the joined video's size, frame rate, audio format and loudness, so segments made by

@@ -15,13 +15,14 @@ NOW = datetime.now(timezone.utc)
 
 
 
-def _clips(conn, cid, kind, n, *, usd, accepted, group=None, gpu_usd=0.0, new_group=True, intermediate=False):
+def _clips(conn, cid, kind, n, *, usd, accepted, group=None, gpu_usd=0.0, new_group=True, intermediate=False,
+           payload=None):
     """n finished clip jobs of `kind`, `accepted` of them passing review, each with `usd` of direct cost."""
     if group and new_group:
         conn.execute("INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, family, "
                      "billed_usd) VALUES (%s, 'runpod', 'runpod_secure_l40s', 1.09, %s, %s, 3, %s, %s)",
                      (group, [kind], NOW + timedelta(hours=1), kind.split(".")[0], gpu_usd))
-    payload = Jsonb({"intermediate": True} if intermediate else {})
+    payload = Jsonb({**({"intermediate": True} if intermediate else {}), **(payload or {})})
     for i in range(n):
         job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES (%s, 'done', %s, %s) RETURNING id",
                            (kind, cid, payload)).fetchone()["id"]
@@ -62,6 +63,27 @@ def test_motion_clips_do_not_count_in_a_kinds_cost_per_accepted_clip(conn, raw_p
     costs = routing.kind_costs(conn, ["comfy.wan_i2v"], since=NOW - timedelta(days=1))["comfy.wan_i2v"]
     # half the machine's time (and none of the motion clips' direct cost) is the story clips': $0.20 / 4
     assert costs["accepted"] == 4 and costs["usd"] == 0.2 and costs["usd_per_accepted"] == 0.05
+
+
+def test_set_plates_do_not_count_in_a_kinds_cost_per_accepted_image(conn, raw_policy):
+    cid = creator(conn)
+    _clips(conn, cid, "image.zimage", 4, usd=0.0, accepted=4, group="g1", gpu_usd=0.40)   # scene images
+    # Set plates on the same kind and machine (creator.sets): never a post's output.
+    _clips(conn, cid, "image.zimage", 4, usd=0.05, accepted=4, group="g1", new_group=False,
+           payload={"plate": {"kind": "set", "id": "home_kitchen"}})
+    costs = routing.kind_costs(conn, ["image.zimage"], since=NOW - timedelta(days=1))["image.zimage"]
+    # the plates' own cost and half the machine are not the scene images': $0.20 / 4
+    assert costs["accepted"] == 4 and costs["usd"] == 0.2 and costs["usd_per_accepted"] == 0.05
+
+
+def test_a_kinds_machines_are_its_policy_familys(conn, raw_policy):
+    cid = creator(conn)
+    # image.qwen_edit runs on edit machines (job_kinds family: edit), not image ones
+    _clips(conn, cid, "image.qwen_edit", 2, usd=0.0, accepted=2, group="g-edit", gpu_usd=0.40)
+    conn.execute("UPDATE gpu_groups SET family = 'edit' WHERE name = 'g-edit'")
+    with_family = routing.kind_costs(conn, ["image.qwen_edit"], since=NOW - timedelta(days=1), policy=raw_policy)
+    assert with_family["image.qwen_edit"]["usd"] == 0.4
+    assert routing.kind_costs(conn, ["image.qwen_edit"], since=NOW - timedelta(days=1))["image.qwen_edit"]["usd"] == 0
 
 
 def test_production_routes_a_story_clip_when_routing_is_on(conn, raw_policy, monkeypatch):

@@ -123,3 +123,48 @@ def test_failures_on_one_card_do_not_block_a_different_one(conn, policy):
         _stopped_machine(conn, policy, f"mw-talk-a40-runpod-{i}", outcome="failed", minutes_ago=30 + i)
     assert autoscale.no_output_streak(conn, policy, "talk", T0, ["runpod_secure_a40"])
     assert autoscale.no_output_streak(conn, policy, "talk", T0, ["runpod_secure_h100"]) is None
+
+
+def test_scene_photo_edits_have_their_own_worker_family(policy):
+    # Qwen-Image-Edit-2511 needs ~58 GB of weights: its own machine size, limits and no-output guard.
+    assert policy.family("image.qwen_edit") == "edit" and policy.family("image.zimage") == "image"
+    assert "image.qwen_edit" not in autoscale._family_kinds(policy, "image")   # image machines don't list it
+    assert autoscale._family_kinds(policy, "edit") == ["image.qwen_edit"]
+    img = policy.get("worker_images", "edit")
+    assert img["image"] == policy.get("worker_images", "image", "image")      # the same worker image
+    assert img["disk_gb"] >= 120 and img["ram_gb"] >= 64 and img["download_gb"] >= 58
+    assert autoscale.attempt_limit_minutes(policy, "edit") > autoscale.attempt_limit_minutes(policy, "image")
+
+
+def test_an_edit_job_starts_an_edit_machine(conn, policy):
+    pools = policy.get("job_kinds", "image.qwen_edit", "pools")
+    queue.enqueue(conn, "image.qwen_edit", {}, batch="bench-edit", pools=pools)
+    ps = providers()
+    actions = autoscale.tick(conn, policy, ps, now=T0)
+    assert [a["pool"] for a in actions if a.get("action") == "launched"] == [pools[0]]
+    name, spec = ps["runpod"].launched[0]
+    img = policy.get("worker_images", "edit")
+    assert name.startswith("mw-edit-") and spec.env["MW_WORKER_KINDS"] == "image.qwen_edit"
+    assert spec.ram_gb == img["ram_gb"] and spec.disk_gb == img["disk_gb"]
+    g = conn.execute("SELECT family, max_attempt_minutes, max_usd FROM gpu_groups WHERE name = %s", (name,)).fetchone()
+    assert g["family"] == "edit"
+    assert float(g["max_attempt_minutes"]) == policy.get("gpu_runs", "max_attempt_minutes_by_family")["edit"]
+    assert float(g["max_usd"]) == policy.get("gpu_runs", "max_usd_by_family")["edit"]
+
+
+def test_failing_edit_machines_do_not_stop_image_work(conn, policy):
+    n = policy.get("autoscale", "no_output_guard", "machines")
+    img = policy.get("worker_images", "edit")
+    for i in range(n):
+        name = f"mw-edit-l40s-runpod-{i}"
+        conn.execute(
+            "INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, started_at, "
+            "stopped_at, stop_reason, family, image) VALUES (%s, 'runpod', 'runpod_secure_l40s', 1.09, "
+            "'{image.qwen_edit}', %s, 3, %s, %s, 'idle', 'edit', %s)",
+            (name, T0, T0 - timedelta(minutes=60 + i), T0 - timedelta(minutes=30 + i), f"{img['image']}:{img['tag']}"))
+        job = queue.enqueue(conn, "fake.image", {"n": 1}, batch=f"old-{name}")
+        conn.execute("INSERT INTO attempts (job_id, worker_id, pool, gpu_group, outcome) VALUES (%s, 'w', "
+                     "'runpod_secure_l40s', %s, 'failed')", (job, name))
+    assert autoscale.no_output_streak(conn, policy, "edit", T0)
+    assert autoscale.no_output_streak(conn, policy, "image", T0) is None
+    assert autoscale.no_output_streak(conn, policy, "image", T0, ["runpod_secure_l40s"]) is None

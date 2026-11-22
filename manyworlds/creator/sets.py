@@ -11,9 +11,11 @@ Stored on the creator (`creators.anchors`, beside the reference images, LoRA and
              prompt asks for the fixed look there). A known id is never overwritten.
   plates     with `sets.generate_plates`, a new entry gets one image job (policy `sets.plate_kind`, Z-Image) of the
              empty room (set plate) or of the clothes alone (outfit reference): no person. The image gate reviews
-             it like any image, with a "nobody in it, matches the description" scene. The gate's identity row
-             always fails (there is no person to match), so the plate is chosen from its realism, safety and scene
-             rows (`refresh`), and the batch is `post-sets-<creator>` so it waits to share a machine with production.
+             it like any image, with a "nobody in it, matches the description" scene, but with no identity gate
+             (payload `plate`: there is no person to match, so it would always fail and count as a reject); the plate
+             is chosen from its realism, safety and scene rows (`refresh`), plate jobs stay out of routing's cost
+             per accepted output (manyworlds.routing), and the batch is `post-sets-<creator>` so it waits to share a
+             machine with production. The producer refreshes pending plates every tick (`refresh_all`).
   apply      a scene whose shot names a registered set or outfit gets the canonical description in its shot (so the
              direction compiler writes it into the prompt) and the plate and outfit reference as payload
              `references`, which the consistency check (manyworlds.review.detail) compares against.
@@ -227,6 +229,30 @@ def refresh(conn, policy: Policy, creator_id) -> dict:
     return out
 
 
+def refresh_all(conn, policy: Policy) -> dict:
+    """`refresh` for every creator with a set or outfit still waiting for its plate (the producer tick), so the
+    first post in a new set gets its references once the plate is reviewed, not only when a later scene asks.
+    Returns {creator_id: refresh result} for creators where something changed."""
+    out: dict = {}
+    if not enabled(policy):
+        return out
+    rows = conn.execute(
+        """SELECT DISTINCT c.id FROM creators c,
+                  LATERAL (SELECT value FROM jsonb_each(coalesce(c.anchors->'sets', '{}'::jsonb))
+                           UNION ALL SELECT value FROM jsonb_each(coalesce(c.anchors->'outfits', '{}'::jsonb))) e(v)
+           WHERE jsonb_typeof(e.v) = 'object'
+             AND coalesce(e.v->>'plate_uri', e.v->>'reference_uri') IS NULL
+             AND coalesce(e.v->>'plate_failed', 'false') <> 'true'
+             AND CASE WHEN jsonb_typeof(coalesce(e.v->'plate_jobs', e.v->'reference_jobs')) = 'array'
+                      THEN jsonb_array_length(coalesce(e.v->'plate_jobs', e.v->'reference_jobs')) ELSE 0 END > 0
+           ORDER BY c.id""").fetchall()
+    for r in rows:
+        res = refresh(conn, policy, r["id"])
+        if any(res.values()):
+            out[str(r["id"])] = res
+    return out
+
+
 def _with_canon(own: str, canon: str) -> str:
     own, canon = (own or "").strip(), (canon or "").strip()
     if not own or own.lower() in canon.lower():
@@ -280,8 +306,8 @@ def edit_kind(policy: Policy) -> str:
 
 
 def edit_pools(policy: Policy) -> list[str] | None:
-    """The edit kind's pools (policy job_kinds): its jobs are pinned there, so the 24 GB image machines that also
-    list the kind never take one."""
+    """The edit kind's pools (policy job_kinds): its jobs are pinned there, on 48-80 GB cards only. The kind has its
+    own worker family (job_kinds.<kind>.family: edit), so image machines don't list it either."""
     return list(policy.get("job_kinds", edit_kind(policy), "pools", default=[]) or []) or None
 
 

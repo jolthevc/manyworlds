@@ -23,8 +23,8 @@ fixed_costs:
 gpu_runs:
   default_max_hours: 2
   default_max_usd: 1.0
-  max_hours_by_family: {train: 3, talk: 2.5, comfy: 2.5}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
-  max_usd_by_family: {talk: 3.0, comfy: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders)
+  max_hours_by_family: {train: 3, talk: 2.5, comfy: 2.5, edit: 2}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
+  max_usd_by_family: {talk: 3.0, comfy: 3.0, edit: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders); edit: an L40S for 2 h, or an H100 for ~1 h
   max_hours_limit: 12          # the launcher refuses anything longer
   idle_stop_minutes: 20        # no open jobs for this long -> stop (SaladCloud: nodes pull images slowly)
   # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
@@ -35,7 +35,7 @@ gpu_runs:
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
-  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, edit: 60}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
   max_attempt_minutes_by_kind: {image.mirror: 120, video.mirror: 120}  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
   serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
@@ -90,8 +90,10 @@ job_kinds:
   image.zimage:    {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 4}
   # Reference-conditioned scene photos (Qwen-Image-Edit-2511 bf16 + 4-step Lightning LoRA, handlers/image_qwen_edit.py,
   # policy `sets.edit`): ~58 GB of weights, so 48-80 GB cards only. Its jobs are pinned to these pools (creator.sets),
-  # so the 24 GB image machines, which list every image kind, never take one. Not benchmarked yet.
-  image.qwen_edit: {pools: [runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 4}
+  # so the 24 GB image machines never take one. Not benchmarked yet. Its own worker family (`edit`, worker_images.edit):
+  # its own machine limits, and the no-output guard counts its machines apart, so failing edit machines can't stop
+  # Z-Image work (and image machines don't list the kind).
+  image.qwen_edit: {pools: [runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 4, family: edit}
   image.mirror:    {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 0}   # copies model weights into R2 once
   image.narrated:  {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # CPU edit (voice + ffmpeg) on image machines
   # Wan 2.2 TI2V-5B. RunPod 3090 measured 2026-11-14: 720p x 5 s in 859 s (cpu offload + tiled VAE), ~$0.05.
@@ -132,6 +134,12 @@ worker_images:
   video: {image: mw-worker-image, tag: v25, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
+  # edit: reference-conditioned scene photos (image.qwen_edit, job_kinds family edit) on the image worker image:
+  # Qwen-Image-Edit-2511 bf16 (~41 GB transformer, ~17 GB text encoder) + Lightning LoRA, ~58 GB downloaded at the
+  # first job. With cpu offload (below MW_EDIT_OFFLOAD_BELOW_GB free, an L40S) the whole model sits in RAM.
+  # Needs the image with handlers/image_qwen_edit.py in it (after v25).
+  edit: {image: mw-worker-image, tag: v25, min_cuda: 12.8, cpu: 8, ram_gb: 96, disk_gb: 150, download_gb: 70,
+         env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", MW_EDIT_OFFLOAD_BELOW_GB: 64}}
   # talk: ComfyUI + WanVideoWrapper (docker/worker-talkcomfy.Dockerfile): fp8-scaled Wan2.1-I2V-14B 480p + InfiniteTalk
   # adapter (~16 GB), UMT5 text encoder (~11 GB), VAE, lightx2v LoRA; weights cached on the pool's volume if it has one.
   # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
@@ -170,7 +178,7 @@ autoscale:
   scale:
     drain_target_minutes: {default: 30, train: 180}
     history_days: 7
-    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200, talk: 900, comfy: 180}
+    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200, talk: 900, comfy: 180, edit: 240}
   # Production work (made lead_hours ahead) waits to share one machine: each machine bills a boot,
   # model load and idle tail (~7-10 min) however few jobs it runs. Lab work and benchmarks start at once.
   batch:
@@ -1103,9 +1111,133 @@ finishing:
   hook: {style: hook, seconds: 1.5, max_seconds: 2.0}
   loudness: {lufs: -14, true_peak: -1.0, lra: 11, two_pass: true, sample_rate: 48000}
   encode: {preset: veryfast, crf: 18, audio_bitrate: 160k, timeout_seconds: 900}
+  # Delivery size: a smaller video (480x832 talk segments, 704x1280 clips) is upscaled (lanczos) until it covers it,
+  # keeping its aspect, then centre-cropped, in the finish pass before the grade (so captions burn at this size).
+  # Never scaled down.
+  output: {width: 720, height: 1280, flags: lanczos}
   # Cover frame: the sharpest keyframe with the face, eyes open, mouth closed (face-mesh ratios: lid gap over eye
   # width, inner-lip gap over mouth width). Without MediaPipe here it is the sharpest keyframe.
   cover: {mediapipe: true, analysis_width: 512, eyes_open_min: 0.18, mouth_closed_max: 0.08}
+
+# Sound design (manyworlds.sound, plan 2026-11-22 wave 3 item 9; research 2026-11-22-video-quality-wave2-3.md s.2):
+# the shot sheet's `sound` (mic, room tone, effects, music) mixed under the voice in one ffmpeg pass before the finish
+# stage (which sets loudness; the mix does not). OFF: nothing calls it yet. Every sound must carry a licence.
+sound:
+  enabled: false
+  sample_rate: 48000
+  mix:
+    room_tone_gain_db: -30     # a low bed under everything
+    effect_gain_db: -12        # default per effect (a call can give its own)
+    music_gain_db: -14         # the bed before ducking; with the duck, music sits ~6-12 dB under the voice (measure it)
+    duck: {threshold: 0.05, ratio: 6, attack_ms: 80, release_ms: 400, makeup: 1}   # sidechaincompress keyed by voice
+    limits: {attack_ms: [50, 100], release_ms: [300, 500], ratio: [2, 20], threshold: [0.001, 1.0]}
+    room_wet: 0.12             # share of the impulse-response (afir) voice mixed with the dry voice
+    audio_bitrate: 320k        # the finish stage re-encodes after loudnorm
+    timeout_seconds: 600
+  # Mic character by shot sheet sound.mic: a band-limit EQ (Hz).
+  mic_eq:
+    phone: {highpass: 180, lowpass: 7500}
+    lav: {highpass: 80, lowpass: 16000}
+    room: {highpass: 120, lowpass: 11000}
+  # Room character: key (a set_id or a mic) -> {path, licence, source, credit}. None shipped. OpenAIR IRs are licensed
+  # per file (mostly CC-BY-4.0): check and credit each one.
+  impulse_responses: {}
+  # The catalogue: {tag, uri, licence, source, credit}. An entry without a licence or source, or with a licence not
+  # listed here, is refused. Freesound's API is non-commercial only: never use it; a human may hand-pick CC0 files.
+  # Pixabay audio is hand-picked only (its API covers images and video); its music can draw Content ID claims.
+  library:
+    allowed_licences: [CC0-1.0, CC-BY-4.0, Pixabay-Content-License, own-recording, own-generated]
+    entries: []
+  # Effects and room tone: Stable Audio 3 Small-SFX (handlers/sound_gen.py, kind sound.sfx). Code MIT; WEIGHTS under the
+  # Stability AI Community License: free commercial use only under $1M annual revenue ("less than $1M in annual
+  # revenue", stability.ai/license, read 2026-11-22), an Enterprise licence above that. The HF repo is gated and its
+  # gate also binds the Gemma Terms of Use (a bundled component). The handler refuses unless BOTH enabled and
+  # licence_accepted are true; only the owner sets licence_accepted, after reading both. Not in job_kinds or any image.
+  sfx:
+    enabled: false
+    licence_accepted: false
+    licence_name: stability-ai-community (revenue-capped at $1M/yr)
+    repo: stabilityai/stable-audio-3-small-sfx
+    code_ref: 790793b89ddceea612be9ce42ff6830d18f6fa57   # Stability-AI/stable-audio-3, API read 2026-11-22
+    model: small-sfx
+    steps: 8
+    cfg_scale: 1.0
+    negative_prompt: "music, speech, low quality"
+    default_seconds: 10
+    max_seconds: 30
+    max_batch: 4
+  # Music beds: ACE-Step 1.5 (kind sound.music), MIT; card: "You can strictly use the generated music for commercial
+  # purposes" (HF ACE-Step/acestep-v15-base, read 2026-11-22). Instrumental only. Not in job_kinds or any image.
+  music:
+    enabled: false
+    licence_name: MIT
+    repo: ACE-Step/Ace-Step1.5
+    code_ref: ca1e85fe9430179831e6bc6be790c332190a3866   # ace-step/ACE-Step-1.5, docs/en/INFERENCE.md read 2026-11-22
+    config_path: acestep-v15-turbo
+    project_root: /opt/acestep
+    thinking: false            # no 5 Hz LM planning: we give the caption and the length
+    steps: 8
+    audio_format: wav
+    default_seconds: 30
+    max_seconds: 120
+    max_batch: 2
+
+# Dance and motion transfer (plan docs/superpowers/plans/2026-11-22-dance-motion-transfer.md): Wan2.2-Animate-2-14B
+# (Apache-2.0) in ComfyUI core (WanAnimate2ToVideo, WanAnimate2Cache; in our pin v0.45.0). OFF; graph only
+# (worker/comfy_animate.py), no handler, kind or image yet. Driving clips only from `references`, ours or licensed
+# (manyworlds.dance.reference); never a downloaded trend video, and never the reference's audio.
+dance:
+  enabled: false
+  model: Wan-AI/Wan2.2-Animate-2-14B
+  comfyui_min: v0.45.0
+  generation: {width: 480, height: 832, frames: 81, steps: 6, shift: 5.0, sampler: lcm, scheduler: simple, cfg: 1.0,
+               lora_strength: 1.0, pose_strength: 1.0, pose_start_percent: 0.0, pose_end_percent: 1.0,
+               reference_image_strength: 1.0, pose_prompt: "", cache: {enabled: true, device: cpu, dtype: int8}}
+  allowed_owners: [ours, licensed]
+  blocked_sources: [tiktok.com, instagram.com, youtube.com, youtu.be, facebook.com, x.com, twitter.com, snapchat.com,
+                    triller.co, likee.video]
+  references: []               # {id, uri, owner: ours|licensed, licence, source, notes}
+  identity: {min_score: 6, min_mean: 7}   # video gate identity scores (1-10): worst keyframe, and the mean
+
+# Hosted talking avatars, the quality ceiling (manyworlds.hosted_avatar; terms: docs/research/2026-11-22-hosted-avatar-
+# terms.md). OFF: refused unless BOTH enabled and terms_reviewed are true (the owner, after reading the provider's
+# current terms). Charged to the ledger as hosted_api at usd_per_second x the returned duration (fal reports no cost).
+# The kind hosted.avatar is not in job_kinds. Prices: fal model pages, 2026-11-22.
+hosted_avatar:
+  enabled: false
+  terms_reviewed: false
+  provider: kling_fal
+  max_seconds: 30
+  max_usd_per_job: 2.0         # a request whose estimate is over this is refused before it is sent
+  providers:
+    kling_fal:
+      base_url: "https://queue.fal.run"
+      key_env: FAL_KEY
+      default_tier: standard
+      poll_seconds: 10
+      timeout_s: 1200
+      tiers:
+        standard: {endpoint: fal-ai/kling-video/ai-avatar/v2/standard, usd_per_second: 0.0562}
+        pro: {endpoint: fal-ai/kling-video/ai-avatar/v2/pro, usd_per_second: 0.115}
+  # Not built; for comparison only (USD per second): Hedra Character-3 API 720p (hedra.com model page, from the
+  # research note, not re-checked), OmniHuman 1.5 on fal (fal page, 2026-11-22).
+  reference_prices: {hedra_character3_720p: 0.05, omnihuman_v15_fal: 0.16}
+
+# Two-person scenes (plan docs/superpowers/plans/2026-11-22-two-person-scenes.md): InfiniteTalk multi-person in
+# WanVideoWrapper (MultiTalkWav2VecEmbeds audio_1..2 + ref_target_masks). OFF; design only, no production changes.
+two_person:
+  enabled: false
+  adapter: InfiniteTalk/Wan2_1-InfiniteTalk-Multi_fp8_e4m3fn_scaled_KJ.safetensors   # Kijai/WanVideo_comfy_fp8_scaled
+  max_speakers: 2              # the wrapper's tested path (human_num == 2)
+  multi_audio_type: add        # turn-taking: tracks concatenated on one timeline; para only for overlapping speech
+  width: 480
+  height: 832
+  speaker_order: left_to_right # speaker 1 = leftmost face: audio_N binds to mask N, in order
+  masks: {dilate: 0.25, min_gap_px: 16, background: false}   # from face boxes; dilate by box size; never touching
+  gate:
+    min_own_correlation: 0.3   # per-face mouth opening vs the speaker's own audio energy, during that speaker's turn
+    max_cross_ratio: 0.6       # the silent face's mouth motion over the speaking face's, during a turn
+    max_both_moving_share: 0.2 # share of single-speaker frames where both mouths move
 
 # Claude models by role. Low-volume judgement work runs on Opus; bulk roles
 # (captions, first-pass judging) come in later days and can point elsewhere.

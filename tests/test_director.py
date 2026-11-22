@@ -137,6 +137,17 @@ def test_scheduling_directs_new_posts(conn, policy):
     assert photo["platform_ai_label"] is True and "shots" not in story
 
 
+def test_a_set_first_named_by_a_scheduled_post_records_that_post(conn, policy):
+    cid = _real_creator(conn)
+    _ready_ideas(conn, cid, ("photo", {"scenes": ["walking along the canal at dusk"]}))
+    ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc), llm=DirectorLLM({"shots": [CANAL]}, conn=conn))
+    post_id = conn.execute("SELECT id FROM posts").fetchone()["id"]
+    from manyworlds.creator import sets
+    b = sets.bibles(conn, cid)
+    assert b["sets"]["canal_path"]["created_from_post"] == str(post_id)
+    assert b["outfits"]["camel_coat"]["created_from_post"] == str(post_id)
+
+
 def test_a_failed_director_call_leaves_the_post_undirected(conn, policy):
     cid = _real_creator(conn)
     _ready_ideas(conn, cid, ("photo", {"scenes": ["walking along the canal at dusk"]}))

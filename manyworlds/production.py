@@ -316,11 +316,15 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     params = dict(policy.get("generation", "talk", default={}) or {})
     default_voice = params.pop("voice", "af_heart")
     params.pop("max_take_seconds", None)   # production's take limit, not a render setting
+    i = _take_index(body, segment)
+    scene, shot = body["scenes"][i], _shot(body, i)
+    from .direction import talk_profile_for
+    profile = talk_profile_for(shot, policy)   # 720p close-ups (direction.hd_close_ups; off as shipped)
+    if profile:
+        params.update(policy.get("generation", "talk_profiles", profile, default={}) or {})
     motion = motion if motion and talk_v2v(policy) else None   # the research-script engine has no V2V
     if motion:
         params.update(_motion_cfg(policy).get("v2v") or {})
-    i = _take_index(body, segment)
-    scene, shot = body["scenes"][i], _shot(body, i)
     script = unmarked(_take_script(body, segment))
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"], "script": script,
@@ -482,7 +486,7 @@ def talk_v2v(policy: Policy) -> bool:
     (MW_TALK_ENGINE, docker/worker-talkcomfy.Dockerfile), so this reads the talk kind's family's image in policy:
     worker_images.<family>.env.MW_TALK_ENGINE when set, else whether the image is one of
     generation.talk_motion.v2v_images."""
-    family = str(_cfg(policy).get("talk_kind", "talk.infinitetalk")).split(".")[0]
+    family = policy.family(str(_cfg(policy).get("talk_kind", "talk.infinitetalk")))
     image = policy.get("worker_images", family, default={}) or {}
     engine = (image.get("env") or {}).get("MW_TALK_ENGINE")
     if engine is not None:
@@ -607,8 +611,9 @@ def _advance_motion(conn, policy: Policy, post: dict, body: dict, chosen: list[d
 
 def join_motion(conn, policy: Policy, post: dict, videos: list[dict], *, segment: int | None = None,
                 store=None) -> dict:
-    """A take's chained motion clips joined end to end into one silent clip, for the lip sync. Idempotent: the same
-    clips reuse the joined asset."""
+    """A take's chained motion clips joined end to end into one silent clip, for the lip sync. Each clip after the
+    first starts on the last frame of the one before (its start image), so that repeated frame is trimmed at the
+    join (media.trim_start). Idempotent: the same clips reuse the joined asset."""
     import hashlib
     import tempfile
     from pathlib import Path
@@ -622,8 +627,11 @@ def join_motion(conn, policy: Policy, post: dict, videos: list[dict], *, segment
     if existing:
         return existing
     with tempfile.TemporaryDirectory(prefix="mw-motion-") as d:
-        paths = [store.get_file(v["uri"], Path(d) / f"motion_{i:02d}.mp4") for i, v in enumerate(videos)]
-        out = media.concat(paths, Path(d) / "motion.mp4", timeout=float(_talk_long_cfg(policy).get("join_timeout_s", 600)))
+        timeout = float(_talk_long_cfg(policy).get("join_timeout_s", 600))
+        paths = [media.trim_start(store.get_file(v["uri"], Path(d) / f"motion_{i:02d}.mp4"),
+                                  Path(d) / f"motion_{i:02d}_cut.mp4", frames=1 if i else 0, timeout=timeout)
+                 for i, v in enumerate(videos)]
+        out = media.concat(paths, Path(d) / "motion.mp4", timeout=timeout)
         stored = store.put_file(out, key)
     return conn.execute(
         """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
@@ -1128,7 +1136,10 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
             info = media.probe(raw)
             if not (info["width"] and info["height"]):
                 raise RuntimeError(f"can't read the frame size of {video['uri']}")
-            plan = caption_plan(conn, policy, post, body, video, width=info["width"], height=info["height"])
+            # The finish stage upscales a smaller video to finishing.output first, so its captions plan at that size.
+            width, height = (finishing.finished_size(info["width"], info["height"], policy) if grade
+                             else (info["width"], info["height"]))
+            plan = caption_plan(conn, policy, post, body, video, width=width, height=height)
         if not grade and plan is None:
             return video   # captions only, and nothing is said
         out, passes, cover = d / "final.mp4", 0, None

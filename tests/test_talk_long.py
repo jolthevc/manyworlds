@@ -71,15 +71,29 @@ def _segment_jobs(conn, pid):
                         "ORDER BY (payload->'segment'->>'index')::int, created_at", (pid,)).fetchall()
 
 
+class _Joins(list):
+    """The joins made (each a list of paths), and `trims`: the frames trimmed off each motion clip before a join."""
+
+    def __init__(self):
+        super().__init__()
+        self.trims: list[int] = []
+
+
 @pytest.fixture()
 def joined(monkeypatch):
-    calls = []
+    calls = _Joins()
 
     def fake_concat(paths, out, timeout=600):
         calls.append(list(paths))
         out.write_bytes(b"".join(p.read_bytes() for p in paths))
         return out
+
+    def fake_trim(path, out, *, frames=1, timeout=600):   # motion-chain joins drop each later clip's first frame
+        calls.trims.append(frames)
+        out.write_bytes(path.read_bytes())
+        return out
     monkeypatch.setattr(media, "concat", fake_concat)
+    monkeypatch.setattr(media, "trim_start", fake_trim)
     return calls
 
 
@@ -160,6 +174,19 @@ def test_concat_really_joins_video_and_audio(tmp_path):   # ffmpeg from the imag
     out = media.concat(parts, tmp_path / "joined.mp4")
     frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
     assert frames == 75 and abs(seconds - 3.0) < 0.2
+
+
+def test_trim_start_really_drops_the_first_frame(tmp_path):   # motion-chain joins (production.join_motion)
+    import imageio_ffmpeg
+    src = tmp_path / "clip.mp4"
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
+    cut = media.trim_start(src, tmp_path / "cut.mp4", frames=1)
+    whole = media.trim_start(src, tmp_path / "whole.mp4", frames=0)
+    assert imageio_ffmpeg.count_frames_and_secs(str(cut))[0] == 24
+    assert imageio_ffmpeg.count_frames_and_secs(str(whole))[0] == 25
+    joined = media.concat([whole, cut], tmp_path / "joined.mp4")
+    assert imageio_ffmpeg.count_frames_and_secs(str(joined))[0] == 49
 
 
 # --- hybrid: some segments on camera, the rest cutaways over the other photos ----------------------------
@@ -563,8 +590,10 @@ def test_a_long_walking_take_chains_motion_clips_from_each_last_frame_then_joins
     [talk] = _segment_jobs(conn, pid)
     joined_uri = conn.execute("SELECT uri FROM assets WHERE meta ? 'motion_chain'").fetchone()["uri"]
     assert talk["payload"]["video_uri"] == joined_uri and len(joined) == 1 and len(joined[0]) == 3
+    assert joined.trims == [0, 1, 1]                 # each later clip's first frame repeats the last one: trimmed
     production.advance(conn, policy, now=NOW, store=store)                           # idempotent: nothing new
     assert len(_motion_jobs(conn, pid, policy)) == 3 and len(_segment_jobs(conn, pid)) == 1 and len(joined) == 1
+    assert joined.trims == [0, 1, 1]
 
 
 def test_a_capped_chain_ends_the_take_on_a_hold(conn, policy, store, tmp_path, joined):

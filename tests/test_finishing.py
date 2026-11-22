@@ -64,6 +64,25 @@ def test_the_hook_text_is_burned_in_last_so_it_gets_no_grain(policy, tmp_path):
     assert noise < hook == len(parts) - 2 and ass.resolve().as_posix() in parts[hook]
 
 
+def test_a_smaller_video_is_upscaled_to_the_output_size_first(policy):
+    size = policy.get("finishing", "output")
+    assert (size["width"], size["height"]) == (720, 1280) and size["flags"] == "lanczos"
+    # 480x832 (cut-joined talk segments): covers 720x1280 keeping its aspect, then the centre is cropped
+    assert finishing.scale_filter(480, 832, policy) == "scale=740:1280:flags=lanczos,crop=720:1280"
+    assert finishing.scale_filter(360, 640, policy) == "scale=720:1280:flags=lanczos"          # same aspect: no crop
+    assert finishing.scale_filter(704, 1280, policy) == "scale=720:1310:flags=lanczos,crop=720:1280"
+    assert finishing.scale_filter(720, 1280, policy) is None                                   # already that size
+    assert finishing.scale_filter(1080, 1920, policy) is None                                  # never scaled down
+    assert finishing.scale_filter(None, None, policy) is None
+    assert finishing.finished_size(480, 832, policy) == (720, 1280)
+    assert finishing.finished_size(1080, 1920, policy) == (1080, 1920)
+    vf = finishing.filters("warm_night", policy=policy, size=(480, 832))
+    assert vf.startswith("scale=740:1280:flags=lanczos,crop=720:1280,eq=")                   # before the grade
+    assert finishing.filters("neutral", policy=policy, size=(1080, 1920)) == finishing.filters("neutral", policy=policy)
+    off = _with(policy, output=None)
+    assert finishing.scale_filter(480, 832, off) is None and finishing.finished_size(480, 832, off) == (480, 832)
+
+
 def test_filter_paths_escape_a_drive_colon_and_refuse_quotes():
     assert finishing._filter_path("C:/work/hook.ass").startswith("'") and "\\:" in finishing._filter_path("C:/work/hook.ass")
     try:

@@ -200,6 +200,25 @@ def test_without_libass_the_captions_are_a_second_pass_over_the_graded_video(con
     assert body["finish"]["passes"] == 2
 
 
+def test_captions_over_a_small_video_are_planned_at_the_finished_size(conn, policy, store, tmp_path, fake_ffmpeg,
+                                                                      monkeypatch):
+    from manyworlds import media
+    monkeypatch.setattr(media, "has_libass", lambda **k: False)
+    monkeypatch.setattr(media, "probe", lambda p, **k: {"seconds": 3.0, "width": 480, "height": 832, "audio": True})
+    policy, pid, cid, job = _edit_post(conn, _finishing(policy), store, tmp_path)
+    _edited(conn, store, tmp_path, cid, job)
+    assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
+    (_, _), (_, bc) = fake_ffmpeg
+    size = policy.get("finishing", "output")                     # the finish pass upscales 480x832 to it first
+    assert (bc["plan"].width, bc["plan"].height) == (size["width"], size["height"])
+    fake_ffmpeg.clear()
+    captions_only, pid, cid, job = _edit_post(conn, _finishing(policy, finish=False), store, tmp_path)
+    _edited(conn, store, tmp_path, cid, job)
+    assert production.advance(conn, captions_only, now=NOW, store=store)["ready"] == 1
+    [(_, bc)] = fake_ffmpeg
+    assert (bc["plan"].width, bc["plan"].height) == (480, 832)    # no finish pass: no upscale
+
+
 def test_each_switch_alone_and_both_off(conn, policy, store, tmp_path, fake_ffmpeg):
     captions_only, pid, cid, job = _edit_post(conn, _finishing(policy, finish=False), store, tmp_path)
     _edited(conn, store, tmp_path, cid, job)
@@ -254,7 +273,9 @@ def test_the_finish_stage_really_grades_and_burns_captions(conn, policy, store, 
     assert body["video_raw"]["uri"] == raw and body["finish"]["captions"] == "clean"
     out = store.get_file(body["video"]["uri"], tmp_path / "final.mp4")
     info = media.probe(out)
-    assert (info["width"], info["height"]) == (360, 640) and info["audio"] and abs(info["seconds"] - 3.0) < 0.2
+    size = policy.get("finishing", "output")                         # upscaled from 360x640 in the same pass
+    assert (info["width"], info["height"]) == (size["width"], size["height"])
+    assert info["audio"] and abs(info["seconds"] - 3.0) < 0.2
     assert out.read_bytes() != src.read_bytes()
 
 

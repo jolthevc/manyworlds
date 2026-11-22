@@ -74,12 +74,12 @@ class MultiAPI:
         p.destroy(name, ref)
 
 
-def _family(kind: str) -> str:
-    return kind.split(".")[0]
+def _family(policy: Policy, kind: str) -> str:
+    return policy.family(kind)   # job_kinds.<kind>.family, else the prefix (image.qwen_edit -> edit)
 
 
 def _family_kinds(policy: Policy, family: str) -> list[str]:
-    return [k for k in policy.get("job_kinds", default={}) if _family(k) == family]
+    return [k for k in policy.get("job_kinds", default={}) if _family(policy, k) == family]
 
 
 def waiting_work(conn, batches: list[str] | None = None) -> list[dict]:
@@ -112,7 +112,7 @@ def seconds_per_job(conn, policy: Policy, kind: str) -> float:
         (kind, int(cfg.get("history_days", 7)))).fetchone()
     if row and row["s"]:
         return float(row["s"])
-    return float(_per_family(cfg, "default_job_seconds", _family(kind), 300))
+    return float(_per_family(cfg, "default_job_seconds", _family(policy, kind), 300))
 
 
 def batch_wait(conn, policy: Policy, family: str, work: list[dict], now: datetime) -> dict | None:
@@ -127,7 +127,7 @@ def batch_wait(conn, policy: Policy, family: str, work: list[dict], now: datetim
     cfg = policy.get("autoscale", "batch", default={})
     if not cfg:
         return None
-    rows = [w for w in work if _family(w["kind"]) == family and not w["pools"]]
+    rows = [w for w in work if _family(policy, w["kind"]) == family and not w["pools"]]
     if not rows:
         return None
     if not all(w["production"] for w in rows) or \
@@ -147,7 +147,7 @@ def machines_wanted(conn, policy: Policy, kind: str, waiting: int) -> int:
     """Enough machines to clear the backlog within the drain target. Each machine pays a
     boot (minutes) once, so small backlogs stay on one machine."""
     cfg = policy.get("autoscale", "scale", default={})
-    drain_s = float(_per_family(cfg, "drain_target_minutes", _family(kind), 30)) * 60
+    drain_s = float(_per_family(cfg, "drain_target_minutes", _family(policy, kind), 30)) * 60
     return max(1, math.ceil(waiting * seconds_per_job(conn, policy, kind) / drain_s))
 
 
@@ -162,7 +162,7 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     """Register then create one worker machine for `kind` in `pool`. Raises NoCapacity."""
     p = policy.pool(pool)
     provider = providers[p["provider"]]
-    family = _family(kind)
+    family = _family(policy, kind)
     img = policy.get("worker_images", family)
     if not img:
         raise ProviderError(f"no worker_images entry for family {family!r}")
@@ -249,7 +249,7 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         actions += serverless.dispatch(conn, policy, work, now=now)
     for w in work:
         kind = w["kind"]
-        if _family(kind) == "fake":
+        if _family(policy, kind) == "fake":
             continue
         pinned = bool(w["pools"])
         if serverless.serves(policy, kind, w["pools"]):
@@ -257,7 +257,7 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         pools = list(w["pools"] or policy.get("job_kinds", kind, "pools", default=[]))
         if all(policy.get("gpu_pools", p, "provider") == "local" for p in pools):
             continue  # runs on the control host (e.g. reviews), not on rented GPUs
-        max_groups = int(_per_family(cfg, "max_groups_per_kind", _family(kind), 1))
+        max_groups = int(_per_family(cfg, "max_groups_per_kind", _family(policy, kind), 1))
         open_groups = conn.execute(
             "SELECT name, pool FROM gpu_groups WHERE stopped_at IS NULL AND %s = ANY(job_kinds)", (kind,)).fetchall()
         serving = [g for g in open_groups if g["pool"] in pools]
@@ -272,7 +272,7 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         if serving and len(serving) >= wanted:
             continue
         # No machine up for this work yet: wait until there is enough to be worth a boot.
-        held = None if (pinned or open_groups) else batch_wait(conn, policy, _family(kind), work, now)
+        held = None if (pinned or open_groups) else batch_wait(conn, policy, _family(policy, kind), work, now)
         if held:
             actions.append({"action": "batching", "kind": kind, **held})
             continue
@@ -288,13 +288,14 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             actions.append({"action": "cooldown", "kind": kind, "after": recent["name"],
                             "reason": recent["stop_reason"]})
             continue
-        streak = no_output_streak(conn, policy, _family(kind), now, pools)
+        streak = no_output_streak(conn, policy, _family(policy, kind), now, pools)
         if streak:   # pinned benchmarks too: they are what ran the talk loop of 2026-11-20
             actions.append({"action": "not_launching", "reason": "no_output_streak", "kind": kind, **streak})
             continue
         # Pinned work (benchmarks) runs where it was pinned; everything else goes to the
         # pool with the lowest measured cost per accepted output, skipping paused pools.
-        order, scores = (pools, []) if pinned else scoring.launch_order(conn, policy, _family(kind), pools, now)
+        order, scores = (pools, []) if pinned else scoring.launch_order(conn, policy, _family(policy, kind),
+                                                                        pools, now)
         if not order:
             actions.append({"action": "no_pool", "kind": kind, "reason": "every pool is paused",
                             "scores": _brief(scores)})

@@ -55,11 +55,13 @@ def ig(conn, store, tmp_path, monkeypatch):
     return cid, fake
 
 
-def _post(conn, cid, fmt="photo", images=1, video=False):
+def _post(conn, cid, fmt="photo", images=1, video=False, cover=None):
     body = {"platform_ai_label": True, "images": [{"uri": f"s3://b/i{i}.png"} for i in range(images)],
             "hashtags": ["#Sunday"]}
     if video:
         body["video"] = {"uri": "s3://b/v.mp4"}
+    if cover:
+        body["cover"] = {"asset_id": "a-cover", "uri": cover}
     return conn.execute("INSERT INTO posts (creator_id, platform, format, status, caption, body, scheduled_for) "
                         "VALUES (%s, 'instagram', %s, 'ready', 'rain again', %s, %s) RETURNING id",
                         (cid, fmt, Jsonb(body), NOW - timedelta(minutes=5))).fetchone()["id"]
@@ -99,6 +101,16 @@ def test_videos_go_out_as_reels_and_stories_as_stories(conn, policy, ig):
     creates = {c[2]["media_type"]: c[2] for c in fake.calls if c[0] == "POST" and c[1].endswith("/media")}
     assert set(creates) == {"REELS", "STORIES"}              # same scheduled time: no order between them
     assert creates["REELS"]["video_url"] and creates["REELS"]["share_to_feed"] is True
+
+
+def test_a_reel_uses_the_finish_stages_cover_else_its_first_photo(conn, policy, ig):
+    cid, fake = ig
+    _post(conn, cid, "talking_video", video=True, cover="s3://b/keyframes/k2.png")
+    _post(conn, cid, "talking_video", video=True)                   # no picked cover: the first photo, as before
+    scheduler.publish_due(conn, policy, now=NOW)
+    reels = [c[2] for c in fake.calls if c[0] == "POST" and c[1].endswith("/media")]
+    assert {r["media_type"] for r in reels} == {"REELS"} and len(reels) == 2
+    assert {r["cover_url"] for r in reels} == {"https://cdn.example/k2.png.jpg", "https://cdn.example/i0.png.jpg"}
 
 
 def test_a_container_still_processing_waits_and_an_error_is_reported(conn, policy, ig):

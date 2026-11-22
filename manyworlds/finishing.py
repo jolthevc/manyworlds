@@ -1,5 +1,8 @@
 """Finishing: what a finished video gets on the control plane before it is published (no GPU).
 
+  scale      a video smaller than `finishing.output` (720x1280; cut-joined talk segments are 480x832) is upscaled
+             (lanczos) until it covers it, keeping its aspect, and centre-cropped, first in the chain, so the grade,
+             grain and burned-in captions all work at the delivery size; never scaled down
   grade      a gentle natural look per creator or set (policy `finishing.looks`: neutral, daylight, warm_night),
              built from ffmpeg eq, colorbalance and curves; every value is clamped to `finishing.limits`, so no
              look can oversaturate or crush the image
@@ -13,14 +16,19 @@
   cover      the cover frame: the sharpest keyframe with the face found, eyes open and mouth closed
              (Laplacian variance, plus MediaPipe face landmarks where that is installed)
 
-The builders (`filters`, `audio_filter`, `loudnorm_filter`, `parse_loudnorm`) are pure strings, tested in CI.
-`finish` runs ffmpeg (manyworlds.media.ffmpeg, the imageio-ffmpeg static build). Production calls it from its
-final step (wave 2); nothing here is called yet.
+The builders (`scale_filter`, `filters`, `audio_filter`, `loudnorm_filter`, `parse_loudnorm`) are pure strings,
+tested in CI. `finish` runs ffmpeg (manyworlds.media.ffmpeg, the imageio-ffmpeg static build): scale, grade, grain
+and text in one pass, plus a loudness measurement. Production's finish stage (production.finish_video, for the formats
+in `finishing.formats`) calls it once a post's video is chosen: the burned-in captions (manyworlds.captions, planned
+at `finished_size`) ride in the same pass as the hook text where this ffmpeg has libass, else a second Pillow pass;
+the cover is picked from the pieces' keyframes and kept as the post's `body.cover` (the Reel's cover on Instagram).
+The finished file replaces the post's video (`body.video`; the unfinished one stays as `body.video_raw`).
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -101,14 +109,50 @@ def _filter_path(path: Path | str) -> str:
     return "'" + p.replace(":", "\\:") + "'"
 
 
+def output_size(policy: Policy | None) -> tuple[int, int] | None:
+    """The delivery frame size (`finishing.output` width x height), or None when none is set."""
+    o = cfg(policy).get("output") or {}
+    try:
+        w, h = int(o.get("width") or 0), int(o.get("height") or 0)
+    except (TypeError, ValueError):
+        return None
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def scale_filter(width: int | None, height: int | None, policy: Policy) -> str | None:
+    """The upscale for a video of this frame size: when it is smaller than `finishing.output` in either dimension,
+    scaled up (`finishing.output.flags`, lanczos) until it covers the output size, keeping its aspect, then
+    centre-cropped to it. None when no output size is set, the size is unknown, or the video is already that big
+    (it is never scaled down)."""
+    out = output_size(policy)
+    if not out or not width or not height:
+        return None
+    (ow, oh), (w, h) = out, (int(width), int(height))
+    if w >= ow and h >= oh:
+        return None
+    s = max(ow / w, oh / h)
+    sw = max(ow, 2 * math.ceil(round(w * s / 2, 6)))   # even sizes for yuv420p; rounding drops float noise
+    sh = max(oh, 2 * math.ceil(round(h * s / 2, 6)))
+    flags = str((cfg(policy).get("output") or {}).get("flags") or "lanczos")
+    f = f"scale={sw}:{sh}:flags={flags}"
+    return f if (sw, sh) == (ow, oh) else f"{f},crop={ow}:{oh}"
+
+
+def finished_size(width: int, height: int, policy: Policy) -> tuple[int, int]:
+    """The frame size the finish stage delivers for a video of this size (what burned-in captions are planned at)."""
+    out = output_size(policy)
+    return out if out and scale_filter(width, height, policy) else (width, height)
+
+
 def filters(look: str | dict | None, *, policy: Policy, grain: bool | float | None = None,
             sharpen: bool | float | None = None, vignette: bool | float | None = None,
-            hook_ass: Path | str | None = None) -> str:
-    """The video filter chain: grade, sharpen, vignette, grain, then the hook text (so text gets no grain), and
-    yuv420p. `grain`, `sharpen` and `vignette`: None = policy, False or 0 = off, True = on at the policy strength,
-    a number = that strength."""
+            hook_ass: Path | str | None = None, size: tuple[int, int] | None = None) -> str:
+    """The video filter chain: the upscale to `finishing.output` (when `size`, the input's frame size, is smaller),
+    grade, sharpen, vignette, grain, then the hook text (so text gets no grain), and yuv420p. `grain`, `sharpen`
+    and `vignette`: None = policy, False or 0 = off, True = on at the policy strength, a number = that strength."""
     c = cfg(policy)
-    chain = grade(look, policy)
+    scale = scale_filter(*size, policy) if size else None
+    chain = ([scale] if scale else []) + grade(look, policy)
 
     def strength(arg, key: str, field: str) -> float:
         block = c.get(key) or {}
@@ -184,12 +228,6 @@ def parse_loudnorm(stderr: str) -> dict | None:
     return None
 
 
-def _has_audio(video: Path, timeout: float) -> bool:
-    from .media import ffmpeg
-    r = subprocess.run([ffmpeg(), "-hide_banner", "-i", str(video)], capture_output=True, text=True, timeout=timeout)
-    return bool(re.search(r"Stream #.*Audio:", r.stderr or ""))
-
-
 def measure(video: Path, policy: Policy, *, timeout: float = 600) -> dict | None:
     from .media import ffmpeg
     r = subprocess.run([ffmpeg(), "-hide_banner", "-nostats", "-i", str(video), "-vn",
@@ -200,17 +238,20 @@ def measure(video: Path, policy: Policy, *, timeout: float = 600) -> dict | None
 
 def finish(video: Path, out: Path, *, look: str | dict | None, grain: bool | float | None = None,
            hook_ass: Path | str | None = None, policy: Policy, timeout: float | None = None) -> Path:
-    """Grade, grain (and sharpen / vignette per policy), the hook text, and loudness, into `out` (H.264 + AAC)."""
-    from .media import ffmpeg
+    """The upscale to `finishing.output` (when smaller), grade, grain (and sharpen / vignette per policy), the hook
+    text, and loudness, into `out` (H.264 + AAC), in one ffmpeg pass (plus a loudness measurement)."""
+    from .media import ffmpeg, probe
     c = cfg(policy)
     enc = c.get("encode") or {}
     timeout = float(timeout or enc.get("timeout_seconds", 900))
     video, out = Path(video), Path(out)
-    vf = filters(look, policy=policy, grain=grain, hook_ass=hook_ass)
+    info = probe(video, timeout=timeout)
+    size = (info["width"], info["height"]) if info["width"] and info["height"] else None
+    vf = filters(look, policy=policy, grain=grain, hook_ass=hook_ass, size=size)
     cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video), "-map", "0:v:0", "-vf", vf,
            "-c:v", "libx264", "-preset", str(enc.get("preset", "veryfast")), "-crf", str(enc.get("crf", 18)),
            "-pix_fmt", "yuv420p"]
-    if _has_audio(video, timeout):
+    if info["audio"]:
         measured = measure(video, policy, timeout=timeout) if _loud_cfg(policy).get("two_pass", True) else None
         cmd += ["-map", "0:a:0", "-af", audio_filter(policy, measured), "-c:a", "aac",
                 "-b:a", str(enc.get("audio_bitrate", "160k")), "-ac", "2"]

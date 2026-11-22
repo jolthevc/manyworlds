@@ -4,7 +4,8 @@ Per Meta's docs (2026-11-20, v27.0): media are published in two steps, a contain
 Instagram fetches and processes from a public URL, then POST /<IG_ID>/media_publish with its id once its
 `status_code` is FINISHED. `is_ai_generated=true` is Meta's self-disclosure of AI use (set on the album, not
 on carousel children); every post sets it (the owner's disclosure rule). Images must be JPEG; ours are PNG, so
-each is converted and served from our bucket by a short-lived presigned URL.
+each is converted and served from our bucket by a short-lived presigned URL. A Reel's cover (`cover_url`) is the
+frame the finish stage picked (`body.cover`), served the same way, else the post's first photo.
 
 Non-blocking: the first call creates the container(s) and keeps their ids on the post (`body.ig`); later calls
 check the status and publish when it is finished, so the producer loop never waits on Instagram. A container
@@ -179,7 +180,10 @@ class InstagramPublisher:
                 video_url = self.store().public_url(body["video"]["uri"], int(_POLICY.get("url_seconds", 3600)))
                 params = {"media_type": "REELS", "video_url": video_url, "caption": self._caption(post),
                           "share_to_feed": True, "is_ai_generated": label}
-                if urls:
+                cover = (body.get("cover") or {}).get("uri")   # the finish stage's pick (production.finish_video)
+                if cover:
+                    params["cover_url"] = public_jpeg(self.store(), cover, Path(tmp))
+                elif urls:
                     params["cover_url"] = urls[0]
                 return {"container": graph("POST", f"/{ig_id}/media", params, token)["id"]}
             if fmt == "story":

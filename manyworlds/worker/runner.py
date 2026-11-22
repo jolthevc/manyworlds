@@ -383,7 +383,7 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import edit_narrated as mod
         elif kind == "image.voice":      # Kokoro voice line, also on image machines
             from .handlers import tts_kokoro as mod
-        elif kind == "image.qwen_edit":  # reference-conditioned scene photos (creator.sets), same image worker
+        elif kind == "image.qwen_edit":  # scene photos from references (creator.sets): image worker image, family edit
             from .handlers import image_qwen_edit as mod
         elif family == "image":
             from .handlers import image_zimage as mod
@@ -400,6 +400,10 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import comfy_video as mod
         elif family == "voice":          # designed voices (VoxCPM2), also on the talk worker image
             from .handlers import tts_voxcpm as mod
+        elif family == "sound":          # generated effects and music beds (policy sound, off)
+            from .handlers import sound_gen as mod
+        elif kind == "hosted.avatar":    # hosted talking avatar (policy hosted_avatar, off), on the control plane
+            from .handlers import hosted_avatar as mod
         elif family == "hosted":         # hosted APIs, on the control plane: no GPU machine
             from .handlers import hosted_video as mod
         else:

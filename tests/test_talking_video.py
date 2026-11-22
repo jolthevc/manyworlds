@@ -76,3 +76,37 @@ def test_talking_video_waits_until_production_makes_it(conn, policy, store, tmp_
     # Not in production.formats until a lip-sync model passes the gate on the benchmark (M10).
     assert "talking_video" not in policy.get("production", "formats")
     assert "talking_video" in policy.get("planner", "video_formats")
+
+
+def _talk_params(conn, policy, shot, attempt=0, motion=None):
+    cid = creator(conn)
+    post = conn.execute("INSERT INTO posts (creator_id, format) VALUES (%s, 'talking_video') RETURNING *",
+                        (cid,)).fetchone()
+    body = {"scenes": ["at the kitchen counter"], "script": SCRIPT, "shots": [shot]}
+    job = production._talk_job(conn, policy, dict(post), body, [{"uri": "s3://b/a.png"}], attempt, motion=motion)
+    return conn.execute("SELECT payload FROM jobs WHERE id = %s", (job,)).fetchone()["payload"]["params"]
+
+
+def _hd_on(policy):
+    return dataclasses.replace(policy, body={**policy.body,
+                                             "direction": {**policy.body["direction"], "hd_close_ups": True}})
+
+
+def test_a_close_up_take_renders_at_720p_only_while_hd_close_ups_is_on(conn, policy):
+    close, medium = {"framing": {"shot_size": "close-up"}}, {"framing": {"shot_size": "medium shot"}}
+    talk, hd = policy.get("generation", "talk"), policy.get("generation", "talk_profiles", "hd720")
+    off = _talk_params(conn, policy, close)                                   # shipped: off
+    assert (off["width"], off["height"]) == (talk["width"], talk["height"])
+    on = _talk_params(conn, _hd_on(policy), close)
+    assert (on["width"], on["height"]) == (hd["width"], hd["height"]) and on["steps"] == hd["steps"]
+    assert on["shift"] == talk["shift"]                                       # the rest stays the talk settings
+    wide = _talk_params(conn, _hd_on(policy), medium)
+    assert (wide["width"], wide["height"]) == (talk["width"], talk["height"])
+
+
+def test_walk_and_talk_settings_win_over_the_hd_profile(conn, policy):
+    v2v = policy.get("generation", "talk_motion", "v2v")
+    on = _talk_params(conn, _hd_on(policy), {"framing": {"shot_size": "close-up"}},
+                      motion={"id": "m1", "uri": "s3://b/motion.mp4"})
+    hd = policy.get("generation", "talk_profiles", "hd720")
+    assert on["width"] == hd["width"] and all(on[k] == v for k, v in v2v.items())

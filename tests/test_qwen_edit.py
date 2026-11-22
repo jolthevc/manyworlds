@@ -125,3 +125,25 @@ def test_without_lightning_the_base_sampler_runs_without_the_lora(fake_gpu, stor
     call = fake_gpu.calls[0]
     assert call["scheduler"] == "BASE" and call["lora"] is False
     assert call["num_inference_steps"] == 40 and call["true_cfg_scale"] == 4.0 and out.recipe["lora"] is None
+
+
+def test_the_edit_benchmark_takes_its_input_images(conn, policy):
+    from manyworlds import bench
+    imgs = ["s3://b/anchor.png", "s3://b/plate.png", "s3://b/hoodie.png"]
+    batch = bench.enqueue(conn, policy, "image.qwen_edit", 2, extra={"images": imgs})
+    jobs = conn.execute("SELECT kind, payload FROM jobs WHERE batch = %s", (batch,)).fetchall()
+    assert len(jobs) == 2 and {j["kind"] for j in jobs} == {"image.qwen_edit"}
+    p = jobs[0]["payload"]
+    assert p["images"] == imgs and p["prompt"].startswith("Picture 1 is the person") and "picture 3" in p["prompt"]
+    cfg = policy.get("sets", "edit")
+    assert p["n"] == cfg["candidates"] and p["params"]["steps"] == cfg["steps"] and "lora_uri" not in p
+    assert edit.settings(p)["images"] == imgs                      # the handler accepts it as it is
+
+
+@pytest.mark.parametrize("extra", [{}, {"images": []}, {"images": "s3://b/a.png"}, {"images": [""]},
+                                   {"images": ["s3://b/1", "s3://b/2", "s3://b/3", "s3://b/4"]}])
+def test_the_edit_benchmark_refuses_missing_images_before_queueing_anything(conn, policy, extra):
+    from manyworlds import bench
+    with pytest.raises(ValueError, match="images"):
+        bench.enqueue(conn, policy, "image.qwen_edit", 1, extra=extra)
+    assert conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"] == 0

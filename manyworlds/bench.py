@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from . import ledger, queue
+from .creator import sets
 from .policy import Policy
 
 # Varied, everyday creator-feed prompts so the benchmark isn't tuned to one easy scene.
@@ -22,11 +23,32 @@ PHOTO_PROMPTS = [
     "gym mirror selfie, fluorescent lighting, water bottle in hand, casual pose",
     "dinner table photo with friends' hands in frame, candlelight, shallow depth of field",
 ]
+# Reference-conditioned scene photos (sets.edit.kind): what the person does in the room; the pictures say who and where.
+EDIT_PROMPTS = [
+    "They sit at the table with a mug of coffee, candid phone photo, window light, slightly tilted framing",
+    "They stand by the window looking out, natural daylight, shot on a phone, relaxed posture",
+    "They tidy a shelf mid-motion, candid smartphone photo, soft lamp light",
+    "Mirror selfie in the room, phone covering part of the face, warm evening light",
+]
+EDIT_ROLES = ("person", "set", "outfit")   # the input images, in this order (the handler takes at most this many)
 SPEECH_LINES = [
     "Okay so I finally tried that new coffee place everyone keeps talking about, and honestly? Worth it.",
     "Quick update: the apartment is still a mess, but the plants are thriving, so that's a win.",
     "If you asked me five years ago where I'd be now, I would not have guessed any of this.",
 ]
+
+
+def edit_inputs(extra: dict[str, Any] | None) -> list[dict]:
+    """The edit benchmark's input images from --extra '{"images": [anchor, set plate, outfit reference]}' (1-3 uris,
+    in that order), as [{kind, uri}]. Raises ValueError with how to pass them."""
+    images = (extra or {}).get("images")
+    usage = ("this benchmark needs its input images: --extra '{\"images\": [\"<creator anchor uri>\", "
+             "\"<set plate uri>\", \"<outfit reference uri>\"]}' (1-3, in that order)")
+    if not isinstance(images, list) or not images or len(images) > len(EDIT_ROLES):
+        raise ValueError(usage)
+    if not all(isinstance(u, str) and u.strip() for u in images):
+        raise ValueError(f"every input image must be a uri; {usage}")
+    return [{"kind": role, "uri": uri} for role, uri in zip(EDIT_ROLES, images)]
 
 
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
@@ -35,10 +57,18 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
     if kind.startswith(("talk.", "hosted.", "comfy.")) and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("this benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
+    edit = kind == sets.edit_kind(policy)
+    if edit:
+        inputs = edit_inputs(extra)   # before anything is queued: a bad list would fail every job on a large card
     batch = batch or f"bench-{kind}-{uuid.uuid4().hex[:6]}"
     gen = policy.get("generation", default={})
     for i in range(jobs):
-        if kind.endswith("image") or kind.startswith("image."):
+        if edit:
+            img = gen.get("image", {})
+            payload = sets.edit_payload(policy, {"prompt": EDIT_PROMPTS[i % len(EDIT_PROMPTS)], "seed": 1000 + i,
+                                                 "width": img.get("width", 896), "height": img.get("height", 1152)},
+                                        inputs)
+        elif kind.endswith("image") or kind.startswith("image."):
             img = gen.get("image", {})
             payload = {"prompt": PHOTO_PROMPTS[i % len(PHOTO_PROMPTS)], "n": policy.get(
                 "job_kinds", kind, "outputs_per_job", default=4), "width": img.get("width", 896),

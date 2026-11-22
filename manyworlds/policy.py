@@ -36,6 +36,12 @@ class Policy:
             raise KeyError(f"unknown GPU pool {name!r}; known: {sorted(pools)}")
         return pools[name]
 
+    def family(self, kind: str) -> str:
+        """A job kind's worker family (its worker_images entry, machine limits and no-output guard):
+        job_kinds.<kind>.family when set, else the kind's prefix (image.zimage -> image)."""
+        override = self.get("job_kinds", kind, "family")
+        return str(override) if override else kind.split(".")[0]
+
     def usd_per_gpu_second(self, pool: str) -> float:
         return float(self.pool(pool)["usd_per_hour"]) / 3600.0
 
