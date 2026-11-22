@@ -575,7 +575,9 @@ llm:
     research: claude-opus-5-5
     creator: claude-opus-5-5
     judge: claude-opus-5-5
-    showrunner: claude-opus-5-5   # batches of post ideas, captions and scripts (brain/agents/showrunner.py)
+    # Qwen4-Max since 2026-11-22 (owner): blind-judged 5.21 vs Opus 5.15 over 7 batches, no voice-rule breaks, all
+    # valid, at a third of the cost. Sonnet answers if it fails; Opus stays as a 10% shadow (llm.shadow.showrunner).
+    showrunner: {model: qwen4-max, fallback: claude-sonnet-5-5}   # post ideas, captions, scripts (brain/agents/showrunner.py)
     # Haiku since 2026-11-22 (owner): 16 shadowed calls 0.59 points from Sonnet on average, all valid, at 5% of the
     # cost. Sonnet stays as a 10% shadow (llm.shadow.evaluator) to catch drift.
     evaluator: claude-haiku-5-5      # creative scoring at volume (manyworlds.brain.evaluation)
@@ -607,13 +609,14 @@ llm:
     nemotron-3.5-vl:     {host: together, id: nvidia/NVIDIA-Nemotron-3.5-Super-VL, usd_per_mtok: [0.15, 0.50], vision: true}
     qwen3.8-flash:       {host: together, id: Qwen/Qwen3.8-Flash, usd_per_mtok: [0.15, 0.47], vision: true, stream: true}
     qwen3.7-plus:        {host: together, id: Qwen/Qwen3.7-Plus, usd_per_mtok: [0.32, 1.28], vision: true, stream: true}
-    qwen4-max:           {host: together, id: Qwen/Qwen4-Max, usd_per_mtok: [1.05, 3.15], vision: true, stream: true}
+    qwen4-max:           {host: together, id: Qwen/Qwen4-Max, usd_per_mtok: [1.05, 3.15], vision: true, stream: true,
+                          timeout_seconds: 300}   # a showrunner batch is a long answer
   #   shape: {host: deepinfra, id: <host model id>, usd_per_mtok: [0.0, 0.0], vision: false, attempts: 2}
   # Shadow tests: a share of a role's calls also go to one of its candidates (open or Claude); compared by
   # `mw llm shadow-report <role>`. No role switches model until its report shows it holds up (owner 2026-11-21:
   # the best model per job at the lowest cost). Candidates were picked from the 2026-11-21 model review.
   shadow:
-    showrunner: {candidates: [kimi-k3.1-pro, glm-5.3, qwen4-max, claude-sonnet-5-5], share: 0.5}
+    showrunner: {candidates: [claude-opus-5-5], share: 0.1}   # quality check on the Qwen4-Max showrunner
     brain:      {candidates: [kimi-k3.1-pro, glm-5.3, qwen4-max], share: 0.5}   # strategist, analyst
     creator:    {candidates: [kimi-k3.1-pro], share: 1.0}                   # creator bibles and profiles (rare)
     evaluator:  {candidates: [claude-sonnet-5-5, qwen3.8-flash], share: 0.1}   # drift check on the Haiku evaluator
