@@ -142,12 +142,13 @@ class ExperimentLLM(LoopLLM):
 def test_a_finding_becomes_an_experiment_whose_result_is_proven(conn, policy):
     import dataclasses
     # A strong planted effect and a large detectable effect keep the sample (and the test) small.
-    brain = {**policy.body["brain"], "experiments": {**policy.body["brain"]["experiments"], "min_sample": 6, "mde": 1.5}}
+    # 14 a side (was 6): with 10 a side the planted effect missed significance in about one run in five (2026-11-22)
+    brain = {**policy.body["brain"], "experiments": {**policy.body["brain"]["experiments"], "min_sample": 14, "mde": 1.5}}
     pol = dataclasses.replace(policy, body={**policy.body, "brain": brain})
     cid = _sim_creator(conn)
     conn.execute("UPDATE creators SET anchors = %s WHERE id = %s",
                  (Jsonb({"simulation": {"scenario": "personality_strong", "seed": 3}}), cid))
-    sandbox.run_batches(conn, pol, ExperimentLLM(conn), cid, batches=12, worker_id="t")
+    sandbox.run_batches(conn, pol, ExperimentLLM(conn), cid, batches=16, worker_id="t")
     exp = conn.execute("SELECT * FROM experiments WHERE creator_id = %s", (cid,)).fetchall()
     assert len(exp) >= 1 and exp[0]["effect_key"]
     arms = conn.execute("SELECT arm, count(*) n FROM ideas WHERE experiment_id = %s GROUP BY arm", (exp[0]["id"],)).fetchall()
