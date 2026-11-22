@@ -9,8 +9,8 @@ from manyworlds import dance, policy as policy_mod
 from manyworlds.worker import comfy_animate
 
 
-def _refs(policy, refs):
-    return policy_mod.from_dict({**policy.body, "dance": {**policy.body["dance"], "references": refs}})
+def _refs(policy, refs, enabled=False):
+    return policy_mod.from_dict({**policy.body, "dance": {**policy.body["dance"], "references": refs, "enabled": enabled}})
 
 
 def test_every_shipped_reference_is_licensed_and_passes_the_rule(raw_policy):
