@@ -107,6 +107,7 @@ def serve(connect, load_policy, make_llm, *, worker_id: str, loops: int | None =
     llm, n = make_llm(conn, pol), 0
     while loops is None or n < loops:
         n += 1
+        out: list = []
         try:
             out = tick(conn, pol, llm, worker_id=worker_id)
             if out and on_output:
@@ -120,7 +121,11 @@ def serve(connect, load_policy, make_llm, *, worker_id: str, loops: int | None =
                 log.exception("reconnect failed")
         if loops is not None and n >= loops:
             break
-        sleep(float(pol.get("brain", "runtime", "loop_seconds", default=30)))
+        # A tick that ran its maximum leaves work waiting: run the next at once. Sleeping 30 s after every 10 jobs
+        # caps one worker at ~3-4 jobs a minute with LLM calls of 10-30 s, about what 1,000 creators need.
+        full = bool(out) and len(out) >= int(pol.get("brain", "runtime", "max_jobs_per_tick", default=10))
+        if not full:
+            sleep(float(pol.get("brain", "runtime", "loop_seconds", default=30)))
         new = load_policy()
         if new.version != pol.version:
             pol, llm = new, make_llm(conn, new)

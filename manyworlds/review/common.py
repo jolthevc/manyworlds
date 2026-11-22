@@ -57,4 +57,4 @@ def run_jobs(job_ids: list, review: Callable[[object, Path], list[dict]], workdi
                 rejected += not r["accepted"]
         except Exception as e:  # noqa: BLE001
             errors.append({"job": str(job_id), "error": str(e)[:300]})
-    return {"accepted": accepted, "rejected": rejected, "errors": errors}
+    return {"accepted": accepted, "rejected": rejected, "errors": errors, "jobs": len(job_ids)}

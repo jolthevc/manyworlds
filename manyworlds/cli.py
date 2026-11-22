@@ -309,7 +309,12 @@ def _review(args, conn, pol, llm) -> int:
                     _print({**result, "llm_usd": llm.spent})
         if not args.loop:
             return 0
-        time.sleep(float(pol.get("review", "image", "loop_seconds", default=120)))
+        # A full batch means more is waiting: go again at once (at scale a fixed sleep caps throughput).
+        full = not args.dry_run and (
+            result["images"].get("jobs", 0) >= int(pol.get("review", "image", "max_jobs_per_run", default=10)) or
+            result["clips"].get("jobs", 0) >= int(pol.get("review", "video", "max_jobs_per_run", default=10)))
+        if not full:
+            time.sleep(float(pol.get("review", "image", "loop_seconds", default=120)))
         pol = policy_mod.load()
 
 

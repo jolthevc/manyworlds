@@ -203,3 +203,14 @@ def test_the_brain_worker_rebuilds_its_claude_client_when_policy_changes(conn, p
     runtime.serve(lambda: conn, lambda: next(versions), lambda c, p: built.append(p.version) or StubLLM(conn=c),
                   worker_id="w1", loops=3, sleep=lambda s: None)
     assert built == [policy.version, "changed"]
+
+
+def test_the_brain_worker_runs_again_at_once_while_work_is_waiting(conn, policy, monkeypatch):
+    # At scale a fixed 30 s sleep after every full tick caps one worker at a few jobs a minute.
+    full = int(policy.get("brain", "runtime", "max_jobs_per_tick"))
+    ticks = iter([[{}] * full, [{}] * full, [{}]])                     # two full ticks, then a short one
+    monkeypatch.setattr(runtime, "tick", lambda *a, **k: next(ticks))
+    slept = []
+    runtime.serve(lambda: conn, lambda: policy, lambda c, p: StubLLM(conn=c), worker_id="w1", loops=4,
+                  sleep=slept.append)
+    assert len(slept) == 1                                             # only after the tick that drained the queue
