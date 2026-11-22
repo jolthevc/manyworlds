@@ -50,11 +50,19 @@ class ObjectStore:
         """A time-limited URL anyone can fetch (e.g. Instagram fetching media to publish)."""
         raise NotImplementedError
 
+    def delete(self, uri: str) -> None:
+        """Remove an object (storage retention); a missing one is fine."""
+        raise NotImplementedError
+
 
 class LocalStore(ObjectStore):
     def __init__(self, root: Path):
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
+
+    def delete(self, uri: str) -> None:
+        from urllib.request import url2pathname
+        Path(url2pathname(urlparse(uri).path)).unlink(missing_ok=True)
 
     def put_file(self, local: Path, key: str) -> StoredObject:
         dest = self.root / key
@@ -111,6 +119,10 @@ class S3Store(ObjectStore):
 
     def uri_for(self, key: str) -> str:
         return f"s3://{self.bucket}/{key}"
+
+    def delete(self, uri: str) -> None:
+        parsed = urlparse(uri)
+        self.client.delete_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))
 
     def exists(self, key: str) -> bool:
         try:

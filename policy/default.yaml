@@ -8,6 +8,10 @@ budgets:
   # brain.llm_usd_per_day per agent. Machines already running keep their own deadline and spend cap.
   daily_usd: 25.0
 
+# Storage retention (manyworlds.retention): rejected media (and a rejected clip's keyframes and voice line) older than
+# retention_days is deleted once a day; anything a post or creator names is kept. ~60 MB a creator a day otherwise.
+storage: {retention_days: 30, every_hours: 24, max_deletes_per_run: 5000}
+
 # Fixed monthly charges, accrued to the ledger daily (usd_per_month / 30, category fixed) by the autoscaler loop.
 fixed_costs:
   - {provider: "runpod:volume:mw-weights-us-nc-1", usd_per_month: 10.50}   # 150 GB standard at $0.07/GB, 2026-11-22

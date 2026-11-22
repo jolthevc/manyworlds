@@ -416,6 +416,19 @@ def housekeeping(conn, policy: Policy | None = None) -> list[dict]:
         return [{"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
 
 
+def storage_retention(conn, policy: Policy, store=None, now: datetime | None = None) -> list[dict]:
+    """Once a day: delete the files of rejected media past the retention window (manyworlds.retention)."""
+    from .. import retention, storage
+    try:
+        now = now or datetime.now(timezone.utc)
+        if not retention.due(conn, policy, now=now):
+            return []
+        out = retention.run(conn, policy, store or storage.from_url(), now=now)
+        return [{"action": "storage_retention", **out}] if out["deleted"] or out["failed"] else []
+    except Exception as e:  # noqa: BLE001 - retention must never stop the loop that stops machines
+        return [{"action": "storage_retention_failed", "error": str(e)[:200]}]
+
+
 def model_selection(conn, policy: Policy, now: datetime | None = None) -> list[dict]:
     """Once every llm.selection.every_hours: propose model switches the shadow evidence supports (approvals, which
     notify_owner then pushes). Stored evidence only, so it spends nothing and runs while operations are paused."""
@@ -468,6 +481,7 @@ def main(argv=None) -> int:
         if not a.dry_run:
             actions += housekeeping(conn, pol)
             actions += model_selection(conn, pol)
+            actions += storage_retention(conn, pol)
             actions += notify_owner(conn, pol, actions)
         # Names, states, prices and errors only: GitHub Actions logs are public.
         interesting = [x for x in actions if x.get("action") != "ok"] if not a.once else actions
