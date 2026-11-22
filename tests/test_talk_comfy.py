@@ -115,3 +115,18 @@ def test_a_broken_download_record_is_cleared_and_the_file_fetched_again(tmp_path
     assert calls == [False, True] and not (records / "h.safetensors.metadata").exists()
     assert (tmp_path / "diffusion_models" / "I2V" / "h.safetensors").stat().st_size == 10
     assert not (tmp_path / ".mw-download.lock").exists()
+
+
+def test_a_full_volume_is_pruned_of_weights_the_worker_no_longer_uses(tmp_path):
+    """2026-11-22: the research script's weights filled the 150 GB volume (Disk quota exceeded)."""
+    from manyworlds.worker import comfy
+    root = tmp_path / "mw"
+    (root / "Wan-AI" / "Wan2.1-I2V-14B-480P").mkdir(parents=True)
+    (root / "comfy" / "vae").mkdir(parents=True)
+    (root / "comfy" / "vae" / "x.safetensors.incomplete").write_bytes(b"part")
+    (root / "comfy" / "vae" / "keep.safetensors").write_bytes(b"x" * 10)
+    comfy.ensure_weights(root / "comfy", {"vae": [("r", "new.safetensors")]}, prune=True,
+                         download=lambda repo, name, local_dir, token, **k: (root / "comfy" / "vae" / name).write_bytes(b"x"),
+                         remote_size=lambda repo, name, token: None)
+    assert sorted(p.name for p in root.iterdir()) == ["comfy"]
+    assert sorted(p.name for p in (root / "comfy" / "vae").iterdir()) == ["keep.safetensors", "new.safetensors"]

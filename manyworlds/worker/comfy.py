@@ -171,7 +171,26 @@ def _volume_lock(models_dir: Path, wait_s: float = 3600, stale_s: float = 7200):
     return held()
 
 
-def ensure_weights(models_dir: Path, weights: dict | None = None, download=None, remote_size=None) -> None:
+def prune_other_weights(models_dir: Path) -> list[str]:
+    """Free the weights volume of what this worker no longer uses: the siblings of `models_dir` (the research
+    script's ~82 GB under MW_MODEL_DIR/<repo>) and half-finished downloads. 2026-11-22: the 150 GB volume filled
+    ("Disk quota exceeded") and every story clip failed. Public model files only; they can be fetched again."""
+    import shutil
+    removed = []
+    parent = models_dir.parent
+    if parent.exists():
+        for p in parent.iterdir():
+            if p.name != models_dir.name and p.is_dir() and not p.name.startswith("."):
+                shutil.rmtree(p, ignore_errors=True)
+                removed.append(p.name)
+    for p in models_dir.rglob("*.incomplete") if models_dir.exists() else []:
+        p.unlink(missing_ok=True)
+        removed.append(p.name)
+    return removed
+
+
+def ensure_weights(models_dir: Path, weights: dict | None = None, download=None, remote_size=None,
+                   prune: bool = False) -> None:
     """Every weight file in place, complete (its remote size), downloaded once per volume. A failed download
     clears huggingface_hub's records for that file and the partial file, then tries once more from scratch."""
     token = os.environ.get("HF_TOKEN") or None
@@ -188,6 +207,10 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
     if not todo:
         return
     with _volume_lock(models_dir):
+        if prune:
+            removed = prune_other_weights(models_dir)
+            if removed:
+                print(f"pruned from the weights volume: {', '.join(removed[:20])}", flush=True)
         for folder, repo, name in todo:
             local = models_dir / folder
             target = local / name

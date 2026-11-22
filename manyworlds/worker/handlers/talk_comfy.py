@@ -67,7 +67,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     models = _models_dir()
     if not _ready["weights"]:
         comfy.write_model_paths(models)
-        comfy.ensure_weights(models)
+        comfy.ensure_weights(models, prune=True)
         _ready["weights"] = True
     comfy.start()
 
