@@ -53,7 +53,8 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
                        "width": vid.get("width", 480), "height": vid.get("height", 832),
                        "frames": vid.get("frames", 81), "seed": 2000 + i, "keyframes": 4,
                        "params": {"steps": vid.get("steps", 4), "guidance": vid.get("guidance", 1.0),
-                                  "fps": vid.get("fps", 16), **({"model": vid["model"]} if vid.get("model") else {})}}
+                                  "fps": vid.get("fps", 16),
+                                  **{k: vid[k] for k in ("model", "dmd_timesteps") if vid.get(k)}}}
         elif kind.startswith("talk."):
             # The start photo is the creator's: pass it with --extra '{"image_uri": "..."}'.
             talk = {**gen.get("talk", {}), **_profile(gen, "talk_profiles", profile)}

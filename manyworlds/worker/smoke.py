@@ -53,6 +53,22 @@ def check_image() -> list[str]:
     if [o.meta["frame"] for o in outs] != keyframe_indices(121, 4):
         raise RuntimeError(f"keyframes came out wrong: {[o.meta for o in outs]}")
     done.append("clip export and keyframes")
+
+    # The DMD sampler (FastWan): a model that predicts the clean latents exactly must land on them in 3 steps.
+    import torch
+
+    from .dmd import DMDScheduler
+    clean = torch.randn(1, 4, 2, 3, 3)
+    s = DMDScheduler([1000, 757, 522], seed=1)
+    s.set_timesteps(3)
+    x = torch.randn_like(clean)
+    for t in s.timesteps:
+        sigma = s.sigma(t)
+        v = (x - clean) / sigma          # the flow prediction a perfect model would give at this noise level
+        x = s.step(v, t, x)[0]
+    if not torch.allclose(x, clean, atol=1e-4):
+        raise RuntimeError("DMD sampler did not recover the clean latents")
+    done.append("DMD sampler")
     return done
 
 

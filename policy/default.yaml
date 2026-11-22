@@ -244,7 +244,9 @@ generation:
   # (FastVideo, Apache-2.0), the same model DMD-distilled to 3 steps with no guidance: one pass per step instead of
   # two, 3 steps instead of 30, so ~20x less compute per clip on paper.
   video_profiles:
-    fast: {model: FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers, steps: 3, guidance: 1.0}
+    # dmd_timesteps: the model card's --dmd-denoising-steps; its default UniPC scheduler at 3 steps gave 0 of 5 passing
+    # clips (2026-11-22, ~58 s each on an L40S), so it samples with worker/dmd.py.
+    fast: {model: FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers, steps: 3, guidance: 1.0, dmd_timesteps: [1000, 757, 522]}
   # Lip-sync (talk.infinitetalk): InfiniteTalk's fp8 single-person build at the README's settings (40 steps, text cfg
   # 5, audio cfg 4). 2026-11-20: the full-precision 14B model was OOM-killed loading on a 48 GB-RAM A40 host; the
   # int8 LoRA build needs a t5_int8 file its repo doesn't have; there is no single-person fp8 LoRA build, so the

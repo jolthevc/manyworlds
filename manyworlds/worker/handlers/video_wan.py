@@ -58,15 +58,24 @@ def _diffusers_pipe(ctx: JobContext, model_id: str = MODEL_ID):
     return _state["pipe"]
 
 
-def _run_diffusers(ctx, image_path, out_path, prompt, w, h, frames, steps, guidance, fps, seed, model_id=MODEL_ID):
+def _run_diffusers(ctx, image_path, out_path, prompt, w, h, frames, steps, guidance, fps, seed, model_id=MODEL_ID,
+                   dmd_timesteps: list[int] | None = None):
     import torch
     from diffusers.utils import export_to_video, load_image
 
     pipe = _diffusers_pipe(ctx, model_id)
     image = load_image(str(image_path)).resize((w, h))
-    frames_out = pipe(image=image, prompt=prompt, height=h, width=w, num_frames=frames,
-                      num_inference_steps=steps, guidance_scale=guidance,
-                      generator=torch.Generator("cpu").manual_seed(seed)).frames[0]
+    default = pipe.scheduler
+    if dmd_timesteps:   # a DMD-distilled model samples at its own few timesteps (worker/dmd.py)
+        from ..dmd import DMDScheduler
+        pipe.scheduler = DMDScheduler(dmd_timesteps, seed=seed)
+        steps = len(dmd_timesteps)
+    try:
+        frames_out = pipe(image=image, prompt=prompt, height=h, width=w, num_frames=frames,
+                          num_inference_steps=steps, guidance_scale=guidance,
+                          generator=torch.Generator("cpu").manual_seed(seed)).frames[0]
+    finally:
+        pipe.scheduler = default
     export_to_video(frames_out, str(out_path), fps=fps)
 
 
@@ -110,7 +119,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     out_path = ctx.workdir / "clip.mp4"
     t0 = time.monotonic()
     model_id = params.get("model") or MODEL_ID
-    _run_diffusers(ctx, image_path, out_path, payload["prompt"], w, h, frames, steps, guidance, fps, seed, model_id)
+    _run_diffusers(ctx, image_path, out_path, payload["prompt"], w, h, frames, steps, guidance, fps, seed, model_id,
+                   dmd_timesteps=params.get("dmd_timesteps"))
     render_s = round(time.monotonic() - t0, 1)
 
     keyframes = extract_keyframes(out_path, ctx.workdir, int(payload.get("keyframes", 4)))
