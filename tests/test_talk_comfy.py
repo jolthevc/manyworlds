@@ -170,8 +170,7 @@ def test_comfyui_exiting_at_start_reports_the_end_of_its_log(tmp_path, monkeypat
     class Dead:
         returncode = 1
         def __init__(self, *a, stdout=None, **k):
-            stdout.write(b"RuntimeError: CUDA driver version is insufficient
-"); stdout.flush()
+            stdout.write(b"RuntimeError: CUDA driver version is insufficient\n"); stdout.flush()
         def poll(self):
             return 1
     monkeypatch.setattr(comfy.subprocess, "Popen", Dead)

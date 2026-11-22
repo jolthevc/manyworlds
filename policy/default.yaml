@@ -274,7 +274,10 @@ generation:
   talk:
     width: 480
     height: 832
-    steps: 6
+    # 10 steps since 2026-11-22 (3-clip benchmarks on the L40S, lip-sync gate at corr 0.3): 6 steps 1 of 3 accepted,
+    # 8 steps 1 of 3 (two clips lost lip sync, corr 0.07 and 0.28), 10 steps 2 of 3 (corr 0.62-0.69; the reject scored
+    # realism and motion 4), ~50 s of GPU per output second, ~$0.08 a clip. Small samples: re-measure on 8-10 clips.
+    steps: 10
     cfg: 1.0
     shift: 11.0
     scheduler: dpm++_sde
@@ -300,11 +303,14 @@ generation:
     # ComfyUI talk at more steps (2026-11-22: at 6 steps 1 of 3 passed; the 2 rejected scored realism or motion 5,
     # a hair clip doubling and the face softening late in the clip; lip sync 0.61-0.70, speech WER 0).
     steps8: {steps: 8}
+    steps6: {steps: 6}
     steps10: {steps: 10}
     # Speed levers (2026-11-22), each benchmarked against the gate before adoption: fp8 fast matmul, torch.compile.
     fp8fast: {quantization: fp8_e4m3fn_scaled_fast}
     compiled: {quantization: fp8_e4m3fn_scaled_fast, compile: true}
-    # 8 steps looked better but lip sync fell (0.07-0.60): stronger audio conditioning at 8 steps.
+    # 8 steps looked better but lip sync fell (0.07-0.60): stronger audio conditioning at 8 steps. Result 2026-11-22:
+    # s8audio 1 of 3 accepted (lip sync 0.54-0.69, rejects on realism and motion 4-5); s8audiocfg 1 of 1 (corr 0.70)
+    # but ~607 s for 6.3 s, since audio cfg adds a pass: not worth it.
     s8audio: {steps: 8, audio_scale: 1.5}
     s8audiocfg: {steps: 8, audio_cfg: 2.0}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
