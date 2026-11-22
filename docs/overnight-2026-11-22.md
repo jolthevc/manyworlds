@@ -100,3 +100,75 @@ If you'd rather nothing runs before you look, mark those jobs dead.
 - The Meta setup in `docs/instagram-setup.md`.
 - `talking_video` joins `production.formats` only once the e2e post passes. That isn't done yet, so there's no
   approval request.
+
+## Evening build (2026-11-22, 18:50-22:00 UTC, owner away)
+The owner asked for everything that can be built to be built, including professional captions, and for the plan
+to keep finding and closing its own gaps. Plan: `docs/superpowers/plans/2026-11-22-video-quality-autonomous.md`,
+with a running "Found gaps" list. Each wave: builders on separate files, then commit, CI green, push. No GPU spend
+beyond the test queued for the 00:00 UTC cap reset, and no deploy, because a deploy would kill the test scripts.
+
+### Built (all in CI and on main; deployed code is still the 18:40 version until the next deploy)
+- **Direction foundation (afternoon):**
+  - shot sheets
+  - a director step: one Sonnet call per post, measured at $0.048
+  - prompts compiled per model
+  - per-creator designed voices (VoxCPM2)
+  - one take per scene
+  - LongCat as a second lip-sync model
+  - a direction check in review
+- **Walk-and-talk:** a moving shot is rendered first as a silent motion clip (Wan 2.2), chained up to the line's
+  length, then lip-synced onto that clip with InfiniteTalk video-to-video.
+- **Captions:** word-timed captions burned into the video.
+  - Six styles: clean, karaoke, boxed, editorial, bold pop, minimal.
+  - Fonts: open-licence (OFL) Poppins, Anton and DM Serif.
+  - Kept inside Instagram's and TikTok's safe zones; words in `*asterisks*` are emphasised.
+  - Timing comes from the voice's clause timings; word timestamps from transcription are built but off.
+  - Rendered on the real control plane on Maren's accepted clip; samples are in `samples/captions/`.
+- **Finish stage, for every video post:**
+  - upscale to 720x1280, natural grade, subtle grain, two-pass loudness to -14 LUFS / -1 dBTP
+  - captions, all in one ffmpeg pass
+  - an automatic cover frame, used as the Reel cover
+- **Natural speech:** synthesised clause by clause, with varied natural pauses, trimmed and faded joins; breaths
+  and fillers are optional and off.
+- **Natural eyes and idle movement** in talk prompts: irregular blinks, glances tied to the beats, and small
+  movements matched to the scene's energy.
+- **Sets and wardrobe:** each creator keeps a set and wardrobe bible, with a reference "plate" photo generated once
+  per set and outfit. The references feed a consistency check. Reference-conditioned scene images
+  (Qwen-Image-Edit-2511, Apache-2.0 confirmed) are built but off until benchmarked, on their own worker family.
+- **Finer checks**, recorded but not enforced until calibrated:
+  - hands and teeth, now with close-up crops from the worker
+  - lips closing on b/p/m
+  - background flicker
+  - set and outfit consistency
+- **Prompt budgets:** directed prompts fit each text encoder (Wan reads about 512 tokens) without losing camera,
+  action or the exclusions.
+- **720p close-up profile:** off until benchmarked.
+- **Wave 3 adapters, all switched off:**
+  - sound mix: ducking, room tone, mic and room character, and a library that refuses anything without a licence
+  - effects and music generators
+  - Wan-Animate-2 dance (our ComfyUI pin has the nodes)
+  - Kling avatar comparison
+  - a two-person design
+- **Worker images:** talkcomfy v11 and image v26, built and smoke-tested; policy points at them.
+
+### Waiting on the owner
+- **LatentSync SyncNet licence** (a better lip-sync scorer): the code is Apache-2.0, the weights are "openrail++";
+  see `docs/research/2026-11-22-latentsync-syncnet-licence.md`. It needs the owner's acceptance.
+- **Stable Audio 3 Small-SFX for effects:** free only under $1M revenue, and its gate also binds the Gemma terms.
+  Needs the owner's acceptance.
+- **Hosted avatar comparison:** read the Kling API terms first (`docs/research/2026-11-22-hosted-avatar-terms.md`);
+  it also needs a fal key. Hedra's acceptable-use policy bars "fake personas".
+- **Dance:** needs reference clips we own.
+
+### Unproven until a GPU run
+- VoxCPM2 voices
+- LongCat
+- walk-and-talk V2V
+- crops
+- the Qwen edit model
+- the 720p profile
+
+The 00:00 UTC test covers the voice, InfiniteTalk vs LongCat, a 30 s single take and a walk-to-camera clip. That
+test was queued with the 18:40 code, so it doesn't include tonight's captions, finish stage or prompt budgets.
+Those reach production at the next deploy, which waits until the test finishes. The remaining gaps are listed in
+the plan's "Found gaps".
