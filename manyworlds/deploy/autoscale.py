@@ -281,7 +281,7 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             actions.append({"action": "cooldown", "kind": kind, "after": recent["name"],
                             "reason": recent["stop_reason"]})
             continue
-        streak = no_output_streak(conn, policy, _family(kind), now)
+        streak = no_output_streak(conn, policy, _family(kind), now, pools)
         if streak:   # pinned benchmarks too: they are what ran the talk loop of 2026-11-20
             actions.append({"action": "not_launching", "reason": "no_output_streak", "kind": kind, **streak})
             continue
@@ -319,7 +319,12 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
     return actions
 
 
-def no_output_streak(conn, policy: Policy, family: str, now: datetime) -> dict | None:
+def no_output_streak(conn, policy: Policy, family: str, now: datetime, pools: list[str] | None = None) -> dict | None:
+    """The family's last `machines` machines in these `pools` (within `hours`, on the current worker image) all
+    tried work and finished none, or never started: renting another would most likely fail the same way. Seven
+    talk machines in a row did exactly that on 2026-11-20. Counted per set of pools, since a failure on one card
+    (out of memory on a 48 GB L40S) says nothing about another (an 80 GB H100). A new worker image tag, or the
+    window passing, gives it a new try."""| None:
     """The family's last `machines` machines (within `hours`, on the current worker image) all tried work and
     finished none, or never started: renting another would most likely fail the same way. Seven talk machines
     in a row did exactly that on 2026-11-20. A new worker image tag, or the window passing, gives it a new try."""
@@ -334,8 +339,9 @@ def no_output_streak(conn, policy: Policy, family: str, now: datetime) -> dict |
                   count(a.id) FILTER (WHERE a.outcome = 'done') AS done, count(a.id) AS tried
            FROM gpu_groups g LEFT JOIN attempts a ON a.gpu_group = g.name
            WHERE g.family = %s AND g.stopped_at > %s AND coalesce(g.stop_reason, '') <> 'manual'
+             AND (%s::text[] IS NULL OR g.pool = ANY(%s::text[]))
            GROUP BY g.name, g.image, g.stop_reason, g.stopped_at
-           ORDER BY g.stopped_at DESC LIMIT %s""", (family, now - timedelta(hours=hours), n)).fetchall()
+           ORDER BY g.stopped_at DESC LIMIT %s""", (family, now - timedelta(hours=hours), pools, pools, n)).fetchall()
     failed = [r for r in rows if not r["done"] and (r["tried"] or r["stop_reason"] == "never_started")
               and (image is None or r["image"] in (None, image))]
     if len(rows) < n or len(failed) < n:

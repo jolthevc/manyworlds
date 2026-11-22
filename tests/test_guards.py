@@ -114,3 +114,12 @@ def test_fixed_monthly_costs_accrue_to_the_ledger_once_a_day(conn, policy):
     assert len(rows) == len(items)
     assert float(rows[0]["usd"]) == pytest.approx(items[0]["usd_per_month"] / 30, abs=1e-6)
     assert ledger.bill_today(conn) >= float(rows[0]["usd"])                # on the bill and under the daily caps
+
+
+def test_failures_on_one_card_do_not_block_a_different_one(conn, policy):
+    # 2026-11-22: three L40S talk machines ran out of memory; an 80 GB H100 is a different question.
+    n = policy.get("autoscale", "no_output_guard", "machines")
+    for i in range(n):
+        _stopped_machine(conn, policy, f"mw-talk-a40-runpod-{i}", outcome="failed", minutes_ago=30 + i)
+    assert autoscale.no_output_streak(conn, policy, "talk", T0, ["runpod_secure_a40"])
+    assert autoscale.no_output_streak(conn, policy, "talk", T0, ["runpod_secure_h100"]) is None
