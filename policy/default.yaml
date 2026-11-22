@@ -153,7 +153,7 @@ worker_images:
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # dance: Wan-Animate-2 (comfy.wan_animate2, off) on the ComfyUI image; needs the image with handlers/dance_animate.py
   # (talkcomfy v11 and later). int8 model (~18 GB), UMT5 fp8 (~7 GB), CLIP vision, VAE, distill LoRA.
-  dance: {image: mw-worker-talkcomfy, tag: v11, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  dance: {image: mw-worker-talkcomfy, tag: v12, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
   # voxcpm in it (v9 and later).
@@ -1213,7 +1213,7 @@ sound:
 # (worker/comfy_animate.py), no handler, kind or image yet. Driving clips only from `references`, ours or licensed
 # (manyworlds.dance.reference); never a downloaded trend video, and never the reference's audio.
 dance:
-  enabled: false
+  enabled: true                 # owner 2026-11-22: test motion transfer on licensed stock clips
   model: Wan-AI/Wan2.2-Animate-2-14B
   comfyui_min: v0.45.0
   generation: {width: 480, height: 832, frames: 81, steps: 6, shift: 5.0, sampler: lcm, scheduler: simple, cfg: 1.0,
@@ -1223,7 +1223,24 @@ dance:
   allowed_owners: [ours, licensed]
   blocked_sources: [tiktok.com, instagram.com, youtube.com, youtu.be, facebook.com, x.com, twitter.com, snapchat.com,
                     triller.co, likee.video]
-  references: []               # {id, uri, owner: ours|licensed, licence, source, notes}
+  references:                  # {id, uri, owner: ours|licensed, licence, source, move, notes}
+    # Pexels stock clips (Pexels License: free commercial use and modification), cut to <=10 s at 480x832 without
+    # audio on 2026-11-22; only the pose and motion drive the output (the original people are never reproduced).
+    - {id: walk-suit, uri: "s3://manyworlds/references/motion/pexels-9167968.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/9167968/", move: walk_to_camera, notes: "walks toward camera in a suit, stops and poses"}
+    - {id: walk-parking, uri: "s3://manyworlds/references/motion/pexels-29867685.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/29867685/", move: walk_to_camera, notes: "walks toward camera, close-up, turns away"}
+    - {id: walk-colonnade, uri: "s3://manyworlds/references/motion/pexels-7681932.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/7681932/", move: walk_to_camera, notes: "walks toward camera from a distance"}
+    - {id: outfit-pose-living, uri: "s3://manyworlds/references/motion/pexels-8995392.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8995392/", move: outfit_pose, notes: "casual outfit poses, small steps, hands on jacket"}
+    - {id: outfit-pose-rooftop, uri: "s3://manyworlds/references/motion/pexels-37465693.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/37465693/", move: outfit_pose, notes: "full-body fashion poses outdoors"}
+    - {id: outfit-pose-neon, uri: "s3://manyworlds/references/motion/pexels-8113108.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8113108/", move: outfit_pose, notes: "standing poses under neon"}
+    - {id: outfit-try-blazer, uri: "s3://manyworlds/references/motion/pexels-8371256.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8371256/", move: outfit_show, notes: "tries on a blazer in front of a rail"}
+    - {id: outfit-show-rail, uri: "s3://manyworlds/references/motion/pexels-6342219.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/6342219/", move: outfit_show, notes: "holds up clothes from a rail, smiles"}
+    - {id: outfit-show-sweater, uri: "s3://manyworlds/references/motion/pexels-8371251.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8371251/", move: outfit_show, notes: "shows a sweater outfit, adjusts bag"}
+    - {id: outfit-show-dress, uri: "s3://manyworlds/references/motion/pexels-6342227.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/6342227/", move: outfit_show, notes: "shows a dress to camera"}
+    - {id: hair-flip, uri: "s3://manyworlds/references/motion/pexels-8328574.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8328574/", move: hair_flip, notes: "head-bang hair flip, then poses"}
+    - {id: dance-casual, uri: "s3://manyworlds/references/motion/pexels-4753978.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/4753978/", move: dance, notes: "casual playful dance, full body"}
+    - {id: dance-close, uri: "s3://manyworlds/references/motion/pexels-8347389.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8347389/", move: dance, notes: "arms-up dance, close framing"}
+    - {id: twirl-dress, uri: "s3://manyworlds/references/motion/pexels-5777427.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/5777427/", move: twirl, notes: "twirls in a dress (2 s)"}
+    - {id: twirl-hair-back, uri: "s3://manyworlds/references/motion/pexels-32152258.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/32152258/", move: twirl, notes: "twirls hair from behind"}
   identity: {min_score: 6, min_mean: 7}   # video gate identity scores (1-10): worst keyframe, and the mean
 
 # Hosted talking avatars, the quality ceiling (manyworlds.hosted_avatar; terms: docs/research/2026-11-22-hosted-avatar-

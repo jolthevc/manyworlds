@@ -13,10 +13,12 @@ def _refs(policy, refs):
     return policy_mod.from_dict({**policy.body, "dance": {**policy.body["dance"], "references": refs}})
 
 
-def test_the_shipped_policy_keeps_dance_off_with_no_references(raw_policy):
+def test_every_shipped_reference_is_licensed_and_passes_the_rule(raw_policy):
     c = raw_policy.get("dance")
-    assert c["enabled"] is False and c["references"] == []
-    assert not dance.enabled(raw_policy)
+    assert c["references"], "the shipped catalogue has the Pexels clips"
+    for e in c["references"]:
+        assert e["owner"] == "licensed" and e["licence"] and e["source"].startswith("https://www.pexels.com/")
+        assert dance.reference(e["id"], raw_policy)["uri"].startswith("s3://manyworlds/references/motion/")
     with pytest.raises(dance.RefusedReference, match="not in dance.references"):
         dance.reference("any", raw_policy)
 
