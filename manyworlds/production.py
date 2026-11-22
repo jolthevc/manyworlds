@@ -222,6 +222,9 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                "seed": _seed(post, 500, attempt),
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
     kind = _cfg(policy).get("video_kind", "video.wan_i2v")
+    if (_cfg(policy).get("routing") or {}).get("story_clip"):   # the cheapest per accepted clip (manyworlds.routing)
+        from . import routing
+        kind, _ = routing.choose(conn, policy, "story_clip", key=str(post["id"]))
     if kind.startswith("hosted."):   # a hosted API renders it (generation.hosted_video): no GPU machine
         payload["params"] = dict(policy.get("generation", "hosted_video", default={}) or {})
     elif kind.startswith("comfy."):  # the ComfyUI worker's Wan 2.2 graph (generation.comfy_video)

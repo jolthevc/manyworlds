@@ -42,7 +42,9 @@ def policy(raw_policy):
     random and would add candidate calls to tests that count calls (test_llm.py turns them on itself)."""
     return policy_mod.from_dict({**raw_policy.body, "operations": {
         **(raw_policy.body.get("operations") or {}), "mode": "live"},
-        "llm": {**raw_policy.body["llm"], "shadow": {}}})
+        "llm": {**raw_policy.body["llm"], "shadow": {}},
+        # output routing off: tests use production.video_kind (test_routing.py covers routing)
+        "production": {**raw_policy.body["production"], "routing": {}}})
 
 
 @pytest.fixture()

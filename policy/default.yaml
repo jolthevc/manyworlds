@@ -574,7 +574,11 @@ production:
   # narrated_edit is out (owner 2026-11-19): anything with a voice is lip-synced talking video, which is not
   # built yet (M10). The edit pipeline stays in code for the talking-video work.
   formats: [photo, carousel, story_clip, story]   # formats production makes now; others wait in 'planned' until added
-  video_kind: video.wan_i2v
+  video_kind: video.wan_i2v       # used when routing has no entry for the output
+  # Which job kind makes each output (manyworlds.routing): the cheapest per accepted output over `days`, once it has
+  # min_accepted; an `explore` share (by post) goes to the others. Before anything is measured, the order below.
+  routing:
+    story_clip: {kinds: [hosted.video, comfy.wan_i2v, video.wan_i2v], min_accepted: 5, explore: 0.1, days: 14}
   talk_kind: talk.infinitetalk   # lip-synced talking video (talking_video posts)
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
