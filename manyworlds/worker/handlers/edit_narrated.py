@@ -6,6 +6,10 @@ Payload: images [uri], script, voice (Kokoro id; bf_/bm_ = British), speed, on_s
 width, height, fps. The script is spoken in chunks (sentences, and "..." for a longer
 pause) so each caption appears exactly while it is said. Photos get a slow push-in or
 pull-out each and hard cuts, the way phone edits look.
+
+With `audio_uri` (a creator's designed voice, already spoken by voice.speak), that wav is the voice instead of
+Kokoro, and `cues` [{text, start_s, end_s}] (the voice job's line timings) time the captions; without cues the
+script's chunks share the line's length by word count.
 """
 
 from __future__ import annotations
@@ -68,31 +72,60 @@ def _drawtext(textfile: Path, start: float, end: float, y: str, size: int, box: 
     return f"drawtext={style}"
 
 
+def supplied_cues(payload: dict, script: str, lead: float, seconds: float) -> list[tuple[str, float, float]]:
+    """Caption timings over a supplied voice line of `seconds` that starts at `lead`: the payload's cues when given,
+    else the script's chunks sharing the line by word count."""
+    given = [(str(c.get("text") or "").strip(), c.get("start_s"), c.get("end_s")) for c in payload.get("cues") or []
+             if isinstance(c, dict)]
+    given = [(t, lead + float(a), lead + float(b)) for t, a, b in given if t and a is not None and b is not None]
+    if given:
+        return given
+    parts = [text for text, _ in chunks(script)]
+    words = [max(len(p.split()), 1) for p in parts]
+    out, t = [], lead
+    for p, n in zip(parts, words):
+        d = seconds * n / sum(words)
+        out.append((p, t, t + d))
+        t += d
+    return out
+
+
 def render(payload: dict, ctx: JobContext) -> HandlerResult:
     import numpy as np
     import soundfile as sf
 
     images, script = payload.get("images") or [], (payload.get("script") or "").strip()
-    if not images or not script:
-        raise NonRetryable("payload needs images and script")
+    audio_uri = payload.get("audio_uri")
+    if not images or not (script or audio_uri):
+        raise NonRetryable("payload needs images and script (or audio_uri)")
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg not installed on this worker")
     voice, speed = payload.get("voice", "af_heart"), float(payload.get("speed", 0.95))
     w, h, fps = int(payload.get("width", 1080)), int(payload.get("height", 1920)), int(payload.get("fps", 30))
     work = ctx.workdir
 
-    # Voice, chunk by chunk, so captions line up with speech.
-    lead = 0.4
-    audio, cues, t = [np.zeros(int(lead * SAMPLE_RATE), dtype="float32")], [], lead
-    for text, pause in chunks(script):
-        a = _speak(text, voice, speed).astype("float32")
-        cues.append((text, t, t + len(a) / SAMPLE_RATE))
-        audio += [a, np.zeros(int(pause * SAMPLE_RATE), dtype="float32")]
-        t += len(a) / SAMPLE_RATE + pause
-    total = t + 0.6
-    audio.append(np.zeros(int(0.6 * SAMPLE_RATE), dtype="float32"))
+    lead, tail = 0.4, 0.6
     wav = work / "voice.wav"
-    sf.write(str(wav), np.concatenate(audio), SAMPLE_RATE)
+    if audio_uri:
+        # The designed voice's finished line: padded like a Kokoro read, captions on its line timings.
+        line, rate = sf.read(str(ctx.fetch(audio_uri, "line.wav")), dtype="float32", always_2d=False)
+        line = line.mean(axis=1) if line.ndim > 1 else line
+        seconds = len(line) / rate
+        cues = supplied_cues(payload, script, lead, seconds)
+        total = lead + seconds + tail
+        sf.write(str(wav), np.concatenate([np.zeros(int(lead * rate), dtype="float32"), line,
+                                           np.zeros(int(tail * rate), dtype="float32")]), rate)
+    else:
+        # Voice, chunk by chunk, so captions line up with speech.
+        audio, cues, t = [np.zeros(int(lead * SAMPLE_RATE), dtype="float32")], [], lead
+        for text, pause in chunks(script):
+            a = _speak(text, voice, speed).astype("float32")
+            cues.append((text, t, t + len(a) / SAMPLE_RATE))
+            audio += [a, np.zeros(int(pause * SAMPLE_RATE), dtype="float32")]
+            t += len(a) / SAMPLE_RATE + pause
+        total = t + tail
+        audio.append(np.zeros(int(tail * SAMPLE_RATE), dtype="float32"))
+        sf.write(str(wav), np.concatenate(audio), SAMPLE_RATE)
 
     # Photos: equal share of the voice's length each, slow zoom alternating in and out.
     paths = [ctx.fetch(u, f"img_{i}.png") for i, u in enumerate(images)]
@@ -135,7 +168,8 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
     seconds = round(total, 2)
     return HandlerResult([OutputFile(out, "video", {"seconds": seconds, "width": w, "height": h})],
                          recipe={"kind": "narrated_edit", "voice": voice, "speed": speed, "script": script,
-                                 "images": images, "on_screen_text": hook, "tts": "hexgrad/Kokoro-82M"},
+                                 "images": images, "on_screen_text": hook,
+                                 **({"audio_uri": audio_uri} if audio_uri else {"tts": "hexgrad/Kokoro-82M"})},
                          meta={"output_seconds": seconds, "captions": len(cues)})
 
 

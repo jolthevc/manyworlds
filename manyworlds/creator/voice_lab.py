@@ -133,6 +133,11 @@ def _decide(conn, policy: Policy, creator_id, job_id, inputs: dict, output: dict
         (creator_id, Jsonb(inputs), Jsonb(output), policy.version, job_id, rationale))
 
 
+def speak_kind(policy: Policy) -> str:
+    """The job kind that speaks lines in a designed voice (policy voice.kinds.speak)."""
+    return _kind(policy, "speak")
+
+
 def speak_payload(policy: Policy, voice: dict, lines: list[dict], *, seed: int | None = None) -> dict:
     """A voice.speak payload for a creator's designed voice (anchors.voice): lines [{text, delivery,
     pause_after_s}], each generated `voice.takes` times."""

@@ -12,6 +12,9 @@ A scene whose job failed, or whose images were all rejected, gets a new job with
 Narrated edits and story clips are made from the chosen photos once all are chosen; a story clip
 must also pass the video review gate (manyworlds.review.video), with review.video.max_repairs_per_post
 new seeds before the post is dropped.
+A creator with a designed voice (voices.engine: voxcpm) has every spoken piece (a talk take or segment, a cutaway,
+a narrated edit's script) voiced first by a voice.speak job; the piece's job starts once that is done, with its wav
+as `audio_uri`. A Kokoro creator's pieces are voiced on their own workers, as before.
 `ready` posts are published by manyworlds.publish.scheduler per policy autonomy.publish (autonomous, or held).
 Only formats listed in production.formats are made; video posts wait as 'planned' until their
 format is added there.
@@ -54,7 +57,7 @@ def ensure_lora(conn, policy: Policy, creator_id) -> dict | None:
 
 def _seed(post: dict, offset: int, attempt: int) -> int:
     """A deterministic seed per post, piece and attempt: a rerun asks for the same output, a retry for a new one.
-    Offsets keep pieces apart (scenes: i*1000, story clip: 500, talk: 700 + segment*1000)."""
+    Offsets keep pieces apart (scenes: i*1000, story clip: 500, talk: 700 + segment*1000, voice: 800 + segment*1000)."""
     return int(str(post["id"]).replace("-", "")[:7], 16) + offset + attempt * 10
 
 
@@ -217,13 +220,16 @@ def _clip_state(conn, job_ids: list[str]) -> tuple[str, Any]:
     return ("chosen", video) if video["passed"] and video["confirmed"] else ("rejected", None)
 
 
-def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int):
-    """The narrated edit for a post whose photos are chosen: their voice reads the script."""
+def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *,
+              audio: dict | None = None):
+    """The narrated edit for a post whose photos are chosen: their voice reads the script (Kokoro on the edit
+    worker, or the designed voice's finished line, `audio`)."""
     anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
     voice = (anchors.get("voice") or {}).get("voice", "af_heart")
     cfg = _cfg(policy).get("edit", {}) or {}
     payload = {"images": [a["uri"] for a in chosen], "script": body.get("script", ""), "voice": voice,
                "on_screen_text": body.get("on_screen_text", ""), **cfg}
+    _with_audio(payload, audio, captions=True)
     return queue.enqueue(conn, "image.narrated", payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
                          post_id=post["id"], idempotency_key=f"post:{post['id']}:edit:{attempt}")
 
@@ -252,9 +258,10 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
 
 def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *,
-              segment: int | None = None, start_uri: str | None = None):
+              segment: int | None = None, start_uri: str | None = None, audio: dict | None = None):
     """A talking video: the creator says the script to camera from the approved photo, lip-synced,
-    in their own voice (Kokoro on the talk worker). For a long script, one segment of it. A directed post's take
+    in their own voice (Kokoro on the talk worker, or the designed voice's finished line, `audio`: the worker then
+    speaks nothing, and `script` stays for the judge). For a long script, one segment of it. A directed post's take
     (body.talk_shots) uses its shot's scene, prompt and, when every shot has its own photo, that photo."""
     row = conn.execute("SELECT bible, anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
     voice = (row["anchors"] or {}).get("voice") or {}
@@ -273,6 +280,7 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                "scene": f"{scene} Speaking to camera: {script}",   # the video judge scores against it
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)), "seed": seed, "params": params}
     _with_shot(payload, shot)
+    _with_audio(payload, audio)
     if segment is not None:
         payload["segment"] = {"index": segment, "of": len(body["talk_segments"])}
     key = f"post:{post['id']}:talk:{attempt}" if segment is None else f"post:{post['id']}:talk:{segment}:{attempt}"
@@ -375,9 +383,11 @@ def _take_photo(body: dict, chosen: list[dict], i: int) -> dict:
     return chosen[i] if _photo_per_shot(body, chosen) and i < len(chosen) else chosen[0]
 
 
-def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, segment: int):
+def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, segment: int,
+                 audio: dict | None = None):
     """A cutaway segment of a hybrid talking video: the post's other photos, moving gently, under the creator's
-    voice saying this part of the script (the narrated-edit worker; no lip-sync render)."""
+    voice saying this part of the script (the narrated-edit worker; no lip-sync render). With `audio`, the
+    designed voice's finished line instead of Kokoro."""
     anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
     out = _hybrid_cfg(policy).get("output", {}) or {}
     if body.get("talk_shots") and _photo_per_shot(body, chosen):   # a directed cutaway: its own shot's photo
@@ -387,8 +397,95 @@ def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict
     payload = {"images": [a["uri"] for a in images], "script": body["talk_segments"][segment],
                "voice": (anchors.get("voice") or {}).get("voice", "af_heart"), "on_screen_text": "",
                **(_cfg(policy).get("edit", {}) or {}), **{k: out[k] for k in ("width", "height", "fps") if k in out}}
+    _with_audio(payload, audio, captions=True)
     return queue.enqueue(conn, "image.narrated", payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
                          post_id=post["id"], idempotency_key=f"post:{post['id']}:cutaway:{segment}:{attempt}")
+
+
+# The designed voice (creator/voice_lab.py, worker/handlers/tts_voxcpm.py): for a creator whose voice engine is
+# voxcpm, each spoken piece is a voice.speak job first, a Step of its own (retried like any other on failure; nothing
+# reviews it here, its takes are chosen by WER on the worker), and the piece's job takes its wav. A rejected talk
+# clip is remade over the same voice line.
+def _designed_voice(conn, post: dict) -> dict | None:
+    """The creator's designed voice (anchors.voice), or None while they speak with Kokoro."""
+    from . import voices
+    anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
+    return (anchors or {}).get("voice") if voices.engine(anchors) == "voxcpm" else None
+
+
+def _sentence_lines(text: str) -> list[dict]:
+    from .talk_segments import sentences
+    return [{"text": s} for s in sentences(text)]
+
+
+def voice_lines(body: dict, segment: int | None = None) -> list[dict]:
+    """What one take of a talking video says, line by line, for voice.speak: [{text, delivery, pause_after_s}].
+    A directed take (body.talk_shots) speaks its shots' lines with their deliveries and pauses, cut to this take's
+    words (a take split for length gets only its part; a line cut in two keeps its pause on the second part).
+    Otherwise, or when the take's words don't follow the shots' lines, one line per sentence, no delivery."""
+    from itertools import groupby
+
+    takes = body.get("talk_segments") or [body.get("talk_script") or body.get("script", "")]
+    k = segment or 0
+    text = takes[k] if k < len(takes) else ""
+    if body.get("talk_shots") and body.get("shots"):
+        from .direction import spoken_lines
+        lines = [line for shot in body["shots"] for line in spoken_lines(shot)]
+        stream = [(w, li, wi == len(line["text"].split()) - 1)
+                  for li, line in enumerate(lines) for wi, w in enumerate(line["text"].split())]
+        start, words = sum(len(t.split()) for t in takes[:k]), text.split()
+        part = stream[start:start + len(words)]
+        if words and [w for w, _, _ in part] == words:
+            out = []
+            for li, group in groupby(part, key=lambda x: x[1]):
+                group = list(group)
+                out.append({"text": " ".join(w for w, _, _ in group), "delivery": lines[li]["delivery"] or None,
+                            "pause_after_s": lines[li]["pause_after_s"] if group[-1][2] else None})
+            return out
+    return _sentence_lines(text)
+
+
+def _voice_state(conn, job_ids: list[str]) -> tuple[str, Any]:
+    """A voice line is not reviewed here: done with an audio asset is chosen."""
+    status = _status(conn, job_ids[-1])
+    if status in ("queued", "running"):
+        return "waiting", None
+    audio = conn.execute("SELECT id, uri, meta FROM assets WHERE job_id = %s AND kind = 'audio' ORDER BY uri LIMIT 1",
+                         (job_ids[-1],)).fetchone()
+    return ("chosen", audio) if status == "done" and audio else ("failed", None)
+
+
+def _voice_job(conn, policy: Policy, post: dict, voice: dict, lines: list[dict], attempt: int, *,
+               segment: int | None = None):
+    from .creator import voice_lab
+    payload = voice_lab.speak_payload(policy, voice, lines, seed=_seed(post, 800 + (segment or 0) * 1000, attempt))
+    key = f"post:{post['id']}:voice:{attempt}" if segment is None else f"post:{post['id']}:voice:{segment}:{attempt}"
+    return queue.enqueue(conn, voice_lab.speak_kind(policy), payload, creator_id=post["creator_id"],
+                         batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=key)
+
+
+def _advance_voice(conn, policy: Policy, post: dict, body: dict, voice: dict | None, jobs: list[str],
+                   lines: list[dict], *, segment: int | None = None, label: str = "") -> tuple[str, Any]:
+    """('chosen', audio asset) once the piece's voice line exists; ('chosen', None) when there is nothing to voice
+    here (a Kokoro creator, or no words), so the piece is made as before."""
+    if voice is None or not lines:
+        return "chosen", None
+    step = Step(jobs, lambda j: _voice_state(conn, j),
+                lambda attempt: _voice_job(conn, policy, post, voice, lines, attempt, segment=segment),
+                ("voice_repairs", 0), ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))),
+                "voice", label)
+    return advance_step(body, step)
+
+
+def _with_audio(payload: dict, audio: dict | None, *, captions: bool = False) -> dict:
+    """The piece speaks the finished voice line (its wav) instead of TTS on its own worker; an edit also gets
+    each line's timing, so its captions appear exactly while they are said."""
+    if audio:
+        payload["audio_uri"] = audio["uri"]
+        if captions:
+            payload["cues"] = [{k: line.get(k) for k in ("text", "start_s", "end_s")}
+                               for line in (audio.get("meta") or {}).get("lines") or []]
+    return payload
 
 
 def _last_frame(conn, video: dict) -> str:
@@ -442,10 +539,23 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
     failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
     results: list[tuple[str, Any]] = []
     modes = body.get("talk_modes") or ["talk"] * len(body["talk_segments"])
+    voice = _designed_voice(conn, post)
+    voice_jobs = body.setdefault("voice_segment_jobs", [[] for _ in body["talk_segments"]]) if voice else None
     for i in range(len(body["talk_segments"])):
+        # The designed voice says this segment first (every segment's line at once, even while a chain waits).
+        # A segment started before the voice was designed keeps going as it began.
+        voiced = voice if voice and (voice_jobs[i] or not jobs[i]) else None
+        vstate, audio = _advance_voice(conn, policy, post, body, voiced, voice_jobs[i] if voiced else [],
+                                       voice_lines(body, i) if voiced else [], segment=i, label=f"segment {i}: ")
+        if vstate == "dropped":
+            return "dropped", None
+        if vstate != "chosen":
+            results.append(("waiting", None))
+            continue
         if modes[i] == "narrated":   # a cutaway over the other photos (hybrid): not a lip-sync render
             step = Step(jobs[i], lambda j: _edit_state(conn, j),
-                        lambda attempt, i=i: _cutaway_job(conn, policy, post, body, chosen, attempt, segment=i),
+                        lambda attempt, i=i, a=audio: _cutaway_job(conn, policy, post, body, chosen, attempt,
+                                                                   segment=i, audio=a),
                         (f"segment_repairs_{i}", repairs), ("follow_up_failures", failures), "edit", f"segment {i}: ")
             results.append(advance_step(body, step))
             if results[-1][0] == "dropped":
@@ -458,8 +568,8 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
             continue
         start_uri = _last_frame(conn, results[-1][1]) if follows else None
         step = Step(jobs[i], lambda j: _clip_state(conn, j),
-                    lambda attempt, i=i, s=start_uri: _talk_job(conn, policy, post, body, chosen, attempt,
-                                                                 segment=i, start_uri=s),
+                    lambda attempt, i=i, s=start_uri, a=audio: _talk_job(conn, policy, post, body, chosen, attempt,
+                                                                         segment=i, start_uri=s, audio=a),
                     (f"segment_repairs_{i}", repairs), ("follow_up_failures", failures), "clip", f"segment {i}: ")
         results.append(advance_step(body, step))
         if results[-1][0] == "dropped":
@@ -503,12 +613,29 @@ def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:
                  "image", f"scene {i}: ") for i, jobs in enumerate(body["scene_jobs"])]
 
 
-def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]) -> Step:
+def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], audio: dict | None = None) -> Step:
     key, make, state, thing = FOLLOW_UPS[post["format"]]
+    voiced = {"audio": audio} if audio else {}
     return Step(body.setdefault(key, []), lambda j: state(conn, j),
-                lambda attempt: make(conn, policy, post, body, chosen, attempt),
+                lambda attempt: make(conn, policy, post, body, chosen, attempt, **voiced),
                 ("clip_repairs", int(policy.get("review", "video", "max_repairs_per_post", default=2))),
                 ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))), thing)
+
+
+# Follow-ups that speak: voiced first by the designed voice, when the creator has one.
+SPOKEN = ("narrated_edit", "talking_video")
+
+
+def _advance_follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]) -> tuple[str, Any]:
+    audio = None
+    voice = _designed_voice(conn, post) if post["format"] in SPOKEN else None
+    # A piece started before the voice was designed keeps going as it began.
+    if voice and (body.get("voice_jobs") or not body.get(FOLLOW_UPS[post["format"]][0])):
+        state, audio = _advance_voice(conn, policy, post, body, voice, body.setdefault("voice_jobs", []),
+                                      voice_lines(body))
+        if state != "chosen":
+            return state, None
+    return advance_step(body, _follow_up(conn, policy, post, body, chosen, audio))
 
 
 def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
@@ -547,7 +674,7 @@ def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
             if body.get("talk_segments"):   # a long script: one job per segment, then joined
                 state, video = _advance_long_talk(conn, policy, post, body, chosen, store)
             else:
-                state, video = advance_step(body, _follow_up(conn, policy, post, body, chosen))
+                state, video = _advance_follow_up(conn, policy, post, body, chosen)
             target = (_cfg(policy).get("reroute_failed_video") or {}).get(post["format"])
             # Only when review kept rejecting the clips (not machine failures), and never for an experiment
             # idea, whose arm would then be measured on a photo.

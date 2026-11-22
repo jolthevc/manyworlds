@@ -217,12 +217,22 @@ def summary(shot: "ShotSheet | dict | None") -> str:
 _PAREN = re.compile(r"\([^)]*\)")
 
 
+def spoken_lines(shot: "ShotSheet | dict | None") -> list[dict]:
+    """The shot's lines that say something, in order: {text (as `spoken` reads it), delivery, pause_after_s}.
+    What the designed voice speaks (production, voice.speak), line by line with its delivery."""
+    s = _coerce(shot)
+    out = []
+    for line in s.performance.lines:
+        text = " ".join(_PAREN.sub(" ", line.text).split())
+        if text:
+            out.append({"text": text, "delivery": line.delivery.strip(), "pause_after_s": line.pause_after_s})
+    return out
+
+
 def spoken(shot: "ShotSheet | dict | None") -> str:
     """What is actually said in the shot: the lines' text in order. Deliveries are never part of it, and a
     parenthetical left in a line's text is a stage direction, so it is removed too."""
-    s = _coerce(shot)
-    texts = (" ".join(_PAREN.sub(" ", line.text).split()) for line in s.performance.lines)
-    return " ".join(t for t in texts if t)
+    return " ".join(line["text"] for line in spoken_lines(shot))
 
 
 def _policy(policy: Any, *path: str, default: Any = None) -> Any:

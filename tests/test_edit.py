@@ -3,6 +3,7 @@ the post is ready when that video exists. Captions follow the speech chunk by ch
 
 from __future__ import annotations
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from manyworlds import production
@@ -55,3 +56,41 @@ def test_failed_jobs_do_not_use_up_review_repairs(conn, policy, store, tmp_path)
         assert production.advance(conn, policy, now=NOW)["producing"] == 1
     body = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
     assert body.get("repairs", 0) == 0 and body["job_failures"] == policy.get("review", "max_repairs_per_post") + 1
+
+
+def test_a_designed_voice_reads_the_edit_script_first(conn, policy, store, tmp_path):
+    from brain_helpers import with_narration
+    policy = with_narration(policy)
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    conn.execute("UPDATE creators SET anchors = anchors || %s WHERE id = %s",
+                 (Jsonb({"voice": {"engine": "voxcpm", "ref_uri": "s3://b/voice/ref.wav", "ref_text": "Okay.",
+                                   "voice": "bf_emma"}}), cid))
+    planner.plan_period(conn, policy, PlanStub([post(0, "narrated_edit", ["a", "b", "c"], script="Soup. More soup!",
+                                                     on_screen_text="soup")]),
+                        cid, start=START)
+    pid = conn.execute("SELECT id FROM posts WHERE creator_id = %s", (cid,)).fetchone()["id"]
+    production.advance(conn, policy, now=NOW)
+    finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok()] * 4), pid)
+    production.advance(conn, policy, now=NOW)
+    assert conn.execute("SELECT 1 FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchone() is None
+    [voice] = conn.execute("SELECT id, payload, idempotency_key FROM jobs WHERE post_id = %s AND kind = 'voice.speak'",
+                           (pid,)).fetchall()
+    assert voice["idempotency_key"] == f"post:{pid}:voice:0"
+    assert voice["payload"]["lines"] == [{"text": "Soup."}, {"text": "More soup!"}]
+    conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (voice["id"],))
+    lines = [{"text": "Soup.", "start_s": 0.0, "end_s": 0.8}, {"text": "More soup!", "start_s": 1.0, "end_s": 2.0}]
+    conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                 "VALUES (%s, %s, 'audio', 's3://b/voice/edit.wav', 'x', 1, %s)", (voice["id"], cid, Jsonb({"lines": lines})))
+    production.advance(conn, policy, now=NOW)
+    [job] = conn.execute("SELECT payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
+    assert job["payload"]["audio_uri"] == "s3://b/voice/edit.wav" and job["payload"]["cues"] == lines
+    assert job["payload"]["script"] == "Soup. More soup!"
+
+
+def test_captions_over_a_supplied_voice_follow_its_cues_or_share_it_by_words():
+    cues = edit.supplied_cues({"cues": [{"text": "Soup.", "start_s": 0.0, "end_s": 0.8}]}, "Soup.", 0.4, 1.0)
+    assert cues == [("Soup.", 0.4, pytest.approx(1.2))]
+    shared = edit.supplied_cues({}, "one two three. four.", 0.4, 4.0)
+    assert [t for t, _, _ in shared] == ["one two three.", "four."]
+    assert shared[0][1:] == (0.4, pytest.approx(3.4)) and shared[1][2] == pytest.approx(4.4)

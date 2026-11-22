@@ -7,16 +7,19 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 ## Layout
 
 - `manyworlds/queue.py` — Postgres job queue for interruptible GPUs (leases, heartbeats, reclaim, reaping)
-- `manyworlds/worker/` — generic worker loop + handlers per job kind (`image.zimage`, `image.narrated`, `image.voice`, `video.wan_i2v`, `talk.infinitetalk` (lip-sync, own image), `train.lora`, `fake.*`); `smoke.py` checks a built image before it is pushed
+- `manyworlds/worker/` — generic worker loop + handlers per job kind (`image.zimage`, `image.narrated`, `image.voice`, `video.wan_i2v`, `talk.infinitetalk` (lip-sync, own image; InfiniteTalk or LongCat-Video-Avatar by `params.model`), `voice.design`/`voice.speak`, `train.lora`, `fake.*`); `smoke.py` checks a built image before it is pushed
 - `manyworlds/brain/` — orchestration decisions (research plan, theses, choices, content plans); each one recorded in `decisions`
 - `manyworlds/brain/agent.py` — agent contract (`AgentContext`, `record_decision`, `commission`); agents in `brain/agents/` run as `brain.<name>` jobs via `brain/runtime.py` (`mw brain worker`)
+- `manyworlds/brain/director.py` — director step: turns scheduled posts' scenes into shot sheets (`body.shots`, strict schema)
 - `manyworlds/brain/evidence.py` — the only reader of findings and metrics; `real` mode never sees simulated data
 - `manyworlds/brain/overrides.py` — settings the Brain changes at runtime within `brain.authority`; beyond it → `approvals`
 - `manyworlds/brain/budget.py` — per-agent daily LLM budgets from the ledger's `agent` tag
-- `manyworlds/production.py` — planned post → scene images → (narrated edit | story clip | talking video) → ready; each piece is a retried `Step`; long talking videos run one job per segment (`talk_segments.py`) and are joined on the control plane (`media.py`)
+- `manyworlds/production.py` — planned post → scene images → (narrated edit | story clip | talking video) → ready; each piece is a retried `Step`; long talking videos run one job per segment (`talk_segments.py`) and are joined on the control plane (`media.py`); a creator with a designed voice has every spoken piece voiced first (`voice.speak`, then `audio_uri`)
+- `manyworlds/direction.py` — shot sheet (set, wardrobe, framing, blocking, performance, sound, edit) + prompt compiler per model
 - `manyworlds/operations.py` — the master switch `operations.mode` (shipped `paused`: only test jobs and `bench-`/`test-` batches run)
 - `manyworlds/review/` — review gates: `gates.py` (images), `video.py` (story and talking clips from keyframes), `common.py` (shared stages and writes)
 - `manyworlds/creator/lab.py` — creator bible, reference pack, anchors, LoRA, voice; `profile.py` versioned profiles and dials
+- `manyworlds/creator/voice_lab.py` + `worker/handlers/tts_voxcpm.py` — designed voices (VoxCPM2): candidates from the bible, picked automatically (WER, distance from other creators), lines spoken in the cloned voice with their delivery; `voices.engine` falls back to Kokoro
 - `manyworlds/research/` — Apify data source, signal aggregation
 - `manyworlds/llm.py` — the only place LLMs are called: per role Claude or an open-weight model on an OpenAI-compatible host (`llm.hosts`, `llm.open_models`, `{model, fallback}` roles); structured outputs, cost recorded per call; shadow tests of candidates into `llm_shadow`, compared by `shadow.py` (`mw llm shadow-report <role>`)
 - `manyworlds/notify.py` — owner alerts: owner events and pending approvals pushed once via ntfy (`NTFY_TOPIC`) from the autoscaler loop; `owner_event()` is how code tells the owner something

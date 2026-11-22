@@ -258,9 +258,11 @@ def test_cutaway_shot_is_narrated(policy):
     assert production.shot_takes(policy, [silent]) == []
 
 
-def _directed_post(conn, policy, store, tmp_path, shots):
+def _directed_post(conn, policy, store, tmp_path, shots, voice=None):
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
+    if voice is not None:
+        conn.execute("UPDATE creators SET anchors = anchors || %s WHERE id = %s", (Jsonb({"voice": voice}), cid))
     from manyworlds.brain import planner
     from manyworlds.direction import summary
     planner.plan_period(conn, policy, PlanStub([post(0, "talking_video", [summary(s) for s in shots])]), cid,
@@ -305,3 +307,102 @@ def test_a_directed_cutaway_is_narrated_over_its_own_photo(conn, policy, store, 
     assert [j["payload"]["image_uri"] for j in talks] == [body["images"][0]["uri"], body["images"][2]["uri"]]
     assert cut["payload"]["images"] == [body["images"][1]["uri"]]
     assert cut["payload"]["script"] == "They still haven't cleaned that window, by the way."
+
+
+# --- the designed voice: every spoken piece is a voice.speak job first -----------------------------------
+DESIGNED = {"engine": "voxcpm", "ref_uri": "s3://b/voice/ref.wav", "ref_text": "Okay, so this morning.", "voice": "bf_emma"}
+
+
+def _voice_jobs(conn, pid, status=None):
+    rows = conn.execute("SELECT id, status, payload, idempotency_key FROM jobs WHERE post_id = %s "
+                        "AND kind = 'voice.speak' ORDER BY idempotency_key", (pid,)).fetchall()
+    return [r for r in rows if status is None or r["status"] == status]
+
+
+def _spoken(conn, job):
+    """The voice worker finished: one wav and each line's timing."""
+    j = conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s RETURNING creator_id", (job["id"],)).fetchone()
+    lines = [{"index": i, "text": line["text"], "start_s": 2.0 * i, "end_s": 2.0 * i + 1.5}
+             for i, line in enumerate(job["payload"]["lines"])]
+    uri = f"s3://b/voice/{job['id']}.wav"
+    conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                 "VALUES (%s, %s, 'audio', %s, 'x', 1, %s)", (job["id"], j["creator_id"], uri, Jsonb({"lines": lines})))
+    return uri, lines
+
+
+def test_a_designed_voice_speaks_each_take_before_its_talk_job(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, DOORWAY], voice=DESIGNED)
+    assert _segment_jobs(conn, pid) == []                                            # no talk job before its voice
+    first, second = _voice_jobs(conn, pid)
+    assert [first["idempotency_key"], second["idempotency_key"]] == [f"post:{pid}:voice:0:0", f"post:{pid}:voice:1:0"]
+    for job, shot in zip((first, second), (SHOP, DOORWAY)):
+        p = job["payload"]
+        assert p["ref_uri"] == DESIGNED["ref_uri"] and p["ref_text"] == DESIGNED["ref_text"]
+        assert p["lines"] == [{"text": line["text"], "delivery": "dry, quick"} for line in shot["performance"]["lines"]]
+        assert p["takes"] == policy.get("voice", "takes")
+    # A failed voice job is retried like any other step, with a new seed.
+    conn.execute("UPDATE jobs SET status = 'failed' WHERE id = %s", (first["id"],))
+    production.advance(conn, policy, now=NOW, store=store)
+    retry = [j for j in _voice_jobs(conn, pid) if j["idempotency_key"] == f"post:{pid}:voice:0:1"]
+    assert len(retry) == 1 and retry[0]["payload"]["seed"] != first["payload"]["seed"]
+    assert conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]["follow_up_failures"] == 1
+    assert _segment_jobs(conn, pid) == []
+    uris = [_spoken(conn, j)[0] for j in _voice_jobs(conn, pid, "queued")]          # segment 0's retry and segment 1
+    production.advance(conn, policy, now=NOW, store=store)
+    talks = _segment_jobs(conn, pid)
+    assert len(talks) == 2
+    assert sorted(t["payload"]["audio_uri"] for t in talks) == sorted(uris)
+    by_key = {j["idempotency_key"]: f"s3://b/voice/{j['id']}.wav" for j in _voice_jobs(conn, pid, "done")}
+    assert talks[0]["payload"]["audio_uri"] == by_key[f"post:{pid}:voice:0:1"]
+    assert talks[1]["payload"]["audio_uri"] == by_key[f"post:{pid}:voice:1:0"]
+    assert talks[0]["payload"]["script"] == " ".join(line["text"] for line in SHOP["performance"]["lines"])
+    production.advance(conn, policy, now=NOW, store=store)                           # idempotent: nothing new
+    assert len(_voice_jobs(conn, pid)) == 3 and len(_segment_jobs(conn, pid)) == 2
+
+
+def test_a_cutaway_uses_the_designed_voice_too(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, WINDOW, DOORWAY], voice=DESIGNED)
+    assert body["talk_modes"] == ["talk", "narrated", "talk"]
+    assert conn.execute("SELECT count(*) n FROM jobs WHERE post_id = %s AND kind = 'image.narrated'",
+                        (pid,)).fetchone()["n"] == 0
+    jobs = _voice_jobs(conn, pid)
+    assert len(jobs) == 3
+    assert jobs[1]["payload"]["lines"] == [{"text": "They still haven't cleaned that window, by the way.",
+                                            "delivery": "dry, quick"}]
+    spoken = [_spoken(conn, j) for j in jobs]
+    production.advance(conn, policy, now=NOW, store=store)
+    [cut] = conn.execute("SELECT payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
+    uri, lines = spoken[1]
+    assert cut["payload"]["audio_uri"] == uri
+    assert cut["payload"]["cues"] == [{k: line[k] for k in ("text", "start_s", "end_s")} for line in lines]
+    assert [t["payload"]["audio_uri"] for t in _segment_jobs(conn, pid)] == [spoken[0][0], spoken[2][0]]
+
+
+def test_a_kokoro_creator_gets_no_voice_job(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    # No reference clip yet: still Kokoro (voices.engine), so production is exactly as before.
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, DOORWAY],
+                               voice={"engine": "voxcpm", "voice": "bf_emma"})
+    assert _voice_jobs(conn, pid) == []
+    talks = _segment_jobs(conn, pid)
+    assert len(talks) == 2 and all("audio_uri" not in t["payload"] for t in talks)
+    assert talks[0]["payload"]["voice"] == "bf_emma"
+    assert "voice_segment_jobs" not in body
+
+
+def test_voice_lines_follow_the_shots_and_a_split_take_gets_only_its_part(policy):
+    long_take = _says(*[SENTENCE] * 7)
+    takes = production.shot_takes(policy, [long_take])
+    body = {"shots": [long_take], "talk_shots": [i for _, _, i in takes], "talk_segments": [t for t, _, _ in takes]}
+    parts = [production.voice_lines(body, k) for k in range(len(takes))]
+    assert [len(p) for p in parts] == [len(t.split()) // 30 for t, _, _ in takes]   # whole lines, one per sentence
+    assert all(line == {"text": SENTENCE, "delivery": "dry, quick", "pause_after_s": None}
+               for p in parts for line in p)
+    # One take on the shot: its lines; without shots, one line per sentence and no delivery.
+    single = {"shots": [SHOP], "talk_shots": [0], "talk_segments": [], "talk_script": production.shot_takes(
+        policy, [SHOP])[0][0]}
+    assert [line["text"] for line in production.voice_lines(single)] == [
+        line["text"] for line in SHOP["performance"]["lines"]]
+    assert production.voice_lines({"script": "Hi there. Bye now."}) == [{"text": "Hi there."}, {"text": "Bye now."}]

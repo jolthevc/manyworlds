@@ -131,14 +131,14 @@ worker_images:
   # talk: ComfyUI + WanVideoWrapper (docker/worker-talkcomfy.Dockerfile): fp8-scaled Wan2.1-I2V-14B 480p + InfiniteTalk
   # adapter (~16 GB), UMT5 text encoder (~11 GB), VAE, lightx2v LoRA; weights cached on the pool's volume if it has one.
   # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
-  talk: {image: mw-worker-talkcomfy, tag: v8, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
+  talk: {image: mw-worker-talkcomfy, tag: v9, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
-  comfy: {image: mw-worker-talkcomfy, tag: v8, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  comfy: {image: mw-worker-talkcomfy, tag: v9, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
   # voxcpm in it (v9 and later).
-  voice: {image: mw-worker-talkcomfy, tag: v8, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+  voice: {image: mw-worker-talkcomfy, tag: v9, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -294,7 +294,8 @@ generation:
     cfg: 1.0
     shift: 11.0
     scheduler: dpm++_sde
-    audio_scale: 1.0
+    # 1.5 since 2026-11-22: Kijai's InfiniteTalk example uses 1.5. audio_cfg acts only when cfg > 1 (s10cfg below).
+    audio_scale: 1.5
     audio_cfg: 1.0
     frame_window: 81
     motion_frame: 9
@@ -329,6 +330,9 @@ generation:
     # but ~607 s for 6.3 s, since audio cfg adds a pass: not worth it.
     s8audio: {steps: 8, audio_scale: 1.5}
     s8audiocfg: {steps: 8, audio_cfg: 2.0}
+    # 10 steps with real guidance (plan 2026-11-22 task 6): cfg 2 turns on the text and audio cfg passes (slower: an
+    # extra pass per step); benchmark against `talk` before adopting.
+    s10cfg: {steps: 10, cfg: 2.0, audio_cfg: 2.0}
     # Second lip-sync model (worker/comfy.py graph_longcat): LongCat-Video-Avatar (MIT) at Kijai's example settings
     # (distill LoRA 0.9, longcat_distill_euler, shift 12, cfg 1, 93-frame windows overlapping 13; the example runs 12
     # steps, 10 here per the plan; audio cfg 3, the bottom of the example note's 3-5 range). sdpa attention: the

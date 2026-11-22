@@ -205,6 +205,9 @@ def _intelligibility(conn, policy: Policy, store: ObjectStore, job_id, payload: 
         return None
     audio = conn.execute("SELECT uri, meta FROM assets WHERE job_id = %s AND kind = 'audio' ORDER BY uri LIMIT 1",
                          (job_id,)).fetchone()
+    if not audio and payload.get("audio_uri"):   # a designed voice's line, spoken by its own voice.speak job
+        audio = conn.execute("SELECT uri, meta FROM assets WHERE uri = %s AND kind = 'audio' LIMIT 1",
+                             (payload["audio_uri"],)).fetchone()
     if not audio:
         return None
     from .. import speech

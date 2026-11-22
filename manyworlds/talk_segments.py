@@ -17,6 +17,11 @@ def _words(text: str) -> int:
     return len(text.split())
 
 
+def sentences(text: str) -> list[str]:
+    """The text's sentences, in order (whitespace collapsed)."""
+    return [s for s in _SENTENCE_END.split(" ".join((text or "").split())) if s]
+
+
 def estimate_seconds(text: str, words_per_second: float) -> float:
     return _words(text) / float(words_per_second)
 
