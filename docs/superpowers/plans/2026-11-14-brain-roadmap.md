@@ -204,3 +204,43 @@ From the model review (`docs/research/2026-11-21-model-landscape.md`):
   lightx2v LoRA; distilled Wan 2.2 and LTX-2.5 vs hosted Wan Turbo / MiniMax H3 Turbo / Kling 2.6 for story clips;
   designed voices (Qwen3-TTS VoiceDesign, VoxCPM2) cloned per creator and voiced in one pass; SoulX-FlashTalk and
   LongCat-Video-Avatar 1.6; AuraFace in the image gate, then FLUX 3 Klein and HiDream-O1 vs Z-Image Turbo.
+
+## Owner direction, 2026-11-22 (video studio, intelligence, new formats)
+
+Priority now: **lock down video** (talking video and story clips on the ComfyUI worker) before anything else in
+this section.
+
+### Video cost and speed (target: a 30 s talking reel at about $0.08-0.12, about $0.04 with the hybrid edit)
+Measured 2026-11-22: ComfyUI InfiniteTalk on a secure L40S ($1.09/h), warm, about 30-35 s of compute per output
+second, so about $0.05 per 5 s clip and about $0.30 per 30 s. 1 of 3 passed the gate at 6 steps (2 at realism or
+motion 5); speech WER 0; lip sync 0.61-0.70.
+1. Cheaper cards: RTX 4090 / 5090 community pools for the ComfyUI worker (fp8 fits 24-32 GB), measured per accepted
+   output, weights from R2 or a volume.
+2. Faster inference: SageAttention 2, fp8 fast matmul, torch.compile, step caching (TeaCache/MagCache); adopted
+   only where the gate holds.
+3. Hybrid talking edit: about a third lip-synced on camera, the rest photos with gentle motion under the same
+   voice, cut on the control plane.
+4. No idle GPU time: warm machines with full queues; RunPod Serverless once the owner approves an endpoint.
+5. Quality levers under test: steps 8/10, 576p, audio and motion settings, prompts against face drift.
+
+### Intelligence: the trend watcher (built 2026-11-22, off until the owner enables it; at most $3/day)
+ScrapeCreators per niche, velocity snapshots, outliers vs controls described by a cheap vision model, a daily
+brief and research findings read by the showrunner. Needs SCRAPECREATORS_API_KEY. Next: cross-platform lag
+(TikTok trends reaching Reels), saturation, comment themes on top posts, peer AI-creator watch list, our own
+results against niche benchmarks.
+
+### Sound effects and ambience
+Foley synced to the video (MMAudio, HunyuanVideo-Foley, ThinkSound) and general sound generation (Stable Audio
+Open), plus CC0 libraries for ambience beds. First step: a licence check per model (MMAudio's weights are
+non-commercial, for example); then a mix stage on the control plane (voice ducking, loudness to platform norms).
+
+### New content formats (after video is locked; each as an experiment the trend watcher and our metrics judge)
+1. Translated versions: the same post dubbed and re-lip-synced (Spanish, Portuguese, Hindi...): new audiences for
+   the cost of the talk render alone.
+2. Serialized micro-dramas: single-character POV episodes with cliffhangers first (memory and series exist), then
+   two-person scenes (InfiniteTalk multi-speaker); full ReelShort-style drama last.
+3. Stylized / animated characters (3D cartoon, anime): adults only, a style LoRA, natural disclosure.
+4. Ambient and long-form (cozy scenes, rain, lo-fi; YouTube long-form): one image, looping motion, sound.
+5. Blender / procedural 3D and "oddly satisfying" loops: CPU-rendered, very cheap, a channel type of its own.
+6. Videos that answer comments (we read comments now).
+7. YouTube Shorts as a third platform from the same assets.

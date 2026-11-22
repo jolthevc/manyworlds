@@ -286,7 +286,21 @@ class LLM:
         timeout = float(spec.get("timeout_seconds", host.get("timeout_seconds", 120)))   # slow thinkers need more
         last = None
         for _ in range(int(spec.get("attempts", 2))):
-            r = self._post(f"{host['base_url'].rstrip('/')}/chat/completions", body, key, timeout)
+            try:
+                r = self._post(f"{host['base_url'].rstrip('/')}/chat/completions", body, key, timeout)
+            except OpenModelError as e:
+                # A timeout or dropped connection is billed by the host with no usage returned: record an estimate
+                # so the ledger matches the bill (2026-11-22: ~$1.80 of Together's bill was missing). HTTP errors
+                # (a refused request) are not billed.
+                if " -> " in str(e) and not any(f" -> {c}" in str(e) for c in range(400, 600)):
+                    est = self.policy.get("llm", "failed_call_estimate", default={}) or {}
+                    parts = [body["messages"][0]["content"], body["messages"][1]["content"]]
+                    text = "".join(p if isinstance(p, str) else "".join(b.get("text", "") for b in p) for p in parts)
+                    images = sum(1 for p in parts if not isinstance(p, str) for b in p if b.get("type") == "image_url")
+                    tin = int(len(text) / float(est.get("chars_per_token", 4))) + images * int(est.get("image_tokens", 1500))
+                    tout = int(est.get("output_tokens", 3000))
+                    self._record(model, tin, tout, 0, 0, (tin * prices[0] + tout * prices[1]) / 1e6, creator_id, agent)
+                raise
             usage = r.get("usage") or {}
             tin, tout = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
             self._record(model, tin, tout, 0, 0, (tin * prices[0] + tout * prices[1]) / 1e6, creator_id, agent)

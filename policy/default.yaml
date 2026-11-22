@@ -691,12 +691,16 @@ llm:
   # the best model per job at the lowest cost). Candidates were picked from the 2026-11-21 model review.
   shadow:
     showrunner: {candidates: [claude-opus-5-5], share: 0.1}   # quality check on the Qwen4-Max showrunner
-    brain:      {candidates: [kimi-k3.1-pro, glm-5.3, qwen4-max], share: 0.5}   # strategist, analyst
-    creator:    {candidates: [kimi-k3.1-pro], share: 1.0}                   # creator bibles and profiles (rare)
+    # Kimi out of all trials (owner 2026-11-22): it timed out often, cost the most, and lost its trials.
+    brain:      {candidates: [glm-5.3, qwen4-max], share: 0.2}   # strategist, analyst
+    creator:    {candidates: [qwen4-max, glm-5.3], share: 0.2}   # creator bibles and profiles (rare)
     evaluator:  {candidates: [claude-sonnet-5-5, qwen3.8-flash], share: 0.1}   # drift check on the Haiku evaluator
     review:     {candidates: [nemotron-3.5-vl, qwen3.8-flash], share: 0.2}
-    judge:      {candidates: [kimi-k3.1-pro], share: 1.0}
-  shadow_usd_per_day: 1.0
+    judge:      {candidates: [qwen4-max, glm-5.3], share: 0.2}
+  shadow_usd_per_day: 0.5
+  # A call to an open model that times out or drops is billed by the host but returns no usage: the ledger records
+  # an estimate (prompt characters / chars_per_token in, output_tokens out) so it matches the host's bill.
+  failed_call_estimate: {chars_per_token: 4, output_tokens: 3000, image_tokens: 1500}
   # Model selection (manyworlds.selection): once a day the autoscaler's loop turns shadow evidence into proposals
   # (approvals): switch a role to the cheapest candidate that qualifies. It reads stored evidence only; judging
   # generative answers (quality mode) spends and runs with `mw llm judge <role> --usd N`. The owner approves.

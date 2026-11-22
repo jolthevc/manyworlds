@@ -254,3 +254,16 @@ def test_a_streamed_answer_is_read_like_a_whole_one(conn, open_policy):
     LLM(conn, policy_mod.from_dict({**open_policy.body, "llm": llm_cfg}), client=FakeAnthropic(), post=host) \
         .structured("evaluator", system="s", content="c", schema=Verdict)
     assert host.requests[0]["body"]["stream"] is True and host.requests[0]["body"]["stream_options"]["include_usage"]
+
+
+def test_a_timed_out_open_call_is_charged_an_estimate_and_a_refused_one_is_not(conn, open_policy):
+    """Hosts bill timeouts without returning usage (2026-11-22: ~$1.80 of Together's bill was missing)."""
+    llm = LLM(conn, open_policy, client=FakeAnthropic(), post=FakeHost(OpenModelError("https://h/v1 -> TimeoutError: timed out")))
+    with pytest.raises(OpenModelError):
+        llm._open(llm.route("review")[0], system="s", content="look", schema=Verdict, creator_id=None)
+    timed_out = conn.execute("SELECT count(*) n, sum(usd) u FROM cost_entries WHERE category = 'llm'").fetchone()
+    assert timed_out["n"] == 1 and float(timed_out["u"]) > 0
+    llm = LLM(conn, open_policy, client=FakeAnthropic(), post=FakeHost(OpenModelError("https://h/v1 -> 403: no")))
+    with pytest.raises(OpenModelError):
+        llm._open(llm.route("review")[0], system="s", content="look", schema=Verdict, creator_id=None)
+    assert conn.execute("SELECT count(*) n FROM cost_entries WHERE category = 'llm'").fetchone()["n"] == 1
