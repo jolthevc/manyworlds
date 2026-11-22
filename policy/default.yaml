@@ -634,6 +634,23 @@ captions:
     contractions, short sentences, an aside or a restart is fine, no lists, no intros. If a line would make a
     stylish 25-year-old cringe, cut it. Cool comes from taste and restraint, not adjectives.
 
+# Direction (manyworlds.direction, owner 2026-11-22): the words the shot-sheet compiler adds to every directed
+# prompt. Moves not in camera_moves are dropped; the planner offers only moves whose readiness is offered.
+# `realism.video` is added only when the shot is handheld; `negatives.solo` only when nobody is in the background.
+direction:
+  realism:
+    photo: "visible pores, fine skin texture, natural imperfections, phone camera HDR, slight grain"
+    video: "slight handheld micro-jitter"
+  style:
+    photo: "realistic"
+    i2v: "small natural movements, steady face, realistic"
+    talk: "small natural head movements and expressions, steady face, realistic"
+  negatives:
+    always: ["no text", "no logos", "no mirrors behind the subject"]
+    solo: ["no extra people"]
+  camera_moves: [static, handheld, push_in, pull_out, pan_left, pan_right, tilt_up, tilt_down, follow, orbit_slow]
+  offer_readiness: [ready, partial]
+
 # Production (manyworlds.production): planned posts -> image jobs -> reviewed images.
 # On Maren with the full appearance prompt, 12 of 12 images passed review, so 4 candidates
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.

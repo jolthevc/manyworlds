@@ -17,6 +17,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from .. import queue
+from ..direction import ShotSheet, compile_prompt
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
 from ..storage import ObjectStore
@@ -84,25 +85,41 @@ def appearance_prompt(bible: dict) -> str:
             f"{a['face']}, {a['eyes']}, {a['hair']}, {a['build']}, {a['signature_details']}")
 
 
-def photo_prompt(bible: dict, scene: str, *, trigger: str | None = None) -> str:
+def _need_policy(policy: Policy | None) -> Policy:
+    if policy is None:
+        raise ValueError("a directed shot needs the policy (direction words, camera moves, negatives)")
+    return policy
+
+
+def photo_prompt(bible: dict, scene: str, *, trigger: str | None = None,
+                 shot: ShotSheet | dict | None = None, policy: Policy | None = None) -> str:
     """The prompt for any photo of a creator: LoRA trigger, the full fixed appearance, then the scene.
     Measured 2026-11-14 on Maren: a short description with her LoRA kept 0 of 12 images on
-    identity; the full appearance with the same LoRA kept 12 of 12."""
+    identity; the full appearance with the same LoRA kept 12 of 12. With a shot sheet the direction
+    compiler writes it (manyworlds.direction); without one it is exactly as before."""
+    if shot is not None:
+        return compile_prompt(shot, bible, "photo", _need_policy(policy), trigger=trigger, scene=scene)
     head = f"{trigger}, " if trigger else ""
     return f"{head}candid smartphone photo of a {appearance_prompt(bible)}. Scene: {scene}. Natural skin texture, realistic."
 
 
-def clip_prompt(bible: dict, scene: str, motion: str) -> str:
+def clip_prompt(bible: dict, scene: str, motion: str, *,
+                shot: ShotSheet | dict | None = None, policy: Policy | None = None) -> str:
     """The prompt for a story clip made from an approved photo of the scene: who, where, what moves.
     Image-to-video keeps the look from the start photo; the full appearance helps it keep the face."""
+    if shot is not None:
+        return compile_prompt(shot, bible, "i2v", _need_policy(policy), scene=scene, motion=motion)
     move = f" Movement: {motion}." if motion else ""
     return (f"Handheld smartphone video of a {appearance_prompt(bible)}. Scene: {scene}.{move} "
             "Small natural movements, steady face, realistic.")
 
 
-def talk_prompt(bible: dict, scene: str) -> str:
+def talk_prompt(bible: dict, scene: str, *,
+                shot: ShotSheet | dict | None = None, policy: Policy | None = None) -> str:
     """The prompt for a lip-synced talking clip from an approved photo: who, where, talking to camera.
     The audio drives the mouth; the prompt keeps the rest natural."""
+    if shot is not None:
+        return compile_prompt(shot, bible, "talk", _need_policy(policy), scene=scene)
     return (f"Smartphone video of a {appearance_prompt(bible)}. Scene: {scene}. "
             "Talking to the camera naturally, with small head movements and expressions; steady face, realistic.")
 
