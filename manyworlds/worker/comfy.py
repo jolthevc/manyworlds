@@ -130,11 +130,78 @@ def write_model_paths(models_dir: Path) -> Path:
     return cfg
 
 
-def ensure_weights(models_dir: Path, weights: dict | None = None) -> None:
-    from huggingface_hub import hf_hub_download
+def _remote_size(repo: str, name: str, token) -> int | None:
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        return get_hf_file_metadata(hf_hub_url(repo, name), token=token).size
+    except Exception:  # noqa: BLE001 - unknown size: trust a file that is there
+        return None
+
+
+def _volume_lock(models_dir: Path, wait_s: float = 3600, stale_s: float = 7200):
+    """One downloader per weights volume: two machines writing the same files on a shared network volume broke
+    huggingface_hub's download records (2026-11-22: every story clip failed with UnboundLocalError 'metadata')."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def held():
+        lock = models_dir / ".mw-download.lock"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + wait_s
+        while True:
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > stale_s:   # a machine died holding it
+                        lock.unlink(missing_ok=True)
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.monotonic() > deadline:
+                    raise RuntimeError("another machine has been downloading weights for too long") from None
+                time.sleep(10)
+        try:
+            yield
+        finally:
+            lock.unlink(missing_ok=True)
+    return held()
+
+
+def ensure_weights(models_dir: Path, weights: dict | None = None, download=None, remote_size=None) -> None:
+    """Every weight file in place, complete (its remote size), downloaded once per volume. A failed download
+    clears huggingface_hub's records for that file and the partial file, then tries once more from scratch."""
+    token = os.environ.get("HF_TOKEN") or None
+    if download is None:
+        from huggingface_hub import hf_hub_download as download
+    remote_size = remote_size or _remote_size
+    todo = []
     for folder, files in (weights or WEIGHTS).items():
         for repo, name in files:
-            hf_hub_download(repo, name, local_dir=str(models_dir / folder), token=os.environ.get("HF_TOKEN") or None)
+            target = models_dir / folder / name
+            size = remote_size(repo, name, token)
+            if not (target.is_file() and (size is None or target.stat().st_size == size)):
+                todo.append((folder, repo, name))
+    if not todo:
+        return
+    with _volume_lock(models_dir):
+        for folder, repo, name in todo:
+            local = models_dir / folder
+            target = local / name
+            size = remote_size(repo, name, token)
+            if target.is_file() and (size is None or target.stat().st_size == size):
+                continue   # another machine finished it while we waited
+            try:
+                download(repo, name, local_dir=str(local), token=token)
+            except Exception:  # noqa: BLE001 - stale or broken download records: start this file over
+                records = local / ".cache" / "huggingface" / "download"
+                for p in records.glob(f"{name}.*") if records.exists() else []:
+                    p.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+                download(repo, name, local_dir=str(local), token=token, force_download=True)
 
 
 def start(*, args: tuple[str, ...] = (), wait_s: float = 600) -> None:

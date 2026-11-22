@@ -82,3 +82,36 @@ def test_an_execution_error_names_the_node_and_exception_without_the_inputs():
         "current_inputs": {"model": "x" * 50000}}]]}
     msg = comfy.execution_error(status)
     assert "WanVideoSampler" in msg and "OutOfMemoryError: CUDA out of memory" in msg and len(msg) < 2500
+
+
+def test_weights_already_complete_are_not_downloaded_again(tmp_path):
+    from manyworlds.worker import comfy
+    (tmp_path / "vae").mkdir()
+    (tmp_path / "vae" / "v.safetensors").write_bytes(b"x" * 10)
+    calls = []
+    comfy.ensure_weights(tmp_path, {"vae": [("r", "v.safetensors")]}, download=lambda *a, **k: calls.append(a),
+                         remote_size=lambda repo, name, token: 10)
+    assert calls == [] and not (tmp_path / ".mw-download.lock").exists()
+
+
+def test_a_broken_download_record_is_cleared_and_the_file_fetched_again(tmp_path):
+    """2026-11-22: two machines on one volume left records huggingface_hub crashed on (UnboundLocalError)."""
+    from manyworlds.worker import comfy
+    records = tmp_path / "diffusion_models" / ".cache" / "huggingface" / "download" / "I2V"
+    records.mkdir(parents=True)
+    (records / "h.safetensors.metadata").write_text("broken")
+    (tmp_path / "diffusion_models" / "I2V").mkdir()
+    (tmp_path / "diffusion_models" / "I2V" / "h.safetensors").write_bytes(b"part")
+    calls = []
+
+    def download(repo, name, local_dir, token, force_download=False):
+        calls.append(force_download)
+        if not force_download:
+            raise UnboundLocalError("cannot access local variable 'metadata'")
+        (tmp_path / "diffusion_models" / name).write_bytes(b"x" * 10)
+
+    comfy.ensure_weights(tmp_path, {"diffusion_models": [("r", "I2V/h.safetensors")]}, download=download,
+                         remote_size=lambda repo, name, token: 10)
+    assert calls == [False, True] and not (records / "h.safetensors.metadata").exists()
+    assert (tmp_path / "diffusion_models" / "I2V" / "h.safetensors").stat().st_size == 10
+    assert not (tmp_path / ".mw-download.lock").exists()
