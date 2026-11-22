@@ -576,7 +576,9 @@ llm:
     creator: claude-opus-5-5
     judge: claude-opus-5-5
     showrunner: claude-opus-5-5   # batches of post ideas, captions and scripts (brain/agents/showrunner.py)
-    evaluator: claude-sonnet-5-5     # creative scoring at volume (manyworlds.brain.evaluation)
+    # Haiku since 2026-11-22 (owner): 16 shadowed calls 0.59 points from Sonnet on average, all valid, at 5% of the
+    # cost. Sonnet stays as a 10% shadow (llm.shadow.evaluator) to catch drift.
+    evaluator: claude-haiku-5-5      # creative scoring at volume (manyworlds.brain.evaluation)
     evaluator_check: claude-opus-5-5 # scores a sample of the same items, to measure agreement
     review: claude-haiku-5-5     # first-pass image screen (manyworlds.review); every image
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
@@ -614,7 +616,7 @@ llm:
     showrunner: {candidates: [kimi-k3.1-pro, glm-5.3, qwen4-max, claude-sonnet-5-5], share: 0.5}
     brain:      {candidates: [kimi-k3.1-pro, glm-5.3, qwen4-max], share: 0.5}   # strategist, analyst
     creator:    {candidates: [kimi-k3.1-pro], share: 1.0}                   # creator bibles and profiles (rare)
-    evaluator:  {candidates: [claude-haiku-5-5, nemotron-3.5-vl, qwen3.8-flash, qwen4-max, kimi-k3.1-pro], share: 0.3}
+    evaluator:  {candidates: [claude-sonnet-5-5, qwen3.8-flash], share: 0.1}   # drift check on the Haiku evaluator
     review:     {candidates: [nemotron-3.5-vl, qwen3.8-flash], share: 0.2}
     judge:      {candidates: [kimi-k3.1-pro], share: 1.0}
   shadow_usd_per_day: 1.0
