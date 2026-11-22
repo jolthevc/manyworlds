@@ -180,6 +180,13 @@ def check_talkcomfy() -> list[str]:
         problems = comfy.missing_inputs(clip, info)
         if problems:
             raise RuntimeError("Wan 2.2 story-clip graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
+        fast = {"width": 480, "height": 832, "steps": 6, "compile": True, "quantization": "fp8_e4m3fn_scaled_fast"}
+        problems = comfy.missing_inputs(comfy.graph(image="x.png", audio="x.wav", prompt="a person talks", frames=125,
+                                                    seed=1, params=fast, blocks_to_swap=20), info)
+        problems += comfy.missing_inputs(comfy.graph_i2v(image="x.png", prompt="she smiles", seed=1, params=fast,
+                                                         blocks_to_swap=20), info)
+        if problems:
+            raise RuntimeError("the compiled / fp8-fast graphs don't match ComfyUI's nodes: " + "; ".join(problems))
     finally:
         comfy.stop()
     handlers_for(["comfy.wan_i2v"])

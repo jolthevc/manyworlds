@@ -130,3 +130,13 @@ def test_a_full_volume_is_pruned_of_weights_the_worker_no_longer_uses(tmp_path):
                          remote_size=lambda repo, name, token: None)
     assert sorted(p.name for p in root.iterdir()) == ["comfy"]
     assert sorted(p.name for p in (root / "comfy" / "vae").iterdir()) == ["keep.safetensors", "new.safetensors"]
+
+
+def test_torch_compile_is_wired_into_every_model_loader_only_when_asked():
+    from manyworlds.worker import comfy
+    plain = comfy.graph_i2v(image="a.png", prompt="p", seed=1, params={}, blocks_to_swap=0)
+    assert "compile" not in plain
+    g = comfy.graph_i2v(image="a.png", prompt="p", seed=1, params={"compile": True}, blocks_to_swap=0)
+    assert g["high_model"]["inputs"]["compile_args"] == ["compile", 0] == g["low_model"]["inputs"]["compile_args"]
+    t = comfy.graph(image="a.png", audio="a.wav", prompt="p", frames=81, seed=1, params={"compile": True}, blocks_to_swap=0)
+    assert t["compile"]["class_type"] == "WanVideoTorchCompileSettings" and t["model"]["inputs"]["compile_args"]

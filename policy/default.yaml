@@ -299,6 +299,9 @@ generation:
     # a hair clip doubling and the face softening late in the clip; lip sync 0.61-0.70, speech WER 0).
     steps8: {steps: 8}
     steps10: {steps: 10}
+    # Speed levers (2026-11-22), each benchmarked against the gate before adoption: fp8 fast matmul, torch.compile.
+    fp8fast: {quantization: fp8_e4m3fn_scaled_fast}
+    compiled: {quantization: fp8_e4m3fn_scaled_fast, compile: true}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
   # 16 fps (5 s), 9:16 at 480p. Cards under swap_below_gb swap blocks_to_swap blocks to the CPU.

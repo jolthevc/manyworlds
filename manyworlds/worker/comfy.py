@@ -44,7 +44,26 @@ NEGATIVE = ("bright tones, overexposed, static, blurred details, subtitles, styl
             "picture, messy background, three legs, many people in the background, walking backwards")
 
 
+def with_compile(g: dict, p: dict, loaders: list[str]) -> dict:
+    """torch.compile on the transformer blocks when `p["compile"]` (WanVideoTorchCompileSettings into each model
+    loader): slower first run on a machine, faster after; adopted only where the benchmark says so."""
+    if not p.get("compile"):
+        return g
+    g["compile"] = {"class_type": "WanVideoTorchCompileSettings",
+                    "inputs": {"backend": "inductor", "fullgraph": False, "mode": p.get("compile_mode", "default"),
+                               "dynamic": False, "dynamo_cache_size_limit": 64, "compile_transformer_blocks_only": True}}
+    for name in loaders:
+        g[name]["inputs"]["compile_args"] = ["compile", 0]
+    return g
+
+
 def graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict, blocks_to_swap: int) -> dict:
+    """The InfiniteTalk graph (see _talk_graph), with torch.compile when the params ask for it."""
+    return with_compile(_talk_graph(image=image, audio=audio, prompt=prompt, frames=frames, seed=seed, params=params,
+                                    blocks_to_swap=blocks_to_swap), params, ["model"])
+
+
+def _talk_graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict, blocks_to_swap: int) -> dict:
     """The InfiniteTalk graph in ComfyUI's API format. `image` and `audio` are file names in ComfyUI's input folder;
     `frames` is the clip length at 25 fps (the audio's)."""
     p = params
@@ -299,7 +318,12 @@ HIGH, LOW = (f for _, f in I2V_WEIGHTS["diffusion_models"])
 
 
 def graph_i2v(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swap: int) -> dict:
-    """A story clip from one approved photo, in ComfyUI's API format."""
+    """A story clip from one approved photo, in ComfyUI's API format (torch.compile when the params ask)."""
+    return with_compile(_i2v_graph(image=image, prompt=prompt, seed=seed, params=params, blocks_to_swap=blocks_to_swap),
+                        params, ["high_model", "low_model"])
+
+
+def _i2v_graph(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swap: int) -> dict:
     p = params
     steps, split = int(p.get("steps", 6)), int(p.get("high_steps", 3))
 
