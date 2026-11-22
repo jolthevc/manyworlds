@@ -38,6 +38,7 @@ gpu_runs:
   max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60}   # talk: first boot downloads ~90 GB of weights
   max_attempt_minutes_by_kind: {image.mirror: 120, video.mirror: 120}  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
+  serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
 
 # Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).
 # The router prefers the cheapest pool that can run the job kind.
@@ -61,6 +62,11 @@ gpu_pools:
   # The same card with the weights volume (mw-weights-us-nc-1, 150 GB standard, ~$10.50/month, created 2026-11-22):
   # talk weights are downloaded once onto it, then every machine loads them. Only in US-NC-1 (volume's data centre;
   # L40S capacity there was LOW on 2026-11-22), so the pool without the volume stays behind it as a fallback.
+  # RunPod Serverless (manyworlds.deploy.serverless): per-second, scales to zero; inactive until endpoint_id is set
+  # (creating the endpoint is an owner decision). A pool serves a kind when it comes first in that kind's pools.
+  # usd_per_second must be checked on RunPod's serverless pricing before an endpoint is created.
+  runpod_serverless_l40s: {provider: runpod_serverless, gpu: l40s, endpoint_id: null, usd_per_second: 0.0,
+                           max_concurrency: 3, max_request_minutes: 60}
   # Secure H100 SXM (80 GB): the full-precision talk model on the card with no offloading, which ran out of memory
   # on a 48 GB L40S (2026-11-22). Ceiling $3/h: a pod RunPod prices above it is destroyed at once.
   runpod_secure_h100: {provider: runpod, gpu: h100, usd_per_hour: 3.00, interruptible: false, cloud: SECURE}
@@ -122,10 +128,10 @@ worker_images:
   # talk: ComfyUI + WanVideoWrapper (docker/worker-talkcomfy.Dockerfile): fp8-scaled Wan2.1-I2V-14B 480p + InfiniteTalk
   # adapter (~16 GB), UMT5 text encoder (~11 GB), VAE, lightx2v LoRA; weights cached on the pool's volume if it has one.
   # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
-  talk: {image: mw-worker-talkcomfy, tag: v1, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
+  talk: {image: mw-worker-talkcomfy, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
-  comfy: {image: mw-worker-talkcomfy, tag: v2, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  comfy: {image: mw-worker-talkcomfy, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}

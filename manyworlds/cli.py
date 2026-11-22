@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("migrate", help="apply schema migrations and register the policy")
 
+    sub.add_parser("serverless-worker", help="run inside a RunPod Serverless endpoint: one queued job per request")
     w = sub.add_parser("worker", help="run a GPU worker (kinds from MW_WORKER_KINDS or --kinds)")
     w.add_argument("--kinds")
     w.add_argument("--pool")
@@ -132,6 +133,11 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     pol = policy_mod.load()
+
+    if args.cmd == "serverless-worker":
+        from .worker import serverless_entry
+        serverless_entry.main()
+        return 0
 
     if args.cmd == "worker":
         from .worker import runner

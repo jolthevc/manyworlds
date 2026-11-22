@@ -224,6 +224,9 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
     daily_cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
     actions: list[dict] = []
     unfunded: set[str] = set()   # providers whose account is out of credit this tick
+    from . import serverless
+    if serverless.pools(policy):   # settle finished serverless requests whatever the caps say
+        actions += serverless.poll(conn, policy, now=now)
     from .. import operations
     allowed = operations.test_batch_patterns(policy)   # None when live; else tests and benchmarks only
     from .. import ledger
@@ -242,11 +245,15 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         actions.append({"action": "not_launching", "reason": "worker_credentials", "missing": gaps,
                         "waiting": {w["kind"]: w["n"] for w in work}})
         return actions
+    if serverless.pools(policy):   # serverless-served kinds get requests, not pods
+        actions += serverless.dispatch(conn, policy, work, now=now)
     for w in work:
         kind = w["kind"]
         if _family(kind) == "fake":
             continue
         pinned = bool(w["pools"])
+        if serverless.serves(policy, kind, w["pools"]):
+            continue   # a live serverless pool serves it (manyworlds.deploy.serverless)
         pools = list(w["pools"] or policy.get("job_kinds", kind, "pools", default=[]))
         if all(policy.get("gpu_pools", p, "provider") == "local" for p in pools):
             continue  # runs on the control host (e.g. reviews), not on rented GPUs

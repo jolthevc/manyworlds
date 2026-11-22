@@ -24,7 +24,8 @@ RUN python -c "import torch; print(f'torch=={torch.__version__.split(\"+\")[0]}'
  && pip install --no-cache-dir -c /tmp/constraints.txt -r /opt/ComfyUI/requirements.txt \
  && pip install --no-cache-dir -c /tmp/constraints.txt -r /opt/ComfyUI/custom_nodes/ComfyUI-WanVideoWrapper/requirements.txt \
  && pip install --no-cache-dir -c /tmp/constraints.txt "sageattention==${SAGEATTENTION}" \
-      "misaki[en]" soundfile "kokoro>=0.9" pyloudnorm "brotli>=1.2" "huggingface_hub[cli]" imageio imageio-ffmpeg
+      "misaki[en]" soundfile "kokoro>=0.9" pyloudnorm "brotli>=1.2" "huggingface_hub[cli]" imageio imageio-ffmpeg \
+      "runpod>=1.7,<2"
 # Lip-sync score (manyworlds/worker/lipsync.py) in its own environment, as in the research-script talk image.
 ARG MEDIAPIPE=0.10.21
 ARG LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
