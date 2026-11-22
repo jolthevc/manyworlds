@@ -149,7 +149,47 @@ assert len(out.hidden_states) == 2, len(out.hidden_states)
     return done
 
 
-CHECKS = {"image": check_image, "train": check_train, "talk": check_talk}
+def check_talkcomfy() -> list[str]:
+    """The ComfyUI talk worker: its imports, the handler, ComfyUI starting (on the CPU here) with WanVideoWrapper
+    loaded, and the InfiniteTalk graph valid against ComfyUI's own node catalogue, so a wiring mistake fails the
+    build instead of a rented machine."""
+    import numpy as np
+    import soundfile as sf
+
+    _imports(["torch", "kokoro", "misaki", "soundfile", "sageattention", "huggingface_hub", "imageio", "PIL"])
+    from .runner import handlers_for
+    from . import comfy
+    os.environ["MW_TALK_ENGINE"] = "comfy"
+    handlers_for(["talk.infinitetalk"])
+    done = ["imports", "handlers: talk.infinitetalk (comfy)"]
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg missing")
+    comfy.write_model_paths(Path(tempfile.mkdtemp()))
+    comfy.start(args=("--cpu",), wait_s=300)
+    try:
+        info = comfy._get("/object_info", timeout=60)
+        g = comfy.graph(image="x.png", audio="x.wav", prompt="a person talks", frames=125, seed=1,
+                        params={"width": 480, "height": 832, "steps": 6}, blocks_to_swap=20)
+        problems = comfy.missing_inputs(g, info)
+        if problems:
+            raise RuntimeError("InfiniteTalk graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
+    finally:
+        comfy.stop()
+    done.append("ComfyUI + WanVideoWrapper nodes match the graph")
+
+    from . import lipsync
+    import imageio.v3 as iio
+    d = Path(tempfile.mkdtemp())
+    sf.write(str(d / "a.wav"), np.zeros(24000, dtype=np.float32), 24000)
+    iio.imwrite(str(d / "blank.mp4"), np.zeros((25, 64, 64, 3), dtype=np.uint8), fps=25)
+    s = lipsync.score_in_venv(d / "blank.mp4", d / "a.wav")
+    if "error" in s or s.get("face_share") != 0.0:
+        raise RuntimeError(f"lip-sync score failed: {s}")
+    done.append("lip-sync score")
+    return done
+
+
+CHECKS = {"image": check_image, "train": check_train, "talk": check_talk, "talkcomfy": check_talkcomfy}
 
 
 def main(argv=None) -> int:

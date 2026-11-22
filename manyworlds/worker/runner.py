@@ -389,8 +389,11 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import video_wan as mod
         elif family == "train":
             from .handlers import train_lora as mod
-        elif family == "talk":
-            from .handlers import talk_infinitetalk as mod
+        elif family == "talk":           # the image chooses the engine: ComfyUI + WanVideoWrapper, or the research script
+            if os.environ.get("MW_TALK_ENGINE") == "comfy":
+                from .handlers import talk_comfy as mod
+            else:
+                from .handlers import talk_infinitetalk as mod
         elif family == "hosted":         # hosted APIs, on the control plane: no GPU machine
             from .handlers import hosted_video as mod
         else:
