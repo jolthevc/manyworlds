@@ -293,6 +293,33 @@ def test_a_talking_clip_whose_voice_doesnt_say_the_script_fails_before_paid_revi
     assert float(usd) > 0                                                   # every transcription is in the ledger
 
 
+def test_cached_word_timestamps_are_reused_instead_of_a_second_transcription(conn, policy, store, tmp_path,
+                                                                            monkeypatch):
+    from manyworlds import speech
+
+    def never(*a, **kw):
+        raise AssertionError("transcribed again although meta.words was cached")
+
+    monkeypatch.setattr(speech, "transcribe", never)
+    monkeypatch.setattr(speech, "_request", never)
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    script = "No comment on the trade. We played hard, the fans were great."
+    good, bad = (_talk_with_voice(conn, store, tmp_path, cid, script) for _ in range(2))
+    for job, said in ((good, "No comment on the trade. We played hard; the fans were great!"),
+                      (bad, "no common on the train we pay hard")):
+        words = [{"word": w, "start": i * 0.4, "end": i * 0.4 + 0.3} for i, w in enumerate(said.split())]
+        conn.execute("UPDATE assets SET meta = %s WHERE job_id = %s AND kind = 'audio'",
+                     (Jsonb({"seconds": 6.0, "words": words}), job))
+    llm = ClipStub(clip(), clip())
+    [r] = video.review_job(conn, policy, llm, store, bad, tmp_path)
+    assert not r["accepted"] and r["intelligibility"] is False and llm.calls == []
+    [r] = video.review_job(conn, policy, llm, store, good, tmp_path)
+    assert r["accepted"] and r["intelligibility"] is True
+    paid = conn.execute("SELECT count(*) n FROM cost_entries WHERE category = 'hosted_api'").fetchone()["n"]
+    assert paid == 0                                                         # nothing paid twice
+
+
 def test_word_error_rate_ignores_case_and_punctuation():
     from manyworlds import speech
     assert speech.wer("it\u2019s fine honestly", "it's fine honestly") == 0.0

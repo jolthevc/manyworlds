@@ -128,16 +128,27 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
     return batch
 
 
+VIDEO_KIND_PREFIXES = ("video.", "comfy.", "talk.")
+VIDEO_KINDS = ("hosted.video", "hosted.avatar")
+
+
+def is_video_kind(kind: str) -> bool:
+    return kind.startswith(VIDEO_KIND_PREFIXES) or kind in VIDEO_KINDS
+
+
 def report(conn, policy: Policy, batch: str) -> dict[str, Any]:
     rows = conn.execute(
         """
         SELECT j.kind, a.pool, a.gpu_type, a.gpu_seconds,
-               (SELECT count(*) FROM assets s WHERE s.job_id = j.id AND s.kind <> 'crop') AS outputs
+               (SELECT count(*) FROM assets s WHERE s.job_id = j.id AND s.kind <> 'crop') AS outputs,
+               (SELECT count(*) FROM assets s WHERE s.job_id = j.id AND s.kind = 'video') AS videos
         FROM attempts a JOIN jobs j ON j.id = a.job_id
         WHERE j.batch = %s AND a.outcome = 'done'
         """,
         (batch,),
     ).fetchall()
+    # A video job's outputs are its videos: keyframes and crops are only for review.
+    rows = [{**r, "outputs": r["videos"]} if is_video_kind(r["kind"]) else r for r in rows]
     out: dict[str, Any] = {"batch": batch, "jobs": queue.counts(conn, batch=batch),
                            "spend": ledger.totals(conn, batch=batch), "measured": []}
     groups: dict[tuple, list] = {}

@@ -248,6 +248,10 @@ def _intelligibility(conn, policy: Policy, store: ObjectStore, job_id, payload: 
     if not audio:
         return None
     from .. import speech
+    cached = (audio["meta"] or {}).get("words")   # word timestamps production.voice_words already paid for
+    if cached:
+        text = " ".join(str(w.get("word", "")).strip() for w in cached if isinstance(w, dict))
+        return {**speech.score(policy, payload["script"], text), "cached_words": True}
     path = store.get_file(audio["uri"], workdir / f"voice{Path(audio['uri']).suffix or '.wav'}")
     return speech.check(conn, policy, path, payload["script"], float((audio["meta"] or {}).get("seconds") or 0),
                         job_id=job_id, creator_id=creator_id)

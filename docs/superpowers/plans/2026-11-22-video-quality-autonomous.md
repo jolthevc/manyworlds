@@ -93,7 +93,7 @@ scene, LongCat, direction gate). This plan turns the direction into what is actu
   Maren bible.
 - (wave 4, word timing) `burned_captions.word_timestamps` ships off. Compare transcript timings with the estimates on
   real takes (caption drift at chunk edges) before turning it on. The transcript is also a free second
-  intelligibility read: the speech gate could reuse the cached `meta.words` instead of paying for its own call.
+  intelligibility read: FIXED, the speech gate reuses the cached `meta.words` instead of paying for its own call.
   Lip closure (`review.detail.lip_closure`) still uses estimated word times and its wider tolerance; feed it the
   cached words when they exist. A Kokoro narrated edit (cues in the video's meta, no audio asset) gets no word
   timestamps.
@@ -102,7 +102,7 @@ scene, LongCat, direction gate). This plan turns the direction into what is actu
   already names tag v11, so nothing can claim a dance job before that image exists. Crops are made for story clips
   on the ComfyUI image (comfy.wan_i2v) and talk clips only, not for video.wan_i2v on the image worker, which has no
   MediaPipe. Calibrate hands and teeth with crops against clips judged by eye before enforcing either. Bench
-  `report` counts keyframes as outputs (crops are now excluded); sec_per_output for clips should count videos only.
+  `report`: FIXED, video kinds (video.*, comfy.*, talk.*, hosted.video, hosted.avatar) count only videos as outputs.
 - (wave 4, dance) The handler reads `dance.enabled` from the policy baked into the worker image, so a benchmark needs
   the owner to switch it on and rebuild the image (as sound_gen does). The handler also needs a reference in
   `dance.references`, which ships empty. Loops of more than one 81-frame window are not built. The Animate-2 graph

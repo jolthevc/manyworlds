@@ -117,5 +117,11 @@ def check(conn, policy, path: Path, script: str, seconds: float, *, job_id=None,
     cfg = policy.get("review", "video", "intelligibility", default={}) or {}
     text = transcribe(path, cfg, post=post)
     record_cost(conn, policy, cfg, seconds, job_id=job_id, creator_id=creator_id)
+    return score(policy, script, text)
+
+
+def score(policy, script: str, text: str) -> dict:
+    """A transcript scored against its script: {wer, transcript, passed} (review.video.intelligibility.max_wer)."""
+    cfg = policy.get("review", "video", "intelligibility", default={}) or {}
     w = wer(script, text)
     return {"wer": w, "transcript": text[:2000], "passed": w <= float(cfg.get("max_wer", 0.15))}
