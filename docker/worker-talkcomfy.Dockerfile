@@ -11,8 +11,10 @@ ARG WANVIDEO_REF=a7439db30bed0c5b5fa437d77ae8a7bb220dfd00
 ARG SAGEATTENTION=1.0.6
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HF_HOME=/models/hf \
     MW_COMFY_DIR=/opt/ComfyUI MW_TALK_ENGINE=comfy MW_WORKER_KINDS=talk.infinitetalk
-# git for the clones; ffmpeg muxes and reads video; espeak-ng for misaki/Kokoro fallbacks; libgl/glib for OpenCV.
-RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg espeak-ng libgl1 libglib2.0-0 \
+# git for the clones; ffmpeg muxes and reads video; espeak-ng for misaki/Kokoro fallbacks; libgl/glib for OpenCV;
+# gcc because Triton (SageAttention) compiles its GPU driver stub and kernels at run time: without it the first
+# sampling step failed with "Failed to find C compiler" (2026-11-22).
+RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg espeak-ng libgl1 libglib2.0-0 gcc libc6-dev \
  && rm -rf /var/lib/apt/lists/*
 # Keep the base image's torch: a constraint stops ComfyUI's or the wrapper's requirements from replacing it.
 RUN python -c "import torch; print(f'torch=={torch.__version__.split(\"+\")[0]}')" > /tmp/constraints.txt \

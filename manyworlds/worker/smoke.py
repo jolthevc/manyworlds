@@ -164,6 +164,8 @@ def check_talkcomfy() -> list[str]:
     done = ["imports", "handlers: talk.infinitetalk (comfy)"]
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg missing")
+    if not shutil.which("gcc"):   # Triton (SageAttention) compiles at run time; 2026-11-22 it failed without one
+        raise RuntimeError("no C compiler: Triton can't build SageAttention's kernels")
     comfy.write_model_paths(Path(tempfile.mkdtemp()))
     comfy.start(args=("--cpu",), wait_s=300)
     try:
