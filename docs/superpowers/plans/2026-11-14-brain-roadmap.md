@@ -244,3 +244,25 @@ non-commercial, for example); then a mix stage on the control plane (voice ducki
 5. Blender / procedural 3D and "oddly satisfying" loops: CPU-rendered, very cheap, a channel type of its own.
 6. Videos that answer comments (we read comments now).
 7. YouTube Shorts as a third platform from the same assets.
+
+## Owner direction, 2026-11-22 (direction and modular control)
+"Where possible we want granular control into all aspects of how we create these media pieces... Modular."
+Today a scene is one sentence and the talk prompt is generic: movement, camera and voice delivery are improvised
+by the models. Build a **shot sheet** per scene, written by the showrunner, stored on the post, and checked by
+the gates. Every field is optional with a default from the creator or format, and each module can be swapped
+or re-rendered alone:
+- **Set**: location, time of day, weather, lighting, set dressing and props, background action, depth of field.
+  Recurring places get a set bible plus reference images (like character anchors), so Maren's kitchen is the
+  same kitchen every time.
+- **Framing and camera**: shot size, angle, lens look, camera move (static, handheld, push-in, pan, follow), and
+  device feel (phone propped up vs held).
+- **Blocking**: timed actions (looks away at 2 s, turns to camera, lifts mug), entrances and exits, walking,
+  dancing. Motion transfer from a reference that is ours or licensed (Wan-Animate-2, licence to confirm).
+- **Performance**: emotion arc and energy; voice delivery per line (tone, pace, pauses, emphasis) through a
+  designed voice that takes instructions (Qwen3-TTS / VoxCPM2).
+- **Sound**: room tone, effects, music bed (licence check first).
+- **Edit**: one take per scene, cuts only at scene changes (owner rule), transitions, captions.
+Pipeline mapping: set and framing go to the scene image; blocking and camera go to the motion model or
+image-to-video; performance goes to the voice and lip sync; sound and edit go to the joiner. The gate adds
+"was the direction followed". A library of social moves (phone-down reveal, walk to camera, outfit transition,
+point at caption), fed by the trend watcher, offers ready-made shot sheets.
