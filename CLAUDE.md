@@ -27,7 +27,8 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/deploy/enforce.py` — deadline / spend cap / idle / never-started / stuck / daily-budget checks (autoscaler and GitHub backstop)
 - `manyworlds/deploy/scoring.py` — ranks pools by measured cost per accepted output; `report.py` — billed vs finished work per machine; `reconcile.py` — providers' itemised charges (Vast bandwidth/disk) into the ledger
 - `manyworlds/brain/portfolio.py`, `agents/strategist.py` — daily portfolio cycle; `launches.py`, `agents/creator_lab.py` — creator launches; `events.py` — breakout/drop/QA-surge events
-- `manyworlds/publish/instagram.py`, `metrics.py` — Instagram Graph API publishing (AI label always) and real insights
+- `manyworlds/publish/instagram.py`, `metrics.py` — Instagram Graph API publishing (AI label always) and real insights; Unified Login (one system-user token, `META_SYSTEM_USER_TOKEN`), setup sheet, verified `mw account connect --username`, posting ramp for new accounts (`docs/instagram-setup.md`)
+- `manyworlds/publish/comments.py` — comments on our posts answered in the creator's voice (`autonomy.comment_replies`: draft by default; `mw comments <handle>`)
 - `fly.toml` — the control plane on Fly.io (app `manyworlds-mw`: autoscaler, brain, producer, reviewer); `.github/workflows/deploy.yml` deploys it after tests pass on `main`
 - `.github/workflows/build-worker.yml` — build a worker image on Depot, smoke-test, push (tag `worker-<family>-vN`); `scripts/build-worker.sh` is the local-Docker equivalent
 - `manyworlds/migrations/` — forward-only SQL; add a new numbered file, never edit an applied one
