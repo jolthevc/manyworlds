@@ -388,11 +388,13 @@ notify:
   max_per_run: 5
   max_age_hours: 24
   body_chars: 400
+  body_chars_by_type: {daily_summary: 1500}
+  daily_summary_hour: 13         # UTC: yesterday's summary (manyworlds.summary) after this hour
   quiet: []
   machine_stop_reasons: [max_usd, daily_gpu_budget, stuck, never_started, attempt_timeout, unregistered]
   priority: {publish_held: high, launch_failed: high, provider_unfunded: high, not_launching: high,
              machine_stop_failed: urgent, machine_stopped: default, autoscaler_failed: high,
-             brain_step_failed: default, account_needed: default, approval_launch: high}
+             brain_step_failed: default, account_needed: default, approval_launch: high, daily_summary: low}
 
 # Master operating budget (spec 6): the Brain allocates inside it; raising it needs the owner.
 budget: {master_usd_per_month: 750, reserve_share: 0.15}

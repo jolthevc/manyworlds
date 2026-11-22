@@ -419,6 +419,16 @@ def housekeeping(conn, policy: Policy | None = None) -> list[dict]:
         return [{"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
 
 
+def daily_summary(conn, policy: Policy, now: datetime | None = None) -> list[dict]:
+    """Once a day: the owner's summary of yesterday (manyworlds.summary), sent by notify_owner right after."""
+    from .. import summary
+    try:
+        s = summary.send_if_due(conn, policy, now)
+        return [{"action": "daily_summary", "day": s["day"]}] if s else []
+    except Exception as e:  # noqa: BLE001 - the summary must never stop the loop that stops machines
+        return [{"action": "daily_summary_failed", "error": str(e)[:200]}]
+
+
 def storage_retention(conn, policy: Policy, store=None, now: datetime | None = None) -> list[dict]:
     """Once a day: delete the files of rejected media past the retention window (manyworlds.retention)."""
     from .. import retention, storage
@@ -485,6 +495,7 @@ def main(argv=None) -> int:
             actions += housekeeping(conn, pol)
             actions += model_selection(conn, pol)
             actions += storage_retention(conn, pol)
+            actions += daily_summary(conn, pol)
             actions += notify_owner(conn, pol, actions)
         # Names, states, prices and errors only: GitHub Actions logs are public.
         interesting = [x for x in actions if x.get("action") != "ok"] if not a.once else actions

@@ -78,7 +78,10 @@ def ntfy_sender(policy: Policy) -> Sender | None:
 
 
 def _line(subject: dict, payload: dict, limit: int) -> str:
+    """The message body: a ready-made `text` when the event has one (the daily summary), else its fields."""
     from .deploy.providers import redact
+    if isinstance((payload or {}).get("text"), str):
+        return redact(payload["text"])[:limit]
     parts = {**(subject or {}), **(payload or {})}
     return redact(json.dumps(parts, default=str, separators=(", ", ": ")))[:limit]
 
@@ -124,7 +127,8 @@ def deliver(conn, policy: Policy, *, send: Sender | None = None, now: datetime |
         sent = []
         for it in items:
             try:
-                send(f"Manyworlds: {it['type'].replace('_', ' ')}", _line(it["subject"], it["payload"], body_chars),
+                send(f"Manyworlds: {it['type'].replace('_', ' ')}",
+                     _line(it["subject"], it["payload"], int((cfg.get("body_chars_by_type") or {}).get(it["type"], body_chars))),
                      str(priorities.get(it["type"], "default")))
             except Exception as e:  # noqa: BLE001 - try the rest; unsent items go next round
                 log.warning("notification failed (%s): %s", it["type"], type(e).__name__)
