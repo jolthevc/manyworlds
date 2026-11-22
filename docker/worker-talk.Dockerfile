@@ -44,13 +44,19 @@ RUN Q=$(python -c "import optimum.quanto, os; print(os.path.dirname(optimum.quan
 # that would clash with the stack above. MediaPipe's code and face landmarker model are Apache-2.0.
 ARG MEDIAPIPE=0.10.21
 ARG LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
-ENV MW_LIPSYNC_PYTHON=/opt/lipsync/bin/python MW_FACE_LANDMARKER=/opt/models/face_landmarker.task
+# Hand landmarker (Apache-2.0) for the judge's hand close-ups (manyworlds/worker/crops.py), same environment.
+ARG HAND_LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+ENV MW_LIPSYNC_PYTHON=/opt/lipsync/bin/python MW_FACE_LANDMARKER=/opt/models/face_landmarker.task \
+    MW_HAND_LANDMARKER=/opt/models/hand_landmarker.task
 RUN python -m venv /opt/lipsync \
  && /opt/lipsync/bin/pip install --no-cache-dir "mediapipe==${MEDIAPIPE}" "imageio[ffmpeg]" soundfile \
  && mkdir -p /opt/models \
  && python -c "import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
       "${LANDMARKER_URL}" /opt/models/face_landmarker.task \
- && test -s /opt/models/face_landmarker.task
+ && test -s /opt/models/face_landmarker.task \
+ && python -c "import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+      "${HAND_LANDMARKER_URL}" /opt/models/hand_landmarker.task \
+ && test -s /opt/models/hand_landmarker.task
 WORKDIR /app
 COPY pyproject.toml ./
 COPY manyworlds ./manyworlds

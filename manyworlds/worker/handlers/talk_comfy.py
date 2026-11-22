@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .. import comfy, lipsync
+from .. import comfy, crops, lipsync
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 from .talk_infinitetalk import _speak, audio_seconds
 from .video_wan import extract_keyframes
@@ -187,6 +187,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
                                           "lip_sync": True, "sync": sync, "engine": "comfy", "model": model,
                                           "v2v": bool(video_uri)}),
                *extract_keyframes(clip, work, int(payload["keyframes"]))]
+    outputs += crops.crops_in_venv([o for o in outputs if o.kind == "keyframe"], work, payload.get("crops"))
     if spoken is not None:
         outputs.append(OutputFile(spoken, "audio", {"seconds": seconds}))
     if model == "longcat":

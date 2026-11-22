@@ -39,7 +39,7 @@ def candidates(conn, policy: Policy, *, now: datetime) -> list[dict]:
            SELECT a.id, a.uri, a.kind, a.bytes FROM assets a
            WHERE a.deleted_at IS NULL AND a.created_at < %(cutoff)s
              AND (a.id IN (SELECT id FROM rejected)
-                  OR (a.kind IN ('keyframe', 'audio')
+                  OR (a.kind IN ('keyframe', 'crop', 'audio')
                       AND a.job_id IN (SELECT job_id FROM rejected WHERE kind = 'video')))
            ORDER BY a.created_at LIMIT %(limit)s""",
         {"cutoff": cutoff, "limit": int(cfg.get("max_deletes_per_run", 5000))}).fetchall()]

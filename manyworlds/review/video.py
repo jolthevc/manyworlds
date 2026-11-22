@@ -107,7 +107,8 @@ def _media_type(uri: str) -> str:
 
 def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, refs: list[bytes],
            start: bytes | None, frames: list[tuple[bytes, str]], scene: str | None,
-           shot: dict | None = None, extra: tuple[list, list[str]] = ([], [])) -> ClipReview:
+           shot: dict | None = None, extra: tuple[list, list[str]] = ([], []),
+           crops: tuple[list, set[str]] = ([], set())) -> ClipReview:
     min_age = int(policy.get("scope", "creator_min_age", default=21))
     content: list = [{"type": "text", "text": f"The person: {appearance_prompt(creator['bible'])}. "
                                               f"Minimum age for this creator: {min_age}."}]
@@ -125,7 +126,8 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
                                                 + common.direction_brief(shot, policy, still=False)})
     ref_content, ref_labels = extra   # set / outfit references (review.detail consistency)
     content += ref_content
-    ask = detail.judge_prompt(policy, consistency=ref_labels, still=False)
+    content += crops[0]               # hand and mouth close-ups (review.detail.crops)
+    ask = detail.judge_prompt(policy, consistency=ref_labels, still=False, crops=crops[1])
     if ask:
         content.append({"type": "text", "text": ask})
     content.append({"type": "text", "text": "Review the clip as a whole from these keyframes."})
@@ -165,6 +167,9 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
 
     heard = _intelligibility(conn, policy, store, job_id, payload, job["creator_id"], workdir)
     extra = detail.reference_blocks(detail.references_for(payload, shot, policy), store, workdir, image_block)
+    crop_rows = conn.execute("SELECT uri, meta FROM assets WHERE job_id = %s AND kind = 'crop' ORDER BY uri",
+                             (job_id,)).fetchall() if detail.check(policy, "crops").get("enabled") else []
+    crops = detail.crop_blocks(crop_rows, store, workdir, image_block, policy)
     warp = detail.background_flicker([b for b, _ in frames], policy)   # free, so measured before any paid judge
 
     rows, out = [], []
@@ -199,7 +204,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             continue
         for role, effort, stage in stages:
             with common.charged_to(llm, job_id):   # review counts in this clip's cost
-                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene, shot, extra)
+                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene, shot, extra, crops)
             verdict = decide(r, cfg, scene, shot=shot, policy=policy)
             checks = detail.judged_verdicts(policy, r, consistency=bool(extra[1]))   # hands, teeth, consistency
             scores = {"identity": r.identity, "motion": r.motion, "realism": r.realism, "scene": r.scene}

@@ -209,3 +209,101 @@ def test_music_refuses_while_off_and_returns_the_engines_files_when_on(tmp_path,
 def test_the_sound_kinds_have_handlers(policy):
     found = runner.handlers_for(["sound.sfx", "sound.music"])
     assert found["sound.sfx"] is sound_gen.sfx and found["sound.music"] is sound_gen.music
+
+
+# --- production: the shot sheets' cues mixed before the finish (production.sound_cues, finish_video) ---------------
+KETTLE = {"tag": "kettle click", "uri": "s3://b/sfx/kettle.wav", "licence": "CC0-1.0", "source": "hand-picked",
+          "credit": ""}
+HUM = {"tag": "fridge hum", "uri": "s3://b/sfx/hum.wav", "licence": "own-recording", "source": "us"}
+SHOT_SOUND = {"mic": "phone", "room_tone": "quiet flat, fridge hum", "effects": ["kettle click", "door slam"],
+              "music": ""}
+
+
+def _finish_policy(policy, entries, *, enabled=True):
+    p = _with(policy, enabled=enabled, library={"entries": entries})
+    return policy_mod.from_dict({**p.body, "finishing": {**p.body["finishing"], "enabled": True},
+                                 "burned_captions": {**p.body["burned_captions"], "enabled": False}})
+
+
+def _made_video(conn, store, tmp_path):
+    from psycopg.types.json import Jsonb
+    from test_production import creator
+    cid = creator(conn)
+    src = tmp_path / "raw.mp4"
+    src.write_bytes(b"mp4")
+    uri = store.put_file(src, "v/raw.mp4").uri
+    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('image.narrated', 'done', %s, %s) "
+                       "RETURNING id", (cid, Jsonb({}))).fetchone()["id"]
+    video = conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                         "VALUES (%s, %s, 'video', %s, 'x', 1, %s) RETURNING id, uri",
+                         (job, cid, uri, Jsonb({"seconds": 3.0}))).fetchone()
+    pid = conn.execute("INSERT INTO posts (creator_id, format, status, body) VALUES (%s, 'narrated_edit', 'producing', "
+                       "'{}') RETURNING id", (cid,)).fetchone()["id"]
+    post = {"id": pid, "creator_id": cid, "format": "narrated_edit"}
+    body = {"scenes": ["the kitchen"], "shots": [{"sound": SHOT_SOUND}], "script": "Kettle's on."}
+    return post, body, video
+
+
+@pytest.fixture()
+def fake_finish(monkeypatch):
+    from manyworlds import finishing
+    calls = []
+
+    def fake(video, out, *, look, grain=None, hook_ass=None, policy, timeout=None):
+        calls.append(("finish", Path(video).name))
+        Path(out).write_bytes(b"finished")
+        return out
+
+    def fake_mix(video, out, **kw):
+        calls.append(("mix", kw))
+        Path(out).write_bytes(b"mixed")
+        return Path(out)
+    monkeypatch.setattr(finishing, "finish", fake)
+    monkeypatch.setattr(sound, "mix", fake_mix)
+    monkeypatch.setattr(media, "probe", lambda p, **k: {"seconds": 3.0, "width": 1080, "height": 1920, "audio": True})
+    return calls
+
+
+class _Sounds:
+    """The object store, plus stand-in files for library sounds."""
+    def __init__(self, store):
+        self.store = store
+
+    def __getattr__(self, name):
+        return getattr(self.store, name)
+
+    def get_file(self, uri, local):
+        if uri.startswith("s3://b/sfx/"):
+            local.parent.mkdir(parents=True, exist_ok=True)
+            local.write_bytes(b"RIFF")
+            return local
+        return self.store.get_file(uri, local)
+
+
+def test_cues_that_resolve_in_the_library_are_mixed_before_the_finish(conn, policy, store, tmp_path, fake_finish):
+    from manyworlds import production
+    p = _finish_policy(policy, [KETTLE, HUM])
+    post, body, video = _made_video(conn, store, tmp_path)
+    cues = production.sound_cues(conn, p, body, video)
+    assert cues["room_tone"].tag == "fridge hum"                               # matched by one part of the cue
+    assert [(r.tag, at) for r, at in cues["effects"]] == [("kettle click", p.get("sound", "mix", "effect_at_s"))]
+    assert cues["music"] is None and cues["mic"] == "phone"                    # "door slam" isn't in the library
+    final = production.finish_video(conn, p, post, body, video, _Sounds(store))
+    assert [name for name, _ in fake_finish] == ["mix", "finish"]
+    (_, mix), (_, finished) = fake_finish
+    assert mix["room_tone"].name.startswith("room") and len(mix["effects"]) == 1 and mix["music"] is None
+    assert mix["mic"] == "phone" and finished == "mixed.mp4"                  # the finish works on the mixed video
+    meta = final["meta"]
+    assert meta["passes"] == 2 and {s["tag"] for s in meta["sound"]} == {"fridge hum", "kettle click"}
+    assert all(s["licence"] for s in meta["sound"])
+
+
+def test_an_empty_library_or_sound_off_mixes_nothing(conn, policy, store, tmp_path, fake_finish):
+    from manyworlds import production
+    for p in (_finish_policy(policy, []), _finish_policy(policy, [KETTLE, HUM], enabled=False),
+              _finish_policy(policy, [{**KETTLE, "licence": "CC-BY-NC-4.0"}])):   # refused: never mixed
+        post, body, video = _made_video(conn, store, tmp_path)
+        assert production.sound_cues(conn, p, body, video) is None
+        final = production.finish_video(conn, p, post, body, video, store)
+        assert "sound" not in final["meta"] and final["meta"]["passes"] == 1
+    assert [name for name, _ in fake_finish] == ["finish"] * 3

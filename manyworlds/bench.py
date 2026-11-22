@@ -51,12 +51,33 @@ def edit_inputs(extra: dict[str, Any] | None) -> list[dict]:
     return [{"kind": role, "uri": uri} for role, uri in zip(EDIT_ROLES, images)]
 
 
+DANCE_KIND = "comfy.wan_animate2"
+DANCE_PROMPT = "she dances in her kitchen, full body in frame, natural movement, handheld phone footage"
+
+
+def dance_reference(policy: Policy, extra: dict[str, Any] | None) -> dict:
+    """The dance benchmark's driving clip from --extra '{"reference": "<dance.references id>"}', checked as the worker
+    will check it (manyworlds.dance.reference). Raises ValueError when dance is off or the clip is refused."""
+    from . import dance
+    if not dance.enabled(policy):
+        raise ValueError("dance is off (policy dance.enabled): the worker would refuse every job")
+    ref = (extra or {}).get("reference")
+    if not ref:
+        raise ValueError("this benchmark needs a driving clip: --extra '{\"image_uri\": ..., \"reference\": \"<dance.references id>\"}'")
+    try:
+        return dance.reference(str(ref), policy)
+    except dance.RefusedReference as e:
+        raise ValueError(str(e)) from None
+
+
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
             extra: dict[str, Any] | None = None, pools: list[str] | None = None,
             profile: str | None = None) -> str:
     if kind.startswith(("talk.", "hosted.", "comfy.")) and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("this benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
+    if kind == DANCE_KIND:
+        dance_reference(policy, extra)   # before anything is queued: dance off or a refused clip would fail every job
     edit = kind == sets.edit_kind(policy)
     if edit:
         inputs = edit_inputs(extra)   # before anything is queued: a bad list would fail every job on a large card
@@ -74,6 +95,9 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
                 "job_kinds", kind, "outputs_per_job", default=4), "width": img.get("width", 896),
                 "height": img.get("height", 1152), "seed": 1000 + i,
                 "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}
+        elif kind == DANCE_KIND:
+            payload = {"prompt": DANCE_PROMPT, "seed": 4000 + i, "keyframes": 4,
+                       "params": dict(policy.get("dance", "generation", default={}) or {})}
         elif kind == "comfy.wan_i2v":
             payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage", "seed": 2000 + i,
                        "keyframes": 4, "params": {**gen.get("comfy_video", {}), **_profile(gen, "comfy_video_profiles", profile)}}
@@ -108,7 +132,7 @@ def report(conn, policy: Policy, batch: str) -> dict[str, Any]:
     rows = conn.execute(
         """
         SELECT j.kind, a.pool, a.gpu_type, a.gpu_seconds,
-               (SELECT count(*) FROM assets s WHERE s.job_id = j.id) AS outputs
+               (SELECT count(*) FROM assets s WHERE s.job_id = j.id AND s.kind <> 'crop') AS outputs
         FROM attempts a JOIN jobs j ON j.id = a.job_id
         WHERE j.batch = %s AND a.outcome = 'done'
         """,

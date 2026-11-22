@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .. import lipsync, models
+from .. import crops, lipsync, models
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 from .video_wan import extract_keyframes
 
@@ -187,6 +187,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     outputs = [OutputFile(clip, "video", {"seconds": seconds, "size": params["size"],
                                           "lip_sync": True, "sync": sync}),
                *extract_keyframes(clip, work, int(payload["keyframes"]))]
+    outputs += crops.crops_in_venv([o for o in outputs if o.kind == "keyframe"], work, payload.get("crops"))
     if spoken is not None:
         outputs.append(OutputFile(spoken, "audio", {"seconds": seconds}))
     recipe = {"model": MODEL, "base": BASE, "prompt": prompt, "image_uri": payload["image_uri"],

@@ -12,8 +12,9 @@
 Each check has `enabled` (measure it and write its own review row) and `enforce` (only then can it reject). A row
 that isn't enforced is written passed, with `would_pass` in its details, because production accepts an output
 only when every row passed. An output without the signal (no hands in frame, no references, no mouth series)
-gets no row: it behaves exactly as before. The reviewer's image has no MediaPipe, so hands and teeth are scored
-by the judge on the full frames rather than on landmark crops.
+gets no row: it behaves exactly as before. The reviewer's image has no MediaPipe, so landmark crops of hands and
+the mouth come from the clip worker (`crops`, worker/crops.py) and are shown beside the keyframes when it made
+them; otherwise hands and teeth are scored on the full frames.
 """
 
 from __future__ import annotations
@@ -78,16 +79,22 @@ def unasked(review, shot: dict | None) -> set[str] | None:
     return out or None
 
 
-def judge_prompt(policy: Policy | None, *, consistency: list[str] | None = None, still: bool) -> str | None:
-    """The judge's instruction for the enabled judged checks, or None when there are none."""
+def judge_prompt(policy: Policy | None, *, consistency: list[str] | None = None, still: bool,
+                 crops: set[str] | None = None) -> str | None:
+    """The judge's instruction for the enabled judged checks, or None when there are none. `crops`: the close-up
+    parts shown (crop_blocks), which hands and teeth are then judged from as well."""
     what = "the photo" if still else "the keyframes (score the worst one)"
+    crops = crops or set()
     parts = []
     if enabled(policy, "hands"):
-        parts.append(f"`hands` 1-10 for any visible hands in {what}: 10 = natural fingers, joints and grip; deduct "
-                     "for extra, missing, fused or bent fingers and impossible grips; null when no hand is visible")
+        also = " and the HAND CLOSE-UPs (look closely at those)" if "hands" in crops else ""
+        parts.append(f"`hands` 1-10 for any visible hands in {what}{also}: 10 = natural fingers, joints and grip; "
+                     "deduct for extra, missing, fused or bent fingers and impossible grips; null when no hand is "
+                     "visible")
     if enabled(policy, "teeth"):
-        parts.append(f"`teeth` 1-10 for any visible teeth in {what}: 10 = a natural single row of plausible teeth; "
-                     "deduct for too many, merged, smeared or shifting teeth; null when no teeth show")
+        also = " and the MOUTH CLOSE-UPs (look closely at those)" if "mouth" in crops else ""
+        parts.append(f"`teeth` 1-10 for any visible teeth in {what}{also}: 10 = a natural single row of plausible "
+                     "teeth; deduct for too many, merged, smeared or shifting teeth; null when no teeth show")
     if consistency and enabled(policy, "consistency"):
         parts.append("`consistency` 1-10 against the SET / OUTFIT REFERENCE images (" + ", ".join(consistency)
                      + "): 10 = the same place (layout, furniture, colours, light fittings) and the same clothes "
@@ -128,6 +135,40 @@ def reference_blocks(refs: list[dict], store, workdir, image_block) -> tuple[lis
         content += [{"type": "text", "text": f"{label}:"}, image_block(data, _media(r["uri"]))]
         labels.append(label)
     return content, labels
+
+
+CROP_LABELS = {"hands": "HAND", "mouth": "MOUTH"}
+
+
+def crop_blocks(rows: list[dict], store, workdir, image_block, policy: Policy | None) -> tuple[list, set[str]]:
+    """Judge content for a clip's close-up crops (assets kind crop, meta {of, part}; worker/crops.py): a label
+    naming the part and its keyframe, then the image, at most crops.max_per_clip, only for parts whose check
+    (hands, or teeth for the mouth) is on. Returns (content, the parts shown). Nothing when crops are off or the
+    worker made none; a crop that can't be fetched is left out."""
+    from pathlib import Path
+    c = check(policy, "crops")
+    if not c.get("enabled") or not rows:
+        return [], set()
+    wanted = {"hands"} if enabled(policy, "hands") and c.get("hands", True) else set()
+    if enabled(policy, "teeth") and c.get("mouth", True):
+        wanted.add("mouth")
+    content, shown = [], set()
+    for i, r in enumerate(rows):
+        if len(content) // 2 >= int(c.get("max_per_clip", 8)):
+            break
+        meta = r.get("meta") or {}
+        part = meta.get("part")
+        if part not in wanted:
+            continue
+        try:
+            data = store.get_file(r["uri"], Path(workdir) / f"crop_{i}{Path(r['uri']).suffix or '.png'}").read_bytes()
+        except Exception:  # noqa: BLE001 - the full keyframes still show it
+            continue
+        of = meta.get("of")
+        where = f" from KEYFRAME {int(of) + 1}" if isinstance(of, (int, float)) else ""
+        content += [{"type": "text", "text": f"{CROP_LABELS[part]} CLOSE-UP{where}:"}, image_block(data, _media(r["uri"]))]
+        shown.add(part)
+    return content, shown
 
 
 def _media(uri: str) -> str:

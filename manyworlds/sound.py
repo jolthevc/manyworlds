@@ -1,7 +1,8 @@
 """Sound design for a video (the shot sheet's `sound` module: mic, room tone, effects, music), on the control plane.
 
 Plan 2026-11-22-video-quality-autonomous, wave 3 item 9; research docs/research/2026-11-22-video-quality-wave2-3.md
-section 2. Everything here is switched off (policy `sound.enabled: false`) and nothing calls it yet.
+section 2. Everything here is switched off (policy `sound.enabled: false`). production.finish_video mixes a post's
+shot-sheet cues that resolve in the library (production.sound_cues) before finishing; with no library, nothing runs.
 
   mix        one ffmpeg pass over a video's own audio (the voice):
                voice      resampled to stereo at `sound.sample_rate`, a mic-character EQ per shot-sheet mic

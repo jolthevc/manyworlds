@@ -23,8 +23,8 @@ fixed_costs:
 gpu_runs:
   default_max_hours: 2
   default_max_usd: 1.0
-  max_hours_by_family: {train: 3, talk: 2.5, comfy: 2.5, edit: 2}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
-  max_usd_by_family: {talk: 3.0, comfy: 3.0, edit: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders); edit: an L40S for 2 h, or an H100 for ~1 h
+  max_hours_by_family: {train: 3, talk: 2.5, comfy: 2.5, edit: 2, dance: 2}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
+  max_usd_by_family: {talk: 3.0, comfy: 3.0, edit: 3.0, dance: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders); edit: an L40S for 2 h, or an H100 for ~1 h
   max_hours_limit: 12          # the launcher refuses anything longer
   idle_stop_minutes: 20        # no open jobs for this long -> stop (SaladCloud: nodes pull images slowly)
   # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
@@ -108,6 +108,9 @@ job_kinds:
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   comfy.wan_i2v:   {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_comm_3090, vast_4090, vast_5090, runpod_secure_a40], outputs_per_job: 1}
+  # Dance (handlers/dance_animate.py, policy `dance`, OFF: the handler refuses): Wan-Animate-2 14B int8 on the same ComfyUI
+  # image, its own family so story-clip machines never load it. 48 GB+ cards until benchmarked; only `mw bench` queues it.
+  comfy.wan_animate2: {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1, family: dance}
   # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
   voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
   voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
@@ -147,6 +150,10 @@ worker_images:
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
   comfy: {image: mw-worker-talkcomfy, tag: v10, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
+  # dance: Wan-Animate-2 (comfy.wan_animate2, off) on the ComfyUI image; needs the image with handlers/dance_animate.py
+  # (talkcomfy v11 and later). int8 model (~18 GB), UMT5 fp8 (~7 GB), CLIP vision, VAE, distill LoRA.
+  dance: {image: mw-worker-talkcomfy, tag: v11, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
   # voxcpm in it (v9 and later).
@@ -287,6 +294,11 @@ review:
                   tolerance_frames: 2, estimated_tolerance_frames: 4, min_bilabials: 3}
     background: {enabled: true, enforce: false, max_flicker: 0.45, exclude_box: [0.2, 0.0, 0.8, 0.9], width: 160}
     consistency: {enabled: true, enforce: false, min_score: 6, max_references: 2}
+    # Close-up crops for the judge (worker/crops.py): clip workers with MediaPipe (the talk images' lip-sync
+    # environment) cut the mouth and each hand out of the keyframes (square, padded by `margin` x the landmark box,
+    # scaled to `size` px), stored as assets kind crop; the video judge sees them beside the keyframes for the
+    # hands and teeth scores. A worker without MediaPipe or the hand model makes none (full frames, as before).
+    crops: {enabled: true, hands: true, mouth: true, size: 384, margin: 0.5, max_per_clip: 8}
   max_repairs_per_post: 4     # day 5: regenerations allowed before a post is dropped
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
@@ -823,6 +835,10 @@ burned_captions:
   enabled: true
   formats: [talking_video, narrated_edit]
   default_style: clean
+  # Time captions from the voice line's transcript (review.video.intelligibility's hosted Whisper, verbose_json word
+  # timestamps; paid once per voice line and cached on its asset as meta.words) instead of estimating them from
+  # the line's spans. Off until compared with estimates on real takes; any failure falls back to estimates.
+  word_timestamps: false
   default_placement: lower
   placement_by_shot_size: {close: lower, wide: lower, full: lower}
   # Shares of the frame kept clear of platform UI: top bar, bottom account/caption/audio rows, right-side
@@ -1128,6 +1144,7 @@ sound:
   mix:
     room_tone_gain_db: -30     # a low bed under everything
     effect_gain_db: -12        # default per effect (a call can give its own)
+    effect_at_s: 0.5           # production: an effect plays this long into its shot (shot sheets carry no times)
     music_gain_db: -14         # the bed before ducking; with the duck, music sits ~6-12 dB under the voice (measure it)
     duck: {threshold: 0.05, ratio: 6, attack_ms: 80, release_ms: 400, makeup: 1}   # sidechaincompress keyed by voice
     limits: {attack_ms: [50, 100], release_ms: [300, 500], ratio: [2, 20], threshold: [0.001, 1.0]}
@@ -1192,7 +1209,8 @@ dance:
   comfyui_min: v0.45.0
   generation: {width: 480, height: 832, frames: 81, steps: 6, shift: 5.0, sampler: lcm, scheduler: simple, cfg: 1.0,
                lora_strength: 1.0, pose_strength: 1.0, pose_start_percent: 0.0, pose_end_percent: 1.0,
-               reference_image_strength: 1.0, pose_prompt: "", cache: {enabled: true, device: cpu, dtype: int8}}
+               reference_image_strength: 1.0, pose_prompt: "", cache: {enabled: true, device: cpu, dtype: int8},
+               timeout_s: 1800}
   allowed_owners: [ours, licensed]
   blocked_sources: [tiktok.com, instagram.com, youtube.com, youtu.be, facebook.com, x.com, twitter.com, snapchat.com,
                     triller.co, likee.video]

@@ -100,3 +100,60 @@ def test_the_cache_can_be_left_out_and_bad_sizes_are_refused(policy):
 
 def test_every_weight_is_from_the_comfy_org_repackage():
     assert {repo for files in comfy_animate.WEIGHTS.values() for repo, _ in files} == {"Comfy-Org/Wan-Animate-2"}
+
+
+# --- the worker handler (comfy.wan_animate2, off) and the benchmark path -----------------------------------------
+OURS = {"id": "ours-1", "uri": "s3://dance/ours-1.mp4", "owner": "ours", "licence": "own-recording",
+        "source": "shot by us 2026-11"}
+TREND = {"id": "trend", "uri": "s3://dance/trend.mp4", "owner": "licensed", "licence": "?",
+         "source": "https://www.tiktok.com/@someone/video/1"}
+
+
+def _on(policy, refs=(OURS, TREND)):
+    p = _refs(policy, list(refs))
+    return policy_mod.from_dict({**p.body, "dance": {**p.body["dance"], "enabled": True}})
+
+
+def test_the_dance_handler_refuses_while_dance_is_off_or_the_clip_is_not_ours(policy):
+    from manyworlds.worker.handlers import dance_animate
+    from manyworlds.worker.runner import NonRetryable
+    job = {"image_uri": "s3://b/photo.png", "reference": "ours-1"}
+    with pytest.raises(NonRetryable, match="dance is off"):
+        dance_animate.generate(job, None, policy=_refs(policy, [OURS]))     # refused before anything is fetched
+    on = _on(policy)
+    ref, params, frames = dance_animate.check(job, on)
+    assert ref["uri"] == OURS["uri"] and frames == on.get("dance", "generation", "frames")
+    assert params["timeout_s"] == on.get("dance", "generation", "timeout_s")
+    for bad, why in (({**job, "reference": "trend"}, "tiktok.com"), ({"image_uri": "x"}, "reference"),
+                     ({**job, "params": {"frames": 80}}, "4k\+1"), ({**job, "params": {"width": 470}}, "16")):
+        with pytest.raises(NonRetryable, match=why):
+            dance_animate.check(bad, on)
+
+
+def test_dance_runs_on_its_own_family_of_the_comfyui_image(policy):
+    from manyworlds.worker.handlers import dance_animate
+    from manyworlds.worker.runner import handlers_for
+    assert policy.family("comfy.wan_animate2") == "dance"
+    img = policy.get("worker_images", "dance")
+    assert img["image"] == policy.get("worker_images", "comfy", "image")       # mw-worker-talkcomfy
+    assert set(policy.get("job_kinds", "comfy.wan_animate2", "pools")) <= set(policy.get("gpu_pools"))
+    assert handlers_for(["comfy.wan_animate2"])["comfy.wan_animate2"] is dance_animate.generate
+    assert "comfy.wan_animate2" not in (policy.get("production", "formats") or [])
+
+
+def test_the_dance_benchmark_needs_dance_on_and_a_cleared_reference(conn, policy):
+    from manyworlds import bench
+    extra = {"image_uri": "s3://b/photo.png", "reference": "ours-1"}
+    with pytest.raises(ValueError, match="dance is off"):
+        bench.enqueue(conn, _refs(policy, [OURS]), "comfy.wan_animate2", 1, extra=extra)
+    on = _on(policy)
+    for bad, why in (({**extra, "reference": "trend"}, "tiktok.com"), ({"image_uri": "s3://b/p.png"}, "reference")):
+        with pytest.raises(ValueError, match=why):
+            bench.enqueue(conn, on, "comfy.wan_animate2", 1, extra=bad)
+    assert conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"] == 0
+    batch = bench.enqueue(conn, on, "comfy.wan_animate2", 2, extra=extra)
+    jobs = conn.execute("SELECT kind, payload FROM jobs WHERE batch = %s", (batch,)).fetchall()
+    assert len(jobs) == 2 and {j["kind"] for j in jobs} == {"comfy.wan_animate2"}
+    p = jobs[0]["payload"]
+    assert p["reference"] == "ours-1" and p["image_uri"] == "s3://b/photo.png" and p["keyframes"] == 4
+    assert p["params"]["frames"] == on.get("dance", "generation", "frames")

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .. import comfy
+from .. import comfy, crops
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 from .talk_comfy import _blocks_to_swap, _models_dir, _prepare_image
 from .video_wan import extract_keyframes
@@ -60,6 +60,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
 
     seconds = round(int(params.get("frames", 81)) / float(params.get("fps", 16)), 2)
     keyframes = extract_keyframes(clip, work, int(payload.get("keyframes", 4)))
+    keyframes += crops.crops_in_venv(keyframes, work, payload.get("crops"))
     recipe = {"model": [comfy.HIGH, comfy.LOW], "lora": comfy.LORA, "engine": "comfy+WanVideoWrapper",
               "prompt": payload["prompt"], "image_uri": payload["image_uri"], "seed": seed, "params": params}
     return HandlerResult([OutputFile(clip, "video", {"seconds": seconds, "width": params["width"],

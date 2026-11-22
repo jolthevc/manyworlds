@@ -83,3 +83,33 @@ scene, LongCat, direction gate). This plan turns the direction into what is actu
 - (wave 2, integration) Instagram publishing should use `body.cover` as `cover_url`. `finishing.py`'s docstring
   and CLAUDE.md need the finish stage.
 - (wave 2, integration) Trim the repeated first frame at each motion-chain join.
+- (21:20, director test) The real director call works: Sonnet, 9.5k in / 2.9k out, $0.048 per post, rich and
+  continuity-aware shot sheets. But the compiled prompts are very long: the bible's full appearance and the
+  outfit's long description. Wan's umt5 encoder reads about 512 tokens, so the set, style and negatives at the end
+  can be silently cut. Give the compiler a token budget per target (policy `direction.prompt_budget` by target,
+  counted with a rough tokenizer). Trim the lowest-priority detail first: set_dressing, wardrobe detail, then
+  appearance details the photo already fixes (for i2v and talk the start photo carries identity, so a short
+  appearance is enough). Keep camera, action and negatives. Test that every target stays within budget on the
+  Maren bible.
+- (wave 4, word timing) `burned_captions.word_timestamps` ships off. Compare transcript timings with the estimates on
+  real takes (caption drift at chunk edges) before turning it on. The transcript is also a free second
+  intelligibility read: the speech gate could reuse the cached `meta.words` instead of paying for its own call.
+  Lip closure (`review.detail.lip_closure`) still uses estimated word times and its wider tolerance; feed it the
+  cached words when they exist. A Kokoro narrated edit (cues in the video's meta, no audio asset) gets no word
+  timestamps.
+- (wave 4, crops) The worker changes (crops.py, the hand landmarker in docker/worker-talk*.Dockerfile, the smoke
+  check, dance_animate.py) need image talkcomfy v11. Until then the crop payload is ignored. `worker_images.dance`
+  already names tag v11, so nothing can claim a dance job before that image exists. Crops are made for story clips
+  on the ComfyUI image (comfy.wan_i2v) and talk clips only, not for video.wan_i2v on the image worker, which has no
+  MediaPipe. Calibrate hands and teeth with crops against clips judged by eye before enforcing either. Bench
+  `report` counts keyframes as outputs (crops are now excluded); sec_per_output for clips should count videos only.
+- (wave 4, dance) The handler reads `dance.enabled` from the policy baked into the worker image, so a benchmark needs
+  the owner to switch it on and rebuild the image (as sound_gen does). The handler also needs a reference in
+  `dance.references`, which ships empty. Loops of more than one 81-frame window are not built. The Animate-2 graph
+  is checked against ComfyUI v0.45.0's nodes only in the image smoke test: if those nodes are missing, the v11 build
+  fails there. No review gate applies `dance.identity_check` yet.
+- (wave 4, sound) The mix runs only when the finish stage runs for the format (finishing or burned captions on).
+  Effects play at a fixed `sound.mix.effect_at_s` into their shot because shot sheets have no times. A
+  `sound.effects[].at_s` in the director's schema would fix that. Cues match library tags only exactly (or by a
+  comma-separated part); a synonym list or embedding match would raise the hit rate. `body.sound` (tags, licences,
+  credits) is stored but not yet added to the Instagram caption, and CC-BY sounds need their credit there.

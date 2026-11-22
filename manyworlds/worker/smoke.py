@@ -156,7 +156,26 @@ assert len(out.hidden_states) == 2, len(out.hidden_states)
     if "error" in s or s.get("face_share") != 0.0 or not s.get("frames"):
         raise RuntimeError(f"lip-sync score failed: {s}")
     done.append("lip-sync score")
+    done.append(_check_crops(d))
     return done
+
+
+def _check_crops(d: Path) -> str:
+    """The judge's close-up crops (worker/crops.py) in the lip-sync environment: both landmark models are in the
+    image, and a blank keyframe runs through and yields no crops."""
+    import numpy as np
+    from PIL import Image
+
+    from . import crops
+    for model in (crops.FACE_LANDMARKER, crops.HAND_LANDMARKER):
+        if not Path(model).exists():
+            raise RuntimeError(f"landmark model missing: {model}")
+    Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8)).save(d / "blank_key.png")
+    found = crops.run_script(crops.write_spec([(0, str(d / "blank_key.png"))], d,
+                                              {"hands": True, "mouth": True, "size": 64, "margin": 0.5}))
+    if found != []:
+        raise RuntimeError(f"crops of a blank keyframe: {found}")
+    return "hand and mouth crops"
 
 
 def check_talkcomfy() -> list[str]:
@@ -216,10 +235,22 @@ def check_talkcomfy() -> list[str]:
             if problems:
                 raise RuntimeError(f"InfiniteTalk V2V graph (clip_vision={clip_vision}) doesn't match ComfyUI's "
                                    "nodes: " + "; ".join(problems))
+        # Dance (comfy.wan_animate2, off): Wan-Animate-2 in ComfyUI core, with and without its cache node.
+        from . import comfy_animate
+        from .. import policy as policy_mod
+        gen = policy_mod.load().get("dance", "generation", default={}) or {}
+        for cached in (True, False):
+            params = {**gen, "width": 480, "height": 832, "cache": {**(gen.get("cache") or {}), "enabled": cached}}
+            problems = comfy.missing_inputs(comfy_animate.graph(image="x.png", video="x.mp4", prompt="she dances",
+                                                                frames=81, seed=1, params=params), info)
+            if problems:
+                raise RuntimeError(f"Wan-Animate-2 graph (cache={cached}) doesn't match ComfyUI's nodes: "
+                                   + "; ".join(problems))
     finally:
         comfy.stop()
-    handlers_for(["comfy.wan_i2v"])
-    done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat) and story-clip graphs")
+    handlers_for(["comfy.wan_i2v", "comfy.wan_animate2"])
+    done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat), story-clip and "
+                "Wan-Animate-2 graphs")
 
     # The motion clip is resampled to the talk's 25 fps before V2V (talk_comfy.at_fps), with the image's ffmpeg.
     import imageio.v3 as iio
@@ -264,6 +295,7 @@ assert out.hidden_states is not None and len(out.hidden_states) == 3, out.hidden
     if "error" in s or s.get("face_share") != 0.0:
         raise RuntimeError(f"lip-sync score failed: {s}")
     done.append("lip-sync score")
+    done.append(_check_crops(d))
     return done + check_voice()
 
 

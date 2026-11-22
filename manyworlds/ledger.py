@@ -94,7 +94,7 @@ def cost_per_output(conn, *, batch: str | None = None) -> list[dict[str, Any]]:
             SELECT j.kind, count(a.id) AS n, count(a.id) FILTER (WHERE r.n > 0 AND r.ok) AS accepted
             FROM assets a JOIN jobs j ON j.id = a.job_id
             LEFT JOIN LATERAL (SELECT count(*) AS n, bool_and(passed) AS ok FROM reviews WHERE asset_id = a.id) r ON true
-            WHERE a.kind <> 'keyframe' AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)
+            WHERE a.kind NOT IN ('keyframe', 'crop') AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)
             GROUP BY j.kind
         )
         SELECT s.kind, o.n AS outputs, coalesce(o.accepted, 0) AS accepted,

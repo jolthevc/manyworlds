@@ -729,3 +729,73 @@ def test_a_cutaway_is_captioned_after_its_lead_and_a_kokoro_take_over_its_own_au
     # A piece whose length is unknown: later captions can't be placed.
     blind = _piece(conn, cid)
     assert production.caption_words(conn, policy, body, _joined_of(conn, cid, [blind, cut], [None, None])) is None
+
+
+# --- captions timed from word timestamps (burned_captions.word_timestamps) ----------------------------------------
+class _AudioStore:
+    """Hands back a stand-in file for any audio URI."""
+    def get_file(self, uri, local):
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_bytes(b"RIFF")
+        return local
+
+
+def _word_timed(policy, on=True):
+    return policy_mod.from_dict({**policy.body, "burned_captions": {**policy.body["burned_captions"],
+                                                                    "word_timestamps": on}})
+
+
+def test_word_timestamps_come_from_the_hosted_whisper_as_verbose_json(tmp_path, monkeypatch):
+    from manyworlds import speech
+    monkeypatch.setenv("TOGETHER_API_KEY", "test")
+    wav = tmp_path / "v.wav"
+    wav.write_bytes(b"RIFF")
+    sent = {}
+
+    def post(url, body, ctype, key):
+        sent["body"] = body
+        return {"text": "hi there", "words": [{"word": "hi", "start": 0.1, "end": 0.3},
+                                              {"word": "there", "start": 0.35, "end": 0.7}, {"word": "x"}]}
+    words = speech.transcribe_words(wav, {"host": "together", "model": "openai/whisper-large-v3"}, post=post)
+    assert words == [{"word": "hi", "start": 0.1, "end": 0.3}, {"word": "there", "start": 0.35, "end": 0.7}]
+    assert b'name="response_format"\r\n\r\nverbose_json' in sent["body"]
+    assert b'name="timestamp_granularities"\r\n\r\nword' in sent["body"]
+    with pytest.raises(RuntimeError):
+        speech.transcribe_words(wav, {}, post=lambda *a: {"text": "hi"})          # no word timestamps
+    assert speech.transcribe(wav, {}, post=lambda *a: {"text": "hi"}) == "hi"
+
+
+def test_captions_use_word_timestamps_once_and_fall_back_to_estimates(conn, policy):
+    cid = creator(conn)
+    voice = {"seconds": 3.0, "lines": [{"index": 0, "text": "Going in. Wish me luck.", "start_s": 0.0, "end_s": 3.0}],
+             "fillers": [{"clause": 1, "line": 0, "word": "um"}]}
+    piece = _piece(conn, cid, seconds=3.2, voice=voice)
+    body = {"scenes": ["a"], "talk_script": "Going in. Wish me *luck*."}
+    heard = [{"word": "going", "start": 0.4, "end": 0.6}, {"word": "in", "start": 0.6, "end": 0.8},
+             {"word": "um", "start": 1.0, "end": 1.2}, {"word": "wish", "start": 1.9, "end": 2.1},
+             {"word": "me", "start": 2.1, "end": 2.2}, {"word": "luck", "start": 2.25, "end": 2.6}]
+    calls = []
+
+    def transcriber(conn_, policy_, path, seconds, *, job_id=None, creator_id=None):
+        calls.append((path.exists(), seconds, creator_id))
+        return heard
+    on = _word_timed(policy)
+    words = production.caption_words(conn, on, body, piece, store=_AudioStore(), transcriber=transcriber)
+    assert [w.text for w in words] == ["Going", "in.", "Wish", "me", "luck."]          # the script's spelling, no "um"
+    assert words[0].start == pytest.approx(0.4) and words[-1].end == pytest.approx(2.6)
+    assert [w.text for w in words if w.emphasis] == ["luck."]
+    assert calls == [(True, 3.0, cid)]
+    meta = conn.execute("SELECT meta FROM assets WHERE kind = 'audio' AND creator_id = %s", (cid,)).fetchone()["meta"]
+    assert meta["words"] == heard                                                       # cached on the voice asset
+    production.caption_words(conn, on, body, piece, store=_AudioStore(), transcriber=transcriber)
+    assert len(calls) == 1                                                              # paid once
+
+    # Off, or a failed transcription: the estimates.
+    estimated = production.caption_words(conn, policy, body, piece)
+    assert estimated[0].start == pytest.approx(0.0)
+    other = _piece(conn, cid, seconds=3.2, voice=voice)
+
+    def broken(*a, **k):
+        raise RuntimeError("host down")
+    words = production.caption_words(conn, on, body, other, store=_AudioStore(), transcriber=broken)
+    assert [w.text for w in words] == ["Going", "in.", "Wish", "me", "luck."] and words[0].start == pytest.approx(0.0)

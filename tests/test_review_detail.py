@@ -285,3 +285,81 @@ def test_a_photo_is_compared_with_its_outfit_reference(conn, policy, store, tmp_
     [r] = gates.review_job(conn, policy, judge, store, job, tmp_path)
     assert r["accepted"] and _gates(conn, r["asset_id"])["consistency"]["score"] == 9
     assert any(b.get("text") == "OUTFIT REFERENCE (green-coat):" for b in judge.calls[0]["content"])
+
+
+# --- (f) hand and mouth close-ups for the judge (review.detail.crops, worker/crops.py) ---------------------------
+
+def test_a_crop_box_is_square_padded_and_inside_the_frame():
+    from manyworlds.worker import crops
+    assert crops.square_box([(0.5, 0.5), (0.6, 0.55)], 1000, 1000, margin=0.5) == (450, 425, 650, 625)
+    x0, y0, x1, y1 = crops.square_box([(0.0, 0.98), (0.02, 1.0)], 480, 832, margin=0.5, min_side=64)
+    assert x1 - x0 == y1 - y0 == 64 and x0 == 0 and y1 == 832                  # moved inside, not shrunk
+    assert crops.square_box([(1.5, 0.5)], 480, 832) is None                     # nothing in the frame
+    assert crops.square_box([(0.1, 0.1), (0.9, 0.9)], 480, 832)[2] - crops.square_box(
+        [(0.1, 0.1), (0.9, 0.9)], 480, 832)[0] == 480                            # never larger than the frame
+
+
+def test_the_worker_turns_landmark_crops_into_crop_outputs(tmp_path):
+    from manyworlds.worker import crops
+    from manyworlds.worker.runner import OutputFile
+    keys = [OutputFile(tmp_path / f"keyframe_{i}.jpg", "keyframe", {"index": i}) for i in range(2)]
+    made = tmp_path / "crops" / "crop_1_hands_1.png"
+    made.parent.mkdir()
+    made.write_bytes(b"\x89PNG hand")
+    seen = {}
+
+    def run(spec):
+        import json
+        seen.update(json.loads(spec.read_text()))
+        return [{"path": str(made), "of": 1, "part": "hands", "box": [0, 0, 10, 10]},
+                {"path": str(tmp_path / "missing.png"), "of": 0, "part": "mouth"}]
+    on = {"enabled": True, "hands": True, "mouth": True, "size": 384}
+    [c] = crops.crops_in_venv(keys, tmp_path, on, run=run)
+    assert c.kind == "crop" and c.meta["of"] == 1 and c.meta["part"] == "hands" and c.path == made
+    assert seen["size"] == 384 and [f[0] for f in seen["frames"]] == [0, 1]
+    assert crops.crops_in_venv(keys, tmp_path, {**on, "enabled": False}, run=run) == []
+    assert crops.crops_in_venv(keys, tmp_path, None, run=run) == []
+
+    def broken(spec):
+        raise RuntimeError("no mediapipe")
+    assert crops.crops_in_venv(keys, tmp_path, on, run=broken) == []          # a clip stands without crops
+
+
+def test_clip_jobs_ask_their_worker_for_crops_when_switched_on(policy):
+    from manyworlds import production
+    assert production._with_crops({}, policy)["crops"]["enabled"] is True
+    assert "crops" not in production._with_crops({}, _detail(policy, crops={"enabled": False}))
+
+
+def _cropped(conn, store, tmp_path, cid):
+    job = clip_job(conn, store, tmp_path, cid)
+    rendered(conn, store, tmp_path, job)
+    for of, part in ((1, "hands"), (3, "mouth")):
+        conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                     "VALUES (%s, %s, 'crop', %s, 'x', 1, %s)",
+                     (job, cid, _put(store, tmp_path, b"\x89PNG crop"), Jsonb({"of": of, "part": part})))
+    return job
+
+
+def test_the_judge_sees_hand_and_mouth_close_ups_beside_the_keyframes(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    job = _cropped(conn, store, tmp_path, cid)
+    llm = ClipStub(clip(hands=8), clip(hands=8))
+    [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
+    texts = [str(b.get("text", "")) for b in llm.calls[0]["content"]]
+    assert "HAND CLOSE-UP from KEYFRAME 2:" in texts and "MOUTH CLOSE-UP from KEYFRAME 4:" in texts
+    ask = next(t for t in texts if t.startswith("DETAIL CHECKS"))
+    assert "HAND CLOSE-UPs" in ask and "MOUTH CLOSE-UPs" in ask
+    assert r["accepted"]
+    # Teeth off: no mouth close-up. Crops off: none, and the prompt is as before.
+    llm = ClipStub(clip(), clip())
+    video.review_job(conn, _detail(policy, teeth={"enabled": False}), llm, store, _cropped(conn, store, tmp_path, cid),
+                     tmp_path)
+    texts = [str(b.get("text", "")) for b in llm.calls[0]["content"]]
+    assert "HAND CLOSE-UP from KEYFRAME 2:" in texts and not any(t.startswith("MOUTH CLOSE-UP") for t in texts)
+    llm = ClipStub(clip(), clip())
+    video.review_job(conn, _detail(policy, crops={"enabled": False}), llm, store, _cropped(conn, store, tmp_path, cid),
+                     tmp_path)
+    texts = [str(b.get("text", "")) for b in llm.calls[0]["content"]]
+    assert not any("CLOSE-UP" in t for t in texts)
