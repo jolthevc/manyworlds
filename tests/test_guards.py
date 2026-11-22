@@ -104,3 +104,13 @@ def test_one_finished_job_or_a_new_worker_image_rearms_the_family(conn, policy):
         _stopped_machine(conn, policy, f"mw-talk-old-{i}", outcome="failed", image="mw-worker-talk:v1",
                          minutes_ago=30 + i)
     assert autoscale.no_output_streak(conn, policy, "talk", T0) is None      # a new image gets its own try
+
+
+def test_fixed_monthly_costs_accrue_to_the_ledger_once_a_day(conn, policy):
+    items = policy.get("fixed_costs")
+    assert items and autoscale.housekeeping(conn, policy) == []
+    autoscale.housekeeping(conn, policy)                                   # same day: not twice
+    rows = conn.execute("SELECT provider, usd FROM cost_entries WHERE category = 'fixed'").fetchall()
+    assert len(rows) == len(items)
+    assert float(rows[0]["usd"]) == pytest.approx(items[0]["usd_per_month"] / 30, abs=1e-6)
+    assert ledger.bill_today(conn) >= float(rows[0]["usd"])                # on the bill and under the daily caps

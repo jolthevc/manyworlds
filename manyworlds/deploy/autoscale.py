@@ -401,12 +401,16 @@ def maybe_reconcile(conn, policy: Policy, providers: dict) -> list[dict]:
     return [{"action": "reconciled", **out}] if out["groups"] else []
 
 
-def housekeeping(conn) -> list[dict]:
+def housekeeping(conn, policy: Policy | None = None) -> list[dict]:
     """Rules that hold whatever the master switch says, on the one loop that always runs: raw research
-    items are deleted once past their retention date (research privacy)."""
+    items are deleted once past their retention date (research privacy), and fixed monthly costs (policy
+    `fixed_costs`, e.g. the weights volume) accrue to the ledger daily."""
+    from .. import ledger
     from ..research.apify import purge_expired
     try:
         n = purge_expired(conn)
+        if policy is not None:
+            ledger.accrue_fixed(conn, policy.get("fixed_costs", default=[]) or [])
         return [{"action": "purged_research_items", "items": n}] if n else []
     except Exception as e:  # noqa: BLE001 - housekeeping never stops enforcement; retried next tick
         return [{"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
@@ -462,7 +466,7 @@ def main(argv=None) -> int:
             actions = [{"action": "tick_failed", "error": redact(str(e))[:300]}]
             conn = db.connect()
         if not a.dry_run:
-            actions += housekeeping(conn)
+            actions += housekeeping(conn, pol)
             actions += model_selection(conn, pol)
             actions += notify_owner(conn, pol, actions)
         # Names, states, prices and errors only: GitHub Actions logs are public.

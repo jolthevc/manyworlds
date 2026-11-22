@@ -8,6 +8,10 @@ budgets:
   # brain.llm_usd_per_day per agent. Machines already running keep their own deadline and spend cap.
   daily_usd: 25.0
 
+# Fixed monthly charges, accrued to the ledger daily (usd_per_month / 30, category fixed) by the autoscaler loop.
+fixed_costs:
+  - {provider: "runpod:volume:mw-weights-us-nc-1", usd_per_month: 10.50}   # 150 GB standard at $0.07/GB, 2026-11-22
+
 # Rented GPU machines. The autoscaler (manyworlds.deploy.autoscale) starts them when jobs
 # wait and registers each with a deadline and spend cap first. Three independent layers
 # stop them: the always-on autoscaler, the same tick on GitHub Actions, and workers on
@@ -50,6 +54,11 @@ gpu_pools:
   # Secure L40S (48 GB VRAM, ~125 GB RAM): the full-precision talk model with the 4-step LoRA (talk_profiles.fast).
   # Price from 2026-11-20; the machine is metered at what RunPod reports once it runs.
   runpod_secure_l40s: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE}
+  # The same card with the weights volume (mw-weights-us-nc-1, 150 GB standard, ~$10.50/month, created 2026-11-22):
+  # talk weights are downloaded once onto it, then every machine loads them. Only in US-NC-1 (volume's data centre;
+  # L40S capacity there was LOW on 2026-11-22), so the pool without the volume stays behind it as a fallback.
+  runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
+                           network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
   # Hosted APIs (Together): jobs run on the control plane (fly.toml process `hosted`); the host bills per output
   # (ledger `hosted_api`), so no machine is rented and nothing idles.
@@ -74,7 +83,7 @@ job_kinds:
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
-  talk.infinitetalk: {pools: [vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_secure_l40s, runpod_comm_3090], outputs_per_job: 1}
+  talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_comm_3090], outputs_per_job: 1}
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)

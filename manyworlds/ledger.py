@@ -115,3 +115,20 @@ def brain_costs(conn, *, since=None) -> list[dict[str, Any]]:
         """SELECT agent, count(*) AS calls, round(sum(usd)::numeric, 6) AS usd FROM cost_entries
            WHERE agent IS NOT NULL AND (%(since)s::timestamptz IS NULL OR created_at >= %(since)s)
            GROUP BY agent ORDER BY usd DESC""", {"since": since}).fetchall()
+
+
+def accrue_fixed(conn, items: list[dict], *, day=None) -> int:
+    """Fixed monthly charges (a storage volume, a subscription) into the ledger, one entry per item per UTC day at
+    usd_per_month / 30, so the bill and the daily caps include them. Idempotent per day. Returns entries written."""
+    from datetime import datetime, timezone
+    day = day or datetime.now(timezone.utc).date()
+    n = 0
+    for it in items or []:
+        provider = str(it["provider"])
+        if conn.execute("SELECT 1 FROM cost_entries WHERE category = 'fixed' AND provider = %s "
+                        "AND (created_at AT TIME ZONE 'utc')::date = %s", (provider, day)).fetchone():
+            continue
+        record(conn, category="fixed", provider=provider, quantity=1, unit="day",
+               usd=round(float(it["usd_per_month"]) / 30, 6))
+        n += 1
+    return n
