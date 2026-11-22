@@ -262,8 +262,9 @@ generation:
   talk_profiles:
     # 2026-11-22 benchmark (L40S, 3 clips of 4.8-6.3 s): 684-902 s each, ~145 s of compute per output second, all three
     # passed the gate (lip-sync corr 0.41-0.56). The script offloads the model to CPU after every forward on one GPU
-    # (offload_model defaults to True): keep it on the card, with the text encoder (used once) on the CPU.
-    fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: ["--offload_model", "False", "--t5_cpu", "--max_frame_num", "1525"],
+    # (offload_model defaults to True): keep it on the card. Not --t5_cpu: InfiniteTalk crashes with it (context
+    # stays a list: "'list' object has no attribute 'dtype'", 2026-11-22); the whole model fits a 48 GB card at 480p.
+    fast: {steps: 4, text_cfg: 1.0, audio_cfg: 2.0, shift: 2, extra: ["--offload_model", "False", "--max_frame_num", "1525"],
            lora: {repo: Kijai/WanVideo_comfy, file: Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors, scale: 1.0}}
   # Story clips on a hosted API (production.video_kind: hosted.video): Wan 2.7 i2v on Together, $0.10 per 5 s clip
   # (catalog 2026-11-21; the job records the host's own cost). Same approved photo as first frame, 9:16 720P.
