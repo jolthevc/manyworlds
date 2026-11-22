@@ -701,7 +701,7 @@ llm:
     creator:    {candidates: [qwen4-max, glm-5.3], share: 0.2}   # creator bibles and profiles (rare)
     evaluator:  {candidates: [claude-sonnet-5-5, qwen3.8-flash], share: 0.1}   # drift check on the Haiku evaluator
     review:     {candidates: [nemotron-3.5-vl, qwen3.8-flash], share: 0.2}
-    judge:      {candidates: [qwen4-max, glm-5.3], share: 0.2}
+    judge:      {candidates: [qwen4-max, qwen3.7-plus], share: 0.2}   # judging sends images: vision models only
   shadow_usd_per_day: 0.5
   # A call to an open model that times out or drops is billed by the host but returns no usage: the ledger records
   # an estimate (prompt characters / chars_per_token in, output_tokens out) so it matches the host's bill.
