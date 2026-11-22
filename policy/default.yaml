@@ -234,7 +234,9 @@ review:
     max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
     # Talking clips: mouth openness vs voice loudness (worker/lipsync.py), recorded on every clip. Off until clips
     # judged by eye give the threshold (benchmark); then a clip below it is rejected before any paid review.
-    lip_sync: {enforce: false, min_corr: 0.3, min_face_share: 0.8}
+    # Enforced since 2026-11-22: 8-step clips passed the visual gate with lip-sync correlation 0.07 and 0.28 (the
+    # keyframes can't show sync); 6-step clips scored 0.61-0.70.
+    lip_sync: {enforce: true, min_corr: 0.3, min_face_share: 0.8}
     # Talking clips: the voice line transcribed (Whisper on Together, $0.0015 a minute, 2026-11-21) must match the
     # script within max_wer (word error rate), or the clip fails before any paid review (manyworlds.speech).
     # Voices are judged automatically, never by ear (owner 2026-11-21).
@@ -302,6 +304,9 @@ generation:
     # Speed levers (2026-11-22), each benchmarked against the gate before adoption: fp8 fast matmul, torch.compile.
     fp8fast: {quantization: fp8_e4m3fn_scaled_fast}
     compiled: {quantization: fp8_e4m3fn_scaled_fast, compile: true}
+    # 8 steps looked better but lip sync fell (0.07-0.60): stronger audio conditioning at 8 steps.
+    s8audio: {steps: 8, audio_scale: 1.5}
+    s8audiocfg: {steps: 8, audio_cfg: 2.0}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
   # 16 fps (5 s), 9:16 at 480p. Cards under swap_below_gb swap blocks_to_swap blocks to the CPU.

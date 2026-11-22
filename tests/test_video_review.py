@@ -207,8 +207,9 @@ def test_a_talking_clip_out_of_sync_is_rejected_before_any_paid_review(conn, pol
     assert "lip_sync" in gates
 
 
-def test_until_calibrated_the_sync_score_is_recorded_but_never_rejects(conn, policy, store, tmp_path):
-    assert policy.get("review", "video", "lip_sync", "enforce") is False
+def test_when_not_enforced_the_sync_score_is_recorded_but_never_rejects(conn, policy, store, tmp_path):
+    assert policy.get("review", "video", "lip_sync", "enforce") is True   # enforced since 2026-11-22
+    policy = _with_sync(policy, enforce=False)
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
     job = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
