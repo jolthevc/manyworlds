@@ -250,7 +250,6 @@ def test_a_talking_clip_whose_voice_doesnt_say_the_script_fails_before_paid_revi
 
 def test_word_error_rate_ignores_case_and_punctuation():
     from manyworlds import speech
-    assert speech.wer("It's fine, honestly.", "its fine honestly") == speech.wer("a b", "a b") == 0.0 or True
     assert speech.wer("it\u2019s fine honestly", "it's fine honestly") == 0.0
     assert speech.wer("one two three four", "one two four") == 0.25
     assert speech.wer("", "") == 0.0
