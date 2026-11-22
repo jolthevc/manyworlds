@@ -72,7 +72,8 @@ def normalize_tiktok(item: dict, market: str, query: str) -> dict | None:
         "shares": _first(st, "share_count"), "saves": _first(st, "collect_count"), "duration_s": dur,
         "posted_at": _ts(a.get("create_time")), "sound_id": str(_first(music, "id_str", "id") or "") or None,
         "sound_title": (music.get("title") or None), "cover_url": _url_list((a.get("video") or {}).get("cover")),
-        "url": f"https://www.tiktok.com/@{handle}/video/{ext}" if handle else a.get("share_url"),
+        # A link without the author's handle (TikTok resolves videos by id): handles are never stored in clear.
+        "url": f"https://m.tiktok.com/v/{ext}.html",
     }
 
 

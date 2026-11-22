@@ -265,7 +265,7 @@ def analyze(conn, policy: Policy, llm, src, *, now: datetime) -> dict:
                 content.append(image_block(img, "image/jpeg"))
             content.append({"type": "text", "text": json.dumps({
                 "key": key, "cover_frame": "the image just above" if img else "not available",
-                "platform": r["platform"], "seconds": r.get("duration_s"),
+                "platform": r["platform"], "seconds": float(r["duration_s"]) if r.get("duration_s") is not None else None,
                 "caption_opening": (r.get("caption") or "")[:160], "first_seconds_of_speech": speech,
                 "sound": r.get("sound_title")}, ensure_ascii=False)})
         try:
