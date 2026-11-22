@@ -154,10 +154,10 @@ def test_talk_prompt_has_natural_eyes_tied_to_the_beats(policy):
     assert "at 0s" not in p                                        # a beat on the lens is no glance
     # eyes and idle are part of the action, before the set
     assert p.index("Action:") < p.index("blinks naturally") < p.index("Set:")
-    # a prop glance without props on the set names the object in her hands
+    # a prop glance without props on the set names the object in hand
     bare = kitchen_talk()
     bare.set.props = ""
-    assert "looks at the object in her hands at 2.5s" in direction.compile_prompt(bare, BIBLE, "talk", policy)
+    assert "looks at the object in hand at 2.5s" in direction.compile_prompt(bare, BIBLE, "talk", policy)
 
 
 def test_idle_line_follows_energy_then_body_language(policy):

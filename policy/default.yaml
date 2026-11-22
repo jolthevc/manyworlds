@@ -990,7 +990,7 @@ direction:
     talk: "blinks naturally and irregularly, glances away between thoughts, returns to the lens"
     i2v: "blinks naturally and irregularly, eyes alive"
     glance: "looks at {target} at {t}s"
-    glance_targets: {off: "something off-camera", prop: "the object in her hands", screen: "the screen"}
+    glance_targets: {"off": "something off-camera", prop: "the object in hand", screen: "the screen"}
   # Micro-expressions and idle movement, by the shot's performance energy; without one, the first level whose word
   # appears in performance.body_language; else default_energy for the target (talk only).
   idle:
