@@ -192,7 +192,11 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
                       interruptible=bool(p.get("interruptible", False)),
                       priority=pool.split("_")[1] if p["provider"] == "salad" else "batch",
                       min_cuda=float(img["min_cuda"]) if img.get("min_cuda") else None,
-                      cloud=str(p.get("cloud", "COMMUNITY")), download_gb=float(img.get("download_gb", 0)))
+                      cloud=str(p.get("cloud", "COMMUNITY")), download_gb=float(img.get("download_gb", 0)),
+                      network_volume=p.get("network_volume") or None)
+    if spec.network_volume:   # weights cached on the volume: downloaded once, not by every machine
+        spec.env.update(MW_MODEL_DIR=f"{spec.network_volume['path']}/mw", HF_HOME=f"{spec.network_volume['path']}/hf")
+        spec.download_gb = 0.0
     if not image_published(spec.image):
         raise ProviderError(f"worker image {spec.image} is not published; not renting a machine for it")
     # Registered first: if anything after this point dies, the enforcer still knows the

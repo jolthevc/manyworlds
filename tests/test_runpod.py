@@ -112,3 +112,32 @@ def test_a_secure_pool_asks_for_secure_cloud(rp, monkeypatch):
     monkeypatch.setattr(providers, "http", rec)
     rp.launch("mw-x", dataclasses.replace(SPEC, cloud="SECURE", max_usd_per_hour=0.6))
     assert rec.calls[0][2]["cloud"] == "SECURE"
+
+
+def test_a_pod_with_a_network_volume_mounts_it_and_runs_in_its_data_center(rp, monkeypatch):
+    import dataclasses
+    rec = Recorder({"id": "p1", "cost": 0.22})
+    monkeypatch.setattr(providers, "http", rec)
+    spec = dataclasses.replace(SPEC, network_volume={"id": "vol_1", "data_center": "US-KS-2", "path": "/models"})
+    rp.launch("mw-talk-l40s-runpod-a", spec)
+    body = rec.calls[0][2]
+    assert body["mounts"] == {"network": [{"volumeId": "vol_1", "path": "/models"}]}
+    assert body["dataCenterIds"] == ["US-KS-2"]
+
+
+def test_a_volume_pool_points_the_worker_at_cached_weights_and_expects_no_download(conn, policy, monkeypatch):
+    import dataclasses
+
+    from manyworlds.deploy import autoscale
+    from test_autoscale import providers as fake_providers, registry  # noqa: F401
+    monkeypatch.setenv("MW_REGISTRY", "docker.io/example")
+    monkeypatch.setattr(autoscale, "image_published", lambda image: True)
+    pools = {**policy.body["gpu_pools"], "runpod_secure_l40s": {**policy.body["gpu_pools"]["runpod_secure_l40s"],
+             "network_volume": {"id": "vol_1", "data_center": "US-KS-2", "path": "/models"}}}
+    pol = dataclasses.replace(policy, body={**policy.body, "gpu_pools": pools})
+    ps = fake_providers()
+    from datetime import datetime, timezone
+    autoscale.launch_one(conn, pol, ps, "talk.infinitetalk", "runpod_secure_l40s", datetime.now(timezone.utc))
+    spec = ps["runpod"].launched[0][1]
+    assert spec.network_volume["id"] == "vol_1" and spec.download_gb == 0
+    assert spec.env["MW_MODEL_DIR"] == "/models/mw" and spec.env["HF_HOME"] == "/models/hf"

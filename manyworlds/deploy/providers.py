@@ -73,6 +73,9 @@ class LaunchSpec:
     min_cuda: float | None = None  # the image's CUDA build; hosts with older drivers can't run it
     cloud: str = "COMMUNITY"       # RunPod only: COMMUNITY or SECURE (per pool)
     download_gb: float = 0.0       # what a machine downloads at boot (image + weights): Vast bills it per GB
+    # RunPod only: {id, data_center, path}: a network volume holding model weights across machines, so each boot
+    # loads them instead of downloading ~82 GB (talk). Machines then run in the volume's data center.
+    network_volume: dict | None = None
 
 
 @dataclass
@@ -300,9 +303,14 @@ class RunPod:
 
     def launch(self, name: str, spec: LaunchSpec) -> Machine:
         gpu = {"id": spec.gpu_name, "count": 1, "minRamPerGpu": spec.ram_gb, **self._cuda(spec)}
+        body = {"name": name, "image": spec.image, "cloud": spec.cloud, "disk": spec.disk_gb, "env": spec.env,
+                "ports": [], "gpu": gpu}
+        if spec.network_volume:   # REST v2: mounts.network [{volumeId, path}]; the pod runs where the volume is
+            v = spec.network_volume
+            body["mounts"] = {"network": [{"volumeId": v["id"], "path": v["path"]}]}
+            body["dataCenterIds"] = [v["data_center"]]
         try:
-            pod = self._req("POST", "/pods", {"name": name, "image": spec.image, "cloud": spec.cloud,
-                                              "disk": spec.disk_gb, "env": spec.env, "ports": [], "gpu": gpu})
+            pod = self._req("POST", "/pods", body)
         except ProviderError as e:
             text = str(e).lower()
             if " -> 402" in text:   # prepaid balance used up: the autoscaler skips the provider
