@@ -146,10 +146,10 @@ worker_images:
   # talk: ComfyUI + WanVideoWrapper (docker/worker-talkcomfy.Dockerfile): fp8-scaled Wan2.1-I2V-14B 480p + InfiniteTalk
   # adapter (~16 GB), UMT5 text encoder (~11 GB), VAE, lightx2v LoRA; weights cached on the pool's volume if it has one.
   # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
-  talk: {image: mw-worker-talkcomfy, tag: v10, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
+  talk: {image: mw-worker-talkcomfy, tag: v11, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
-  comfy: {image: mw-worker-talkcomfy, tag: v10, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  comfy: {image: mw-worker-talkcomfy, tag: v11, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # dance: Wan-Animate-2 (comfy.wan_animate2, off) on the ComfyUI image; needs the image with handlers/dance_animate.py
   # (talkcomfy v11 and later). int8 model (~18 GB), UMT5 fp8 (~7 GB), CLIP vision, VAE, distill LoRA.
@@ -157,7 +157,7 @@ worker_images:
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
   # voxcpm in it (v9 and later).
-  voice: {image: mw-worker-talkcomfy, tag: v10, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+  voice: {image: mw-worker-talkcomfy, tag: v11, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -1031,6 +1031,15 @@ direction:
   hd_close_ups: false
   hd_for_shot_sizes: [close-up, extreme close-up]
   hd_profile: hd720
+  # Prompt length (plan 2026-11-22, 21:20 gap): estimated tokens per directed prompt (direction.estimate_tokens:
+  # the larger of words x 1.35 and chars / 3.6). Wan 2.1/2.2's umt5-xxl (i2v, talk) and Z-Image's Qwen3-4B (photo,
+  # diffusers' max_sequence_length 512) read 512 tokens and silently drop the rest; these leave headroom for the
+  # estimate's error. Over budget, the compiler shortens set_dressing, props and outfit to their first clause
+  # (clause_words at most), then uses the short appearance for video, then drops optional detail, then cuts the
+  # lowest-priority section; camera, action and negatives are kept. Undirected prompts are not budgeted.
+  prompt_budget: {photo: 400, i2v: 300, talk: 300}
+  prompt_trim:
+    clause_words: 20
   # The director (manyworlds.brain.director): when an accepted idea becomes a post, one LLM call writes a shot sheet
   # per scene (body.shots) for the formats below. A failed call never drops the post: it is made undirected.
   enabled: true

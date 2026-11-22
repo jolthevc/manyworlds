@@ -11,10 +11,15 @@ In video with the creator in shot (talk, and i2v unless the shot is a cutaway), 
 behaviour (blinks, glances tied to the beats whose eyeline leaves the lens) and an idle/micro-expression line from
 her energy or body language, both worded in policy `direction.eyes` and `direction.idle`.
 
+Each target has a token budget (policy `direction.prompt_budget`, counted by `estimate_tokens`): the text encoders
+read 512 tokens and drop the rest, so a longer prompt is trimmed lowest priority first (`_fit`) while camera, action
+and negatives stay whole. A prompt within its budget is never touched.
+
 Words, defaults and the allowed camera moves come from policy `direction`. Text never goes on a generated
 surface: `edit.on_screen_text` is an overlay added in post and never reaches an image or video prompt.
 """
 
+import math
 import re
 import types
 import typing
@@ -342,13 +347,130 @@ def talk_profile_for(shot: "ShotSheet | dict | None", policy: Any) -> str | None
     return name if name in profiles else None
 
 
+def estimate_tokens(text: str) -> int:
+    """A rough token count for the prompt encoders, without loading a tokenizer (no new dependency): the larger of
+    words x TOKENS_PER_WORD and characters / CHARS_PER_TOKEN, rounded up. English prose runs about 1.3 tokens per
+    word in umt5's SentencePiece vocabulary (Wan 2.1/2.2) and Qwen3's BPE (Z-Image Turbo); text dense with commas,
+    numbers and short words ('26 mm lens', 'at 2.5 s:') runs nearer one token per 3.6 characters. Taking the
+    larger leans high, which is the safe side for a budget."""
+    return math.ceil(max(len(text.split()) * TOKENS_PER_WORD, len(text) / CHARS_PER_TOKEN))
+
+
+TOKENS_PER_WORD = 1.35
+CHARS_PER_TOKEN = 3.6
+
+# Trimming a directed prompt over its budget (policy direction.prompt_budget), in this order, stopping as soon as
+# it fits: shorten long free text to its first clause, then (video only) the short appearance, then drop optional
+# fields, then cut the lowest-priority section that is left at a word boundary. Camera, action and negatives are
+# never trimmed. These are the compiler's priorities, not tunables: they follow what each field is for.
+_SHORTEN = (("set", "set_dressing"), ("set", "props"), ("wardrobe", "outfit"))
+_DROP = (("set", "background_action"), ("set", "practical_lights"), ("wardrobe", "accessories"),
+         ("wardrobe", "state"), ("set", "season"))
+_TRUNCATE = ("sound", "style", "set", "wardrobe", "subject")          # lowest priority first
+_LABELS = {"camera": "Camera", "subject": "Subject", "wardrobe": "Wardrobe and look", "action": "Action",
+           "set": "Set", "style": "Style", "sound": "Sound"}
+_DANGLING = frozenset({"a", "an", "the", "and", "or", "with", "of", "to", "in", "on", "at", "by", "for", "from"})
+_CLAUSE_END = re.compile(r"[.;:!?](?=\s|$)|\s[—–-]\s")
+
+
+def _first_clause(text: str, max_words: int) -> str:
+    """The first clause of a long free-text field: up to its first sentence end (. ; : ! ? or a spaced dash), then
+    whole comma items while they fit in `max_words` (the first item always), then a word cut if that one item is
+    still longer."""
+    text = " ".join(text.split())
+    m = _CLAUSE_END.search(text)
+    first = (text[:m.start()] if m else text).strip().rstrip(",")
+    if len(first.split()) <= max_words:
+        return first
+    kept: list[str] = []
+    for item in (x.strip() for x in first.split(",")):
+        if not item:
+            continue
+        if kept and len(", ".join([*kept, item]).split()) > max_words:
+            break
+        kept.append(item)
+    words = ", ".join(kept).split()
+    return " ".join(words[:max_words]).rstrip(",;:")
+
+
+def _wardrobe(s: ShotSheet) -> str:
+    w, lk = s.wardrobe, s.look
+    return _join([f"wearing {w.outfit}" if w.outfit.strip() else "", w.accessories, w.state,
+                  f"hair {lk.hair_style}" if lk.hair_style.strip() else "",
+                  f"hair {lk.hair_state}" if lk.hair_state.strip() else "",
+                  f"makeup {lk.makeup}" if lk.makeup.strip() else "", lk.skin_state])
+
+
+def _set(s: ShotSheet, video: bool, scene: str) -> str:
+    st = s.set
+    people = (f"{st.background_people} {'person' if st.background_people == 1 else 'people'} in the background"
+              if st.background_people > 0 else "")
+    set_ = _join([st.location, st.time_of_day, st.season, st.weather, _lighting(st), st.practical_lights,
+                  st.set_dressing, st.props, st.background_action if video else "", people,
+                  f"{st.depth_of_field} depth of field" if st.depth_of_field.strip() else "",
+                  f"same as before: {s.continuity.carry_over}" if s.continuity.carry_over.strip() else ""])
+    if not st.location.strip() and scene.strip():
+        set_ = _join([scene.strip(), set_])
+    return set_
+
+
+def _render(head: str, sections: dict[str, str], negatives: str) -> str:
+    parts = [_sentence(_LABELS[k], v) for k, v in sections.items()]
+    return head + " ".join(x for x in [*parts, negatives] if x)
+
+
+def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, negatives: str, budget: int, video: bool,
+         scene: str, short_subject: str, policy: Any) -> str:
+    """Trim a directed prompt into `budget` estimated tokens (see _SHORTEN, _DROP, _TRUNCATE). Camera, action and
+    negatives are kept whole; if they alone are over budget, the prompt is returned with everything else cut."""
+    fits = lambda: estimate_tokens(_render(head, sections, negatives)) <= budget  # noqa: E731
+    if fits():
+        return _render(head, sections, negatives)
+    t = s.model_copy(deep=True)
+
+    def refresh():
+        sections["wardrobe"], sections["set"] = _wardrobe(t), _set(t, video, scene)
+
+    words = int(_policy(policy, "direction", "prompt_trim", "clause_words", default=20) or 20)
+    for part, field in _SHORTEN:                                      # (1) long free text to its first clause
+        spec = getattr(t, part)
+        setattr(spec, field, _first_clause(getattr(spec, field), words))
+        refresh()
+        if fits():
+            return _render(head, sections, negatives)
+    if video and short_subject:                                       # (2) the start photo carries identity
+        sections["subject"] = short_subject
+        if fits():
+            return _render(head, sections, negatives)
+    for part, field in _DROP:                                         # (3) optional detail
+        setattr(getattr(t, part), field, "")
+        refresh()
+        if fits():
+            return _render(head, sections, negatives)
+    for key in _TRUNCATE:                                             # (4) cut at a word boundary, lowest first
+        kept = sections.get(key, "").split()
+        while kept and not fits():
+            kept.pop()
+            while kept and kept[-1].lower() in _DANGLING:              # no cut ending on 'with the'
+                kept.pop()
+            sections[key] = " ".join(kept).rstrip(",;:.")
+        if fits():
+            break
+    return _render(head, {k: v for k, v in sections.items() if v}, negatives)
+
+
 def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target, policy: Any, *,
                    trigger: str | None = None, scene: str = "", motion: str = "") -> str:
     """The prompt for one shot on one target model (photo, image-to-video, or lip-synced talk).
 
     `scene` and `motion` are the post's plain-text scene and movement, used only where the shot leaves the
-    set or the blocking empty; `trigger` is the creator's LoRA trigger word (photos)."""
-    from .creator.lab import appearance_prompt
+    set or the blocking empty; `trigger` is the creator's LoRA trigger word (photos).
+
+    A prompt over the target's policy `direction.prompt_budget` (estimated tokens, `estimate_tokens`) is trimmed
+    (`_fit`): the text encoders read 512 tokens (Wan's umt5-xxl; Z-Image's Qwen3 at diffusers' default
+    max_sequence_length) and silently drop the rest, which is where the set, style and negatives are. A prompt
+    within budget is exactly as compiled."""
+    from .creator.lab import appearance_prompt, short_appearance
 
     s = _coerce(shot)
     video = target != "photo"
@@ -361,11 +483,7 @@ def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target,
                     _DEVICE.get(f.device or "", ""), _HANDHELD.get(f.handheld or "", "") if video else "",
                     f"camera {move}" if move else ""])
 
-    w, lk = s.wardrobe, s.look
-    wardrobe = _join([f"wearing {w.outfit}" if w.outfit.strip() else "", w.accessories, w.state,
-                      f"hair {lk.hair_style}" if lk.hair_style.strip() else "",
-                      f"hair {lk.hair_state}" if lk.hair_state.strip() else "",
-                      f"makeup {lk.makeup}" if lk.makeup.strip() else "", lk.skin_state])
+    wardrobe = _wardrobe(s)
 
     p = s.performance
     if target == "photo":
@@ -381,15 +499,7 @@ def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target,
     # eyes and idle movement only in video with the creator in shot; both empty leave the action as it was
     action = _join([_join([beats, perf]), _eyes(s, target, policy), _idle(s, target, policy)], "; ")
 
-    st = s.set
-    people = (f"{st.background_people} {'person' if st.background_people == 1 else 'people'} in the background"
-              if st.background_people > 0 else "")
-    set_ = _join([st.location, st.time_of_day, st.season, st.weather, _lighting(st), st.practical_lights,
-                  st.set_dressing, st.props, st.background_action if video else "", people,
-                  f"{st.depth_of_field} depth of field" if st.depth_of_field.strip() else "",
-                  f"same as before: {s.continuity.carry_over}" if s.continuity.carry_over.strip() else ""])
-    if not st.location.strip() and scene.strip():
-        set_ = _join([scene.strip(), set_])
+    set_ = _set(s, video, scene)
 
     realism = _policy(policy, "direction", "realism", default={}) or {}
     style_words = _policy(policy, "direction", "style", default={}) or {}
@@ -405,15 +515,17 @@ def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target,
 
     neg = _policy(policy, "direction", "negatives", default={}) or {}
     negatives = list(neg.get("always", []))
-    if st.background_people <= 0:
+    if s.set.background_people <= 0:
         negatives += list(neg.get("solo", []))
 
     head = f"{trigger}, " if trigger else ""
-    sections = [_sentence("Camera", camera), _sentence("Subject", appearance_prompt(bible)),
-                _sentence("Wardrobe and look", wardrobe), _sentence("Action", action),
-                _sentence("Set", set_), _sentence("Style", style), _sentence("Sound", sound),
-                _negatives(negatives)]
-    return head + " ".join(x for x in sections if x)
+    sections = {"camera": camera, "subject": appearance_prompt(bible), "wardrobe": wardrobe, "action": action,
+                "set": set_, "style": style, "sound": sound}
+    budget = (_policy(policy, "direction", "prompt_budget", default={}) or {}).get(target)
+    if not budget:
+        return _render(head, sections, _negatives(negatives))
+    return _fit(s, sections, head=head, negatives=_negatives(negatives), budget=int(budget), video=video,
+                scene=scene, short_subject=short_appearance(bible) if video else "", policy=policy)
 
 
 def _negatives(items: list[str]) -> str:

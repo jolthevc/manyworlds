@@ -231,3 +231,151 @@ def test_talk_profile_for_close_ups(policy):
     # a profile name that is not in generation.talk_profiles is never returned
     missing = {**on, "generation": {"talk_profiles": {}}}
     assert direction.talk_profile_for(shot("close-up"), missing) is None
+
+
+# --- Prompt budgets (21:20 gap): the text encoders read 512 tokens and drop the rest ---
+
+# Sizes mirror the real director test: a ~700-character appearance, a ~600-character outfit, a ~700-character set.
+LONG_BIBLE = {"appearance": {
+    "apparent_age": 31, "gender_presentation": "woman",
+    "ethnicity_and_skin": "fair Northern European skin with cool pink undertones, light freckles across the nose and "
+                          "cheekbones, faint redness around the nostrils",
+    "face": "soft heart-shaped face with high rounded cheekbones, a slightly upturned nose, a small scar through the "
+            "left eyebrow, a full lower lip, a defined cupid's bow and a gentle jawline",
+    "eyes": "wide-set grey-green eyes with heavy upper lids, thin laugh lines at the outer corners, straight "
+            "light-brown brows",
+    "hair": "shoulder-length wavy strawberry-blonde hair with a centre parting, usually tucked behind one ear, a few "
+            "loose strands framing the face",
+    "build": "tall and lean, narrow shoulders, long arms",
+    "signature_details": "a small silver hoop in her left ear, a thin red string bracelet on her right wrist, chipped "
+                         "sage-green nail polish"}}
+LONG_OUTFIT = ("a slouchy oatmeal cable-knit wool jumper with dropped shoulders and slightly too-long sleeves pushed up "
+               "to the forearms, worn over a faded cream cotton t-shirt whose hem peeks out at the bottom, high-waisted "
+               "straight-leg indigo jeans with a soft worn fade at the knees and a rolled cuff, thick ribbed charcoal "
+               "socks and battered tan suede ankle boots with a stacked heel; the jumper has a small darned patch near "
+               "the left cuff and a few pills of wool along the sides, which gives the whole outfit a lived-in, "
+               "comfortable, slightly rumpled weekend feel, with no visible logos or text anywhere")
+LONG_DRESSING = ("white metro tiles, a pale oak worktop scattered with crumbs, a green enamel kettle on the hob, a chipped "
+                 "blue ceramic fruit bowl holding two lemons and a browning banana, a row of mismatched mugs hanging "
+                 "from brass hooks under a wall cabinet, a trailing pothos plant on the windowsill above the sink, a tea "
+                 "towel with a faded check pattern draped over the oven door handle, a small wooden chopping board "
+                 "leaning against the backsplash, a stack of unopened post weighed down by a jar of honey, a slightly "
+                 "crooked framed botanical print on the far wall, a dish rack holding two plates and a frying pan, and "
+                 "a single window over the sink looking out onto a grey courtyard")
+BUDGETED = ("photo", "i2v", "talk")
+
+
+def long_kitchen() -> ShotSheet:
+    return ShotSheet(
+        set=SetSpec(location="her narrow galley kitchen", time_of_day="early morning", season="late autumn",
+                    light_direction="the window on her left", light_quality="soft",
+                    color_temp="cool daylight with a warm lamp", practical_lights="a warm under-cabinet strip light",
+                    set_dressing=LONG_DRESSING,
+                    props="a chipped mug of builder's tea, a teaspoon, a half-eaten slice of toast with marmalade",
+                    background_action="steam curling from the kettle spout", depth_of_field="shallow"),
+        wardrobe=WardrobeSpec(outfit=LONG_OUTFIT, accessories="a black hair tie on her wrist",
+                              state="sleeves pushed up, a little creased"),
+        look={"hair_state": "slightly messy, just woken up", "makeup": "none",
+              "skin_state": "a little puffy under the eyes"},
+        framing=FramingSpec(shot_size="medium close-up", angle="eye level", lens_mm=26, camera_move="push_in",
+                            handheld="light", device="propped", headroom="normal"),
+        blocking=[Beat(at_s=0, action="leans on the worktop and sighs", eyeline="lens"),
+                  Beat(at_s=3.5, action="lifts the mug and blows on the tea", eyeline="prop",
+                       hands="both around the mug"),
+                  Beat(at_s=7, action="glances at the window, then back", eyeline="off")],
+        performance=PerformanceSpec(energy="low", body_language="slouched against the counter, shoulders loose",
+                                    emotion_arc="groggy to wry"),
+        sound=SoundSpec(mic="phone", room_tone="fridge hum and a dripping tap",
+                        effects=["kettle click", "spoon on ceramic"]))
+
+
+def unbudgeted(policy) -> dict:
+    return {"direction": {k: v for k, v in policy.get("direction").items() if k != "prompt_budget"}}
+
+
+def _trigger(target: str) -> str | None:
+    return "mw_m" if target == "photo" else None
+
+
+def test_budgets_leave_headroom_under_the_encoders_512_tokens(policy):
+    budget = policy.get("direction", "prompt_budget")
+    assert set(budget) == set(BUDGETED) and all(0 < budget[t] < 512 for t in BUDGETED)
+    assert direction.estimate_tokens("") == 0
+    assert direction.estimate_tokens("one two three") == 5           # 3 words x 1.35 = 4.05 -> 5
+    assert direction.estimate_tokens("a,b,c,d,e,f,g,h") == 5         # one word, but 15 chars / 3.6 = 4.2 -> 5
+
+
+def test_the_fixture_is_over_budget_untrimmed(policy):
+    # the sizes of the real director test (2026-11-22 21:20)
+    assert len(lab.appearance_prompt(LONG_BIBLE)) > 700 and len(LONG_OUTFIT) > 550 and len(LONG_DRESSING) > 650
+    for target in BUDGETED:
+        full = direction.compile_prompt(long_kitchen(), LONG_BIBLE, target, unbudgeted(policy),
+                                        trigger=_trigger(target))
+        assert len(full) > 1500
+        assert direction.estimate_tokens(full) > policy.get("direction", "prompt_budget", target), target
+
+
+def test_every_target_fits_its_budget_and_keeps_camera_action_and_negatives(policy):
+    budget = policy.get("direction", "prompt_budget")
+    for target in BUDGETED:
+        p = direction.compile_prompt(long_kitchen(), LONG_BIBLE, target, policy, trigger=_trigger(target))
+        full = direction.compile_prompt(long_kitchen(), LONG_BIBLE, target, unbudgeted(policy),
+                                        trigger=_trigger(target))
+        assert direction.estimate_tokens(p) <= budget[target], target
+        camera = full[:full.index(" Subject:")]
+        action = full[full.index("Action:"):full.index(" Set:")]
+        negatives = full[full.index("No text"):]
+        assert negatives == "No text, no logos, no mirrors behind the subject, no extra people."
+        assert p.startswith(camera) and action in p and p.endswith(negatives), target
+        # what is left keeps the fixed order, and every cut is clean
+        labels = [x for x in ("Camera:", "Subject:", "Wardrobe and look:", "Action:", "Set:", "Style:", "Sound:",
+                              "No text") if x in p]
+        assert [p.index(x) for x in labels] == sorted(p.index(x) for x in labels)
+        assert "Subject:" in p and "  " not in p and ".." not in p and ", ." not in p
+        # long free text was cut to its first clause first
+        assert LONG_OUTFIT not in p and "darned patch" not in p and "courtyard" not in p
+
+
+def test_video_uses_the_short_appearance_and_photos_keep_the_full_one(policy):
+    short = lab.short_appearance(LONG_BIBLE)
+    assert short == ("31-year-old woman, shoulder-length wavy strawberry-blonde hair with a centre parting, usually "
+                     "tucked behind one ear, a few loose strands framing the face, a small silver hoop in her left ear")
+    assert lab.short_appearance(BIBLE) == "29-year-old woman, black bob with a clip, thin gold wire glasses"
+    for target in ("i2v", "talk"):
+        p = direction.compile_prompt(long_kitchen(), LONG_BIBLE, target, policy)
+        assert f"Subject: {short}." in p and lab.appearance_prompt(LONG_BIBLE) not in p, target
+    # the photo is where identity is made (LoRA + the full appearance: 12 of 12 kept on Maren)
+    photo = direction.compile_prompt(long_kitchen(), LONG_BIBLE, "photo", policy, trigger="mw_m")
+    assert f"Subject: {lab.appearance_prompt(LONG_BIBLE)}." in photo and photo.startswith("mw_m, Camera:")
+
+
+def test_short_shots_are_not_trimmed(policy):
+    shots = [bus_stop(shot_size="medium shot", camera_move="push_in", handheld="light", lens_mm=26),
+             kitchen_talk(energy="high"), kitchen_talk(), ShotSheet()]
+    for shot in shots:
+        for target in BUDGETED:
+            assert direction.compile_prompt(shot, BIBLE, target, policy, scene="at a bus stop") == (
+                direction.compile_prompt(shot, BIBLE, target, unbudgeted(policy), scene="at a bus stop"))
+            assert LOOK in direction.compile_prompt(shot, BIBLE, target, policy)
+
+
+def test_undirected_prompts_are_never_budgeted():
+    look = lab.appearance_prompt(LONG_BIBLE)
+    assert lab.photo_prompt(LONG_BIBLE, "in her kitchen", trigger="mw_m") == (
+        f"mw_m, candid smartphone photo of a {look}. Scene: in her kitchen. Natural skin texture, realistic.")
+    assert lab.clip_prompt(LONG_BIBLE, "in her kitchen", "she sips") == (
+        f"Handheld smartphone video of a {look}. Scene: in her kitchen. Movement: she sips. "
+        "Small natural movements, steady face, realistic.")
+    assert lab.talk_prompt(LONG_BIBLE, "in her kitchen") == (
+        f"Smartphone video of a {look}. Scene: in her kitchen. Talking to the camera naturally, with small head "
+        "movements and expressions; steady face, realistic.")
+
+
+def test_first_clause():
+    assert direction._first_clause("a sofa. a lamp by the door", 20) == "a sofa"
+    assert direction._first_clause("white tiles; a kettle", 20) == "white tiles"
+    assert direction._first_clause("white tiles, a kettle", 20) == "white tiles, a kettle"      # short: as it was
+    many = ", ".join(f"item number {i}" for i in range(10))                                    # 30 words
+    assert direction._first_clause(many, 7) == "item number 0, item number 1"                 # whole items
+    assert direction._first_clause("one two three four five six", 4) == "one two three four"  # one long item
+    assert direction._first_clause("", 20) == ""

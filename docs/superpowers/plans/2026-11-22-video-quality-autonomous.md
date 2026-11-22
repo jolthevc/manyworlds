@@ -83,7 +83,7 @@ scene, LongCat, direction gate). This plan turns the direction into what is actu
 - (wave 2, integration) Instagram publishing should use `body.cover` as `cover_url`. `finishing.py`'s docstring
   and CLAUDE.md need the finish stage.
 - (wave 2, integration) Trim the repeated first frame at each motion-chain join.
-- (21:20, director test) The real director call works: Sonnet, 9.5k in / 2.9k out, $0.048 per post, rich and
+- (21:20, director test, FIXED 21:55: direction.prompt_budget) The real director call works: Sonnet, 9.5k in / 2.9k out, $0.048 per post, rich and
   continuity-aware shot sheets. But the compiled prompts are very long: the bible's full appearance and the
   outfit's long description. Wan's umt5 encoder reads about 512 tokens, so the set, style and negatives at the end
   can be silently cut. Give the compiler a token budget per target (policy `direction.prompt_budget` by target,

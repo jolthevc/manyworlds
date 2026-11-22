@@ -85,6 +85,16 @@ def appearance_prompt(bible: dict) -> str:
             f"{a['face']}, {a['eyes']}, {a['hair']}, {a['build']}, {a['signature_details']}")
 
 
+def short_appearance(bible: dict) -> str:
+    """Who is in a video made from her approved photo, when the full appearance would not fit the prompt budget
+    (manyworlds.direction): age, gender presentation, hair and her first signature detail. The start photo carries
+    the identity in image-to-video and talk; photos always get the full appearance_prompt."""
+    a = bible["appearance"]
+    signature = re.split(r"[,;]", str(a.get("signature_details") or ""))[0].strip()
+    return ", ".join(x for x in (f"{a['apparent_age']}-year-old {a['gender_presentation']}",
+                                 str(a.get("hair") or "").strip(), signature) if x)
+
+
 def _need_policy(policy: Policy | None) -> Policy:
     if policy is None:
         raise ValueError("a directed shot needs the policy (direction words, camera moves, negatives)")
