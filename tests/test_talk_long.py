@@ -45,7 +45,9 @@ def _talking(policy, join="cut"):
             "production": {**policy.body["production"],
                            "formats": [*policy.body["production"]["formats"], "talking_video"]},
             "generation": {**policy.body["generation"],
-                           "talk_long": {**policy.body["generation"]["talk_long"], "join": join}}}
+                           # 25 s segments keep the test scripts short (production takes run to 60 s)
+                           "talk_long": {**policy.body["generation"]["talk_long"], "join": join,
+                                         "max_segment_seconds": 25}}}
     return policy_mod.from_dict(body)
 
 

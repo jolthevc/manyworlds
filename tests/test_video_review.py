@@ -86,7 +86,9 @@ def test_a_good_clip_passes_both_stages_and_melting_hands_fail_motion(conn, poli
     good, bad = clip_job(conn, store, tmp_path, cid), clip_job(conn, store, tmp_path, cid)
     rendered(conn, store, tmp_path, good)
     rendered(conn, store, tmp_path, bad)
-    llm = ClipStub(clip(), clip(identity=8))
+    # just over every bar, so the screen alone doesn't clear it (clear_pass_margin) and the confirm runs
+    lo = {k: policy.get("review", "video", f"min_{k}") for k in ("identity", "motion", "realism")}
+    llm = ClipStub(clip(**lo), clip(identity=8))
     [r] = video.review_job(conn, policy, llm, store, good, tmp_path)
     assert r["accepted"] and r["confirmed"] and [s["stage"] for s in r["stages"]] == ["screen", "confirm"]
     assert [c["role"] for c in llm.calls] == [policy.get("review", "video", "role"),
