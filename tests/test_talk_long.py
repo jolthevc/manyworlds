@@ -175,7 +175,11 @@ def test_the_hook_and_sign_off_stay_on_camera_and_enough_of_the_middle_joins_the
 def test_a_hybrid_talking_video_renders_only_its_on_camera_part_and_joins_with_cutaways(conn, policy, store, tmp_path,
                                                                                      joined, monkeypatch):
     normalised = []
-    monkeypatch.setattr(media, "normalize", lambda p, out, **k: normalised.append(k) or out.write_bytes(p.read_bytes()) or out)
+    def fake_normalize(p, out, **k):
+        normalised.append(k)
+        out.write_bytes(p.read_bytes())
+        return out
+    monkeypatch.setattr(media, "normalize", fake_normalize)
     policy = _talking(policy)
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
