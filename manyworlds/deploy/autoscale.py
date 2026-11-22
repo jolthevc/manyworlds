@@ -324,10 +324,7 @@ def no_output_streak(conn, policy: Policy, family: str, now: datetime, pools: li
     tried work and finished none, or never started: renting another would most likely fail the same way. Seven
     talk machines in a row did exactly that on 2026-11-20. Counted per set of pools, since a failure on one card
     (out of memory on a 48 GB L40S) says nothing about another (an 80 GB H100). A new worker image tag, or the
-    window passing, gives it a new try."""| None:
-    """The family's last `machines` machines (within `hours`, on the current worker image) all tried work and
-    finished none, or never started: renting another would most likely fail the same way. Seven talk machines
-    in a row did exactly that on 2026-11-20. A new worker image tag, or the window passing, gives it a new try."""
+    window passing, gives it a new try."""
     cfg = policy.get("autoscale", "no_output_guard", default={}) or {}
     n, hours = int(cfg.get("machines", 0)), float(cfg.get("hours", 24))
     if n <= 0:
