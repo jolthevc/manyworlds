@@ -259,11 +259,45 @@ def _talk_long_cfg(policy: Policy) -> dict:
     return policy.get("generation", "talk_long", default={}) or {}
 
 
-def talk_segments(policy: Policy, script: str) -> list[str]:
+def talk_segments(policy: Policy, script: str, *, hybrid: bool = False) -> list[str]:
     from .talk_segments import split_script
     cfg = _talk_long_cfg(policy)
-    return split_script(script, max_seconds=float(cfg.get("max_segment_seconds", 25)),
-                        words_per_second=float(cfg.get("words_per_second", 2.5)))
+    seconds = _hybrid_cfg(policy).get("segment_seconds", 10) if hybrid else cfg.get("max_segment_seconds", 25)
+    return split_script(script, max_seconds=float(seconds), words_per_second=float(cfg.get("words_per_second", 2.5)))
+
+
+def _hybrid_cfg(policy: Policy) -> dict:
+    return policy.get("generation", "talk_hybrid", default={}) or {}
+
+
+def hybrid_modes(segments: list[str], on_camera_share: float) -> list[str]:
+    """Which segments are lip-synced on camera ('talk') and which are cutaways over the post's other photos
+    ('narrated'), in the same voice. The hook and the sign-off are always on camera; middle segments join them,
+    shortest first, until on-camera speech is at least `on_camera_share` of the words. Only the on-camera part
+    needs the expensive lip-sync render."""
+    n = len(segments)
+    if n <= 2:
+        return ["talk"] * n
+    modes = ["talk"] + ["narrated"] * (n - 2) + ["talk"]
+    words = [len(s.split()) for s in segments]
+    total = sum(words) or 1
+    for i in sorted(range(1, n - 1), key=lambda i: words[i]):
+        if sum(w for w, m in zip(words, modes) if m == "talk") / total >= on_camera_share:
+            break
+        modes[i] = "talk"
+    return modes
+
+
+def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, segment: int):
+    """A cutaway segment of a hybrid talking video: the post's other photos, moving gently, under the creator's
+    voice saying this part of the script (the narrated-edit worker; no lip-sync render)."""
+    anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
+    out = _hybrid_cfg(policy).get("output", {}) or {}
+    payload = {"images": [a["uri"] for a in chosen[1:]], "script": body["talk_segments"][segment],
+               "voice": (anchors.get("voice") or {}).get("voice", "af_heart"), "on_screen_text": "",
+               **(_cfg(policy).get("edit", {}) or {}), **{k: out[k] for k in ("width", "height", "fps") if k in out}}
+    return queue.enqueue(conn, "image.narrated", payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
+                         post_id=post["id"], idempotency_key=f"post:{post['id']}:cutaway:{segment}:{attempt}")
 
 
 def _last_frame(conn, video: dict) -> str:
@@ -289,10 +323,15 @@ def join_talk(conn, policy: Policy, post: dict, videos: list[dict], store=None) 
     existing = conn.execute("SELECT id, uri FROM assets WHERE uri = %s AND kind = 'video'", (uri,)).fetchone()
     if existing:
         return existing
+    timeout = float(_talk_long_cfg(policy).get("join_timeout_s", 600))
     with tempfile.TemporaryDirectory(prefix="mw-join-") as d:
         paths = [store.get_file(v["uri"], Path(d) / f"segment_{i:02d}.mp4") for i, v in enumerate(videos)]
-        out = media.concat(paths, Path(d) / "joined.mp4",
-                           timeout=float(_talk_long_cfg(policy).get("join_timeout_s", 600)))
+        if (post.get("body") or {}).get("talk_modes") or _hybrid_cfg(policy).get("normalize_all"):
+            out_cfg = _hybrid_cfg(policy).get("output", {}) or {}
+            paths = [media.normalize(p, p.with_name(f"norm_{p.name}"), width=int(out_cfg.get("width", 720)),
+                                     height=int(out_cfg.get("height", 1280)), fps=int(out_cfg.get("fps", 30)),
+                                     lufs=float(out_cfg.get("lufs", -14)), timeout=timeout) for p in paths]
+        out = media.concat(paths, Path(d) / "joined.mp4", timeout=timeout)
         stored = store.put_file(out, key)
     return conn.execute(
         """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
@@ -311,11 +350,20 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
     repairs = int(policy.get("review", "video", "max_repairs_per_post", default=2))
     failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
     results: list[tuple[str, Any]] = []
+    modes = body.get("talk_modes") or ["talk"] * len(body["talk_segments"])
     for i in range(len(body["talk_segments"])):
-        if chain and i > 0 and results[-1][0] != "chosen":
+        if modes[i] == "narrated":   # a cutaway over the other photos (hybrid): not a lip-sync render
+            step = Step(jobs[i], lambda j: _edit_state(conn, j),
+                        lambda attempt, i=i: _cutaway_job(conn, policy, post, body, chosen, attempt, segment=i),
+                        (f"segment_repairs_{i}", repairs), ("follow_up_failures", failures), "edit", f"segment {i}: ")
+            results.append(advance_step(body, step))
+            if results[-1][0] == "dropped":
+                return "dropped", None
+            continue
+        if chain and i > 0 and modes[i - 1] == "talk" and results[-1][0] != "chosen":
             results.append(("waiting", None))   # starts from the previous segment's last frame
             continue
-        start_uri = _last_frame(conn, results[-1][1]) if chain and i > 0 else None
+        start_uri = _last_frame(conn, results[-1][1]) if chain and i > 0 and modes[i - 1] == "talk" else None
         step = Step(jobs[i], lambda j: _clip_state(conn, j),
                     lambda attempt, i=i, s=start_uri: _talk_job(conn, policy, post, body, chosen, attempt,
                                                                  segment=i, start_uri=s),
@@ -382,8 +430,13 @@ def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
         body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
         if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
             if post["format"] == "talking_video" and "talk_segments" not in body:
-                segments = talk_segments(policy, body.get("script", ""))
+                # Hybrid (generation.talk_hybrid): with cutaway photos, short segments, only some on camera.
+                hybrid = bool(_hybrid_cfg(policy).get("enabled")) and len(chosen) >= 2
+                segments = talk_segments(policy, body.get("script", ""), hybrid=hybrid)
                 body["talk_segments"] = segments if len(segments) > 1 else []   # [] = one clip
+                if hybrid and len(segments) > 2:
+                    body["talk_modes"] = hybrid_modes(segments, float(_hybrid_cfg(policy).get("on_camera_share", 0.4)))
+                    post = {**post, "body": body}
             if body.get("talk_segments"):   # a long script: one job per segment, then joined
                 state, video = _advance_long_talk(conn, policy, post, body, chosen, store)
             else:

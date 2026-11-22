@@ -42,6 +42,23 @@ def concat(paths: list[Path], out: Path, *, timeout: float = 600) -> Path:
     raise RuntimeError(f"ffmpeg could not join {len(paths)} segments: {error}")
 
 
+def normalize(path: Path, out: Path, *, width: int, height: int, fps: int, lufs: float = -14.0,
+              sample_rate: int = 48000, timeout: float = 600) -> Path:
+    """One segment at the joined video's size, frame rate, audio format and loudness, so segments made by
+    different engines (a lip-synced talk at 480p, a narrated photo edit at 1080p) cut together cleanly."""
+    vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+          f"fps={fps},format=yuv420p,setsar=1")
+    cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(path), "-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl=stereo",
+           "-filter_complex", f"[0:v]{vf}[v];[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0,"
+                              f"loudnorm=I={lufs}:TP=-1.5:LRA=11,aresample={sample_rate}[a]",
+           "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+           "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-shortest", "-movflags", "+faststart", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+        raise RuntimeError(f"ffmpeg could not normalise {Path(path).name}: {(r.stderr or '')[-500:]}")
+    return out
+
+
 def frame_count(path: Path) -> int:
     import imageio_ffmpeg
     return int(imageio_ffmpeg.count_frames_and_secs(str(path))[0])

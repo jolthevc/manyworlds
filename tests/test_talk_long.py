@@ -160,3 +160,53 @@ def test_concat_really_joins_video_and_audio(tmp_path):   # ffmpeg from the imag
     out = media.concat(parts, tmp_path / "joined.mp4")
     frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
     assert frames == 75 and abs(seconds - 3.0) < 0.2
+
+
+# --- hybrid: some segments on camera, the rest cutaways over the other photos ----------------------------
+def test_the_hook_and_sign_off_stay_on_camera_and_enough_of_the_middle_joins_them():
+    segs = ["a b c d", "a b", "a b c d e f", "a", "a b c"]          # 16 words
+    modes = production.hybrid_modes(segs, 0.5)
+    assert modes[0] == modes[-1] == "talk"
+    on = sum(len(s.split()) for s, m in zip(segs, modes) if m == "talk")
+    assert on / 16 >= 0.5 and modes.count("narrated") >= 1
+    assert production.hybrid_modes(["a", "b"], 0.4) == ["talk", "talk"]
+
+
+def test_a_hybrid_talking_video_renders_only_its_on_camera_part_and_joins_with_cutaways(conn, policy, store, tmp_path,
+                                                                                     joined, monkeypatch):
+    normalised = []
+    monkeypatch.setattr(media, "normalize", lambda p, out, **k: normalised.append(k) or out.write_bytes(p.read_bytes()) or out)
+    policy = _talking(policy)
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    from manyworlds.brain import planner
+    planner.plan_period(conn, policy, PlanStub([post(0, "talking_video", ["facing camera outside the corner shop",
+                                                                          "the shop's window at night",
+                                                                          "her hands around a paper cup"],
+                                                     script=LONG)]), cid, start=START)
+    pid = conn.execute("SELECT id FROM posts WHERE creator_id = %s", (cid,)).fetchone()["id"]
+    production.advance(conn, policy, now=NOW, store=store)
+    finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok()] * 4), pid)       # three photos chosen
+    production.advance(conn, policy, now=NOW, store=store)
+    body = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
+    modes = body["talk_modes"]
+    assert len(modes) == len(body["talk_segments"]) > 2 and modes[0] == modes[-1] == "talk" and "narrated" in modes
+    talks = _segment_jobs(conn, pid)
+    cuts = conn.execute("SELECT id, payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
+    assert len(talks) == modes.count("talk") and len(cuts) == modes.count("narrated")
+    assert all(len(c["payload"]["images"]) == 2 and c["payload"]["width"] == 720 for c in cuts)   # the cutaway photos
+    for j in talks:
+        rendered(conn, store, tmp_path, j["id"])
+    video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
+    for c in cuts:
+        conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (c["id"],))
+        conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes) VALUES (%s, %s, 'video', %s, 'x', 1)",
+                     (c["id"], cid, store.put_file(_tmp(tmp_path, c["id"]), f"cut/{c['id']}.mp4").uri))
+    assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
+    assert len(joined[0]) == len(modes) and len(normalised) == len(modes) and normalised[0]["width"] == 720
+
+
+def _tmp(tmp_path, name):
+    p = tmp_path / f"{name}.mp4"
+    p.write_bytes(b"cut")
+    return p

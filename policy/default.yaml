@@ -315,6 +315,11 @@ generation:
   # 60 s (was 25, 2026-11-22): InfiniteTalk's streaming mode makes one continuous take, clean to about a minute
   # (model review); longer scripts are cut at sentences into ~60 s takes. One take, one voice line, no seams.
   talk_long: {max_segment_seconds: 60, words_per_second: 2.5, join: cut, join_timeout_s: 600}
+  # Hybrid talking video (owner 2026-11-22): when the post has cutaway photos, the script is cut into short segments;
+  # the hook, the sign-off and enough of the middle to reach on_camera_share are lip-synced, the rest are the cutaway
+  # photos moving under the same voice (image.narrated). All segments are brought to `output` and joined. Only the
+  # on-camera part pays for the lip-sync render (about a third of a 30 s reel costs a third as much).
+  talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4, output: {width: 720, height: 1280, fps: 30, lufs: -14}}
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:
@@ -536,7 +541,7 @@ planner:
   days: 3                      # short periods: each plan sees the latest posts and settings
   plan_ahead_days: 2           # the producer plans the next period when less than this is planned
   auto_statuses: [draft, active]   # creators the producer plans for (needs a profile and reference images)
-  formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1], story: [1, 1], talking_video: [1, 1]}
+  formats: {photo: [1, 1], carousel: [2, 4], narrated_edit: [3, 6], story_clip: [1, 1], story: [1, 1], talking_video: [1, 3]}
   video_formats: [narrated_edit, story_clip, talking_video]
   # What each format can show; the planner writes to these limits.
   format_notes:
@@ -544,7 +549,7 @@ planner:
     carousel: "2-4 photos of the same moment, evening or day, in order"
     narrated_edit: "3-6 photos in sequence with the creator's own voice reading `script` (15-30 s of natural speech, said the way they talk) and burned-in captions; routine montages belong here"
     story_clip: "ONE 5-second shot animated from ONE photo, with one simple motion (steam rising, rain running down glass, a hand lifting a mug); `script` says only what moves. Never a montage or several actions"
-    talking_video: "the creator talks to camera, lip-synced in their own voice: ONE scene where they face the camera, chest-up, in the place they are speaking from (the start frame), and `script` = exactly what they say (10-90 s of natural speech in full sentences, said the way they talk, no stage directions; long scripts are rendered in segments)"
+    talking_video: "the creator talks to camera, lip-synced in their own voice: ONE scene where they face the camera, chest-up, in the place they are speaking from (the start frame), optionally followed by one or two cutaway scenes (what they talk about, or their hands, room or street, never another face to camera) shown while they keep talking, and `script` = exactly what they say (10-90 s of natural speech in full sentences, said the way they talk, no stage directions; long scripts are rendered in segments)"
     story: "ONE vertical throwaway Story photo: a quick in-the-moment glimpse (the view, the coffee, the mess, a mood); casual, unposed, 0-6 words of caption; not a grid post"
   post_hours_utc: [12, 15, 17, 19, 21, 23]   # nth post of a day goes out at the nth hour
   recent_posts: 30             # shown back to the planner for continuity
