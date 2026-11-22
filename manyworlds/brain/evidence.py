@@ -111,3 +111,21 @@ def supersede(conn, *, creator_id) -> int:
                           "WHERE creator_id = %s AND status = 'open' AND scope = 'creator' AND grade <> 'proven'",
                           (creator_id,)).rowcount
     return n
+
+
+def niche_trends(conn, creator_id, policy) -> dict | None:
+    """What is working in the creator's niche on public posts (the trend watcher's latest brief and its findings).
+    Research evidence: correlation in other people's posts, never proof; the same in real and sandbox modes."""
+    c = conn.execute("SELECT c.bible->>'niche' AS niche, m.name AS market FROM creators c "
+                     "LEFT JOIN markets m ON m.id = c.market_id WHERE c.id = %s", (creator_id,)).fetchone()
+    names = [n for n in ((c or {}).get("market"), (c or {}).get("niche"),
+                         (policy.get("trends", "default_market") if policy else None)) if n]
+    for name in names:
+        row = conn.execute("SELECT day, brief FROM trend_briefs WHERE market = %s ORDER BY day DESC LIMIT 1",
+                           (name,)).fetchone()
+        if row:
+            b = row["brief"]
+            return {"niche": name, "as_of": str(row["day"]), "working": [p["statement"] for p in b.get("working", [])],
+                    "rising": b.get("rising", []), "cooling": b.get("cooling", []),
+                    "hooks_to_try": b.get("hooks_to_try", []), "avoid": b.get("avoid", [])}
+    return None

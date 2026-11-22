@@ -92,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--force", action="store_true", help="plan again even if the period has a plan")
     pr = sub.add_parser("produce", help="turn due planned posts into reviewed images (--loop to keep going)")
     pr.add_argument("--loop", action="store_true")
+    tr = sub.add_parser("trends", help="trend watcher: what works on TikTok and Instagram per niche (policy trends)")
+    tr.add_argument("action", choices=["tick", "loop", "brief", "spend"])
+    tr.add_argument("market", nargs="?", help="for brief: the niche name (policy trends.markets)")
     pf = sub.add_parser("profile", help="show, build or change a creator's profile")
     pf.add_argument("creator")
     pf.add_argument("--build", action="store_true", help="write version 1 from the bible (Brain)")
@@ -232,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WORKER_DATABASE_URL={credentials.rotate_login(conn, os.environ['DATABASE_URL'])}")
     elif args.cmd == "brain":
         return _brain_ops(args, conn, pol)
-    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce"):
+    elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce", "trends"):
         return _brain(args, conn, pol)
     return 0
 
@@ -423,6 +426,24 @@ def produce_tick(conn, pol, llm=None) -> dict:
     return result
 
 
+def _trends(args, conn, pol, llm) -> int:
+    """The trend watcher (manyworlds.research.trends): one tick, or a loop every trends.loop_minutes."""
+    import time
+
+    from .research import trends
+    from .research.scrapecreators import ScrapeCreators
+    src = ScrapeCreators()
+    while True:
+        try:
+            result = trends.tick(conn, pol, llm, src)
+        except Exception as e:  # noqa: BLE001 - the loop keeps going; the error is printed
+            result = {"error": f"{type(e).__name__}: {e}"[:300]}
+        _print(result)
+        if args.action != "loop":
+            return 0
+        time.sleep(60 * float(pol.get("trends", "loop_minutes", default=30)))
+        pol = policy_mod.load()
+
 def _produce(args, conn, pol, llm) -> int:
     import time
 
@@ -460,11 +481,19 @@ def _brain(args, conn, pol) -> int:
         _print({**c, "jobs": conn.execute("SELECT kind, status, count(*) n FROM jobs WHERE creator_id = %s "
                                            "GROUP BY kind, status", (cid,)).fetchall()})
         return 0
+    if args.cmd == "trends" and args.action in ("brief", "spend"):
+        from datetime import datetime as _d, timezone as _z
+        from .research import trends
+        _print(trends.brief(conn, args.market) if args.action == "brief" else
+               {"spent_today": trends.spent_today(conn, _d.now(_z.utc)), "max": pol.get("trends", "daily_usd_max")})
+        return 0
     llm = Claude(conn, pol)
     if args.cmd == "review":
         return _review(args, conn, pol, llm)
     if args.cmd == "produce":
         return _produce(args, conn, pol, llm)
+    if args.cmd == "trends":
+        return _trends(args, conn, pol, llm)
     if args.cmd == "profile":
         from .creator import profile as prof
         cid = _creator_id(conn, args.creator)

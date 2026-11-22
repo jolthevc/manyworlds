@@ -334,6 +334,43 @@ research:
     tiktok: clockworks~tiktok-scraper
   usd_per_1k_items: {instagram: 2.70, tiktok: 1.70}   # for the ledger; check the Apify invoice
 
+# Trend watcher (manyworlds.research.trends; `mw trends tick|loop|brief <niche>|spend`; Fly process `trends`).
+# Owner 2026-11-22: know what is working, hot or cooling, hooks and patterns, at most $3 a day. Off until the owner
+# sets enabled: true. Every cent is in the ledger under agent trends:<stage>; each stage stops at its share.
+# ScrapeCreators bills one credit per request (a search page returns many posts); usd_per_credit is an estimate
+# (its pricing page was unreadable 2026-11-21): check the invoice and correct it.
+trends:
+  enabled: false
+  daily_usd_max: 3.0
+  stage_share: {collect: 0.4, analyze: 0.45, synthesize: 0.15}
+  usd_per_credit: 0.002
+  loop_minutes: 30
+  refresh_hours: 3             # per niche: searches again (posts seen again give velocity)
+  region: US
+  tiktok_date_posted: this-week
+  tiktok_sort_by: relevance
+  instagram_date_posted: last-week
+  trending_feed: true          # TikTok's trending feed too, as niche `_trending`
+  window_days: 7
+  min_outlier: 0.5             # log10 views over the niche median: 0.5 is ~3x the median
+  outliers_per_group: 8        # per niche and platform, per tick
+  controls_per_group: 4        # ordinary posts described too, so winners are compared with something
+  feature_batch: 8
+  usd_per_feature_batch_estimate: 0.01
+  cover_max_bytes: 400000
+  min_n: 5                     # a pattern needs this many outliers behind it
+  min_outliers_for_brief: 10
+  usd_per_brief_estimate: 0.05
+  hook_examples: 12
+  patterns_max: 25
+  findings_per_brief: 6
+  tentative_min_n: 20          # research findings are speculative below this, tentative above; never proven
+  default_market: night routine   # for creators with no market of their own
+  markets:
+    - {name: night routine, queries: [night routine, 4am routine, cozy night in], platforms: [tiktok, instagram]}
+    - {name: talking to camera, queries: [storytime, honest rant, things nobody tells you], platforms: [tiktok, instagram]}
+    - {name: ai creators, queries: [ai influencer, ai generated character], platforms: [tiktok, instagram]}
+
 creator_lab:
   # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
   # with `captions.voice_guide` for how they write.
@@ -614,6 +651,8 @@ llm:
     evaluator_check: claude-opus-5-5 # scores a sample of the same items, to measure agreement
     review: claude-haiku-5-5     # first-pass image screen (manyworlds.review); every image
     comment_reply: {model: qwen4-max, fallback: claude-sonnet-5-5}   # replies in the creator's voice (publish/comments.py); same writing as the showrunner
+    trend_features: {model: qwen3.8-flash, fallback: claude-haiku-5-5}   # describes public posts from cover, caption, speech (research/trends.py)
+    trend_analyst: {model: qwen4-max, fallback: claude-sonnet-5-5}      # the daily niche brief
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

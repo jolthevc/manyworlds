@@ -97,7 +97,7 @@ def report(conn, policy: Policy, batch: str) -> dict[str, Any]:
         projections = {
             name: round(med * float(p["usd_per_hour"]) / 3.6, 4)
             for name, p in policy.get("gpu_pools", default={}).items()
-            if p.get("gpu") == gpu
+            if p.get("gpu") == gpu and p.get("usd_per_hour") is not None   # serverless pools bill per second
         }
         out["measured"].append({
             "kind": kind, "pool": pool, "gpu": gpu, "jobs": len(rs),

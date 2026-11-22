@@ -113,6 +113,10 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         "SELECT body->>'drop_reason' AS why FROM ideas WHERE creator_id = %s AND status = 'dropped' "
         "AND body->>'drop_reason' ~ '^(repetitive feed|unoriginal|[a-z_]+ [0-9.]+ below)' "
         "ORDER BY updated_at DESC LIMIT %s", (creator_id, qa_window)).fetchall()]
+    niche = evidence.niche_trends(conn, creator_id, policy)
+    niche_text = (f"What is working in this niche on public TikTok and Instagram posts right now (other people's posts: "
+                  f"correlation, not proof; use it for hooks, formats and pacing, never copy, and stay in the creator's "
+                  f"voice): {json.dumps(niche)}\n" if niche else "")
     breakouts = events.for_planning(conn, creator_id)
     breakout_text = (f"Recent posts that did far better than usual (a natural follow-up may suit; never a copy): "
                      f"{json.dumps(breakouts)}. " if breakouts else "")
@@ -126,6 +130,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"or captions):\n{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}\n"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
+        f"{niche_text}"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
         f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"

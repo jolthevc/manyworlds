@@ -26,6 +26,8 @@ primary_region = "iad"     # next to Neon us-east-2
   # Jobs a hosted API renders (no GPU): it polls the host and downloads the result. While operations are
   # paused it takes only test and benchmark batches, like the GPU machines.
   hosted = "worker --pool hosted --kinds hosted.video"
+  # The trend watcher (manyworlds.research.trends): runs only while policy trends.enabled; at most trends.daily_usd_max.
+  trends = "trends loop"
 
 [[vm]]
   size = "shared-cpu-1x"
