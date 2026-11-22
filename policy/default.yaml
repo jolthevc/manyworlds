@@ -90,7 +90,8 @@ job_kinds:
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
-  talk.infinitetalk: {pools: [runpod_secure_h100, runpod_secure_l40s_vol, runpod_secure_l40s, vast_5090, vast_4090, runpod_comm_4090, runpod_secure_a40, runpod_comm_3090], outputs_per_job: 1}
+  # fp8 + block swapping fits 24 GB cards: the volume L40S first (weights cached), then by price.
+  talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
@@ -116,9 +117,10 @@ worker_images:
   video: {image: mw-worker-image, tag: v24, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                 MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
-  # talk: Wan2.1-I2V-14B-480P (~82 GB) + adapter (10 GB) + wav2vec, all on the rented machine; 64 GB RAM / 200 GB disk
-  # found no RunPod community capacity (2026-11-20); offloading the 14B model needs ~40-45 GB of RAM.
-  talk: {image: mw-worker-talk, tag: v8, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 150, download_gb: 50,
+  # talk: ComfyUI + WanVideoWrapper (docker/worker-talkcomfy.Dockerfile): fp8-scaled Wan2.1-I2V-14B 480p + InfiniteTalk
+  # adapter (~16 GB), UMT5 text encoder (~11 GB), VAE, lightx2v LoRA; weights cached on the pool's volume if it has one.
+  # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
+  talk: {image: mw-worker-talkcomfy, tag: v1, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -251,18 +253,24 @@ generation:
     # dmd_timesteps: the model card's --dmd-denoising-steps; its default UniPC scheduler at 3 steps gave 0 of 5 passing
     # clips (2026-11-22, ~58 s each on an L40S), so it samples with worker/dmd.py.
     fast: {model: FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers, steps: 3, guidance: 1.0, dmd_timesteps: [1000, 757, 522]}
-  # Lip-sync (talk.infinitetalk): InfiniteTalk's fp8 single-person build at the README's settings (40 steps, text cfg
-  # 5, audio cfg 4). 2026-11-20: the full-precision 14B model was OOM-killed loading on a 48 GB-RAM A40 host; the
-  # int8 LoRA build needs a t5_int8 file its repo doesn't have; there is no single-person fp8 LoRA build, so the
-  # 8-step distill LoRA waits. Unmeasured until the benchmark.
+  # Lip-sync (talk.infinitetalk) on ComfyUI + WanVideoWrapper (worker image mw-worker-talkcomfy, worker/comfy.py):
+  # fp8-scaled InfiniteTalk with the 4-step lightx2v LoRA and SageAttention, at Kijai's example settings (6 steps,
+  # cfg 1, shift 11, dpm++_sde, 81-frame windows, 9 motion frames). 480x832 is 9:16 at 480p; the approved photo is
+  # cover-cropped to it. Cards under swap_below_gb swap blocks_to_swap transformer blocks to the CPU. The research
+  # script's settings (InfiniteTalk's own repo, image mw-worker-talk) are kept below as talk_profiles.script.
   talk:
-    size: infinitetalk-480
-    steps: 40
-    text_cfg: 5.0
-    audio_cfg: 4.0
-    extra: ["--quant", "fp8", "--quant_dir", "{infinitetalk}/quant_models/infinitetalk_single_fp8.safetensors",
-            "--num_persistent_param_in_dit", "0"]
-    motion_frame: 9              # frames carried between streaming chunks (README value)
+    width: 480
+    height: 832
+    steps: 6
+    cfg: 1.0
+    shift: 11.0
+    scheduler: dpm++_sde
+    audio_scale: 1.0
+    audio_cfg: 1.0
+    frame_window: 81
+    motion_frame: 9
+    swap_below_gb: 40
+    blocks_to_swap: 20
     timeout_s: 3000              # one render; the attempt limit (gpu_runs, talk: 90 min) also covers the download
     voice: af_heart
   # Settings to benchmark against `talk` (mw bench talk.infinitetalk --profile NAME), merged over it. fast: the
