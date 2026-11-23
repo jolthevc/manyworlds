@@ -183,7 +183,7 @@ def test_a_run_makes_only_its_own_posts_in_an_urgent_test_batch_and_resumes(conn
                         (out["run"],)).fetchone()["n"] == 2
     # paused machines may take the run's batch
     patterns = operations.test_batch_patterns(pol)
-    job = queue.claim(conn, ["image.zimage"], "w1", 60, pool=None, batches=patterns)
+    job = queue.claim(conn, ["image.zimage"], "w1", 60, pool="runpod_comm_3090", batches=patterns)
     assert job is not None and job.batch == batch
     rep = breadth.report(conn, pol, out["run"], store=store, probe=False)
     assert {i["id"] for i in rep["items"]} == set(items)
