@@ -393,6 +393,33 @@ def unix_transport(socket_path: str, timeout: float = 60):
     return call
 
 
+FLY_MACHINES_API = "api.machines.dev"
+
+
+def token_transport(token: str, timeout: float = 60, host: str = FLY_MACHINES_API):
+    """HTTPS to Fly's public Machines API with an app-scoped token (Fly secret FLY_API_TOKEN, a deploy token for this
+    app only): call(method, path, body) -> the JSON answer. The in-machine proxy (/.fly/api) answers 403 to an app
+    listing its own machines (2026-11-23), so starting the finisher needs this. Errors never carry the token."""
+    def call(method: str, path: str, body: dict | None = None):
+        import http.client
+
+        conn = http.client.HTTPSConnection(host, timeout=timeout)
+        try:
+            conn.request(method, path, body=json.dumps(body).encode() if body is not None else None,
+                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                  "Accept": "application/json", "User-Agent": USER_AGENT})
+            r = conn.getresponse()
+            status, raw = r.status, r.read()
+        except OSError as e:
+            raise ProviderError(f"{method} {path} -> {type(e).__name__}") from None
+        finally:
+            conn.close()
+        if status >= 300:
+            raise ProviderError(redact(f"{method} {path} -> {status}: {raw.decode(errors='replace')[:1500]}"))
+        return json.loads(raw) if raw.strip() else None
+    return call
+
+
 class FlyMachines:
     """Machines of this Fly app (the finisher: fly.toml process group `finisher`), through the in-machine Machines API
     proxy (/.fly/api, http://flaps/v1/apps/<app>/machines). `launch` starts a STOPPED machine of the pool's process
@@ -411,10 +438,12 @@ class FlyMachines:
         self._transport = transport
 
     def configured(self) -> bool:
-        return bool(self.app) and (self._transport is not None or os.path.exists(self.socket_path))
+        return bool(self.app) and (self._transport is not None or bool(os.environ.get("FLY_API_TOKEN"))
+                                   or os.path.exists(self.socket_path))
 
     def _req(self, method: str, path: str, body: dict | None = None):
-        call = self._transport or unix_transport(self.socket_path)
+        token = os.environ.get("FLY_API_TOKEN")
+        call = self._transport or (token_transport(token) if token else unix_transport(self.socket_path))
         return call(method, f"/v1/apps/{self.app}{path}", body)
 
     @staticmethod

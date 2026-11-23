@@ -153,8 +153,8 @@ def test_the_handler_renders_under_the_producers_policy(raw_policy):
         handler.finish({"post": {}}, None, policy=raw_policy)
 
 
-def test_finishing_is_queued_by_default(raw_policy, policy):
-    assert production.finish_mode(raw_policy) == "queue"
+def test_finishing_ships_inline_until_the_finisher_can_be_started(raw_policy, policy):
+    assert production.finish_mode(raw_policy) == "inline"                     # until FLY_API_TOKEN (owner)
     assert production.finish_mode(policy) == "inline"                         # tests advance in one process
     assert raw_policy.pool("fly_finisher")["provider"] == "fly"
     assert raw_policy.get("job_kinds", production.FINISH_KIND, "pools") == ["fly_finisher"]
@@ -382,3 +382,17 @@ def test_the_finisher_works_only_for_an_open_run(conn, database_url):
     assert cli._open_run("mw-finish-fly-t1", connect)
     conn.execute("UPDATE gpu_groups SET stopped_at = now(), stop_reason = 'idle' WHERE name = 'mw-finish-fly-t1'")
     assert not cli._open_run("mw-finish-fly-t1", connect)
+
+
+def test_the_fly_adapter_uses_an_app_token_when_there_is_one(monkeypatch):
+    from manyworlds.deploy import providers
+    seen = {}
+
+    def fake(token, timeout=60, host=providers.FLY_MACHINES_API):
+        seen["token"] = token
+        return lambda method, path, body=None: [{"id": "m1", "state": "stopped",
+                                                 "config": {"metadata": {"fly_process_group": "finisher"}}}]
+    monkeypatch.setattr(providers, "token_transport", fake)
+    monkeypatch.setenv("FLY_API_TOKEN", "t0k")
+    fly = providers.FlyMachines(["finisher"], app="mw-test", socket_path="/nonexistent")
+    assert fly.configured() and fly.list_live() == {} and seen["token"] == "t0k"
