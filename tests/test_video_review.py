@@ -165,8 +165,8 @@ def test_a_story_clip_is_graded_with_no_captions_and_gets_a_cover_from_its_keyfr
     from manyworlds import captions, finishing
     calls = []
 
-    def fake_finish(video, out, *, look, grain=None, hook_ass=None, policy, timeout=None):
-        calls.append(hook_ass)
+    def fake_finish(video, out, *, look, grain=None, hook_ass=None, ass=None, has_voice=True, policy, timeout=None, **_):
+        calls.append(ass or hook_ass)
         out.write_bytes(b"graded")
         return out
     monkeypatch.setattr(finishing, "finish", fake_finish)

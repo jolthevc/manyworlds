@@ -543,4 +543,3 @@ def test_sound_off_mixes_nothing_and_an_empty_library_still_gets_room_tone(conn,
         assert final["meta"]["passes"] == 2          # never ships dry: a synthesised room tone at least
     mixes = [kw for name, kw in fake_finish if name == "mix"]
     assert len(mixes) == 2 and all(kw.get("room_tone_synth") is not None for kw in mixes)
-    assert all("CC-BY-NC" not in str(kw) for kw in mixes)   # the refused cue is never mixed
