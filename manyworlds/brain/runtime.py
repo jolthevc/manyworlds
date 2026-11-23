@@ -18,7 +18,7 @@ import psycopg
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from .. import operations, queue
+from .. import logs, operations, queue
 from ..policy import Policy
 from ..worker.runner import NonRetryable
 from . import agent as agent_mod
@@ -68,6 +68,11 @@ def _context_policy(conn, policy: Policy) -> Policy:
 
 
 def run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: datetime, lease_s: int = 600) -> dict:
+    with logs.context(job_id=job.id, kind=job.kind, creator_id=job.creator_id):   # every line names the agent's job
+        return _run_job(conn, policy, llm, job, worker_id=worker_id, now=now, lease_s=lease_s)
+
+
+def _run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: datetime, lease_s: int) -> dict:
     name = job.kind.removeprefix("brain.")
     try:
         a = agent_mod.get(name)

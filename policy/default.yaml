@@ -1594,9 +1594,9 @@ production:
   # Where a video post's finish (production.finish: mix, grade, captions, cover) renders: `queue`, a finish.video job on the
   # finisher (a Fly machine the autoscaler starts; gpu_pools.fly_finisher), so minutes of 1080x1920 encodes never block
   # the producer's loop or its 512 MB VM; `inline`, in the producer's own tick (as before 2026-11-23).
-  # inline until the finisher can be started: the in-machine API proxy refuses (403), so the autoscaler needs an
-  # app-scoped Fly token (secret FLY_API_TOKEN, owner's decision); then switch to queue after one checked start/stop.
-  finish_mode: inline
+  # queue since 2026-11-23: the autoscaler starts the finisher with an app-scoped deploy token (Fly secret
+  # FLY_API_TOKEN; the in-machine API proxy answers 403); one start/stop checked live the same day.
+  finish_mode: queue
 
 # Finishing (manyworlds.finishing, 2026-11-22): grade, grain, hook text, loudness and the cover frame of a finished
 # video: production's finish stage (production.finish; on the finisher machine while production.finish_mode is queue)

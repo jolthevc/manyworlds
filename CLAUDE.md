@@ -107,7 +107,8 @@ applies migrations at start. Never start a second autoscaler anywhere else.
   logs with post/job ids (`logs.py`); producer and reviewer wake on job/review notifications (`wakeup.py`,
   migration 033, Neon's direct endpoint); richer director context with a cached static brief; reliability fixes
   (poison posts, failing reviews, lost leases, retry backoff). Finishing can run as `finish.video` on an on-demand
-  Fly finisher, but ships `inline` until an app-scoped `FLY_API_TOKEN` lets the autoscaler start it.
+  Fly finisher (`finish_mode: queue` since 2026-11-23, started with an app-scoped `FLY_API_TOKEN`; no real video
+  finished on it yet).
 - 2026-11-24: a three-way review (pipeline seams, agency bugs, creative gaps) and its fixes: clear passes are
   chosen, real metrics reach analysis, accepted requests have effects, model memory is freed on a family switch.
   Built the style layer (style director, aesthetics library, aspirational faceless shots, branded carousel
@@ -115,5 +116,5 @@ applies migrations at start. Never start a second autoscaler anywhere else.
 - 2026-11-23 night: the agency layer (requests, rights, tiers, predictions, market lead, chief of staff) built and
   deployed; talent manager and two-call director verified live on a sandbox clone ($0.53 of Claude in total).
 - Waiting on the owner: the breadth test (`mw test breadth --plan default`, ~$5-9, needs RunPod or Vast credit and
-  the owner's go); connecting an Instagram account; `NTFY_TOPIC`, `FLY_API_TOKEN` in GitHub; `MW_HASH_SALT` and a
+  the owner's go); connecting an Instagram account; `NTFY_TOPIC`, `FLY_API_TOKEN` in GitHub (deploys); `MW_HASH_SALT` and a
   bucket-scoped R2 token for workers (tech debt).

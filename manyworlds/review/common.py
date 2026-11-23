@@ -9,6 +9,7 @@ from typing import Callable
 
 from psycopg.types.json import Jsonb
 
+from .. import logs
 from ..storage import ObjectStore
 
 log = logging.getLogger("manyworlds.review")
@@ -137,7 +138,9 @@ def run_jobs(job_ids: list, review: Callable[[object, Path], list[dict]], workdi
         jd = Path(workdir) / f"{prefix}{job_id}"
         jd.mkdir(parents=True, exist_ok=True)
         try:
-            for r in review(job_id, jd):
+            with logs.context(job_id=job_id):   # every line of this review names its job
+                rs = list(review(job_id, jd))
+            for r in rs:
                 accepted += r["accepted"]
                 rejected += not r["accepted"]
         except Exception as e:  # noqa: BLE001

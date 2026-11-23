@@ -8,9 +8,9 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 | Item | Why it matters | Where |
 |---|---|---|
 | ~~production.py is ~2,000 lines; its workflow state is ~37 untyped keys in posts.body~~ (split into the production/ package; every body key declared in production/state.py and checked by a test; a lease row per post in advance) | the keys still live flat in posts.body beside the brief (live rows); moving them into a typed `body.production` needs a data migration | `manyworlds/production/` |
-| The finisher can't be started yet: the in-machine Fly API proxy answers 403 | `production.finish_mode` stays inline (finishing in the producer's loop) until an app-scoped Fly token is set as secret FLY_API_TOKEN and one start/stop is checked | `deploy/providers.FlyMachines` |
+| ~~The finisher can't be started yet~~ (app-scoped deploy token set as Fly secret FLY_API_TOKEN 2026-11-23; start, own-group read and the enforcer's stop checked live; finish_mode queue) | it has not finished a real video yet: the first video post is the check | `deploy/providers.FlyMachines` |
 | No Message Batches API for off-critical-path LLM calls | brain agents, evaluator and shadow tests could run at ~half price | `llm.py` |
-| The image worker's Python deps are open ranges | a rebuild can pull a new diffusers and break Z-Image only on a rented GPU; pin with a constraints file like talkcomfy | `docker/worker.Dockerfile`, `pyproject.toml`, `setup-flyctl@master` |
+| The image worker's Python deps are open ranges | a rebuild can pull a new diffusers and break Z-Image only on a rented GPU; pin with a constraints file like talkcomfy | `docker/worker.Dockerfile`, `pyproject.toml` (setup-flyctl pinned to 1.6 by SHA 2026-11-23) |
 | No critic-revise loop for ideas near the QA floor | the evaluator's why could rewrite a borderline idea for one small call instead of dropping it | showrunner, `evaluation.py` |
 | The GPU backstop runs on GitHub Actions (free: the repo is public) | GitHub cron can be delayed or dropped; a Cloudflare Worker cron (same account as R2) plus a Healthchecks.io dead-man ping would be more independent | `.github/workflows/gpu-enforcer.yml` |
 | The RunPod key in GitHub secrets is expired (401 since 2026-11-23) | the backstop can't see RunPod machines; rotate it (owner) | GitHub secrets |

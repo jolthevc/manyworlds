@@ -219,3 +219,16 @@ def test_listen_uses_the_direct_endpoint_not_the_pooler():
     assert db.direct_url(pooled) == "postgresql://u:p@ep-cool-name-123456.us-east-2.aws.neon.tech/mw?sslmode=require"
     plain = "postgresql://mw:mw@db:5432/mw"
     assert db.direct_url(plain) == plain
+
+
+def test_each_review_job_logs_under_its_own_job_id(tmp_path):
+    from manyworlds.review import common
+
+    seen = []
+
+    def review(job_id, jd):
+        seen.append(logs.current().get("job_id"))
+        return [{"accepted": True}]
+
+    common.run_jobs(["j1", "j2"], review, tmp_path)
+    assert seen == ["j1", "j2"] and "job_id" not in logs.current()

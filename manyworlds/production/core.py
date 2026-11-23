@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 
-from .. import queue
+from .. import logs, queue
 from ..policy import Policy
 from .common import _cfg, _set, log
 from .finish import _advance_finish, _advance_upscale, _finish_failed, finish_mode, finish_video
@@ -160,7 +160,8 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
         try:
             # One producer per post (production.locks): another producer's post is skipped this tick, and the row
             # is read again under the lease, so a post started meanwhile is not started twice.
-            with post_lease(conn, policy, post["id"]) as held:
+            with (logs.context(post_id=post["id"], creator_id=post["creator_id"]),
+                  post_lease(conn, policy, post["id"]) as held):
                 if not held:
                     out["locked"] = out.get("locked", 0) + 1
                     continue
@@ -179,7 +180,8 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
         try:
             # advance_post writes the whole body back: under the post's lease, from the row as it is now (another
             # producer may have advanced it since the list above was read). A post another producer holds waits.
-            with post_lease(conn, policy, post["id"]) as held:
+            with (logs.context(post_id=post["id"], creator_id=post["creator_id"]),
+                  post_lease(conn, policy, post["id"]) as held):
                 if not held:
                     out["locked"] = out.get("locked", 0) + 1
                     continue

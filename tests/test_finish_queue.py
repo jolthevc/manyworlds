@@ -153,8 +153,8 @@ def test_the_handler_renders_under_the_producers_policy(raw_policy):
         handler.finish({"post": {}}, None, policy=raw_policy)
 
 
-def test_finishing_ships_inline_until_the_finisher_can_be_started(raw_policy, policy):
-    assert production.finish_mode(raw_policy) == "inline"                     # until FLY_API_TOKEN (owner)
+def test_finishing_ships_on_the_finisher(raw_policy, policy):
+    assert production.finish_mode(raw_policy) == "queue"                      # FLY_API_TOKEN set 2026-11-23
     assert production.finish_mode(policy) == "inline"                         # tests advance in one process
     assert raw_policy.pool("fly_finisher")["provider"] == "fly"
     assert raw_policy.get("job_kinds", production.FINISH_KIND, "pools") == ["fly_finisher"]
