@@ -43,9 +43,11 @@ def _creator_with_profile(conn, policy):
     conn.execute("UPDATE creators SET status = 'active', bible = %s WHERE id = %s",
                  (Jsonb({"display_name": "Isla", "appearance": {"ethnicity_and_skin": "fair skin",
                                                                 "signature_details": "a thin gold ring"}}), cid))
-    conn.execute("INSERT INTO creator_profiles (creator_id, version, body, author, reason) "
-                 "VALUES (%s, 1, %s, 'test', 'seed')", (cid, Jsonb({"persona": {"never": []}})))
-    conn.execute("UPDATE creators SET profile_version = 1 WHERE id = %s", (cid,))
+    body = {"identity": {"apparent_age": 27}, "look": {"hair": "bob", "wardrobe": "knits", "accessories": "a watch",
+                                                      "makeup": "none", "signature_item": "a thin gold ring"},
+            "persona": {"traits": ["warm"], "vibe": "quiet", "ethos": "e", "humour": "h", "caption_voice": "c",
+                        "speaking_voice": "s", "never": []}, "dials": {}}
+    profile_mod.save(conn, policy, cid, body, author="test", reason="seed")
     return cid
 
 

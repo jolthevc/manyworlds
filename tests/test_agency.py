@@ -118,7 +118,8 @@ def test_predictions_are_scored_against_real_outcomes_and_make_a_scorecard(conn,
     for i, reach in enumerate((600, 800, 700)):
         _published(conn, cid, reach, NOW + timedelta(days=2 + i))
     assert predictions.resolve_due(conn, policy, now=NOW + timedelta(days=5))["resolved"] == 0   # not due yet
-    out = predictions.resolve_due(conn, policy, now=NOW + timedelta(days=15))
+    assert predictions.resolve_due(conn, policy, now=NOW + timedelta(days=15))["resolved"] == 0  # window not mature
+    out = predictions.resolve_due(conn, policy, now=NOW + timedelta(days=18))
     assert out["resolved"] == 2
     rows = {r["id"]: r for r in conn.execute("SELECT id, outcome, observed, brier FROM predictions").fetchall()}
     assert rows[sure]["outcome"] is True and float(rows[sure]["observed"]) == 700

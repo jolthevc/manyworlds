@@ -3,6 +3,22 @@
 Known issues we chose not to fix yet, with when they must be fixed. "Before X" means the
 capability X does not go live until the item is closed. Updated 2026-11-14 (Brain M1 merge).
 
+## Noted 2026-11-24 (the three-way review and the style layer)
+
+| Item | Why it matters | Where |
+|---|---|---|
+| The director's shot schema gained `shot_type`; the grammar-size limit has not been re-checked | if the strict schema is too large again, every post goes undirected; one director call on a sandbox clone checks it | `direction.DirectedShots` |
+| The style director has never run against a real model | its style, world and season are tested with fixed answers only; read the first one before it steers production | `brain/agents/style_director.py` |
+| Anchor sets get their canonical description from the first shot that names them, not from the style director's room | the director is given the room, so they agree in practice | `creator/sets.py` |
+| Talking videos and narrated edits are still off in production.formats (breadth test only) | talk-led archetypes (storyteller, GRWM, educator) can't make their main content until they are switched on | policy `production.formats` |
+| The sound library is empty: beds and effects are synthesized noise | silent clips and edits have no music or Foley; seed licensed CC0 beds and effects | policy `sound.library` |
+| Comments never feed planning; series have no episode state | months-long continuity (callbacks, "part 2", what the audience asked) is missing | `publish/comments.py`, showrunner |
+| Within-post consistency (the room and light drifting between shots) waits for reference conditioning | `sets.reference_conditioning` is off until `image.qwen_edit` is benchmarked | `creator/sets.py` |
+| Research discovery runs only by hand (`mw discover`) | the CEO launches only from theses someone made, or accepted cohorts | `brain/discover.py` |
+
+Closed 2026-11-24: accepted cohort requests become proposed theses; requests waiting on the owner no longer block a
+creator; the experiment learning test is de-flaked.
+
 ## Noted 2026-11-23 (overnight build and the review of waves 1-2)
 
 | Item | Why it matters | Where |
@@ -11,7 +27,6 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 | The no-output guard counts a machine as failed when it tried work and finished none; a machine cut off by an interruptible host mid-first-job also counts | at worst it holds a family until the window passes or a new image tag ships, and tells the owner | `manyworlds/deploy/autoscale.py` |
 | The talent manager has never run against a real model | its dossier sections and weekly briefs are tested with stubs only; the first real onboarding should be read by the owner before any brief steers production | `brain/agents/talent_manager.py`, `creator/dossier.py` |
 | Market leads have no live test and no creator has a market yet (creators.market_id is never set at launch) | the lead activates only for markets with 3+ creators; set the market from the thesis at launch | `brain/launches.py`, `agents/market_lead.py` |
-| Accepted cohort requests are recorded but do not create theses or launches | the CEO still launches from theses; a cohort should become theses for the launch flow | `brain/proposals.py`, `brain/agents/strategist.py` |
 | Paid idle time is not yet filled with useful work (extra takes, best-of-N candidates) | a warm machine that drains its queue idles until the idle stop; filling it would turn already-paid minutes into quality | `worker/runner.py`, `deploy/autoscale.py` |
 | Memory floors (`job_kinds.<kind>.min_vram_gb`) are set only for Wan-Animate-2 | Z-Image's OOMs on 24 GB consumer cards may need a floor or a free-memory check; set others once measured | policy `job_kinds` |
 | A narrated edit's labels are timed as if photos split the video evenly | labels drift from their photo (narrated_edit is not in production.formats today) | `production.shot_spans` |

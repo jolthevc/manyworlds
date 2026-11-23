@@ -44,9 +44,19 @@ def library(policy: Policy | None = None) -> dict:
     if not path.exists():
         return {"version": None, "shots": {}, "subjects": {}, "grades": {}, "rules": {}, "templates": {}}
     lib = _load(str(path), hashlib.sha256(path.read_bytes()).hexdigest())
-    return {"version": lib.get("version") or name, "shots": lib.get("shots") or {}, "subjects": lib.get("subjects") or {},
+    shots = {k: {**v, "face": _face(v.get("face"))} for k, v in (lib.get("shots") or {}).items()}
+    return {"version": lib.get("version") or name, "shots": shots, "subjects": lib.get("subjects") or {},
             "grades": lib.get("grades") or {}, "rules": lib.get("rules") or {}, "templates": lib.get("templates") or {},
             "photo_dump": lib.get("photo_dump") or []}
+
+
+def _face(v) -> str:
+    """YAML 1.1 reads a bare yes/no as a boolean; the library means the words."""
+    if v is True:
+        return "yes"
+    if v is False:
+        return "no"
+    return str(v or "no")
 
 
 def shot(policy: Policy | None, name: str) -> dict | None:

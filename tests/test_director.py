@@ -83,9 +83,9 @@ def test_one_shot_per_scene(conn, policy):
 def test_shots_that_break_the_voice_rules_are_refused(conn, policy):
     cid = creator(conn)
     salesy = {**CANAL, "edit": {"on_screen_text": "drop a comment if you agree"}}
-    with pytest.raises(ValueError, match="read as AI"):
-        director.direct(conn, policy, DirectorLLM({"shots": [salesy]}, conn=conn), {"scenes": ["a"]}, cid,
-                        fmt="photo")
+    [shot] = director.direct(conn, policy, DirectorLLM({"shots": [salesy]}, conn=conn), {"scenes": ["a"]}, cid,
+                             fmt="photo")
+    assert "comment" not in str(shot["edit"]) and shot["set"]["location"]       # edit cleared, shot kept
 
 
 def _says(*texts, **kw):
@@ -230,9 +230,9 @@ def test_overlay_items_keep_the_voice_rules(conn, policy):
     cid = creator(conn)
     salesy = {**CANAL, "edit": {"on_screen_text": [{"kind": "label", "text": "fine"},
                                                     {"kind": "question", "text": "drop a comment below"}]}}
-    with pytest.raises(ValueError, match="read as AI"):
-        director.direct(conn, policy, DirectorLLM({"shots": [salesy]}, conn=conn), {"scenes": ["a"]}, cid,
-                        fmt="story_clip")
+    [shot] = director.direct(conn, policy, DirectorLLM({"shots": [salesy]}, conn=conn), {"scenes": ["a"]}, cid,
+                             fmt="story_clip")
+    assert "comment" not in str(shot["edit"])                                  # the overlay went with the edit
 
 
 def test_direction_can_be_switched_off(conn, policy):
