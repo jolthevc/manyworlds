@@ -43,9 +43,10 @@ GATES = ("identity", "realism", "safety")
 
 class CandidateReview(BaseModel):
     index: int = Field(description="0-based candidate index")
-    identity: int = Field(description="10 = unmistakably the same person as the REFERENCE photos: "
-                          "face shape and features, apparent age, skin, hair, and signature details; "
-                          "0 = a different person. A missing signature detail (e.g. glasses) costs at least 3")
+    identity: int = Field(description="is this the same PERSON as the REFERENCE photos, judged by the face: "
+                          "10 = unmistakably her (face shape and features, apparent age, skin); 0 = a different "
+                          "person. Clothes, hats, hairstyle, props, pose, framing and setting never lower it: "
+                          "those are the scene, not the person. A visible signature detail that is wrong costs 1-2")
     realism: int = Field(description="10 = indistinguishable from an ordinary smartphone photo; "
                          "deduct for warped hands or anatomy, garbled text, plastic skin, rendering artifacts")
     defects: list[str] = Field(description="concrete visible problems, empty if none")
@@ -200,6 +201,15 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True) for g in detail.JUDGED)
             if res["accepted"]:
                 still.append(a)
+        # A screen pass that clears every bar by `clear_pass_margin` needs no paid confirm (as for clips): only
+        # close calls are worth the stronger model.
+        if stage == "screen" and len(stages) > 1 and cfg.get("clear_pass_margin") is not None:
+            m = int(cfg["clear_pass_margin"])
+            for a in list(still):
+                res = results[a["id"]]
+                if (res["identity_score"] is None or res["identity_score"] >= int(cfg.get("min_identity", 7)) + m)                         and (res["realism_score"] or 0) >= int(cfg.get("min_realism", 6)) + m:
+                    res["clear_pass"] = True
+                    still.remove(a)
         # Only the best screen passes are worth a confirm: a post uses its top candidates.
         # The rest stay accepted on the screen alone ("confirmed": False).
         top = int(cfg.get("confirm_top_per_job", 0)) or len(still)
@@ -208,7 +218,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     if write:
         common.write_rows(conn, rows)
     for r in results.values():
-        r["confirmed"] = r["accepted"] and len(r["stages"]) == len(stages)
+        r["confirmed"] = r["accepted"] and (len(r["stages"]) == len(stages) or bool(r.get("clear_pass")))
     return [results[a["id"]] for a in assets]
 
 

@@ -33,3 +33,11 @@ def test_no_identity_gate_for_a_faceless_shot():
     assert "identity" in gates.gates_for("a kitchen", FACE)
     assert "identity" not in video.gates_for("a kitchen", POV)
     assert "identity" in video.gates_for("a kitchen", FACE)
+
+
+def test_props_beyond_the_feasible_number_are_cut_from_the_prompt(policy):
+    cap = policy.get("direction", "feasibility", "max_props")
+    shot = {**FACE, "set": {"location": "a small kitchen", "props": "a mug, a kettle, a cat, a scarf, a lamp"}}
+    prompt = direction.compile_prompt(shot, BIBLE, "photo", policy)
+    kept = ["a mug", "a kettle", "a cat", "a scarf", "a lamp"][:cap]
+    assert all(p in prompt for p in kept) and "a lamp" not in prompt

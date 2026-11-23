@@ -223,9 +223,13 @@ review:
     # Opus cost $0.012 per image (17x the image itself), Haiku $0.0003.
     role: review
     effort: low
-    confirm_role: judge
+    # Owner 2026-11-22: once an image exists only defects in the media kill it, and judging must cost far less than
+    # making: the confirm is Sonnet (review_confirm), only for close calls (a screen pass by clear_pass_margin on
+    # identity and realism skips it), and at most the best one per job.
+    confirm_role: review_confirm
     confirm_effort: low
-    confirm_top_per_job: 2     # Opus confirms the best 2 screen passes per job (one prompt); 0 = all
+    confirm_top_per_job: 1
+    clear_pass_margin: 2
     # 2026-11-19 (owner): keep images unless the face is clearly someone else (identity 5 = recognisably her,
     # small drift) or there are clear AI defects (realism 5 = passes a casual scroll). Scene fit only ranks
     # candidates (min_scene 0): rejecting on it threw away 9 in 10 of Maren's images.
@@ -241,7 +245,7 @@ review:
   video:
     role: review               # screen every clip...
     effort: low
-    confirm_role: judge        # ...confirm the ones it passed
+    confirm_role: review_confirm   # ...confirm the close calls it passed (Sonnet; Opus was ~$0.05 a clip)
     confirm_effort: low
     keyframes: 4               # spread over the clip, ending on the last frame
     min_identity: 6            # in the worst keyframe (video drift compounds; a notch stricter than photos)
@@ -268,7 +272,9 @@ review:
   # beats and scores `direction` 1-10 on rubric policy/rubrics/direction-v<n>.yaml; below min_score it is rejected
   # (gate `direction`). Undirected outputs are judged as before.
   direction:
-    min_score: 6
+    # Report-only (owner 2026-11-22): whether the output followed the brief is scored and learned from, never a reason
+    # to throw away good media; the brief is checked before any GPU instead (direction.feasibility, the director).
+    min_score: 0
     rubric: direction
   # Finer checks (manyworlds.review.detail, 2026-11-22). Each has a switch (`enabled`: measured and recorded as its
   # own review row) and `enforce` (only then can it reject; a row that isn't enforced is written passed, with
@@ -1324,6 +1330,9 @@ direction:
   # For a target without a negative channel: the positive phrasing that stands in for a negative (Z-Image photos).
   # An item without one is dropped. Mirrors and text have none on purpose: "a plain wall behind the person" on every photo
   # would flatten the ordinary rooms the research asks for, and any wording of "text" asks for text.
+  # The checkpoint before any GPU (owner 2026-11-22: make sure the brief is drawable before paying to draw it; after
+  # media only defects kill). Props beyond max_props are cut from the prompt; the director is told the same.
+  feasibility: {max_props: 2}
   positive_instead_of:
     logos: "unbranded clothes and objects"
     extra people: "the only person in the frame"
@@ -1392,6 +1401,7 @@ direction:
   # (docs/research/2026-11-23-readiness-and-craft.md; graded sources in the craft notes). Short: they go in every call.
   director:
     craft:
+      - "Every shot is drawable in one frame: one action, at most two named props, one place; what a picture can't show (a smell, a backstory, a thought) belongs in the caption or the voice, never the scene."
       - "The first frame is moving (a hand, hair, a step, a door, a spin) or beautiful (an aesthetic plate), never a still face starting to talk."
       - "The hook is on screen in the first second as hook text, and is the most surprising line or a story tease, never a greeting."
       - "Eyes to the lens on the hook and the punchlines; motivated glances (hands, mirror, the path ahead) between; never a fixed stare."
@@ -1817,6 +1827,8 @@ llm:
     research: claude-opus-5-5
     creator: claude-opus-5-5
     judge: claude-opus-5-5
+    # The paid second look at close calls (review.image/video.confirm_role) and the finished-file review.
+    review_confirm: claude-sonnet-5-5
     # Qwen4-Max since 2026-11-22 (owner): blind-judged 5.21 vs Opus 5.15 over 7 batches, no voice-rule breaks, all
     # valid, at a third of the cost. Sonnet answers if it fails; Opus stays as a 10% shadow (llm.shadow.showrunner).
     showrunner: {model: qwen4-max, fallback: claude-sonnet-5-5}   # post ideas, captions, scripts (brain/agents/showrunner.py)

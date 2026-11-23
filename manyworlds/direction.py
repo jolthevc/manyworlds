@@ -581,12 +581,23 @@ def _wardrobe(s: ShotSheet) -> str:
                   f"makeup {lk.makeup}" if lk.makeup.strip() else "", lk.skin_state])
 
 
-def _set(s: ShotSheet, video: bool, scene: str) -> str:
+def feasible_props(props: str, policy: Any = None) -> str:
+    """The shot's props cut to policy `direction.feasibility.max_props` (comma-separated, first ones kept): an image
+    model draws one or two named objects reliably; a fifth one is where scenes failed review (2026-11-22: 341 of
+    596 real-post images missed their scene, mostly on props). Free, and checked before any GPU time."""
+    cap = (_policy(policy, "direction", "feasibility", default={}) or {}).get("max_props") if policy is not None else None
+    if not cap:
+        return props
+    parts = [p.strip() for p in props.split(",") if p.strip()]
+    return ", ".join(parts[:int(cap)])
+
+
+def _set(s: ShotSheet, video: bool, scene: str, policy: Any = None) -> str:
     st = s.set
     people = (f"{st.background_people} {'person' if st.background_people == 1 else 'people'} in the background"
               if st.background_people > 0 else "")
     set_ = _join([st.location, st.time_of_day, st.season, st.weather, _lighting(st), st.practical_lights,
-                  st.set_dressing, st.props, st.background_action if video else "", people,
+                  st.set_dressing, feasible_props(st.props, policy), st.background_action if video else "", people,
                   f"{st.depth_of_field} depth of field" if st.depth_of_field.strip() else "",
                   f"same as before: {s.continuity.carry_over}" if s.continuity.carry_over.strip() else ""])
     if not st.location.strip() and scene.strip():
@@ -756,7 +767,7 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
     # eyes and idle movement only in video with the creator in shot; both empty leave the action as it was
     action = _join([_join([beats, perf]), _eyes(s, target, policy), _idle(s, target, policy)], "; ")
 
-    set_ = _set(s, video, scene)
+    set_ = _set(s, video, scene, policy)
     style = _style(s, target, policy)
 
     # Sound is for the mix (the shot sheet keeps it): the video models cannot render it, so by default no target's

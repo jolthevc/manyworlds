@@ -49,7 +49,12 @@ def policy(raw_policy):
         # the finish stage (grade, grain, burned-in captions) off: most tests stand in fake bytes for videos;
         # the finish tests (test_production.py, test_talk_long.py, test_edit.py) turn it on
         "finishing": {**raw_policy.body["finishing"], "enabled": False},
-        "burned_captions": {**raw_policy.body["burned_captions"], "enabled": False}})
+        "burned_captions": {**raw_policy.body["burned_captions"], "enabled": False},
+        # the image confirm runs on every screen pass the old way (test_review.py tests clear passes and the
+        # report-only direction gate itself); the direction gate rejects below 6, as it did when it was enforced
+        "review": {**raw_policy.body["review"],
+                   "image": {**raw_policy.body["review"]["image"], "clear_pass_margin": None, "confirm_top_per_job": 2},
+                   "direction": {**raw_policy.body["review"]["direction"], "min_score": 6}}})
 
 
 @pytest.fixture()

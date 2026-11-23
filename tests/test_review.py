@@ -268,3 +268,22 @@ def test_an_image_in_a_breadth_batch_is_judged_under_the_test_overlay(conn, poli
     conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"scene": "at a rainy bus stop", "shot": SHOT}), job))
     [r] = gates.review_job(conn, policy, JudgeStub([ok(direction=1)], confirm=[ok(direction=1)]), store, job, tmp_path)
     assert r["accepted"] and r["direction"] is True          # report-only in the overlay; production rejects a 1
+
+
+def test_a_clear_screen_pass_skips_the_paid_confirm_and_scene_never_rejects(conn, raw_policy, store, tmp_path):
+    """Shipped policy (owner 2026-11-22): once an image exists only media defects kill it, and the stronger model
+    only sees close calls: a screen pass by clear_pass_margin on identity and realism is accepted without it."""
+    from manyworlds import policy as policy_mod
+    pol = policy_mod.from_dict({**raw_policy.body, "operations": {**raw_policy.body["operations"], "mode": "live"},
+                                "llm": {**raw_policy.body["llm"], "shadow": {}}})
+    cfg = pol.get("review", "image")
+    assert cfg["confirm_role"] == "review_confirm" and pol.get("review", "direction", "min_score") == 0
+    _, job = creator_with_job(conn, store, tmp_path, n_images=2)
+    m = int(cfg["clear_pass_margin"])
+    clear = ok(identity=int(cfg["min_identity"]) + m, realism=int(cfg["min_realism"]) + m, scene=0)
+    close = ok(identity=int(cfg["min_identity"]), realism=int(cfg["min_realism"]) + m)
+    judge = JudgeStub([clear, close])
+    results = gates.review_job(conn, pol, judge, store, job, tmp_path)
+    assert [r["accepted"] for r in results] == [True, True]            # scene 0 never rejects
+    assert results[0].get("clear_pass") and results[0]["confirmed"]
+    assert len(judge.calls) == 2 and judge.calls[1]["n"] == 1          # only the close call is confirmed
