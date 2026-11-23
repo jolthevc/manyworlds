@@ -121,6 +121,8 @@ job_kinds:
   brain.analyst:   {pools: [local], outputs_per_job: 0}
   brain.creator_lab: {pools: [local], outputs_per_job: 0}
   brain.strategist: {pools: [local], outputs_per_job: 0}
+  brain.talent_manager: {pools: [local], outputs_per_job: 0}
+  brain.market_lead: {pools: [local], outputs_per_job: 0}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
@@ -716,7 +718,7 @@ brain:
   # The archetype library (manyworlds.brain.archetypes): playbooks the talent manager, showrunner and director read.
   archetypes: {file: archetypes-v1.yaml}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
-                    creator_lab: 5.0, director: 2.0, talent_manager: 2.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -751,7 +753,7 @@ brain:
     qa_min_posts: 4              # qa_surge: of at least this many posts touched in a day...
     qa_drop_share: 0.5           # ...more than this share dropped
     max_per_type_per_creator_per_day: 3
-    routes: {breakout: analyst, drop: analyst, qa_surge: owner}
+    routes: {breakout: analyst, drop: talent_manager, qa_surge: owner}   # drop: the manager diagnoses (mode diagnose)
   # Launches (manyworlds.brain.launches): an approved launch walks bible -> reference pack -> anchors -> LoRA ->
   # profile -> ready (sandbox + account request); a step whose jobs fail is retried this many times, then stops.
   launches: {max_step_retries: 2, step_timeout_hours: 48, min_reference_renders: 8}
@@ -783,10 +785,43 @@ brain:
   # the dossier (manyworlds.creator.dossier) at launch; a weekly review (review_weekday, 0 = Monday) writes the brief
   # the showrunner plans from and changes the profile only under `editable` (path prefixes; identity, the never-list,
   # disclosure and handle never). max_overlap: positioning word overlap with a sibling above which it is rewritten.
-  talent_manager: {enabled: true, role: talent_manager, effort: medium, review_weekday: 0, recent_posts: 30, stats_days: 14,
+  talent_manager: {enabled: true, role: talent_manager, effort: medium, diagnose_effort: high, recent_posts: 30, stats_days: 14,
                    max_overlap: 0.35,
+                   # how often a creator's review comes round, by stage (days); events (a drop) come on top
+                   review_days_by_stage: {default: 7, exploring: 7, iterating: 5, growing: 3, breaking_out: 2,
+                                          established: 7, paused: 30},
                    editable: [look.wardrobe, look.situational_looks, look.makeup, persona.traits, persona.humour,
                               content, content_system, arc, story, audience_insight, positioning, dials.tone_mix]}
+  # Decision rights (manyworlds.brain.proposals; docs/superpowers/plans/2026-11-23-agency.md): who decides each kind
+  # of request, and what each role may decide alone. Code checks them; the model only argues. Anything over a role's
+  # rights goes to the owner.
+  rights:
+    routes: {tier_change: strategist, production_upgrade: strategist, budget: strategist, cohort: strategist,
+             research: analyst, experiment: talent_manager, escalate: owner}
+    # kinds accepted as filed (within the requester's weekly allowance below): research runs the analyst at once,
+    # an experiment is the manager's own call
+    auto_accept: [research, experiment]
+    cooldown_days: 14              # a rejected request comes back only with new evidence or after this
+    due_days: 3                    # undecided past this, it expires (the chief of staff reports it)
+    max_open_per_creator: 3
+    talent_manager: {research_per_week: 2, budget_per_week: 1, tier_change_per_week: 1}
+    strategist: {max_usd_per_request: 20, tier_changes_per_day: 5}
+  # Production tiers (creator_states.tier; the CEO sets them): what a creator's plan may use. usd_per_day is the
+  # planning estimate the finance check uses for a change.
+  tiers:
+    default: economy
+    levels:
+      economy:  {posts_per_day_max: 2, video_share_max: 0.3, usd_per_day: 0.5}
+      standard: {posts_per_day_max: 3, video_share_max: 0.5, usd_per_day: 1.5}
+      premium:  {posts_per_day_max: 4, video_share_max: 0.7, usd_per_day: 4.0}
+  # The predictions ledger (manyworlds.brain.predictions): a claim with nothing published to measure closes unscored.
+  predictions: {give_up_days: 14}
+  # Market leads (brain/agents/market_lead.py): activated for a market with min_creators active portfolio creators, or
+  # one the CEO opened (markets.dossier.lead = open); a run every review_days.
+  market_lead: {enabled: true, role: market_lead, effort: medium, min_creators: 3, review_days: 7, trend_briefs: 3}
+  # The chief of staff (manyworlds.brain.chief_of_staff, code): predictions resolved, overdue requests expired, failing
+  # agents and spend without decisions reported, owner requests chased.
+  chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
@@ -1847,6 +1882,7 @@ llm:
     director: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     # The talent manager (brain/agents/talent_manager.py): a few calls per creator a week, judgement-heavy.
     talent_manager: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    market_lead: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}   # one run per active market a week
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

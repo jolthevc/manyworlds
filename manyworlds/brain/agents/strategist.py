@@ -26,7 +26,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ...worker.runner import NonRetryable
-from .. import portfolio
+from .. import portfolio, proposals
 from ..agent import AgentContext, register, remember
 
 SYSTEM = """You are the portfolio strategist of an AI creator studio that runs many openly AI-generated social
@@ -49,9 +49,16 @@ class LaunchProposal(BaseModel):
     reason: str
 
 
+class RequestDecision(BaseModel):
+    proposal_id: str
+    accept: bool
+    reason: str = Field(description="why, against the evidence and the budget; a rejection says what would change it")
+
+
 class PortfolioPlan(BaseModel):
     stage_moves: list[StageMove]
     launches: list[LaunchProposal]
+    requests: list[RequestDecision] = Field(default_factory=list, description="a decision on every open request addressed to you")
     notes: str = Field(description="one or two sentences on the portfolio and why these choices")
 
 
@@ -149,7 +156,16 @@ class Strategist:
                           "SELECT id, summary, body FROM theses WHERE status = 'proposed' "
                           "ORDER BY score DESC NULLS LAST, created_at LIMIT %s",
                           (int(cfg.get("thesis_candidates", 8)),)).fetchall()]
+            open_requests = proposals.open_for(ctx.conn, "strategist",
+                                               limit=int(cfg.get("max_requests_per_run", 20)))
+            markets = [dict(m) for m in ctx.conn.execute(
+                "SELECT id::text, name, conviction_mean, conviction_low, conviction_high, dossier->'thesis' thesis "
+                "FROM markets WHERE dossier ? 'thesis' ORDER BY conviction_mean DESC NULLS LAST LIMIT 10").fetchall()]
             prompt = (f"Portfolio (numbers from real outcomes only): {json.dumps(snap, default=str)}\n"
+                      f"Market theses from the market leads: {json.dumps(markets, default=str) if markets else 'none yet'}\n"
+                      f"Requests addressed to you (decide every one; a talent manager's conviction is an argument to "
+                      f"weigh, not a fact; requests labelled SIMULATED rest on sandbox data, which shows nothing about "
+                      f"real demand): {json.dumps(open_requests, default=str) if open_requests else 'none'}\n"
                       f"Unlaunched theses: {json.dumps(theses, default=str)}\n"
                       f"Stages: {cfg.get('stages')}. Moves into {cfg.get('downward_stages')} need an evidence window "
                       f"({cfg.get('min_posts_before_downward')} real posts, {cfg.get('min_days_before_downward')} days live). "
@@ -159,13 +175,37 @@ class Strategist:
             plan = ctx.llm.structured("brain", system=SYSTEM, content=prompt, schema=PortfolioPlan,
                                       effort=cfg.get("effort", "medium"))
             moves = _apply_moves(ctx, snap, plan.stage_moves)
+            decided = _decide_requests(ctx, open_requests, plan.requests)
             launches = _apply_launches(ctx, snap, plan.launches, f"strategist:{p['day']}")
             return {"kind": "portfolio", "rationale": plan.notes, "model": ctx.llm.model_for("brain"),
                     "inputs": {"creators": snap["creators"], "budget": snap["budget"], "launches": snap["launches"],
                                "theses": [t["thesis_id"] for t in theses]},
-                    "output": {"proposed": plan.model_dump(), "stage_moves": moves, "launches": launches}}
+                    "output": {"proposed": plan.model_dump(), "stage_moves": moves, "launches": launches,
+                               "requests": decided}}
 
         return remember(ctx, "portfolio", compute)
+
+
+def _decide_requests(ctx: AgentContext, open_requests: list[dict], decisions: list) -> list[dict]:
+    """Each decision applied through manyworlds.brain.proposals (rights and money checked there); requests it left
+    out stay open for the next run, and expire when due. At most `tier_changes_per_day` tier changes a run."""
+    known = {r["id"]: r for r in open_requests}
+    cap = int((ctx.policy.get("brain", "rights", "strategist", default={}) or {}).get("tier_changes_per_day", 5))
+    out, tiers = [], 0
+    for d in decisions or []:
+        r = known.get(d.proposal_id)
+        if r is None:
+            out.append({"proposal_id": d.proposal_id, "refused": "not an open request addressed to the strategist"})
+            continue
+        if d.accept and r["kind"] in ("tier_change", "production_upgrade"):
+            tiers += 1
+            if tiers > cap:
+                out.append({"proposal_id": d.proposal_id, "refused": f"over {cap} tier changes a day; left open"})
+                continue
+        out.append({"proposal_id": d.proposal_id,
+                    **proposals.decide(ctx.conn, ctx.policy, d.proposal_id, decided_by="strategist", accept=d.accept,
+                                       reason=d.reason)})
+    return out
 
 
 register(Strategist())

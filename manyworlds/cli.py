@@ -120,6 +120,16 @@ def build_parser() -> argparse.ArgumentParser:
     bdec = ba.add_mutually_exclusive_group()
     bdec.add_argument("--approve", action="store_true")
     bdec.add_argument("--reject", action="store_true")
+    brq = bsub.add_parser("requests", help="requests between the agency's roles; the owner's, or decide one")
+    brq.add_argument("--role", default="owner", help="whose queue to list (owner, strategist, analyst...)")
+    brq.add_argument("--decide")
+    brq_d = brq.add_mutually_exclusive_group()
+    brq_d.add_argument("--accept", action="store_true")
+    brq_d.add_argument("--reject", action="store_true")
+    brq.add_argument("--reason", default="")
+    bsc = bsub.add_parser("scorecard", help="how good each role's predictions were, per month (real unless --sandbox)")
+    bsc.add_argument("--sandbox", action="store_true")
+    bsc.add_argument("--role")
     bdr = bsub.add_parser("rubric-drift", help="score the reference set under the current rubric and model; drift vs before")
     bdr.add_argument("rubric")
     bcal = bsub.add_parser("calibrate", help="score a creator's latest posts as ideas; noise per dimension")
@@ -363,6 +373,19 @@ def _brain_ops(args, conn, pol) -> int:
             ops.decide(conn, args.decide, approved=args.approve, by="owner")
         _print(ops.approvals(conn))
         return 0
+    if args.brain_cmd == "requests":
+        from .brain import proposals
+        if args.decide:
+            if not (args.accept or args.reject):
+                raise SystemExit("--decide needs --accept or --reject")
+            _print(proposals.decide(conn, pol, args.decide, decided_by="owner", accept=args.accept,
+                                    reason=args.reason or "owner"))
+        _print(proposals.open_for(conn, args.role))
+        return 0
+    if args.brain_cmd == "scorecard":
+        from .brain import predictions
+        _print(predictions.scorecard(conn, mode="sandbox" if args.sandbox else "real", role=args.role))
+        return 0
     if args.brain_cmd == "learning":
         from .brain import sandbox
         _print(sandbox.learning_trace(conn, _creator_id(conn, args.creator)))
@@ -454,7 +477,8 @@ def brain_steps(conn, pol, llm=None) -> dict:
 
     from . import notify
     from .brain import events, ideas, launches, portfolio, showrunner_loop
-    from .brain.agents import talent_manager
+    from .brain import chief_of_staff
+    from .brain.agents import market_lead, talent_manager
     from .deploy.providers import redact
 
     now = datetime.now(timezone.utc)
@@ -472,7 +496,9 @@ def brain_steps(conn, pol, llm=None) -> dict:
         if not pol.get("brain", "strategist", "enabled", default=False):
             return []
         portfolio.ensure_daily(conn, pol)          # the daily portfolio cycle (one strategist job a day)
-        talent_manager.ensure_reviews(conn, pol, now=now)   # each creator's weekly career review
+        talent_manager.ensure_reviews(conn, pol, now=now)   # each creator's career review, on its stage's cadence
+        market_lead.ensure_reviews(conn, pol, now=now)      # each market that warrants a lead
+        chief_of_staff.tick(conn, pol, now=now)             # predictions resolved, stalled requests and agents reported
         r = launches.advance(conn, pol)            # approved launches walk the creator lab's steps
         return [{"launches": r}] if any(r.values()) else []
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 
@@ -46,9 +46,12 @@ class DossierLLM(StubLLM):
     def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
         super().structured(role, system=system, content=content, schema=schema)
         if schema.__name__ == "CareerReview":
-            base = {"state": "early", "working": [], "not_working": [], "focus": ["rituals"], "series_next": ["2am tea"],
-                    "capabilities_to_try": ["devices.pov", "edits.nope"], "stop": [], "hypotheses": [],
-                    "brief_for_showrunner": "more 2am tea", "profile_changes": [], "asks": []}
+            base = {"state": "early", "diagnosis": "", "working": [], "not_working": [], "focus": ["rituals"],
+                    "series_next": ["2am tea"], "capabilities_to_try": ["devices.pov", "edits.nope"], "stop": [],
+                    "hypotheses": [], "brief_for_showrunner": "more 2am tea", "profile_changes": [], "requests": [],
+                    "predictions": [],
+                    "conviction": {"probability": 0.4, "low": 0.2, "high": 0.6, "horizon_weeks": 8,
+                                   "case": "a clear ritual angle nobody owns"}}
             return schema.model_validate({**base, **self.review})
         return schema.model_validate(SECTION_OUT[schema.__name__])
 
@@ -130,17 +133,23 @@ def test_a_review_changes_only_what_it_may_and_asks_the_owner_for_the_rest(conn,
         {"path": "look.wardrobe", "value": json.dumps("long cardigans"), "reason": "warmer"},
         {"path": "persona.never", "value": json.dumps([]), "reason": "loosen"},
         {"path": "identity.face", "value": json.dumps("new"), "reason": "x"}],
-        "asks": [{"to": "owner", "ask": "a second set", "why": "repetition"},
-                 {"to": "strategist", "ask": "more video budget", "why": "video works"}]})
+        "requests": [{"kind": "escalate", "subject": json.dumps({"ask": "a second set"}), "argument": "repetition"},
+                     {"kind": "tier_change", "subject": json.dumps({"tier": "standard"}), "argument": "video works"}],
+        "predictions": [{"claim": "reach doubles", "metric": "median_reach", "comparator": "above", "threshold": 500,
+                         "probability": 0.6, "horizon_days": 21}]})
     out, _ = _run(conn, policy, cid, "review", llm)
-    assert out["review"] == {"applied": 1, "needs_owner": 3}
+    r = out["review"]
+    assert (r["applied"], r["needs_owner"], r["requests"], r["predictions"]) == (1, 2, 3, 1)
     prof = profile.current(conn, cid)[1]
     assert prof["look"]["wardrobe"] == "long cardigans" and prof["persona"]["never"] == ["glam"]
-    ev = conn.execute("SELECT payload FROM events WHERE type = 'talent_needs_owner'").fetchone()
-    assert len(ev["payload"]["changes"]) == 2 and ev["payload"]["asks"][0]["ask"] == "a second set"
+    reqs = {(x["kind"], x["to_role"]) for x in conn.execute("SELECT kind, to_role FROM proposals").fetchall()}
+    assert reqs == {("escalate", "owner"), ("tier_change", "strategist")}
+    assert conn.execute("SELECT count(*) n FROM events WHERE type = 'request_for_owner'").fetchone()["n"] == 2
+    conv = conn.execute("SELECT mean, low, high FROM convictions WHERE subject_id = %s", (cid,)).fetchone()
+    assert (float(conv["mean"]), float(conv["low"]), float(conv["high"])) == (0.4, 0.2, 0.6)
     snap = portfolio.snapshot(conn, policy)
     mine = next(c for c in snap["creators"] if c["creator_id"] == str(cid))
-    assert mine["talent"]["asks"][0]["ask"] == "more video budget"            # the CEO reads it
+    assert mine["talent"]["conviction"]["case"] == "a clear ritual angle nobody owns"   # the CEO reads the case
 
 
 def test_the_showrunner_plans_from_the_brief_and_the_playbook(conn, policy):
@@ -153,15 +162,18 @@ def test_the_showrunner_plans_from_the_brief_and_the_playbook(conn, policy):
     assert meta["talent_brief_id"]
 
 
-def test_reviews_are_queued_weekly_for_active_creators_only_when_enabled(conn, policy):
+def test_reviews_are_queued_on_the_stage_cadence_for_active_creators_only_when_enabled(conn, policy):
     cid = _creator(conn, policy)
     conn.execute("INSERT INTO creators (handle, status) VALUES ('draftie', 'draft')")
-    monday = datetime(2026, 11, 23, 9, tzinfo=timezone.utc)
-    first = talent_manager.ensure_reviews(conn, policy, now=monday)
-    again = talent_manager.ensure_reviews(conn, policy, now=monday.replace(hour=15))
-    assert len(first) == 1 and first == again                                 # one per creator per week
-    assert talent_manager.ensure_reviews(conn, policy, now=monday.replace(day=24)) == []   # not review day
+    days = policy.get("brain", "talent_manager", "review_days_by_stage", "exploring")
+    t0 = datetime(2026, 11, 23, 9, tzinfo=timezone.utc)
+    t0 = datetime.fromtimestamp((t0.timestamp() // (days * 86400)) * days * 86400, tz=timezone.utc)   # a period start
+    first = talent_manager.ensure_reviews(conn, policy, now=t0)
+    again = talent_manager.ensure_reviews(conn, policy, now=t0.replace(hour=15))
+    assert len(first) == 1 and first == again                                 # one per creator per period
+    later = talent_manager.ensure_reviews(conn, policy, now=t0 + timedelta(days=days))
+    assert later != first                                                     # the next period: a new review
     off = dataclasses.replace(policy, body={**policy.body, "brain": {
         **policy.body["brain"], "talent_manager": {**policy.body["brain"]["talent_manager"], "enabled": False}}})
-    assert talent_manager.ensure_reviews(conn, off, now=monday) == []
+    assert talent_manager.ensure_reviews(conn, off, now=t0) == []
     assert conn.execute("SELECT creator_id FROM jobs WHERE kind = 'brain.talent_manager'").fetchone()["creator_id"] == cid

@@ -72,6 +72,10 @@ def analyse(ctx: AgentContext, creator_id) -> dict:
     content = (f"DATA: {label}. Posts with outcomes: {result['n']}; effects tested: {result.get('tested')}.\n"
                f"Effects (strongest first): {_table(result)[:40]}\n"
                f"Breakouts (reach far above baseline): {result['breakouts']}")
+    question = str((ctx.job.payload or {}).get("question") or "").strip()
+    if question:   # research a talent manager asked for (manyworlds.brain.proposals): answer it in the notes
+        content += (f"\nA QUESTION FROM HER TALENT MANAGER (answer it in your notes from this data; say plainly what "
+                    f"the data can't tell): {question}")
     out = ctx.llm.structured("brain", system=SYSTEM, content=content, schema=Analysis,
                              effort=ctx.policy.get("brain", "analyst", "effort", default="medium"),
                              creator_id=creator_id)

@@ -1,0 +1,119 @@
+"""The predictions ledger: what each role expected, scored later against what happened.
+
+This is how the agency shows that it decides better over time, not just more. A talent manager's conviction and
+hypotheses, the CEO's calls and a market lead's thesis are written as checkable claims ("median reach of her posts
+in the next 21 days above 800", with a probability). When due, the resolver measures the outcome from published
+posts through manyworlds.brain.evidence: real metrics for real creators; sandbox creators resolve against
+simulated outcomes and stay labelled `sandbox`, so the real scorecard never mixes them in.
+
+    record()       one claim (metric from METRICS, above/below a threshold, probability, horizon)
+    resolve_due()  every due claim measured; outcome, observed value and Brier score ((p - outcome)^2) stored;
+                   a claim with no posts to measure stays open until `brain.predictions.give_up_days` after due
+    scorecard()    per role and month: n, mean Brier, hit rate, and calibration (claims grouped by probability)
+
+Metrics: median_reach (median latest reach of posts published in the window), posts_published (count),
+reach_growth (log of median reach in the window over the creator's median before it).
+"""
+
+from __future__ import annotations
+
+import math
+import statistics
+from datetime import datetime, timedelta, timezone
+
+from ..policy import Policy
+from . import evidence
+
+METRICS = ("median_reach", "posts_published", "reach_growth")
+
+
+def record(conn, *, role: str, claim: str, metric: str, comparator: str, threshold: float, probability: float,
+           horizon_days: int, creator_id=None, market_id=None, decision_id=None, now: datetime | None = None):
+    """The prediction's id, or None when it can't be checked (unknown metric or comparator, no subject)."""
+    now = now or datetime.now(timezone.utc)
+    if metric not in METRICS or comparator not in ("above", "below") or creator_id is None:
+        return None
+    p = min(max(float(probability), 0.0), 1.0)
+    mode = evidence.mode_for(conn, creator_id)
+    return conn.execute(
+        "INSERT INTO predictions (role, creator_id, market_id, claim, metric, comparator, threshold, probability, "
+        "horizon_days, mode, decision_id, resolve_at, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+        "%s, %s) RETURNING id",
+        (role, creator_id, market_id, claim[:500], metric, comparator, float(threshold), p, int(horizon_days), mode,
+         decision_id, now + timedelta(days=int(horizon_days)), now)).fetchone()["id"]
+
+
+def _reach(conn, post_id, mode) -> float | None:
+    rows = evidence.metrics(conn, post_id, mode=mode)
+    if not rows:
+        return None
+    last = max(rows, key=lambda r: r.get("post_age_s") or 0)
+    v = (last.get("metrics") or {}).get("reach")
+    return float(v) if v is not None else None
+
+
+def _reaches(conn, creator_id, mode, start, end) -> list[float]:
+    simulated = mode == "sandbox"
+    posts = conn.execute("SELECT p.id FROM posts p JOIN publications u ON u.post_id = p.id "
+                         "WHERE p.creator_id = %s AND u.simulated = %s AND u.published_at > %s AND u.published_at <= %s",
+                         (creator_id, simulated, start, end)).fetchall()
+    return [r for r in (_reach(conn, p["id"], mode) for p in posts) if r is not None]
+
+
+def measure(conn, pred: dict) -> float | None:
+    start, end, mode = pred["created_at"], pred["resolve_at"], pred["mode"]
+    if pred["metric"] == "posts_published":
+        return float(conn.execute("SELECT count(*) n FROM posts p JOIN publications u ON u.post_id = p.id "
+                                  "WHERE p.creator_id = %s AND u.simulated = %s AND u.published_at > %s "
+                                  "AND u.published_at <= %s", (pred["creator_id"], mode == "sandbox", start, end)
+                                  ).fetchone()["n"])
+    window = _reaches(conn, pred["creator_id"], mode, start, end)
+    if not window:
+        return None
+    if pred["metric"] == "median_reach":
+        return statistics.median(window)
+    before = _reaches(conn, pred["creator_id"], mode, start - (end - start), start)
+    if not before or statistics.median(before) <= 0 or statistics.median(window) <= 0:
+        return None
+    return math.log(statistics.median(window) / statistics.median(before))
+
+
+def resolve_due(conn, policy: Policy, *, now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    give_up = timedelta(days=float(policy.get("brain", "predictions", "give_up_days", default=14)))
+    out = {"resolved": 0, "unmeasurable": 0}
+    for pred in conn.execute("SELECT * FROM predictions WHERE resolved_at IS NULL AND resolve_at <= %s", (now,)).fetchall():
+        observed = measure(conn, pred)
+        if observed is None:
+            if now - pred["resolve_at"] > give_up:   # nothing published to judge it by: closed, no score
+                conn.execute("UPDATE predictions SET resolved_at = %s WHERE id = %s", (now, pred["id"]))
+                out["unmeasurable"] += 1
+            continue
+        held = observed > float(pred["threshold"]) if pred["comparator"] == "above" else observed < float(pred["threshold"])
+        brier = (float(pred["probability"]) - (1.0 if held else 0.0)) ** 2
+        conn.execute("UPDATE predictions SET resolved_at = %s, observed = %s, outcome = %s, brier = %s WHERE id = %s",
+                     (now, observed, held, round(brier, 4), pred["id"]))
+        out["resolved"] += 1
+    return out
+
+
+def scorecard(conn, *, mode: str = "real", role: str | None = None) -> list[dict]:
+    """Per role and month: how good the claims were. Lower Brier is better; 0.25 is a coin flip at p = 0.5."""
+    rows = conn.execute(
+        "SELECT role, to_char(created_at, 'YYYY-MM') AS month, count(*) n, avg(brier) brier, "
+        "avg(CASE WHEN outcome THEN 1 ELSE 0 END) held, avg(probability) mean_p FROM predictions "
+        "WHERE mode = %s AND outcome IS NOT NULL AND (%s::text IS NULL OR role = %s) GROUP BY 1, 2 ORDER BY 1, 2",
+        (mode, role, role)).fetchall()
+    out = []
+    for r in rows:
+        buckets = conn.execute(
+            "SELECT width_bucket(probability, 0, 1, 5) b, count(*) n, avg(probability) p, "
+            "avg(CASE WHEN outcome THEN 1 ELSE 0 END) held FROM predictions WHERE mode = %s AND role = %s "
+            "AND to_char(created_at, 'YYYY-MM') = %s AND outcome IS NOT NULL GROUP BY 1 ORDER BY 1",
+            (mode, r["role"], r["month"])).fetchall()
+        out.append({"role": r["role"], "month": r["month"], "n": r["n"], "brier": round(float(r["brier"]), 4),
+                    "hit_rate": round(float(r["held"]), 3), "mean_probability": round(float(r["mean_p"]), 3),
+                    "calibration": [{"said": round(float(b["p"]), 2), "happened": round(float(b["held"]), 2),
+                                     "n": b["n"]} for b in buckets],
+                    **({"label": evidence.LABEL} if mode == "sandbox" else {})})
+    return out

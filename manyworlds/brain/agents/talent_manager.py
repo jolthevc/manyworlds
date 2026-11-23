@@ -1,37 +1,50 @@
-"""The talent manager: one per creator, owns their identity and career, reports to the strategist (the CEO).
+"""The talent manager: one per creator, the coordinator of that creator's career, reports to the CEO (strategist).
 
-Two modes, one job each (payload {creator_id, mode}):
+It is a role with durable state (the profile and dossier, its briefs, its conviction, its open requests and its
+predictions), activated as a job when it is due; nothing runs per creator in between. Three modes (payload
+{creator_id, mode}):
 
-  onboard  builds the dossier sections the profile lacks (manyworlds.creator.dossier: archetypes, positioning,
-           audience insight, story, content system), one remembered step per section, each saved as a profile
-           version authored by the talent manager. If the positioning ends too close to a sibling (word overlap past
-           `brain.talent_manager.max_overlap`), it is rewritten once against that sibling. Then a first brief.
-  review   the weekly career review: reads the dossier, the archetype playbooks, recent posts and their scores, what
-           production accepted and dropped, the analyst's findings (labelled real or simulated) and its own last
-           brief; writes the brief the showrunner plans the next batches from, changes the profile within its
-           authority (policy `brain.talent_manager.editable`: path prefixes; identity, never-list and disclosure are
-           never its call), and puts anything else to the owner.
+  onboard   builds the dossier sections the profile lacks (manyworlds.creator.dossier: archetypes, positioning,
+            audience insight, story, content system), one remembered step per section, each a profile version
+            authored by the talent manager; a positioning too close to a sibling (word overlap past
+            `brain.talent_manager.max_overlap`) is rewritten once against it. Then a first review.
+  review    the career review, on a cadence by stage (`review_days_by_stage`): dossier, playbooks, recent posts and
+            scores, what production made and dropped and what it cost, findings and the analyst's guidance (labelled
+            real or simulated), its market's learnings, its tier, its last brief, and what became of its requests.
+  diagnose  the same review when something happened (a `drop` event routes here: brain.events.routes), with the
+            event in front of it and the instruction to find out why before changing course.
 
-The brief (decision kind `talent_brief`) is what the agency runs on: the showrunner reads the latest one for the
-creator, the strategist reads every creator's latest one in its portfolio snapshot.
+A review writes:
+  - the brief the showrunner plans from (decision `talent_brief`; the strategist reads the latest per creator)
+  - its conviction: the probability she reaches the next stage within a horizon, with an interval and the case
+    for it (a `convictions` row). A creator with little traction but real upside can be argued for here.
+  - typed requests (manyworlds.brain.proposals): a tier change or budget to the CEO, research to the analyst,
+    escalations to the owner. Code checks the rights and the money; a rejected request comes back only with new
+    evidence.
+  - predictions (manyworlds.brain.predictions): checkable claims about her next weeks, scored later
+  - profile changes within `brain.talent_manager.editable` (identity, the never-list, disclosure and handle never);
+    anything else goes to the owner as an escalation
 """
 
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Literal
 
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from ... import direction, notify, queue
+from ... import direction, queue
 from ...creator import dossier
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import archetypes, evidence
+from .. import archetypes, evidence, predictions, proposals
 from ..agent import AgentContext, record_decision, register, remember
 from . import analyst
 
 LOCKED = ("identity", "persona.never", "disclosure_line", "handle")
+ROLE = "talent_manager"
 
 
 class ProfileChange(BaseModel):
@@ -40,14 +53,34 @@ class ProfileChange(BaseModel):
     reason: str
 
 
-class Ask(BaseModel):
-    to: str = Field(description="strategist or owner")
-    ask: str
-    why: str
+class Conviction(BaseModel):
+    probability: float = Field(description="0-1: how likely she reaches her next stage within horizon_weeks")
+    low: float = Field(description="0-1: the pessimistic end of that")
+    high: float = Field(description="0-1: the optimistic end of that")
+    horizon_weeks: int
+    case: str = Field(description="the argument: why she can become influential, or why not, with the evidence")
+
+
+class Request(BaseModel):
+    kind: Literal["tier_change", "budget", "research", "experiment", "production_upgrade", "escalate"]
+    subject: str = Field(description='what is asked, as JSON: {"tier": "standard"}, {"usd": 5}, '
+                                     '{"question": "..."}, {"hypothesis": "..."}, {"ask": "..."}')
+    argument: str = Field(description="why, with the evidence; for money, what it buys and what it should show")
+
+
+class Claim(BaseModel):
+    claim: str = Field(description="what you expect, in words")
+    metric: Literal["median_reach", "posts_published", "reach_growth"]
+    comparator: Literal["above", "below"]
+    threshold: float
+    probability: float = Field(description="0-1: how sure you are")
+    horizon_days: int
 
 
 class CareerReview(BaseModel):
     state: str = Field(description="where her brand stands now, in two sentences")
+    diagnosis: str = Field(description="why things are going as they are (for a diagnosis: the most likely causes, "
+                                       "ranked, and what would tell them apart); empty when nothing needs explaining")
     working: list[str]
     not_working: list[str]
     focus: list[str] = Field(description="what the next batches are about (pillars, series, a thread to build)")
@@ -57,8 +90,10 @@ class CareerReview(BaseModel):
     hypotheses: list[str] = Field(description="what the next batches should test about her audience")
     brief_for_showrunner: str = Field(description="the brief the showrunner writes the next ideas from: concrete, "
                                                   "in her voice's terms, what to make and what to avoid")
+    conviction: Conviction
+    predictions: list[Claim] = Field(description="1-3 checkable claims about her next weeks; none before she posts")
+    requests: list[Request] = Field(description="requests to other roles; often none")
     profile_changes: list[ProfileChange] = Field(description="changes to her profile; often none")
-    asks: list[Ask] = Field(description="requests to the strategist or the owner; often none")
 
 
 def _cfg(policy) -> dict:
@@ -115,6 +150,23 @@ def _recent(conn, creator_id, n: int) -> list[dict]:
     return [{k: v for k, v in dict(r).items() if v} for r in rows]
 
 
+def _requests_history(conn, creator_id, n: int = 10) -> list[dict]:
+    """Its recent requests and what became of them: the loop closes here."""
+    rows = conn.execute("SELECT kind, subject, status, resolution, created_at FROM proposals WHERE creator_id = %s "
+                        "AND from_role = %s ORDER BY created_at DESC LIMIT %s", (creator_id, ROLE, n)).fetchall()
+    return [{"kind": r["kind"], "subject": r["subject"], "status": r["status"],
+             "reason": (r["resolution"] or {}).get("reason") or (r["resolution"] or {}).get("refused")} for r in rows]
+
+
+def _market_learnings(conn, creator_id) -> dict | None:
+    row = conn.execute("SELECT m.name, m.dossier FROM creators c JOIN markets m ON m.id = c.market_id WHERE c.id = %s",
+                       (creator_id,)).fetchone()
+    if not row:
+        return None
+    d = row["dossier"] or {}
+    return {"market": row["name"], "thesis": d.get("thesis"), "learnings": d.get("learnings")}
+
+
 def _onboard(ctx: AgentContext, creator_id) -> dict:
     conn, policy = ctx.conn, ctx.policy
     built = []
@@ -127,9 +179,9 @@ def _onboard(ctx: AgentContext, creator_id) -> dict:
         def compute(section=section, prof=prof):
             return {"kind": "dossier_section", "creator_id": creator_id, "inputs": {"section": section},
                     "output": dossier.build_section(conn, policy, ctx.llm, creator_id, section, prof),
-                    "rationale": f"dossier section {section}", "model": ctx.llm.model_for(_cfg(policy).get("role", "talent_manager"))}
+                    "rationale": f"dossier section {section}", "model": ctx.llm.model_for(_cfg(policy).get("role", ROLE))}
         patch = remember(ctx, f"section:{section}", compute)
-        profile_mod.update(conn, policy, creator_id, patch, author="talent_manager", reason=f"dossier: {section}")
+        profile_mod.update(conn, policy, creator_id, patch, author=ROLE, reason=f"dossier: {section}")
         built.append(section)
     prof = profile_mod.current(conn, creator_id)[1]
     diff = dossier.differentiation(conn, policy, creator_id, prof)
@@ -143,24 +195,33 @@ def _onboard(ctx: AgentContext, creator_id) -> dict:
             return {"kind": "dossier_section", "creator_id": creator_id, "inputs": {"section": "positioning", **diff},
                     "output": dossier.build_section(conn, policy, ctx.llm, creator_id, "positioning", prof, extra=extra),
                     "rationale": "positioning too close to a sibling"}
-        profile_mod.update(conn, policy, creator_id, remember(ctx, "differentiate", rewrite), author="talent_manager",
+        profile_mod.update(conn, policy, creator_id, remember(ctx, "differentiate", rewrite), author=ROLE,
                            reason=f"dossier: positioning apart from {diff['closest']}")
         prof = profile_mod.current(conn, creator_id)[1]
         diff = {**dossier.differentiation(conn, policy, creator_id, prof), "rewritten": True}
     return {"built": built, "differentiation": diff}
 
 
-def _review_prompt(ctx: AgentContext, creator_id, prof: dict) -> str:
+def _event(conn, event_id) -> dict | None:
+    if not event_id:
+        return None
+    row = conn.execute("SELECT type, payload, created_at FROM events WHERE id = %s", (event_id,)).fetchone()
+    return {"type": row["type"], "payload": row["payload"], "at": row["created_at"].isoformat()} if row else None
+
+
+def _review_prompt(ctx: AgentContext, creator_id, prof: dict, mode: str, event: dict | None) -> str:
     conn, policy = ctx.conn, ctx.policy
     cfg = _cfg(policy)
-    mode = evidence.mode_for(conn, creator_id)
+    ev_mode = evidence.mode_for(conn, creator_id)
     findings = [{"finding": f["statement"], "grade": f["grade"]}
-                for f in evidence.findings(conn, mode=mode, creator_id=creator_id)]
+                for f in evidence.findings(conn, mode=ev_mode, creator_id=creator_id)]
     last = analyst.latest(conn, creator_id)
     prev = latest_brief(conn, creator_id)
     who = {k: v for k, v in prof.items() if k not in ("dials", "identity", "commercialization")}
-    label = "SIMULATED (sandbox test, not evidence of demand)" if mode == "sandbox" else "real"
-    return "\n\n".join([
+    label = "SIMULATED (sandbox test, not evidence of demand)" if ev_mode == "sandbox" else "real"
+    tier = proposals.tier_of(conn, policy, creator_id)
+    tiers = (policy.get("brain", "tiers", "levels", default={}) or {})
+    parts = [
         f"Her profile and dossier:\n{json.dumps(who, default=str)}",
         f"Her archetypes' playbooks: {json.dumps(archetypes.playbooks(policy, prof), default=str)}",
         f"Recent posts, newest first, with idea scores where scored:\n"
@@ -169,24 +230,39 @@ def _review_prompt(ctx: AgentContext, creator_id, prof: dict) -> str:
         f"money and made nothing): {json.dumps(production_stats(conn, creator_id, int(cfg.get('stats_days', 14))))}",
         f"Findings about her audience ({label}): {json.dumps(findings) if findings else 'none yet'}",
         f"The analyst's latest guidance ({label}): {json.dumps((last['output'] or {}).get('guidance')) if last else 'none'}",
+        f"Her market's thesis and learnings (from its market lead): {json.dumps(_market_learnings(conn, creator_id), default=str)}",
+        f"Her production tier: {tier} (tiers: {json.dumps(tiers)}). The CEO sets tiers; you may ask for a change "
+        f"with the evidence that it would pay off.",
         f"Your previous brief: {json.dumps(prev['output'], default=str) if prev else 'none (first review)'}",
-        f"Profile paths you may change yourself (prefixes): {cfg.get('editable')}; never: {list(LOCKED)}. "
-        f"Anything else goes in `asks` to the owner. Never touch: {policy.get('scope', 'excluded_topics')}.",
-        "Review her career as her talent manager. Be specific and forensic: what is building her brand, what is "
-        "diluting it, what the next batches are for. Simulated findings only show the loop works; never treat them "
-        "as what real people want."])
+        f"Your recent requests and what became of them: {json.dumps(_requests_history(conn, creator_id), default=str)}",
+        f"Profile paths you may change yourself (prefixes): {cfg.get('editable')}; never: {list(LOCKED)}. Anything "
+        f"else is an `escalate` request. Never touch: {policy.get('scope', 'excluded_topics')}.",
+    ]
+    if mode == "diagnose" and event:
+        parts.append(f"WHAT HAPPENED (diagnose this before changing course): {json.dumps(event, default=str)}. Rank the "
+                     f"likely causes (content, production quality, cadence, audience fit, distribution), say what "
+                     f"would tell them apart, and ask for research where the data can't.")
+    parts.append("Review her career as her talent manager. Be specific and forensic: what is building her brand, what "
+                 "is diluting it, what the next batches are for. State your own conviction about her future and argue "
+                 "it, even against how she is doing so far, when the evidence supports upside. Predictions must be "
+                 "checkable within their horizon. Simulated findings only show the loop works; never treat them as "
+                 "what real people want.")
+    return "\n\n".join(parts)
 
 
-def _review(ctx: AgentContext, creator_id) -> dict:
+def _review(ctx: AgentContext, creator_id, mode: str, event: dict | None) -> dict:
     conn, policy = ctx.conn, ctx.policy
     version, prof = profile_mod.current(conn, creator_id)
-    role = _cfg(policy).get("role", "talent_manager")
+    role = _cfg(policy).get("role", ROLE)
 
     def compute():
         out = ctx.llm.structured(role, system=profile_mod.persona_system(policy, dossier.SYSTEM),
-                                 content=_review_prompt(ctx, creator_id, prof), schema=CareerReview,
-                                 effort=_cfg(policy).get("effort", "medium"), creator_id=creator_id)
-        return {"kind": "talent_review", "creator_id": creator_id, "inputs": {"profile_version": version},
+                                 content=_review_prompt(ctx, creator_id, prof, mode, event), schema=CareerReview,
+                                 effort=_cfg(policy).get("diagnose_effort" if mode == "diagnose" else "effort",
+                                                         "medium"),
+                                 creator_id=creator_id)
+        return {"kind": "talent_review", "creator_id": creator_id,
+                "inputs": {"profile_version": version, "mode": mode, "event": event},
                 "output": out.model_dump(), "rationale": out.state, "model": ctx.llm.model_for(role)}
     review = remember(ctx, "review", compute)
     applied, needs_owner = [], []
@@ -195,52 +271,99 @@ def _review(ctx: AgentContext, creator_id) -> dict:
             needs_owner.append(ch)
             continue
         try:
-            profile_mod.set_path(conn, policy, creator_id, ch["path"], _value(ch["value"]), author="talent_manager",
+            profile_mod.set_path(conn, policy, creator_id, ch["path"], _value(ch["value"]), author=ROLE,
                                  reason=ch["reason"] or "career review")
             applied.append(ch)
         except (ValueError, LookupError) as e:
             needs_owner.append({**ch, "refused": str(e)})
-    owner_asks = [a for a in review.get("asks") or [] if a.get("to") == "owner"]
-    if needs_owner or owner_asks:
-        notify.owner_event(conn, "talent_needs_owner", subject={"creator_id": str(creator_id)},
-                           payload={"changes": needs_owner, "asks": owner_asks}, creator_id=creator_id,
-                           dedupe_key=f"talent_needs_owner:{ctx.job.id}")
+    conv = review.get("conviction") or {}
+    finding_ids = [str(f["id"]) for f in evidence.findings(conn, mode=evidence.mode_for(conn, creator_id),
+                                                           creator_id=creator_id)]
+    filed = []
+    if needs_owner:
+        filed.append(proposals.file(conn, policy, kind="escalate", from_role=ROLE, creator_id=creator_id,
+                                    subject={"profile_changes": needs_owner},
+                                    argument="profile changes outside the talent manager's rights",
+                                    evidence_={"conviction": conv}, job_id=ctx.job.id))
+    for r in review.get("requests") or []:
+        filed.append(proposals.file(conn, policy, kind=r["kind"], from_role=ROLE, creator_id=creator_id,
+                                    subject=_subject(r.get("subject")), argument=r.get("argument") or "",
+                                    evidence_={"conviction": conv, "finding_ids": finding_ids}, job_id=ctx.job.id))
     ok_caps = set(direction.capability_ids(policy, available_only=True))
-    brief = {k: review.get(k) for k in ("state", "focus", "series_next", "stop", "hypotheses", "brief_for_showrunner")}
+    brief = {k: review.get(k) for k in ("state", "diagnosis", "focus", "series_next", "stop", "hypotheses",
+                                        "brief_for_showrunner", "conviction")}
     brief["capabilities_to_try"] = [c for c in review.get("capabilities_to_try") or [] if c in ok_caps]
-    brief["asks_for_strategist"] = [a for a in review.get("asks") or [] if a.get("to") == "strategist"]
-    record_decision(ctx, "talent_brief", step="brief", creator_id=creator_id, inputs={"review": "review"},
-                    output=brief, rationale=review.get("state", ""), model=ctx.llm.model_for(role))
-    return {"applied": len(applied), "needs_owner": len(needs_owner) + len(owner_asks)}
+    brief["requests"] = filed
+    decision = record_decision(ctx, "talent_brief", step="brief", creator_id=creator_id, inputs={"mode": mode},
+                               output=brief, rationale=review.get("state", ""), model=ctx.llm.model_for(role))
+    if conv and not conn.execute("SELECT 1 FROM convictions WHERE inputs->>'decision_id' = %s",
+                                 (str(decision),)).fetchone():
+        conn.execute("INSERT INTO convictions (subject, subject_id, mean, low, high, inputs) VALUES "
+                     "('creator', %s, %s, %s, %s, %s)",
+                     (creator_id, _p(conv.get("probability")), _p(conv.get("low")), _p(conv.get("high")),
+                      Jsonb({"decision_id": str(decision), "role": ROLE, "horizon_weeks": conv.get("horizon_weeks"),
+                             "case": conv.get("case")})))
+    made = 0
+    if not conn.execute("SELECT 1 FROM predictions WHERE decision_id = %s", (decision,)).fetchone():
+        for c in review.get("predictions") or []:
+            made += predictions.record(conn, role=ROLE, creator_id=creator_id, decision_id=decision,
+                                       claim=c["claim"], metric=c["metric"], comparator=c["comparator"],
+                                       threshold=c["threshold"], probability=c["probability"],
+                                       horizon_days=c["horizon_days"]) is not None
+    return {"applied": len(applied), "needs_owner": len(needs_owner),
+            "requests": sum(1 for f in filed if f.get("id")), "refused": [f["refused"] for f in filed if f.get("refused")],
+            "predictions": made}
+
+
+def _p(v) -> float:
+    try:
+        return min(max(float(v), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _subject(raw) -> dict:
+    v = _value(raw) if isinstance(raw, str) else raw
+    return v if isinstance(v, dict) else {"text": str(raw or "")}
 
 
 class TalentManager:
-    name = "talent_manager"
+    name = ROLE
 
     def run(self, ctx: AgentContext) -> dict:
         p = ctx.job.payload or {}
-        creator_id, mode = p.get("creator_id"), p.get("mode", "review")
-        if not creator_id or mode not in ("onboard", "review"):
-            raise NonRetryable("talent_manager payload needs creator_id and mode onboard|review")
+        creator_id = p.get("creator_id")
+        mode = p.get("mode") or ("diagnose" if p.get("event_id") else "review")
+        if not creator_id or mode not in ("onboard", "review", "diagnose"):
+            raise NonRetryable("talent_manager payload needs creator_id and mode onboard|review|diagnose")
         if not profile_mod.current(ctx.conn, creator_id):
             raise NonRetryable("the creator has no profile yet (the launch builds it first)")
         out = {"mode": mode}
         if mode == "onboard":
             out["onboard"] = _onboard(ctx, creator_id)
-        out["review"] = _review(ctx, creator_id)
+        out["review"] = _review(ctx, creator_id, mode, _event(ctx.conn, p.get("event_id")))
         return out
 
 
 register(TalentManager())
 
 
-def ensure_reviews(conn, policy, *, now) -> list:
-    """One review per active portfolio creator per ISO week (weekday `review_weekday`, 0 = Monday)."""
+def ensure_reviews(conn, policy, *, now: datetime | None = None) -> list:
+    """A review for each active portfolio creator when its stage's cadence is due (`review_days_by_stage`, days;
+    `default`): exploring and growing creators often, paused ones rarely. One job per creator per period."""
+    now = now or datetime.now(timezone.utc)
     cfg = _cfg(policy)
-    if not cfg.get("enabled") or now.weekday() != int(cfg.get("review_weekday", 0)):
+    if not cfg.get("enabled"):
         return []
-    week = now.strftime("%G-W%V")
-    rows = conn.execute("SELECT c.id FROM creators c WHERE c.status = 'active' AND c.anchors->'simulation' IS NULL "
-                        "AND EXISTS (SELECT 1 FROM creator_profiles p WHERE p.creator_id = c.id)").fetchall()
-    return [queue.enqueue(conn, "brain.talent_manager", {"creator_id": str(r["id"]), "mode": "review"},
-                          creator_id=r["id"], idempotency_key=f"talent:{r['id']}:{week}") for r in rows]
+    cadence = cfg.get("review_days_by_stage") or {}
+    rows = conn.execute(
+        "SELECT c.id, coalesce(s.stage, 'exploring') stage FROM creators c LEFT JOIN creator_states s ON s.creator_id = c.id "
+        "WHERE c.status = 'active' AND c.anchors->'simulation' IS NULL "
+        "AND EXISTS (SELECT 1 FROM creator_profiles p WHERE p.creator_id = c.id)").fetchall()
+    out = []
+    for r in rows:
+        days = max(int(cadence.get(r["stage"], cadence.get("default", 7))), 1)
+        period = int(now.timestamp() // (days * 86400))
+        out.append(queue.enqueue(conn, "brain.talent_manager", {"creator_id": str(r["id"]), "mode": "review"},
+                                 creator_id=r["id"], idempotency_key=f"talent:{r['id']}:{days}d:{period}"))
+    return out

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import archetypes, events, evidence, experiments, exploration, memory, planner
+from .. import archetypes, events, evidence, experiments, exploration, memory, planner, proposals
 from ..agent import AgentContext, commission, record_decision, register
 from . import analyst, talent_manager
 
@@ -94,6 +94,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     from ...publish import instagram
     dials = instagram.ramp_dials(conn, policy, creator_id, dials,
                                  datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
+    dials = proposals.tier_dials(policy, proposals.tier_of(conn, policy, creator_id), dials)   # within her tier
     counts = planner._counts(policy, dials, days)
     formats = planner._formats(policy)
     who = {k: prof[k] for k in planner.ANALYSIS_FIELDS if k in prof} if prof else \
