@@ -266,3 +266,66 @@ Pipeline mapping: set and framing go to the scene image; blocking and camera go 
 image-to-video; performance goes to the voice and lip sync; sound and edit go to the joiner. The gate adds
 "was the direction followed". A library of social moves (phone-down reveal, walk to camera, outfit transition,
 point at caption), fed by the trend watcher, offers ready-made shot sheets.
+
+## Owner direction, 2026-11-23 (capabilities, archetypes, an AI-native talent agency)
+Three ideas from the owner, to design before building:
+
+**1. Capabilities, not formats.** "We shouldn't overfit to specific formats... have all the necessary weapons in our
+arsenal... exact content will depend on the creator archetype."
+
+The studio is a toolbox the Brain composes from:
+- camera devices and moves
+- actions: talk, walk, pose, dance, prop work, outfit change
+- edits: cut on motion, labels, timestamps, hook text, voiceover over B-roll
+- sound
+
+Researched formats (GRWM, outfit check, day in the life...) are examples the director may draw on, never code paths.
+The breadth test measures capability coverage.
+
+**2. Archetypes drive the content mix.** "Some influencers don't need a ton of instructive content or really rich
+video talking (e.g. lifestyle or fashion) and then others do -- so the focus and mission and ways in which we present
+and communicate that archetype then matters."
+
+Today `bible.archetype` is free text. Proposal: a policy library of archetypes (`archetypes.<name>`). Each one sets:
+- mission
+- how the creator communicates: talking share, voiceover vs on camera, text-label-led vs speech-led, silent
+  aesthetic share
+- capability mix and weights (e.g. fashion: mostly visual, posing, outfit changes, labels, little talking; educator:
+  talking head, captions, B-roll; storyteller: long single takes)
+- pacing and length ranges per platform
+- caption and look defaults
+- what "good" means for the evaluator (rubric weights)
+
+The research and evaluation agents learn per archetype what works (real evidence only). Each creator's profile picks
+an archetype and can override any dial.
+
+**3. An AI-native talent agency.** "Each influencer gets a talent agent to manage their career, they report to the
+brain - the CEO. Then we have talent scouts, brand strategists etc."
+
+Mapping onto what exists:
+
+| Agency role | Agent today | What it would add |
+|---|---|---|
+| CEO | strategist (portfolio, budgets, launches) | owns the agency's goals, allocates spend across talent, hires/retires talent |
+| Talent scout | discover + creator_lab | scouts archetypes and niches with audience pull, pitches new talent to the CEO (owner approves launches) |
+| Talent manager (one per creator) | new | owns one creator's career: goals, positioning, archetype dials, weekly review of their numbers, briefs the showrunner, escalates to the CEO |
+| Producer / showrunner | showrunner + director | turns the manager's brief into posts and shot sheets |
+| Creative QA | evaluator + review gates | unchanged |
+| Analyst | analyst | per-creator and per-archetype learning, reported to managers and the CEO |
+| Community manager | comment replies | replies in the creator's voice (draft by default) |
+| Brand strategist / partnerships | new | brand fit, rate cards, sponsorship pitches, disclosure (never implies real first-hand use) |
+| Trend desk | trend watcher | trend briefs for managers and showrunners |
+
+Rules that still bind every role:
+- No cross-account engagement between our creators: managers never coordinate likes, comments or collabs between our
+  accounts.
+- Simulated evidence never counts.
+- Every decision is recorded with its cost, under per-agent budgets.
+- Launches and money need the owner.
+
+Build order to consider after the breadth test:
+1. archetype library plus profile dials
+2. the per-creator talent manager agent (weekly loop, reads real metrics, writes briefs)
+3. the brand strategist, once an account has an audience
+
+Each is an agent under `brain/agents/` with its own budget tag.

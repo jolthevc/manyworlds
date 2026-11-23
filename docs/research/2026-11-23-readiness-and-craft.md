@@ -106,19 +106,22 @@ Quality weak spots:
    - face-safe placement
 8. **Phone-native look** as the default finish (bright, flat, no vignette, light grain). Room tone and a quiet bed
    from CC0 sources, so nothing ships dry.
-9. **Formats from the clips, built as shot-sheet templates (moves library):**
-   - outfit check (locked-off, full body, 3 looks, cut on spin, hair flip or hand-over-lens)
-   - GRWM-style talking with a prop in hand
-   - day in the life (POV B-roll with timestamps and voiceover, creator rarely on camera)
-   - mirror talk
-   - walk-and-talk vlog
-   - posing ideas
-   - silent aesthetic
+9. **Capabilities, not formats** (owner, 2026-11-23: "we shouldn't overfit to specific formats... have all the
+   necessary weapons in our arsenal... exact content will depend on the creator archetype"). The Brain and director
+   compose posts from a toolbox:
+   - camera devices: propped, mirror, selfie arm, POV, handheld follow, locked-off
+   - actions: talk, walk, pose, dance, prop or makeup work, outfit change
+   - edits: cut on motion, labels, timestamps, hook text, voiceover over B-roll
+   - sound: voice, room tone, bed
+
+   The researched formats (outfit check, GRWM, day in the life, mirror talk, walk-and-talk vlog, posing, silent
+   aesthetic) are examples the director may draw on per archetype, not production formats or code paths. The breadth
+   test is organised by capability coverage.
 10. **Cuts only at scene changes:** hybrid splitting off for directed posts. Transitions on motion (spin, blur, hand
     over the lens) in the joiner.
 11. **Review the finished file** (one pass on final.mp4: captions over the face, seams, sync). Cover from the
     finished frames.
-12. **Dance and pose** through production (outfit-show format) with the identity gate. A pose library from the
+12. **Dance and pose as production capabilities** (any shot whose blocking calls for them) with the identity gate. A pose library from the
     Pexels clips.
 
 Then the breadth test: one item per format and feature (the audit's list of 18), within the $10/day cap, likely over
