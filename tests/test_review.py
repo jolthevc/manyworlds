@@ -242,7 +242,14 @@ def test_repair_hints_never_put_a_negation_in_the_prompt(policy):
     out = adjust({"prompt": "p"})
     avoid = policy.get("review", "repair", "hints", "realism", "avoid")
     assert out["negative_prompt"] == ", ".join(avoid)
-    assert adjust(out)["negative_prompt"] == out["negative_prompt"]           # a second repair adds nothing twice
+    assert "five fingers on each hand" in out["prompt"] and "blank, unprinted surfaces" in out["prompt"].lower()  # no channel
+    again = adjust(out)
+    assert again["negative_prompt"] == out["negative_prompt"]                 # a second repair adds nothing twice
+    assert again["prompt"].count("five fingers on each hand") == 1
+    adjust, _ = repair.plan(policy, "realism", scene="", identity_repairs=0, target="i2v")
+    wan = adjust({"prompt": "p"})
+    assert wan["negative_prompt"].startswith(policy.get("direction", "negatives", "base", "i2v")[:20])   # added to, not replaced
+    assert wan["prompt"].startswith("p")
 
 
 def test_a_negated_clause_in_a_string_hint_moves_to_the_negative_prompt():

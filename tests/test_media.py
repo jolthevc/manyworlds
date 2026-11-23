@@ -104,17 +104,17 @@ def _graph(raw_policy, joins, segments=None, fps=30):
                                   fps=fps, fin=fin)
 
 
-def test_whip_flash_and_blur_cross_over_a_few_frames_with_the_audio(raw_policy):
+def test_whip_flash_and_blur_cross_over_a_few_frames_without_moving_any_segment(raw_policy):
     graph, v, a = _graph(raw_policy, ["whip", "flash"])
     blocks = raw_policy.get("finishing", "transitions")
     px, whip_d = blocks["whip"]["blur_px"], blocks["whip"]["frames"] / 30
-    assert f"avgblur=sizeX={px}:sizeY=1:enable='gte(t,{media._fmt(2 - whip_d)})'" in graph   # A's tail blurs
+    assert f"[v0]tpad=stop_mode=clone:stop_duration={media._fmt(whip_d)}[j1h]" in graph      # A holds its last frame
+    assert f"avgblur=sizeX={px}:sizeY=1:enable='gte(t,2)'" in graph                         # ...which blurs
     assert f"avgblur=sizeX={px}:sizeY=1:enable='lt(t,{media._fmt(whip_d)})'" in graph        # B's head blurs
-    assert f"xfade=transition=slideleft:duration={media._fmt(whip_d)}:offset={media._fmt(2 - whip_d)}" in graph
+    assert f"xfade=transition=slideleft:duration={media._fmt(whip_d)}:offset=2" in graph   # B starts at 2 s exactly
     flash_d = blocks["flash"]["frames"] / 30
-    off = 2 + 2 - whip_d - flash_d                                       # after the first crossover, minus this one
-    assert f"xfade=transition=fadewhite:duration={media._fmt(flash_d)}:offset={media._fmt(off)}" in graph
-    assert f"acrossfade=d={media._fmt(whip_d)}" in graph and (v, a) == ("j2", "k2")
+    assert f"xfade=transition=fadewhite:duration={media._fmt(flash_d)}:offset=4" in graph   # no drift
+    assert "acrossfade" not in graph and "[a0][a1]concat=n=2:v=0:a=1[k1]" in graph and (v, a) == ("j2", "k2")
     graph, _, _ = _graph(raw_policy, ["blur"])
     assert f"gblur=sigma={blocks['blur']['sigma']}" in graph and "xfade=transition=fade:" in graph
     graph, _, _ = _graph(raw_policy, [{"type": "whip", "direction": "up"}])

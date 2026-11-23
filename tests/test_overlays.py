@@ -263,3 +263,13 @@ def test_burn_draws_labels_only_while_they_show(raw_policy, tmp_path, use_ass):
     assert _bright_pixels(out, 0.1) == 0 and _bright_pixels(out, 2.3) == 0
     if use_ass is False:
         assert (tmp_path / "work" / "overlay" / "overlay.ffconcat").exists()
+
+
+def test_a_label_moves_off_the_burned_captions_band(policy):
+    """A label placed where the captions are (review 2026-11-22: lower labels sat on the lower caption band)."""
+    items = [{"kind": "label", "text": "Soup day", "position": "lower"}]
+    free = ov.overlay_events(items, (1080, 1920), policy, duration=5.0)
+    assert free and free[0].position == "lower"
+    top, bottom = free[0].extent[1] / 1920, free[0].extent[3] / 1920
+    moved = ov.overlay_events(items, (1080, 1920), policy, duration=5.0, avoid_bands=[(top, bottom)])
+    assert moved[0].position != "lower"

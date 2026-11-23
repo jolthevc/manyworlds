@@ -405,9 +405,15 @@ def _take_lease(conn, run: str, seconds: float) -> str | None:
     return holder if got else None
 
 
+class LostLease(RuntimeError):
+    """Another driver took this run over (this one stalled past its lease): stop, don't advance twice."""
+
+
 def _renew_lease(conn, run: str, holder: str, seconds: float) -> None:
-    conn.execute("UPDATE leases SET until = now() + make_interval(secs => %s) WHERE name = %s AND holder = %s",
-                 (seconds, f"breadth:{run}", holder))
+    r = conn.execute("UPDATE leases SET until = now() + make_interval(secs => %s) WHERE name = %s AND holder = %s "
+                     "RETURNING name", (seconds, f"breadth:{run}", holder)).fetchone()
+    if r is None:
+        raise LostLease(f"breadth run {run}: another driver holds the lease")
 
 
 def _release_lease(conn, run: str, holder: str) -> None:
@@ -500,12 +506,16 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
             errors[item.id] = f"{type(e).__name__}: {e}"[:300]
     adopt_jobs(conn, pol, plan, rid, batch)
     posts = _run_posts(conn, rid)
-    first = min((p["created_at"] for p in posts), default=now())
+    # the run's start survives restarts: its first post or, for a bench-only run, its first job
+    job_start = conn.execute("SELECT min(created_at) AS t FROM jobs WHERE batch = %s OR batch LIKE %s",
+                             (batch, f"{batch}-%")).fetchone()["t"]
+    first = min([p["created_at"] for p in posts] + ([job_start] if job_start else []), default=now())
     deadline = first + timedelta(hours=float(hours if hours is not None else cfg.get("deadline_hours", 12)))
     while True:
         queue.reap(conn)
         for post in conn.execute("SELECT * FROM posts WHERE body->>'breadth_run' = %s AND status = 'producing'",
                                  (rid,)).fetchall():
+            _renew_lease(conn, rid, holder, loop_s * 3)   # a finish or review can take minutes: keep the run ours
             try:
                 production.advance_post(conn, pol, post, store, llm=llm)
             except Exception as e:  # noqa: BLE001 - one post's bug must not stop the others
@@ -539,10 +549,15 @@ def _state(conn, rid: str, bench_batches: list[str]) -> dict:
 
 
 def cancel_queued(conn, batch: str) -> int:
-    """At the deadline: the run's jobs nobody has started are failed, so no machine boots for them."""
-    return len(conn.execute(
+    """At the deadline: the run's queued jobs, and running ones whose lease has lapsed, are failed; running ones
+    get no further attempt (max_attempts = attempts), so a retry can never boot a machine after the driver left."""
+    n = len(conn.execute(
         "UPDATE jobs SET status = 'failed', error = 'breadth test deadline passed', updated_at = now() "
-        "WHERE status = 'queued' AND (batch = %s OR batch LIKE %s) RETURNING id", (batch, f"{batch}-%")).fetchall())
+        "WHERE (status = 'queued' OR (status = 'running' AND lease_until < now())) AND (batch = %s OR batch LIKE %s) "
+        "RETURNING id", (batch, f"{batch}-%")).fetchall())
+    conn.execute("UPDATE jobs SET max_attempts = attempts, updated_at = now() WHERE status = 'running' "
+                 "AND (batch = %s OR batch LIKE %s)", (batch, f"{batch}-%"))
+    return n
 
 
 # ------------------------------------------------------------------------------------------------------ the report

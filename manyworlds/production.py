@@ -1451,17 +1451,14 @@ def shot_spans(conn, post: dict, body: dict, video: dict, duration: float | None
 
 
 def overlay_items(conn, post: dict, body: dict, video: dict, duration: float | None) -> list[dict]:
-    """The post's on-screen text items in the finished video's time (overlays.items_for_shot per shot), with the
-    opening shot's edit.hook as a hook item unless that shot already lists one."""
+    """The post's on-screen text items in the finished video's time (overlays.items_for_shot per shot). Only
+    `edit.on_screen_text` is drawn: `edit.hook` describes what grabs attention (often a visual note), and the
+    director writes hook TEXT as a hook item."""
     from . import overlays
     items: list[dict] = []
     for k, a, b in shot_spans(conn, post, body, video, duration):
         edit = (_shot(body, k) or {}).get("edit") or {}
-        shot_items = overlays.items_for_shot(edit, a, b)
-        hook = str(edit.get("hook") or "").strip()
-        if hook and a == 0.0 and not any(str(it.get("kind") or "").lower() == "hook" for it in shot_items):
-            shot_items.insert(0, {"kind": "hook", "text": hook, "start_s": 0.0, "end_s": None})
-        items += shot_items
+        items += overlays.items_for_shot(edit, a, b)
     return items
 
 
@@ -1629,7 +1626,7 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
     import tempfile
     from pathlib import Path
 
-    from . import finishing, media, overlays, storage
+    from . import captions, finishing, media, overlays, storage
     fmt = post["format"]
     grade, burn = finishes(policy, fmt), captions_burned(policy, fmt)
     if not (grade or burn):
@@ -1669,7 +1666,8 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
                                     face_box=face)
             if items:
                 ovs = overlays.overlay_events(items, (width, height), policy, duration=info.get("seconds"),
-                                              face_box=face)
+                                              face_box=face,   # labels stay off the burned captions too
+                                              avoid_bands=[captions.plan_band(plan)] if plan else ())
         text = plan is not None or bool(ovs)
         if not grade and not text and not mixed:
             return video   # captions only, and nothing is said or shown
@@ -1705,6 +1703,20 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
         else:   # captions only and nothing said, but the sound was mixed
             import shutil
             shutil.copyfile(raw, out)
+        stored = store.put_file(out, key)
+        meta = {"finished": grade, "look": look, "captions": plan.style_name if plan else None,
+                "placement": plan.placement if plan else None, "passes": passes, "raw": str(video["id"]), "cover": cover,
+                **({"sound": used} if used else {}), **({"sound_error": sound_error} if sound_error else {}),
+                **({"on_screen_text": [{"kind": o.kind, "text": o.text, "position": o.position} for o in ovs]}
+                   if ovs else {}),
+                **({"sound_design": {"room_tone": getattr(cues.get("room_tone_synth"), "preset", None),
+                                     "room_size": cues.get("room_size"), "mic": cues.get("mic")}} if mixed else {})}
+        row = conn.execute(
+            """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
+               VALUES (%s, 'video', %s, %s, %s, %s, %s) RETURNING id, uri, meta""",
+            (post["creator_id"], stored.uri, stored.sha256, stored.bytes, Jsonb(meta),
+             Jsonb({"finished_from": (source or video)["uri"], "policy_version": policy.version}))).fetchone()
+        # judged after the asset exists, so its final_* review rows land on it (review/final.py _rows)
         if llm is not None:   # the finished file judged once (review.final; body.final_review, updated in place)
             from .review.final import review_final
             try:
@@ -1712,19 +1724,7 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
                              text_spans=text_spans(plan, ovs))
             except Exception as e:  # noqa: BLE001 - a judge outage never holds a finished post; the error is kept
                 body["final_review"] = {"error": f"{type(e).__name__}: {e}"[:500], "passed": True}
-        stored = store.put_file(out, key)
-    meta = {"finished": grade, "look": look, "captions": plan.style_name if plan else None,
-            "placement": plan.placement if plan else None, "passes": passes, "raw": str(video["id"]), "cover": cover,
-            **({"sound": used} if used else {}), **({"sound_error": sound_error} if sound_error else {}),
-            **({"on_screen_text": [{"kind": o.kind, "text": o.text, "position": o.position} for o in ovs]}
-               if ovs else {}),
-            **({"sound_design": {"room_tone": getattr(cues.get("room_tone_synth"), "preset", None),
-                                 "room_size": cues.get("room_size"), "mic": cues.get("mic")}} if mixed else {})}
-    return conn.execute(
-        """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
-           VALUES (%s, 'video', %s, %s, %s, %s, %s) RETURNING id, uri, meta""",
-        (post["creator_id"], stored.uri, stored.sha256, stored.bytes, Jsonb(meta),
-         Jsonb({"finished_from": (source or video)["uri"], "policy_version": policy.version}))).fetchone()
+    return row
 
 
 # The AI upscaler (finishing.upscaler, off until benchmarked): when it names a job kind, a made video is first upscaled
@@ -1882,11 +1882,13 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
     for post in conn.execute(
             # Only creators with reference images: the reviewer judges identity against them.
             "SELECT p.* FROM posts p JOIN creators c ON c.id = p.creator_id WHERE p.status = 'planned' "
-            "AND coalesce(p.scheduled_for, now()) <= %s AND p.format = ANY(%s) "
+            "AND coalesce(p.scheduled_for, now()) <= %s AND p.format = ANY(%s) AND NOT p.body ? 'breadth_run' "
             "AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0 "
             "ORDER BY p.scheduled_for", (now + lead, list(_cfg(policy).get("formats", ["photo", "carousel"])))).fetchall():
         start(conn, policy, post)
         out["started"] += 1
-    for post in conn.execute("SELECT * FROM posts WHERE status = 'producing' ORDER BY scheduled_for").fetchall():
+    # Breadth-test posts (manyworlds.breadth) are only ever advanced by their own driver, under the test overlay.
+    for post in conn.execute("SELECT * FROM posts WHERE status = 'producing' AND NOT body ? 'breadth_run' "
+                             "ORDER BY scheduled_for").fetchall():
         out[advance_post(conn, policy, post, store, llm=llm)] += 1
     return out

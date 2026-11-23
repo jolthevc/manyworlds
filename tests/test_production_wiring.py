@@ -196,7 +196,8 @@ def _made(conn, store, tmp_path, fmt, kind, body):
     return {"id": pid, "creator_id": cid, "format": fmt, "body": body}, video
 
 
-LABELLED = {"edit": {"hook": "Wait for the end", "on_screen_text": [{"kind": "label", "text": "Soup day"}]}}
+LABELLED = {"edit": {"hook": "she lifts the lid", "on_screen_text": [{"kind": "hook", "text": "Wait for the end"},
+                                                                     {"kind": "label", "text": "Soup day"}]}}
 
 
 def test_captions_labels_and_the_hook_ride_in_one_script_in_one_pass(conn, policy, store, tmp_path, fake_finish):
@@ -208,6 +209,7 @@ def test_captions_labels_and_the_hook_ride_in_one_script_in_one_pass(conn, polic
     assert len(finishes) == 1                                                   # one pass, one script
     ass = finishes[0]["ass"]
     assert "Thursday" in ass and "Soup day" in ass and "Wait for the end" in ass
+    assert "she lifts the lid" not in ass                                # edit.hook is a note, never drawn
     assert finishes[0]["has_voice"] is True
     assert {o["kind"] for o in final["meta"]["on_screen_text"]} == {"label", "hook"}
     assert final["meta"]["captions"] == p.get("burned_captions", "default_style")

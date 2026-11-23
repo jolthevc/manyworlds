@@ -27,7 +27,10 @@ autoscale:
   # (manyworlds.deploy.autoscale merge_groups; the image tag is the newest of the members'). Unproven on a real
   # machine: the first run shows whether one worker holding several models in turn fits a 48 GB L40S.
   merge_families:
-    talkcomfy: {families: [voice, comfy, talk, dance]}
+    # The run's voice, motion and lip sync work runs one job at a time on this one machine, so it gets its own limits
+    # (review 2026-11-22: the members' 2.5 h / $3 cut renders off mid-job and paid a reboot ~4 times a run).
+    # ram_gb: the worker process (VoxCPM, Whisper) and ComfyUI's models are resident together.
+    talkcomfy: {families: [voice, comfy, talk, dance], max_hours: 6, max_usd: 7.0, ram_gb: 64}
 
 # The breadth driver (manyworlds.breadth, `mw test breadth`).
 breadth:
@@ -46,7 +49,7 @@ breadth:
     comfy: [runpod_secure_l40s_vol, runpod_secure_l40s]
     voice: [runpod_secure_l40s_vol, runpod_secure_l40s]
     dance: [runpod_secure_l40s_vol, runpod_secure_l40s]
-    edit: [runpod_secure_l40s_vol, runpod_secure_l40s]
+    edit: [runpod_secure_l40s, runpod_secure_h100]   # off the 150 GB weights volume: Qwen-Image-Edit is ~58 GB
     image: [runpod_comm_3090, runpod_comm_4090]   # Vast has no credit; RunPod community cards for photos and narrated edits
   # Dry-run estimates (labelled as policy, not measured). Where finished attempts exist, their median is used.
   estimate:
@@ -302,7 +305,7 @@ breadth:
             scenes: ["standing behind an empty bar at closing, talking to her propped phone"]
             shots:
               - framing: {shot_size: "medium shot", device: propped}
-                edit: {hook: "rate my closing playlist", caption_style: "tiktok_box", on_screen_text: "rate my closing playlist"}
+                edit: {hook: "she points at the phone on the first word", caption_style: "tiktok_box", on_screen_text: [{kind: hook, text: "rate my closing playlist"}]}
                 performance: {lines: [{text: "Closing playlist, rate it. Slow songs only, lights up, everybody out.", delivery: "bright, teasing"}]}
         - id: outfits_cut_on_motion
           exercises: [outfit_change, cut_on_motion, posing, camera_propped]

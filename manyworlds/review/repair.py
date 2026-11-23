@@ -74,11 +74,21 @@ def split_hint(hint) -> tuple[str, list[str]]:
     return ",".join(kept), [str(a).strip() for a in avoid if str(a).strip()]
 
 
-def with_negative(payload: dict, avoid: list[str]) -> dict:
-    """`payload` with `avoid` added to its `negative_prompt` (the workers' negative channel), each item once."""
+def with_negative(payload: dict, avoid: list[str], policy: Policy | None = None, target: str = "photo") -> dict:
+    """`payload` with `avoid` added to its `negative_prompt`, each item once. A target whose model has no negative
+    channel (Z-Image at guidance 0: every repaired scene photo) also gets the positive stand-ins of those items in
+    its prompt (direction.positive_instead_of), since it ignores the field; a target with one starts from its
+    standard negative list when the payload has none, so the repair adds to it instead of replacing it."""
     if not avoid:
         return payload
+    from .. import direction
+    if policy is not None and not direction.has_negative_channel(target, policy):
+        tail = direction._stand_ins(list(avoid), policy)
+        if tail and tail not in str(payload.get("prompt") or ""):
+            payload = {**payload, "prompt": f"{str(payload.get('prompt') or '').rstrip()}. {tail}"}
     current = str(payload.get("negative_prompt") or "").strip()
+    if not current and policy is not None and direction.has_negative_channel(target, policy):
+        current = direction._negative_text([], target, policy)
     have = {x.strip().lower() for x in current.split(",") if x.strip()}
     extra = [a for a in dict.fromkeys(avoid) if a.lower() not in have]
     if not extra:
@@ -86,7 +96,7 @@ def with_negative(payload: dict, avoid: list[str]) -> dict:
     return {**payload, "negative_prompt": ", ".join(x for x in (current, *extra) if x)}
 
 
-def plan(policy: Policy, cause: str, *, scene: str, identity_repairs: int):
+def plan(policy: Policy, cause: str, *, scene: str, identity_repairs: int, target: str = "photo"):
     """(adjust, action): a function that changes the next job's payload, and a description of it. Hints add only
     positive wording to the prompt; what to avoid goes to the job's `negative_prompt`."""
     cfg = policy.get("review", "repair", default={}) or {}
@@ -96,7 +106,7 @@ def plan(policy: Policy, cause: str, *, scene: str, identity_repairs: int):
         text, avoid = split_hint(hints.get("identity", ""))
 
         def adjust(p: dict) -> dict:
-            out = with_negative({**p, "prompt": p["prompt"] + text}, avoid)
+            out = with_negative({**p, "prompt": p["prompt"] + text}, avoid, policy, target)
             if "lora_scale" in p:
                 out["lora_scale"] = round(min(cap, float(p["lora_scale"]) + step * (identity_repairs + 1)), 3)
             return out
@@ -104,8 +114,8 @@ def plan(policy: Policy, cause: str, *, scene: str, identity_repairs: int):
     if cause == "scene":
         text, avoid = split_hint(hints.get("scene", ""))
         lead = text.format(scene=scene)
-        return (lambda p: with_negative({**p, "prompt": lead + p["prompt"]}, avoid)), "prompt leads with the scene"
+        return (lambda p: with_negative({**p, "prompt": lead + p["prompt"]}, avoid, policy, target)), "prompt leads with the scene"
     if cause in ("realism", "hands", "teeth"):   # hands / teeth: the finer checks (review.detail), when enforced
         text, avoid = split_hint(hints.get(cause, hints.get("realism", "")))
-        return (lambda p: with_negative({**p, "prompt": p["prompt"] + text}, avoid)), "anatomy and text hints"
+        return (lambda p: with_negative({**p, "prompt": p["prompt"] + text}, avoid, policy, target)), "anatomy and text hints"
     return None, "new seed"

@@ -130,6 +130,8 @@ def merged_image(policy: Policy, name: str) -> dict:
             "ram_gb": int(group.get("ram_gb") or max(int(i["ram_gb"]) for i in imgs)),
             # each member downloads its own weights on first use: the largest disk plus the others' downloads
             "disk_gb": int(group.get("disk_gb") or max(disks) + round(sum(downloads) - max(downloads))),
+            # on a pool with a weights volume the weights live there, so the container needs only the largest disk
+            "volume_disk_gb": int(group.get("volume_disk_gb") or max(disks)),
             "download_gb": sum(downloads), "env": env, **({"min_cuda": max(cudas)} if cudas else {})}
 
 
@@ -276,6 +278,8 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     if spec.network_volume:   # weights cached on the volume: downloaded once, not by every machine
         spec.env.update(MW_MODEL_DIR=f"{spec.network_volume['path']}/mw", HF_HOME=f"{spec.network_volume['path']}/hf")
         spec.download_gb = 0.0
+        if img.get("volume_disk_gb"):   # a merged machine: no member's weights on the container disk
+            spec.disk_gb = int(img["volume_disk_gb"])
     if not image_published(spec.image):
         raise ProviderError(f"worker image {spec.image} is not published; not renting a machine for it")
     # Registered first: if anything after this point dies, the enforcer still knows the

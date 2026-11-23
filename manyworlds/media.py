@@ -213,8 +213,10 @@ def transition_graph(segments: list[dict], joins: list[dict], *, width: int, hei
 
     Each input is trimmed (match cuts), brought to the rate (fps_filter with `finishing.interpolate`), fitted to the
     size, and given one time base so xfade accepts it; a silent segment among voiced ones gets silence. Cuts and
-    match cuts concatenate; whip, blur and flash cross over `frames` frames (xfade, the audio acrossfade), never
-    more than half of either side."""
+    match cuts concatenate; whip, blur and flash cross over `frames` frames, never more than half of either side.
+    The outgoing picture holds its last frame for the crossover (tpad) and the sound is concatenated, so every
+    segment starts exactly where the sum of the lengths before it says (captions, labels, effects and the final
+    review's join times stay right) and no take's last syllable fades under the next one's first word."""
     rate, interp = float(fps), fin.get("interpolate")
     blocks = fin.get("transitions") or {}
     sr = int((fin.get("loudness") or {}).get("sample_rate", 48000))
@@ -262,7 +264,9 @@ def transition_graph(segments: list[dict], joins: list[dict], *, width: int, hei
         else:
             block = blocks[j["type"]] or {}
             d = min(_frames(j, block, fin) / rate, cur / 2, lengths[i] / 2)
-            off = cur - d
+            off = cur   # the outgoing side is held d longer, so the crossover ends where the next segment starts + d
+            lines.append(f"[{v}]tpad=stop_mode=clone:stop_duration={_fmt(d)}[{nv}h]")
+            v = f"{nv}h"
             left, right = v, f"v{i}"
             if j["type"] == "blur":
                 sigma = _fmt(float(j.get("sigma") or block["sigma"]))
@@ -283,8 +287,8 @@ def transition_graph(segments: list[dict], joins: list[dict], *, width: int, hei
                 xf = str(block["xfade"])
             lines.append(f"[{left}][{right}]xfade=transition={xf}:duration={_fmt(d)}:offset={_fmt(off)}[{nv}]")
             if audio:
-                lines.append(f"[{a}][a{i}]acrossfade=d={_fmt(d)}[{na}]")
-            cur += lengths[i] - d
+                lines.append(f"[{a}][a{i}]concat=n=2:v=0:a=1[{na}]")
+            cur += lengths[i]
         v, a = nv, (na if audio else None)
     return ";".join(lines), v, a
 

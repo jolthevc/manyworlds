@@ -291,6 +291,25 @@ def _coerce(shot: "ShotSheet | dict | None") -> ShotSheet:
     return ShotSheet.model_validate(shot)
 
 
+def faceless(shot: "ShotSheet | dict | None") -> bool:
+    """A shot with no face of hers in it: her point of view (device pov: only her hands) or a cutaway (b-roll of
+    what she talks about). Its prompt describes no face and no eyes, and no gate judges it on identity."""
+    if not shot:
+        return False
+    try:
+        s = _coerce(shot)
+    except Exception:  # noqa: BLE001 - a malformed sheet is judged as before
+        return False
+    return s.framing.device == "pov" or bool(s.cutaway)
+
+
+def _hands_subject(bible: dict) -> str:
+    """The subject of a faceless shot: her hands, with what makes them hers (skin, signature details)."""
+    a = bible.get("appearance") or {}
+    return _join(["seen from her own eyes, her hands and forearms in frame", str(a.get("ethnicity_and_skin") or ""),
+                  str(a.get("signature_details") or "")])
+
+
 def _lighting(s: SetSpec) -> str:
     light = _join([s.light_quality, s.color_temp])
     light = f"{light} light" if light else ""
@@ -449,7 +468,7 @@ def _eyes(s: ShotSheet, target: Target, policy: Any) -> str:
     """Natural eye behaviour for a video with the creator in shot (not a photo, not a cutaway): the target's
     policy line (`direction.eyes.<target>`), then one glance per beat whose eyeline leaves the lens, at its time
     ("looks at the mug at 4s"). A prop glance names the shot's first prop when it has one."""
-    if target == "photo" or s.cutaway:
+    if target == "photo" or faceless(s):
         return ""
     eyes = _policy(policy, "direction", "eyes", default={}) or {}
     template = eyes.get("glance", "") or ""
@@ -470,7 +489,7 @@ def _idle(s: ShotSheet, target: Target, policy: Any) -> str:
     """The micro-expression and idle-movement line for a video with the creator in shot, from her energy; with
     no energy set, from the first `direction.idle.keywords` energy whose word appears in her body language; else
     the target's `idle.default_energy` (talk only, as shipped)."""
-    if target == "photo" or s.cutaway:
+    if target == "photo" or faceless(s):
         return ""
     idle = _policy(policy, "direction", "idle", default={}) or {}
     energy = s.performance.energy or ""
@@ -749,7 +768,9 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
                        *snd.effects, f"music {snd.music}" if snd.music.strip() else ""])
 
     head = f"{trigger}, " if trigger else ""
-    sections = {"camera": camera, "subject": appearance_prompt(bible), "wardrobe": wardrobe, "action": action,
+    no_face = faceless(s)
+    sections = {"camera": camera, "subject": _hands_subject(bible) if no_face else appearance_prompt(bible),
+                "wardrobe": wardrobe, "action": action,
                 "set": set_, "style": style, "sound": sound}
     items = negative_items(s, target, policy, positive=_render(head, sections, ""))
     channel = has_negative_channel(target, policy)
@@ -759,7 +780,7 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
     if not budget:
         return {"prompt": _render(head, sections, tail), "negative": negative}
     prompt = _fit(s, sections, head=head, tail=tail, budget=int(budget), video=video, scene=scene,
-                  short_subject=short_appearance(bible) if video else "", policy=policy)
+                  short_subject=short_appearance(bible) if video and not no_face else "", policy=policy)
     return {"prompt": prompt, "negative": negative}
 
 

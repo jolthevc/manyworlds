@@ -739,6 +739,14 @@ def face_box_union(boxes: Iterable[Sequence[float] | None]) -> tuple[float, floa
     return (min(b[0] for b in found), min(b[1] for b in found), max(b[2] for b in found), max(b[3] for b in found))
 
 
+def plan_band(plan: "CaptionPlan") -> tuple[float, float]:
+    """(top, bottom) as shares of the frame height that a plan's captions take (its placement, `face_band` tall):
+    what on-screen labels must stay out of."""
+    places = plan.cfg.get("placements") or _DEFAULT_PLACEMENTS
+    place = places.get(plan.placement) or _DEFAULT_PLACEMENTS["lower"]
+    return band_of(place, float(plan.cfg.get("face_band", 0.12)))
+
+
 def placement_for(face_box: Sequence[float] | None, policy=None, *, preferred: str | None = None,
                   band: float | None = None) -> str:
     """The caption band that does not cover the face: `preferred` (the shot's, else `default_placement`) when it

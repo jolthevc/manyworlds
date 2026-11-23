@@ -1340,6 +1340,10 @@ direction:
     extra people: "the only person in the frame"
     waxy skin: "real skin with pores and fine lines"
     studio lighting: "lit only by real sources in the scene, a window, a lamp or daylight"
+    # the realism repair's avoid list (review.repair.hints.realism.avoid), for scene photos, which have no negative channel
+    text: "blank, unprinted surfaces"
+    extra fingers: "five fingers on each hand"
+    warped hands: "natural, relaxed hands"
   camera_moves: [static, handheld, push_in, pull_out, pan_left, pan_right, tilt_up, tilt_down, follow, orbit_slow]
   offer_readiness: [ready, partial]
   # Natural eyes (plan 2026-11-22 wave 2): added to the action of talk prompts, and of i2v prompts unless the shot is

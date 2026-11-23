@@ -35,6 +35,7 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+from .. import direction
 from ..creator.lab import appearance_prompt
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
@@ -80,7 +81,9 @@ class ClipReview(BaseModel):
 
 
 def gates_for(scene: str | None, shot: dict | None = None) -> tuple[str, ...]:
-    return GATES + (("scene",) if scene else ()) + (("direction",) if shot else ())
+    """A POV or cutaway clip (direction.faceless) shows no face, so it is not judged on identity."""
+    base = tuple(g for g in GATES if not (g == "identity" and direction.faceless(shot)))
+    return base + (("scene",) if scene else ()) + (("direction",) if shot else ())
 
 
 MOTION_TRANSFER_KINDS = ("comfy.wan_animate2",)
@@ -120,6 +123,8 @@ def decide(r: ClipReview, cfg: dict, scene: str | None = None, *, shot: dict | N
         verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))
     if shot:
         verdict["direction"] = common.direction_passes(r.direction, policy)
+    if direction.faceless(shot):
+        del verdict["identity"]
     return verdict
 
 

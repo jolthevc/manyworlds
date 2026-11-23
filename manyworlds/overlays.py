@@ -308,12 +308,14 @@ def _on_face(extent, face_box, width: int, height: int, margin: float) -> bool:
 
 
 def overlay_events(items: Iterable[dict], plan_or_size, policy=None, *, duration: float | None = None,
-                   face_box: Sequence[float] | None = None) -> list[Overlay]:
+                   face_box: Sequence[float] | None = None,
+                   avoid_bands: Sequence[tuple[float, float]] = ()) -> list[Overlay]:
     """The items laid out for a video: a captions plan (its frame size) or (width, height). Each item gets its
     kind's style and position unless it names known ones; times default per kind (a hook from `start_s` for
     `duration_s`, at most `max_duration_s`; others to the end of the video, else `default_duration_s`) and are
     clipped to `duration`. An item covering `face_box` (x0, y0, x1, y1 shares) or an earlier item showing at the
-    same time moves to the first clear position in its position's `alternatives`. Empty when
+    same time, or inside an `avoid_bands` band ((top, bottom) shares of the height: the burned captions), moves to
+    the first clear position in its position's `alternatives`. Empty when
     `on_screen_text.enabled` is off. Items with no drawable text, or no time on screen, are left out."""
     cfg = _cfg(policy)
     if not cfg.get("enabled", True):
@@ -358,7 +360,8 @@ def overlay_events(items: Iterable[dict], plan_or_size, policy=None, *, duration
             cand = _layout(pieces, style, places[name], width, height, safe, fonts)
             if laid is None:
                 laid, where = cand, name
-            if not _on_face(cand["extent"], face_box, width, height, margin) and \
+            in_band = any(cand["extent"][1] / height < b and t < cand["extent"][3] / height for t, b in avoid_bands)
+            if not _on_face(cand["extent"], face_box, width, height, margin) and not in_band and \
                     not any(_clash(cand["extent"], o, start, end) for o in out):
                 laid, where = cand, name
                 break

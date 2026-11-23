@@ -220,13 +220,18 @@ def test_adopted_talk_jobs_get_the_item_profile_and_the_plan_pools(conn, policy)
     assert breadth.adopt_jobs(conn, pol, plan, "r1", "test-breadth-r1") == 0   # once
 
 
-def test_the_deadline_cancels_queued_jobs(conn):
+def test_the_deadline_cancels_queued_jobs_and_any_retry(conn):
     a = queue.enqueue(conn, "image.zimage", {}, batch="test-breadth-r2")
     b = queue.enqueue(conn, "comfy.wan_animate2", {}, batch="test-breadth-r2-dance")
     c = queue.enqueue(conn, "image.zimage", {}, batch="test-breadth-r20")   # another run
-    assert breadth.cancel_queued(conn, "test-breadth-r2") == 2
-    status = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM jobs").fetchall()}
-    assert status[a] == status[b] == "failed" and status[c] == "queued"
+    live = queue.enqueue(conn, "talk.infinitetalk", {}, batch="test-breadth-r2")
+    lapsed = queue.enqueue(conn, "talk.infinitetalk", {}, batch="test-breadth-r2")
+    conn.execute("UPDATE jobs SET status = 'running', attempts = 1, lease_until = now() + interval '5 min' WHERE id = %s", (live,))
+    conn.execute("UPDATE jobs SET status = 'running', attempts = 1, lease_until = now() - interval '5 min' WHERE id = %s", (lapsed,))
+    assert breadth.cancel_queued(conn, "test-breadth-r2") == 3
+    rows = {r["id"]: r for r in conn.execute("SELECT id, status, attempts, max_attempts FROM jobs").fetchall()}
+    assert rows[a]["status"] == rows[b]["status"] == rows[lapsed]["status"] == "failed" and rows[c]["status"] == "queued"
+    assert rows[live]["status"] == "running" and rows[live]["max_attempts"] == rows[live]["attempts"]   # no retry
 
 
 # ------------------------------------------------------------------------------------------------- one machine
@@ -316,3 +321,29 @@ def test_cli_dry_run_prints_the_plan(conn, policy, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["dry_run"] and [i["id"] for i in out["items"]] == ["photo_propped_pose"]
     assert _count(conn, "posts") == 0
+
+
+def test_the_producer_never_touches_breadth_posts(conn, policy, store):
+    """Once the owner goes live, unfinished breadth posts must not be produced under the base policy."""
+    from manyworlds import production
+    handle = _creator(conn)
+    cid = conn.execute("SELECT id FROM creators WHERE handle = %s", (handle,)).fetchone()["id"]
+    pids = [conn.execute("INSERT INTO posts (creator_id, format, status, body) VALUES (%s, 'photo', %s, %s) RETURNING id",
+                         (cid, status, Jsonb({"breadth_run": "r1", "scenes": ["a kitchen"]}))).fetchone()["id"]
+            for status in ("planned", "producing")]
+    production.advance(conn, policy, now=NOW, store=store)
+    assert [conn.execute("SELECT status FROM posts WHERE id = %s", (p,)).fetchone()["status"] for p in pids] == [
+        "planned", "producing"]
+    assert _count(conn, "jobs") == 0
+
+
+def test_the_merged_machine_has_its_own_caps_and_a_small_disk_on_the_volume(policy, tmp_path):
+    pol = breadth.test_policy(policy)
+    img = autoscale.merged_image(pol, "talkcomfy")
+    members = [pol.get("worker_images", f) for f in ("voice", "comfy", "talk", "dance")]
+    assert img["volume_disk_gb"] == max(int(m["disk_gb"]) for m in members) < img["disk_gb"]
+    assert autoscale._limit(pol, "talkcomfy", "max_hours_by_family", "max_hours", "default_max_hours", 2) == 6
+    assert "runpod_secure_l40s_vol" not in breadth._cfg(pol)["pools_by_family"]["edit"]   # Qwen edit off the volume
+    empty = tmp_path / "empty.yaml"
+    empty.write_text("# nothing\n", encoding="utf-8")
+    assert policy_mod.with_overlay(policy, empty).body == policy.body                      # an empty overlay is no-op

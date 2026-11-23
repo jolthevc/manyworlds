@@ -104,7 +104,8 @@ def with_overlay(base: Policy, path: str | os.PathLike) -> Policy:
         over = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         if not isinstance(over, dict):
             raise ValueError(f"policy overlay {p} must be a mapping")
-        _OVERLAYS[key] = from_dict(deep_merge(base.body, over))
+        # an empty overlay changes nothing (deep_merge's "an empty dict replaces" is for keys inside it)
+        _OVERLAYS[key] = from_dict(deep_merge(base.body, over) if over else base.body)
     return _OVERLAYS[key]
 
 
