@@ -126,3 +126,26 @@ Quality weak spots:
 
 Then the breadth test: one item per format and feature (the audit's list of 18), within the $10/day cap, likely over
 two UTC days.
+
+## Status, 2026-11-23 morning: built, not yet run on a GPU
+All 12 build items are on main (CI green). Worker images talkcomfy v13 and image v27 are built and smoke-tested; the
+control plane is deployed. Nothing has run on a GPU, and no test runs until the owner approves.
+
+The breadth test, waiting for approval:
+- **Step 0:** design Maren's voice (`mw voice design maren.afterhours`, then `mw voice candidates` to listen, then
+  `mw voice pick`). One L40S job.
+- **Step 1:** `mw test breadth --plan default --creator maren.afterhours`. 21 items, organised by capability:
+  - photo, carousel, story
+  - story clip with a prop
+  - voiceover over POV B-roll, timestamps and labels
+  - talking: Kokoro voice, designed voice, a 30 s single take while doing makeup, two shots with a scene change, a
+    cutaway, walk-and-talk, a push-in, LongCat, the 720p profile, caption styles and hook
+  - outfit changes cut on a spin
+  - room tone on a silent clip
+  - two motion-transfer clips (Pexels references)
+  - the reference-conditioned scene benchmark
+- **Skipped:** the music bed (ACE-Step is off until benchmarked).
+- **Cost:** the dry run estimates $3.87 for first attempts. With repairs and boots, expect $5-9, within the $10/day
+  GPU cap. If the cap is hit, the rest continues after 00:00 UTC.
+- **Output:** `mw test breadth-report <run>` gives each item's gate verdicts, lip sync, WER, fps and resolution,
+  render seconds, $ and a link to the final video. Results are grouped by capability.
