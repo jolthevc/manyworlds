@@ -21,11 +21,22 @@ talk job then lip-syncs that clip (`video_uri`, InfiniteTalk video-to-video, onl
 longer than one motion clip (max_motion_seconds) gets a chain of them, each from the last frame of the one before,
 joined here before the lip sync, up to max_motion_chain; past that the take ends on a hold. Production waits for no
 review of the motion clips; the take is judged.
+Dance and motion transfer (policy `dance`): a shot with `motion_reference` (a dance.references id) is rendered by
+Wan-Animate-2 (production.dance_kind) from that shot's photo while dance.enabled: a story clip's shot becomes the
+animate clip (reviewed like any clip), and a talking take's shot becomes the silent motion clip the talk job lip-syncs
+onto (the walk-and-talk path, V2V).
+Joins: a directed post (body.shots) is cut only where its shots change, one take per shot that speaks (a take split
+only past generation.talk.max_take_seconds); each join between shots is the next shot's `edit.transition_in` mapped
+by direction.transition_kind (cut, match, whip, blur, flash) and rendered by media.concat. Undirected posts keep the
+hybrid split (generation.talk_hybrid) behind its switch.
 Finish (`finish_video`, policy `finishing` and `burned_captions`, each with its `formats`): once a video post's video
-is made (and joined), it is finished once on the control plane: grade, grain and loudness (manyworlds.finishing) and
-the spoken words burned in as captions (manyworlds.captions, timed from the voice lines), in one ffmpeg pass where
-this ffmpeg has libass; the cover frame is picked from its keyframes. The post's `video` is the finished file
-(post-<id>/final.mp4, reused on a rerun), `video_raw` the one it was made from.
+is made (and joined), it is finished once on the control plane: the sound mix (policy `sound`: procedural room tone,
+voice polish, library cues, a bed for silent formats), then grade, grain and loudness (manyworlds.finishing) with the
+spoken words (manyworlds.captions, timed from the voice lines, in the style captions.caption_style_for picks, placed
+off the face) and the shots' on-screen text (manyworlds.overlays: labels, the hook, timestamps, question bubbles) in
+ONE ASS script, burned in the same ffmpeg pass where this ffmpeg has libass. The cover frame is picked from the
+finished file. An AI upscaler (finishing.upscaler, off) runs as a GPU job first when it is on. The post's `video` is
+the finished file (post-<id>/final.mp4, reused on a rerun), `video_raw` the one it was made from.
 `ready` posts are published by manyworlds.publish.scheduler per policy autonomy.publish (autonomous, or held).
 Only formats listed in production.formats are made; video posts wait as 'planned' until their
 format is added there.
@@ -42,7 +53,7 @@ from typing import Any, Callable
 from psycopg.types.json import Jsonb
 
 from . import queue
-from .creator.lab import clip_prompt, photo_prompt, talk_prompt
+from .creator.lab import photo_prompt, prompts
 from .review import repair
 from .policy import Policy
 
@@ -107,10 +118,35 @@ def _with_crops(payload: dict, policy: Policy) -> dict:
     return payload
 
 
+def _with_prompts(payload: dict, target: str, bible: dict, scene: str, *, motion: str = "", shot: dict | None = None,
+                  policy: Policy) -> dict:
+    """The job's `prompt`, and `negative_prompt` when the direction compiler wrote one (only for a target whose model
+    has a negative channel, creator.lab.prompts); none leaves the worker's own default negative."""
+    p = prompts(target, bible, scene, motion=motion, shot=shot, policy=policy)
+    payload["prompt"] = p["prompt"]
+    if p.get("negative"):
+        payload["negative_prompt"] = p["negative"]
+    return payload
+
+
+def is_video_format(policy: Policy, fmt: str) -> bool:
+    """Whether a format is a video: one production makes from photos (FOLLOW_UPS), or one of planner.video_formats."""
+    return fmt in FOLLOW_UPS or fmt in (policy.get("planner", "video_formats", default=[]) or [])
+
+
+def scene_size(policy: Policy, fmt: str) -> dict:
+    """A scene photo's generation settings: generation.image, under the format's generation.image_by_format entry,
+    else (any video format) the `video` entry: every video's scene photos are 9:16, the frame the video is made in."""
+    by_format = policy.get("generation", "image_by_format", default={}) or {}
+    over = by_format.get(fmt)
+    if over is None and is_video_format(policy, fmt):
+        over = by_format.get("video")
+    return {**(policy.get("generation", "image", default={}) or {}), **(over or {})}
+
+
 def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None, scene_i: int, attempt: int,
                adjust=None):
-    cfg, img = _cfg(policy), policy.get("generation", "image", default={})
-    img = {**img, **(policy.get("generation", "image_by_format", post["format"], default={}) or {})}   # Stories are 9:16
+    cfg, img = _cfg(policy), scene_size(policy, post["format"])   # Stories and every video format are 9:16
     from .creator import sets
     # A registered set or outfit (creator.sets): its canonical description goes into the shot, its plate and outfit
     # reference into `references` (the consistency check compares). Nothing registered: the shot as it was.
@@ -282,18 +318,63 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
     vid, scene, motion = policy.get("generation", "video", default={}), body["scenes"][0], body.get("script", "")
     shot = _shot(body, 0)   # a story clip is one shot, from scene 0's photo
-    payload = {"image_uri": chosen[0]["uri"], "prompt": clip_prompt(bible, scene, motion, shot=shot, policy=policy),
+    keyframes = int(policy.get("review", "video", "keyframes", default=4))
+    reference = dance_reference(policy, shot)
+    if reference:   # the shot's motion comes from a licensed reference clip (Wan-Animate-2), reviewed like any clip
+        payload = dance_payload(policy, bible, scene, shot, image_uri=chosen[0]["uri"], reference=reference,
+                                seed=_seed(post, 500, attempt))
+        payload["scene"] = f"{scene} Movement: {motion}" if motion else scene
+        _with_crops(payload, policy)
+        return queue.enqueue(conn, _dance_kind(policy), payload, creator_id=post["creator_id"],
+                             batch=f"post-{post['id']}", post_id=post["id"],
+                             idempotency_key=f"post:{post['id']}:clip:{attempt}")
+    payload = {"image_uri": chosen[0]["uri"],
                "scene": f"{scene} Movement: {motion}" if motion else scene,   # the video judge scores against it
                "width": vid.get("width", 704), "height": vid.get("height", 1280), "frames": vid.get("frames", 121),
-               "keyframes": int(policy.get("review", "video", "keyframes", default=4)),
+               "keyframes": keyframes,
                "seed": _seed(post, 500, attempt),
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
+    _with_prompts(payload, "i2v", bible, scene, motion=motion, shot=shot, policy=policy)
     _with_shot(payload, shot)
     _with_crops(payload, policy)
     kind = _story_clip_kind(conn, policy, post)
     _clip_params(policy, kind, payload)
     return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
+
+
+# Dance and motion transfer (policy `dance`; worker/handlers/dance_animate.py): a shot sheet's `motion_reference` names
+# a driving clip in dance.references; while dance.enabled, that shot is rendered by Wan-Animate-2 from the shot's photo
+# (the worker checks the reference again: ours or licensed, never a platform download).
+def _dance_kind(policy: Policy) -> str:
+    return str(_cfg(policy).get("dance_kind", "comfy.wan_animate2"))
+
+
+def dance_reference(policy: Policy, shot: dict | None) -> str | None:
+    """The shot's motion reference (a listed dance.references id, direction.motion_reference) when dance is on, else
+    None (the shot renders as before)."""
+    from . import dance
+    from .direction import motion_reference
+    if shot is None or not dance.enabled(policy) or not str(shot.get("motion_reference") or "").strip():
+        return None
+    return motion_reference(shot, policy) or None
+
+
+def dance_payload(policy: Policy, bible: dict, scene: str, shot: dict | None, *, image_uri: str, reference: str,
+                  seed: int) -> dict:
+    """A comfy.wan_animate2 job's payload (the handler's contract, as `mw bench` sends it): the photo, the reference,
+    the shot's image-to-video prompt and the policy's dance.generation settings, with dance.identity.keyframes
+    keyframes (the video gate's dance identity row scores each). The animate graph reads its negative text from
+    params (worker/comfy_animate.py), so the compiled negative goes there too."""
+    from . import dance
+    keyframes = int((dance.cfg(policy).get("identity") or {}).get(
+        "keyframes", policy.get("review", "video", "keyframes", default=4)))
+    payload = {"image_uri": image_uri, "reference": reference, "seed": seed, "keyframes": keyframes,
+               "params": dict(dance.cfg(policy).get("generation") or {})}
+    _with_prompts(payload, "i2v", bible, scene, shot=shot, policy=policy)
+    if payload.get("negative_prompt"):
+        payload["params"]["negative_prompt"] = payload["negative_prompt"]
+    return _with_shot(payload, shot)
 
 
 def _story_clip_kind(conn, policy: Policy, post: dict) -> str:
@@ -339,9 +420,9 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"], "script": script,
                "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),
-               "prompt": talk_prompt(row["bible"], scene, shot=shot, policy=policy),
                "scene": f"{scene} Speaking to camera: {script}",   # the video judge scores against it
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)), "seed": seed, "params": params}
+    _with_prompts(payload, "talk", row["bible"], scene, shot=shot, policy=policy)
     _with_shot(payload, shot)
     _with_crops(payload, policy)
     _with_audio(payload, audio)
@@ -427,8 +508,24 @@ def shot_takes(policy: Policy, shots: list, *, cutaways: bool = True) -> list[tu
 
 
 def _directed(policy: Policy, body: dict) -> bool:
-    """Whether a talking video's segments follow its shots (generation.talk_hybrid.segment_by: scene)."""
-    return bool(body.get("shots")) and _hybrid_cfg(policy).get("segment_by", "scene") == "scene"
+    """Whether a talking video's takes follow its shots: always for a directed post (body.shots), which is cut only
+    where its shots change, never split into the hybrid's short segments."""
+    return bool(body.get("shots"))
+
+
+def script_takes(policy: Policy, body: dict) -> list[tuple[str, str, int]]:
+    """A directed post whose shots speak no lines: the post's script as on-camera takes on its first on-camera shot,
+    split only past generation.talk.max_take_seconds (as shot_takes splits a long take). [] when there's no script."""
+    from .direction import ShotSheet
+    from .talk_segments import split_script
+    script = str(body.get("script") or "").strip()
+    if not script:
+        return []
+    sheets = [ShotSheet.model_validate(s) if isinstance(s, dict) else s for s in body.get("shots") or []]
+    anchor = next((i for i, s in enumerate(sheets) if not s.cutaway), 0)
+    max_take = float(policy.get("generation", "talk", "max_take_seconds", default=60))
+    wps = float(_talk_long_cfg(policy).get("words_per_second", 2.5))
+    return [(part, "talk", anchor) for part in split_script(script, max_seconds=max_take, words_per_second=wps)]
 
 
 def _take_shot(body: dict, segment: int | None) -> int:
@@ -507,13 +604,15 @@ def talk_v2v(policy: Policy) -> bool:
 
 def _needs_motion(policy: Policy, post: dict, body: dict, segment: int | None) -> bool:
     """Whether this talk take is walk-and-talk: a talking video on InfiniteTalk (the only V2V talk model) in the
-    ComfyUI talk engine, whose take's shot moves."""
+    ComfyUI talk engine, whose take's shot moves, or has a motion reference while dance is on (its animate clip is
+    then the motion clip)."""
     if post["format"] != "talking_video":
         return False
     talk = policy.get("generation", "talk", default={}) or {}
     if str(talk.get("model") or "infinitetalk") != "infinitetalk" or not talk_v2v(policy):
         return False
-    return moves(policy, _shot(body, _take_index(body, segment)))
+    shot = _shot(body, _take_index(body, segment))
+    return bool(dance_reference(policy, shot)) or moves(policy, shot)
 
 
 def _wan_frames(seconds: float, fps: float) -> int:
@@ -554,18 +653,29 @@ def _motion_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]
     bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
     i = _take_index(body, segment)
     scene, shot = body["scenes"][i], _shot(body, i)
+    part = "" if segment is None else f"{segment}:"
+    link = f"c{clip}:" if clip else ""
+    key = f"post:{post['id']}:motion:{part}{link}{attempt}"
+    seed = _seed(post, 900 + (segment or 0) * 1000 + 3 * clip, attempt)
+    reference = dance_reference(policy, shot)
+    if reference:   # the take's motion is the reference's (Wan-Animate-2), as long as the reference clip
+        payload = dance_payload(policy, bible, scene, shot, image_uri=start_uri or _take_photo(body, chosen, i)["uri"],
+                                reference=reference, seed=seed)
+        payload.update(scene=scene, intermediate=True)
+        return queue.enqueue(conn, _dance_kind(policy), payload, creator_id=post["creator_id"],
+                             batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=key)
     if seconds is None:
         seconds = _take_seconds(policy, body, segment, audio)
     seconds = min(float(seconds), float(cfg.get("max_motion_seconds", 5)))
     vid = policy.get("generation", "video", default={})
     kind = cfg.get("kind") or _story_clip_kind(conn, policy, post)
     payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"],
-               "prompt": clip_prompt(bible, scene, "", shot=shot, policy=policy),   # compile_prompt(shot, ..., "i2v")
                "scene": scene, "width": vid.get("width", 704), "height": vid.get("height", 1280),
                "keyframes": int(cfg.get("keyframes", 1)),
-               "seed": _seed(post, 900 + (segment or 0) * 1000 + 3 * clip, attempt),
+               "seed": seed,
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)},
                "intermediate": True}   # walk-and-talk's source clip, not a post's output: the take is reviewed
+    _with_prompts(payload, "i2v", bible, scene, shot=shot, policy=policy)
     _clip_params(policy, kind, payload)
     frames = _wan_frames(seconds, float(payload["params"].get("fps") or vid.get("fps", 24)))
     payload["frames"] = frames
@@ -574,10 +684,8 @@ def _motion_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]
     _with_shot(payload, shot)
     if clip:
         payload["chain"] = {"index": clip}
-    part = "" if segment is None else f"{segment}:"
-    link = f"c{clip}:" if clip else ""
     return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
-                         post_id=post["id"], idempotency_key=f"post:{post['id']}:motion:{part}{link}{attempt}")
+                         post_id=post["id"], idempotency_key=key)
 
 
 def _chain_jobs(body: dict, segment: int | None, clip: int) -> list[str]:
@@ -599,7 +707,10 @@ def _advance_motion(conn, policy: Policy, post: dict, body: dict, chosen: list[d
     a clip with no last frame to continue from ends the chain there (the take ends on a hold)."""
     failures = ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6)))
     videos: list[dict] = []
-    for k, seconds in enumerate(motion_lengths(policy, _take_seconds(policy, body, segment, audio))):
+    lengths = motion_lengths(policy, _take_seconds(policy, body, segment, audio))
+    if dance_reference(policy, _shot(body, _take_index(body, segment))):
+        lengths = lengths[:1]   # one animate clip, as long as its reference: no chain (the talk holds past its end)
+    for k, seconds in enumerate(lengths):
         start = start_uri
         if k:
             try:
@@ -780,35 +891,55 @@ def _last_frame(conn, video: dict) -> str:
     return row["uri"]
 
 
-def join_talk(conn, policy: Policy, post: dict, videos: list[dict], store=None) -> dict:
-    """The post's segments joined into one video asset. Idempotent: a rerun reuses the joined asset."""
+def join_transitions(policy: Policy, body: dict, n: int) -> list[str] | None:
+    """The transition at each of the n - 1 joins of a directed post's takes: where the shot changes, the next shot's
+    `edit.transition_in` as direction.transition_kind reads it (empty text: a cut); within one shot (a take split for
+    length), a cut. None when every join is a cut, or the post has no shots (a plain join)."""
+    if not body.get("shots") or n < 2:
+        return None
+    from .direction import transition_kind
+    out = []
+    for i in range(1, n):
+        k = _take_shot(body, i)
+        text = str((((_shot(body, k) or {}).get("edit") or {}).get("transition_in")) or "").strip()
+        out.append(transition_kind(text, policy) if text and k != _take_shot(body, i - 1) else "cut")
+    return out if any(t != "cut" for t in out) else None
+
+
+def join_talk(conn, policy: Policy, post: dict, videos: list[dict], store=None, *, body: dict | None = None) -> dict:
+    """The post's segments joined into one video asset, with each shot's transition in (join_transitions).
+    Idempotent: a rerun reuses the joined asset."""
     import tempfile
     from pathlib import Path
 
     from . import media, storage
     store = store or storage.from_url()
+    body = body if body is not None else (post.get("body") or {})
     key = f"assets/{post['creator_id']}/post-{post['id']}/talk-joined.mp4"
     uri = store.uri_for(key)
     existing = conn.execute("SELECT id, uri FROM assets WHERE uri = %s AND kind = 'video'", (uri,)).fetchone()
     if existing:
         return existing
     timeout = float(_talk_long_cfg(policy).get("join_timeout_s", 600))
+    transitions = join_transitions(policy, body, len(videos))
     with tempfile.TemporaryDirectory(prefix="mw-join-") as d:
         paths = [store.get_file(v["uri"], Path(d) / f"segment_{i:02d}.mp4") for i, v in enumerate(videos)]
-        if (post.get("body") or {}).get("talk_modes") or _hybrid_cfg(policy).get("normalize_all"):
+        if body.get("talk_modes") or _hybrid_cfg(policy).get("normalize_all"):
             out_cfg = _hybrid_cfg(policy).get("output", {}) or {}
             paths = [media.normalize(p, p.with_name(f"norm_{p.name}"), width=int(out_cfg.get("width", 720)),
                                      height=int(out_cfg.get("height", 1280)), fps=int(out_cfg.get("fps", 30)),
-                                     lufs=float(out_cfg.get("lufs", -14)), timeout=timeout) for p in paths]
+                                     lufs=float(out_cfg.get("lufs", -14)), timeout=timeout, policy=policy)
+                     for p in paths]
         seconds = [media.duration(p) for p in paths]   # where each segment starts in the joined video (captions)
-        out = media.concat(paths, Path(d) / "joined.mp4", timeout=timeout)
+        out = media.concat(paths, Path(d) / "joined.mp4", timeout=timeout, transitions=transitions, policy=policy)
         stored = store.put_file(out, key)
     return conn.execute(
         """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
            VALUES (%s, 'video', %s, %s, %s, %s, %s) RETURNING id, uri""",
         (post["creator_id"], stored.uri, stored.sha256, stored.bytes,
          Jsonb({"lip_sync": True, "segments": [str(v["id"]) for v in videos], "segment_seconds": seconds}),
-         Jsonb({"joined": [v["uri"] for v in videos], "join": _talk_long_cfg(policy).get("join", "cut")}))).fetchone()
+         Jsonb({"joined": [v["uri"] for v in videos], "join": _talk_long_cfg(policy).get("join", "cut"),
+                "transitions": transitions}))).fetchone()
 
 
 def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], store=None):
@@ -873,7 +1004,7 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
             return "dropped", None
     if any(state != "chosen" for state, _ in results):
         return "waiting", None
-    return "chosen", join_talk(conn, policy, post, [video for _, video in results], store)
+    return "chosen", join_talk(conn, policy, post, [video for _, video in results], store, body=body)
 
 
 # Formats made from the post's chosen photos: body key for their jobs, job maker, state, name.
@@ -1044,7 +1175,8 @@ def _piece_timing(conn, piece: dict, script: str) -> tuple[list[tuple[dict, int]
         spoken = seconds - lead - tail
     if not script.strip() or not spoken or float(spoken) <= 0:
         return [], seconds
-    return [({"text": script, "start_s": lead, "end_s": lead + float(spoken)}, 0)], seconds
+    # One block over the spoken span (nothing finer known): captions.block_timings shares it out
+    return [({"text": script, "start_s": lead, "end_s": lead + float(spoken), "block": True}, 0)], seconds
 
 
 def _voice_audio(conn, piece: dict) -> dict | None:
@@ -1110,11 +1242,13 @@ def _drop_unscripted(words: list, script: str, drop: set[str]) -> list:
     return [w for i, w in enumerate(words) if i not in gone]
 
 
-def _transcribed(conn, policy: Policy, piece: dict, script: str, offset: float, store, transcriber) -> list | None:
+def _transcribed(conn, policy: Policy, piece: dict, script: str, offset: float, store, transcriber,
+                 fmt: str | None = None) -> list | None:
     """A piece's words from its voice line's word timestamps, placed at `offset` (plus a narrated edit's lead), or
-    None when word timestamps are off, the piece has no voice line, or the transcription failed."""
+    None when word timestamps are off for this format (captions.word_timestamps_for), the piece has no voice line,
+    or the transcription failed."""
     from . import captions
-    if not (policy.get("burned_captions", "word_timestamps", default=False)):
+    if not captions.word_timestamps_for(policy, fmt):
         return None
     audio = _voice_audio(conn, piece)
     if audio is None:
@@ -1132,13 +1266,14 @@ def _transcribed(conn, policy: Policy, piece: dict, script: str, offset: float, 
     return _drop_unscripted(timed, script, _fillers(audio["meta"] or {})) or None
 
 
-def caption_words(conn, policy: Policy, body: dict, video: dict, *, store=None, transcriber=None) -> list | None:
+def caption_words(conn, policy: Policy, body: dict, video: dict, *, store=None, transcriber=None,
+                  fmt: str | None = None) -> list | None:
     """The post's spoken words, timed in its finished video (captions.Word). Each piece's lines (_piece_timing) are
     placed at the piece's start in the joined video (the join's measured segment lengths, else each piece's own),
-    fillers dropped, and the post's script (with *emphasis*) lines up the shown words. With
-    burned_captions.word_timestamps, a piece with a voice line is timed from its transcript's word timestamps
-    instead (voice_words; estimates when that fails). None when a piece's length is unknown, so later captions
-    can't be placed."""
+    fillers dropped, and the post's script (with *emphasis*) lines up the shown words. With word timestamps on for
+    the post's format `fmt` (captions.word_timestamps_for), a piece with a voice line is timed from its transcript's
+    word timestamps instead (voice_words; estimates when that fails). None when a piece's length is unknown, so
+    later captions can't be placed."""
     from . import captions
     row, pieces = _pieces(conn, video)
     measured = (row["meta"] or {}).get("segment_seconds") or []
@@ -1147,12 +1282,16 @@ def caption_words(conn, policy: Policy, body: dict, video: dict, *, store=None, 
     for i, piece in enumerate(pieces):
         script = _take_script(body, i if segmented else None)
         lines, seconds = _piece_timing(conn, piece, unmarked(script))
-        heard = _transcribed(conn, policy, piece, script, t, store, transcriber) if lines else None
+        heard = _transcribed(conn, policy, piece, script, t, store, transcriber, fmt) if lines else None
         if heard:
             words += heard
             lines = []
         for line, fillers in lines:
-            words += captions.estimate_timings([line], offset=t, policy=policy)[fillers:]
+            if line.get("block"):   # a Kokoro take's script over its own audio
+                words += captions.block_timings(line["text"], line["start_s"], line["end_s"], offset=t,
+                                                policy=policy)[fillers:]
+            else:
+                words += captions.estimate_timings([line], offset=t, policy=policy)[fillers:]
         scripts.append(script)
         if i < len(pieces) - 1:
             length = measured[i] if i < len(measured) and measured[i] is not None else seconds
@@ -1181,42 +1320,159 @@ def _caption_style(conn, creator_id) -> str | None:
     return str(style) if style else None
 
 
-def caption_plan(conn, policy: Policy, post: dict, body: dict, video: dict, *, width: int, height: int, store=None,
-                 transcriber=None):
-    """The captions for a post's finished video of width x height, or None when nothing is said (or can't be timed)."""
+def _style_keys(post: dict, body: dict) -> list[str]:
+    """What burned_captions.style_by_format is looked up by: the post's template (a shot-sheet archetype such as an
+    outfit check, when the director or breadth driver names one) before its format."""
+    return [str(k) for k in (body.get("template"), post["format"]) if k]
+
+
+def caption_style(conn, policy: Policy, post: dict, body: dict) -> str | None:
+    """The post's caption style (captions.caption_style_for: the opening shot's edit.caption_style, the template or
+    format, the creator's dial), or None for no spoken captions (on-screen labels only)."""
     from . import captions
-    words = caption_words(conn, policy, body, video, store=store, transcriber=transcriber)
+    shot = _shot(body, _take_index(body, 0 if body.get("talk_segments") else None))
+    return captions.caption_style_for(policy, creator=_caption_style(conn, post["creator_id"]),
+                                      fmt=_style_keys(post, body), shot=shot)
+
+
+def caption_plan(conn, policy: Policy, post: dict, body: dict, video: dict, *, width: int, height: int, store=None,
+                 transcriber=None, face_box=None):
+    """The captions for a post's finished video of width x height, or None when nothing is said (or can't be timed)
+    or its style is none. Placed by the opening shot's size, off the face (`face_box`, shares of the frame)."""
+    from . import captions
+    style = caption_style(conn, policy, post, body)
+    if style is None:
+        return None
+    words = caption_words(conn, policy, body, video, store=store, transcriber=transcriber, fmt=post["format"])
     if not words:
         return None
     shot = _shot(body, _take_index(body, 0 if body.get("talk_segments") else None))
-    return captions.make_plan(words, policy, width=width, height=height, style=_caption_style(conn, post["creator_id"]),
-                              placement=caption_placement(policy, shot))
+    return captions.make_plan(words, policy, width=width, height=height, style=style,
+                              placement=captions.placement_for_shot(policy, shot, face_box))
 
 
-def _cover(conn, policy: Policy, store, body: dict, pieces: list[dict], workdir) -> dict | None:
-    """The cover frame (finishing.pick_cover): among the pieces' keyframes, else the post's chosen photos."""
+def _piece_keyframes(conn, store, body: dict, pieces: list[dict], workdir) -> dict:
+    """The pieces' keyframes (else the post's chosen photos), fetched: {local path: {id, uri}}."""
     from pathlib import Path
-
-    from . import finishing
     job_ids = [str(p["job"]["id"]) for p in pieces if p["job"]]
     frames = conn.execute("SELECT id, uri FROM assets WHERE job_id = ANY(%s::uuid[]) AND kind = 'keyframe' ORDER BY uri",
                           (job_ids,)).fetchall() if job_ids else []
     frames = frames or [{"id": im.get("asset_id"), "uri": im["uri"]} for im in body.get("images") or []]
-    if not frames:
-        return None
     local = {}
     for i, f in enumerate(frames):
-        local[store.get_file(f["uri"], Path(workdir) / f"cover_{i:03d}{Path(f['uri']).suffix or '.jpg'}")] = f
+        local[store.get_file(f["uri"], Path(workdir) / f"frame_{i:03d}{Path(f['uri']).suffix or '.jpg'}")] = f
+    return local
+
+
+def _cover(conn, policy: Policy, store, body: dict, pieces: list[dict], workdir) -> dict | None:
+    """The cover frame (finishing.pick_cover) among the pieces' keyframes, else the post's chosen photos: the fallback
+    when the finished file's own frames can't be read (_final_cover)."""
+    from . import finishing
+    local = _piece_keyframes(conn, store, body, pieces, workdir)
+    if not local:
+        return None
     best = local[finishing.pick_cover(list(local), policy=policy)]
     return {"asset_id": str(best["id"]) if best["id"] else None, "uri": best["uri"]}
 
 
-# Sound (policy `sound`, off as shipped): before finishing, the shot sheets' sound cues (sound.room_tone, .effects,
-# .music: free text) are looked up as tags in the licence-checked library (manyworlds.sound.library; a cue may also
-# match by one of its comma-separated parts) and mixed under the voice in one ffmpeg pass (sound.mix). Room tone,
-# music and the mic come from the first shot that has them; each effect plays sound.mix.effect_at_s into its own
-# piece (shot sheets carry no times). Cues that resolve to nothing are skipped; with the shipped empty library the
-# mix never runs. The finish stage's loudnorm then sets the level of the whole.
+def text_windows(plan, ovs: list) -> list[tuple[float, float]]:
+    """(start, end) of every caption chunk and on-screen text: the times a cover frame would show text."""
+    return [(float(c.start), float(c.end)) for c in (plan.chunks if plan is not None else ())] + \
+           [(float(o.start), float(o.end)) for o in ovs]
+
+
+def _final_cover(conn, policy: Policy, store, post: dict, final, workdir, *,
+                 avoid: list[tuple[float, float]] | None = None) -> dict:
+    """The cover picked from the finished video's own frames (finishing.cover_from_video, as pick_cover on a video),
+    so it shows the post as published (graded, upscaled), passing over frames with text on screen (`avoid`); stored as
+    post-<id>/cover.jpg. Raises when the frames can't be read."""
+    from pathlib import Path
+
+    from . import finishing
+    d = Path(workdir) / "cover"
+    d.mkdir(parents=True, exist_ok=True)
+    picked = finishing.cover_from_video(Path(final), workdir=d, policy=policy, avoid=avoid)
+    stored = store.put_file(Path(picked["frame"]), f"assets/{post['creator_id']}/post-{post['id']}/cover.jpg")
+    meta = Jsonb({"cover": True, "t": picked.get("t")})
+    row = conn.execute("UPDATE assets SET sha256 = %s, bytes = %s, meta = %s WHERE uri = %s AND kind = 'keyframe' "
+                       "AND job_id IS NULL RETURNING id, uri", (stored.sha256, stored.bytes, meta, stored.uri)).fetchone()
+    row = row or conn.execute(   # (a rerun of a finish that failed after its cover updates the same asset)
+        """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
+           VALUES (%s, 'keyframe', %s, %s, %s, %s, %s) RETURNING id, uri""",
+        (post["creator_id"], stored.uri, stored.sha256, stored.bytes, meta,
+         Jsonb({"cover_of": f"post-{post['id']}/final.mp4"}))).fetchone()
+    return {"asset_id": str(row["id"]), "uri": row["uri"]}
+
+
+def face_box(frames: Callable[[], Any], *, face=None) -> tuple | None:
+    """One box round the faces in the video's keyframes (`frames()`: their local paths, fetched only when a face
+    reader is here; `face`: finishing.mediapipe_face), as captions.face_box_union, so captions and labels stay off
+    the face wherever it moves. None when this host has no MediaPipe (the control plane today) or no frame shows one."""
+    import importlib.util
+
+    from . import captions, finishing
+    if face is None:
+        if importlib.util.find_spec("mediapipe") is None:
+            return None
+        face = finishing.mediapipe_face
+    return captions.face_box_union((face(p) or {}).get("box") for p in frames())
+
+
+# On-screen text (manyworlds.overlays): each shot's edit.on_screen_text items (and the opening shot's edit.hook as a
+# hook item), timed in the finished video from where that shot plays in it.
+def shot_spans(conn, post: dict, body: dict, video: dict, duration: float | None) -> list[tuple[int, float, float | None]]:
+    """(shot index, start_s, end_s) for each shot that plays in the made video. A joined talking video: each take's
+    shot over its segments (the join's measured lengths, else each piece's own). One piece: its take's shot over the
+    whole (a story clip's shot 0); a narrated edit's shots share it evenly, one photo each."""
+    shots = body.get("shots") or []
+    if not shots:
+        return []
+    row, pieces = _pieces(conn, video)
+    measured = (row["meta"] or {}).get("segment_seconds") or []
+    if len(body.get("talk_segments") or []) == len(pieces) > 1:
+        spans: dict[int, list] = {}
+        t = 0.0
+        for i, piece in enumerate(pieces):
+            length = measured[i] if i < len(measured) and measured[i] is not None else (piece["meta"] or {}).get("seconds")
+            end = None if length is None else t + float(length)
+            k = _take_index(body, i)
+            if k in spans:
+                spans[k][1] = end
+            else:
+                spans[k] = [t, end]
+            if end is None:
+                break   # later shots can't be placed
+            t = end
+        return [(k, a, b) for k, (a, b) in spans.items()]
+    if post["format"] == "narrated_edit" and len(shots) > 1 and duration:
+        step = float(duration) / len(shots)
+        return [(i, i * step, (i + 1) * step) for i in range(len(shots))]
+    return [(_take_index(body, None) if body.get("scenes") else 0, 0.0, duration)]
+
+
+def overlay_items(conn, post: dict, body: dict, video: dict, duration: float | None) -> list[dict]:
+    """The post's on-screen text items in the finished video's time (overlays.items_for_shot per shot), with the
+    opening shot's edit.hook as a hook item unless that shot already lists one."""
+    from . import overlays
+    items: list[dict] = []
+    for k, a, b in shot_spans(conn, post, body, video, duration):
+        edit = (_shot(body, k) or {}).get("edit") or {}
+        shot_items = overlays.items_for_shot(edit, a, b)
+        hook = str(edit.get("hook") or "").strip()
+        if hook and a == 0.0 and not any(str(it.get("kind") or "").lower() == "hook" for it in shot_items):
+            shot_items.insert(0, {"kind": "hook", "text": hook, "start_s": 0.0, "end_s": None})
+        items += shot_items
+    return items
+
+
+# Sound (policy `sound`, on as shipped for the parts that need no GPU): before finishing, every finished video is mixed
+# once (sound.mix) while sound.enabled. The procedural design (sound.design: a room tone synthesised from the shot's
+# sound.room_tone text or its set, the voice polish room, the mic) is always there, even without shot sheets, so no
+# video ships studio-dry or dead silent; a silent format (sound.silent_beds) also gets its music bed
+# (sound.bed_music). On top, the shot sheets' cues (sound.room_tone, .effects, .music: free text) are looked up as
+# tags in the licence-checked library (manyworlds.sound.library; a cue may also match by one of its comma-separated
+# parts): a library room tone replaces the synthesised one; each effect plays sound.mix.effect_at_s into its own
+# piece (shot sheets carry no times). The finish stage's loudnorm then sets the level of the whole.
 def _sound_ref(lib, cue: str):
     from . import sound
     cue = str(cue or "").strip()
@@ -1278,6 +1534,22 @@ def sound_cues(conn, policy: Policy, body: dict, video: dict) -> dict | None:
     return out
 
 
+def sound_plan(conn, policy: Policy, post: dict, body: dict, video: dict) -> dict | None:
+    """Everything mixed under a post's video: the library cues (sound_cues) over the procedural design (sound.design):
+    {room_tone, room_tone_synth (only when no library room tone resolves), room_size, music (a library cue, else the
+    silent format's bed), effects, ir, mic}. None only when sound is off."""
+    from . import sound
+    design = sound.design(body.get("shots"), seed_key=str(post["id"]), policy=policy)
+    if design is None:
+        return None
+    cues = sound_cues(conn, policy, body, video) or {"room_tone": None, "music": None, "effects": [], "ir": None,
+                                                     "mic": None}
+    if cues["music"] is None:
+        cues["music"] = sound.bed_music(sound.library(policy), post["format"], policy, seed_key=str(post["id"]))
+    return {**cues, "room_tone_synth": design.room_tone if cues["room_tone"] is None else None,
+            "room_size": design.room_size, "mic": cues["mic"] or design.mic}
+
+
 def _mix_sound(policy: Policy, store, cues: dict, raw, workdir) -> tuple:
     """The raw video with its sound mixed (sound.mix), and what was used (tags, licences, credits) for the post."""
     from pathlib import Path
@@ -1293,19 +1565,71 @@ def _mix_sound(policy: Policy, store, cues: dict, raw, workdir) -> tuple:
     mixed = sound.mix(raw, d / "mixed.mp4", room_tone=local(cues["room_tone"], "room") if cues["room_tone"] else None,
                       effects=[(local(r, f"fx{k}"), at_s, None) for k, (r, at_s) in enumerate(cues["effects"])],
                       music=local(cues["music"], "music") if cues["music"] else None,
-                      ir=local(cues["ir"], "ir") if cues["ir"] else None, mic=cues["mic"], policy=policy)
+                      ir=local(cues["ir"], "ir") if cues["ir"] else None, mic=cues["mic"],
+                      room_tone_synth=cues.get("room_tone_synth"), room_size=cues.get("room_size"), policy=policy)
     return mixed, [{"tag": r.tag, "uri": r.uri, "licence": r.licence, "source": r.source, "credit": r.credit}
                    for r in used]
 
 
-def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, store=None) -> dict:
-    """The post's finished video asset (or `video` itself when nothing applies to its format). Idempotent: the
-    finished file is assets/<creator>/post-<id>/final.mp4, and a rerun reuses its asset."""
+def _burn_text(video, out, workdir, plan, ovs: list, policy: Policy):
+    """Captions and on-screen texts burned over `video` in one pass (no libass: overlays.burn draws both; captions
+    alone: captions.burn)."""
+    from . import captions, overlays
+    if ovs:
+        return overlays.burn(video, out, workdir=workdir, plan=plan, overlays=ovs, policy=policy)
+    return captions.burn(video, plan, out, workdir=workdir, policy=policy)
+
+
+def _text_fonts(plan, ovs: list, policy: Policy):
+    """The fonts directory of the text script, after checking every style's font is there (text in a fallback font
+    is worse than none)."""
+    from . import captions
+    fonts = plan.fonts_dir if plan is not None else (ovs[0].fonts_dir if ovs else captions.fonts_dir(policy))
+    for style in ([plan.style] if plan is not None else []) + [ov.style for ov in ovs]:
+        if fonts is None or not (fonts / str(style.get("file", ""))).exists():
+            raise FileNotFoundError(f"text font {style.get('file')!r} not found ({fonts})")
+    return fonts
+
+
+def join_times(conn, video: dict) -> list[float]:
+    """Where the joins are in a joined video (seconds): after each segment but the last, by the join's measured
+    lengths; [] for a single piece, or when a length is unknown from there on."""
+    row = conn.execute("SELECT meta FROM assets WHERE id = %s", (video["id"],)).fetchone()
+    out, t = [], 0.0
+    for s in ((row["meta"] or {}).get("segment_seconds") or [])[:-1] if row else []:
+        if s is None:
+            break
+        t += float(s)
+        out.append(round(t, 3))
+    return out
+
+
+def text_spans(plan, ovs: list) -> list[dict]:
+    """The text on screen for the final review: each caption chunk (kind caption) and on-screen text (hook, else
+    label), {text, start_s, end_s, kind}."""
+    spans = [{"text": " ".join(w.text for w in c.words), "start_s": float(c.start), "end_s": float(c.end),
+              "kind": "caption"} for c in (plan.chunks if plan is not None else ())]
+    return spans + [{"text": o.text, "start_s": float(o.start), "end_s": float(o.end),
+                     "kind": "hook" if o.kind == "hook" else "label"} for o in ovs]
+
+
+def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, store=None, *,
+                 source: dict | None = None, llm=None) -> dict:
+    """The post's finished video asset (or `video` itself when nothing applies to its format). `source`: the file to
+    finish when it is not `video` itself (the AI upscaler's output; captions and shots are still timed from `video`'s
+    pieces). With `llm` (the judge), the finished file gets the final review once (manyworlds.review.final), its
+    result in body.final_review. Idempotent: the finished file is assets/<creator>/post-<id>/final.mp4, and a rerun
+    reuses its asset.
+
+    In order: the sound mix (sound_plan, its own pass; a mix that fails is recorded and the video goes on unmixed),
+    then the captions plan (style, word timings, placement off the face) and the shots' on-screen texts
+    (overlay_items -> overlays.overlay_events) in ONE ASS script (overlays.write_script) that rides in finishing's
+    filter chain where this ffmpeg has libass, else one Pillow burn pass of both; the cover from the finished file."""
     import dataclasses
     import tempfile
     from pathlib import Path
 
-    from . import captions, finishing, media, storage
+    from . import finishing, media, overlays, storage
     fmt = post["format"]
     grade, burn = finishes(policy, fmt), captions_burned(policy, fmt)
     if not (grade or burn):
@@ -1317,63 +1641,119 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
     if existing:
         return existing
     _, pieces = _pieces(conn, video)
-    look = None
+    look, sound_error = None, None
     with tempfile.TemporaryDirectory(prefix="mw-finish-") as tmp:
         d = Path(tmp)
-        raw = store.get_file(video["uri"], d / "raw.mp4")
-        cues, used, passes = sound_cues(conn, policy, body, video), None, 0
-        if cues:   # room tone, effects, music under the voice (policy sound): its own pass, before the finish
-            raw, used = _mix_sound(policy, store, cues, raw, d)
-            passes += 1
-        plan = None
-        if burn:
+        raw = store.get_file((source or video)["uri"], d / "raw.mp4")
+        cues, used, mixed, passes = sound_plan(conn, policy, post, body, video), None, False, 0
+        if cues:   # room tone, polish, effects, music under the voice (policy sound): its own pass, before the finish
+            try:
+                raw, used = _mix_sound(policy, store, cues, raw, d)
+                mixed = True
+                passes += 1
+            except Exception as e:  # noqa: BLE001 - the video ships unmixed rather than not at all; the error is kept
+                sound_error = f"{type(e).__name__}: {e}"[:500]
+        plan, ovs, width, height = None, [], None, None
+        if burn or body.get("shots"):
             info = media.probe(raw)
             if not (info["width"] and info["height"]):
                 raise RuntimeError(f"can't read the frame size of {video['uri']}")
-            # The finish stage upscales a smaller video to finishing.output first, so its captions plan at that size.
+            # The finish stage upscales a smaller video to finishing.output first, so its text is laid out at that size.
             width, height = (finishing.finished_size(info["width"], info["height"], policy) if grade
                              else (info["width"], info["height"]))
-            plan = caption_plan(conn, policy, post, body, video, width=width, height=height, store=store)
-        if not grade and plan is None and used is None:
-            return video   # captions only, and nothing is said
+            items = overlay_items(conn, post, body, video, info.get("seconds"))
+            face = (face_box(lambda: list(_piece_keyframes(conn, store, body, pieces, d / "faces")))
+                    if burn or items else None)
+            if burn:
+                plan = caption_plan(conn, policy, post, body, video, width=width, height=height, store=store,
+                                    face_box=face)
+            if items:
+                ovs = overlays.overlay_events(items, (width, height), policy, duration=info.get("seconds"),
+                                              face_box=face)
+        text = plan is not None or bool(ovs)
+        if not grade and not text and not mixed:
+            return video   # captions only, and nothing is said or shown
         out, cover = d / "final.mp4", None
         if grade:
             handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["handle"]
             shot = _shot(body, _take_index(body, 0 if body.get("talk_segments") else None)) or {}
             look = finishing.look_for(policy, creator=handle, set_id=(shot.get("set") or {}).get("set_id"))
-            one_pass = plan is not None and media.has_libass()
+            one_pass = text and media.has_libass()
             ass, fpolicy = None, policy
-            if one_pass:   # the captions ride in finishing's filter chain, after the grain
-                if plan.fonts_dir is None or not (plan.fonts_dir / str(plan.style.get("file", ""))).exists():
-                    raise FileNotFoundError(f"caption font {plan.style.get('file')!r} not found ({plan.fonts_dir})")
-                ass = captions.write_ass(plan, d / "captions.ass")
+            if one_pass:   # captions and labels ride in finishing's filter chain, after the grain: one script
+                fonts = _text_fonts(plan, ovs, policy)
+                ass = overlays.write_script(d / "text.ass", plan, ovs, policy, size=(width, height))
                 fpolicy = dataclasses.replace(policy, body={
-                    **policy.body, "finishing": {**finishing.cfg(policy), "fonts_dir": str(plan.fonts_dir)}})
-            graded = finishing.finish(raw, out if plan is None or one_pass else d / "graded.mp4", look=look,
-                                      hook_ass=ass, policy=fpolicy)
+                    **policy.body, "finishing": {**finishing.cfg(policy), "fonts_dir": str(fonts)}})
+            # A format nobody speaks in (a story clip) is levelled as a bed, not loudnormed to the voice target.
+            graded = finishing.finish(raw, out if not text or one_pass else d / "graded.mp4", look=look,
+                                      ass=ass, has_voice=fmt in SPOKEN, policy=fpolicy)
             passes += 1
-            if plan is not None and not one_pass:   # no libass here: the captions' Pillow overlay, a second pass
-                captions.burn(graded, plan, out, workdir=d / "captions", policy=policy)
+            if text and not one_pass:   # no libass here: the Pillow drawings, a second pass
+                _burn_text(graded, out, d / "captions", plan, ovs, policy)
                 passes += 1
             try:
-                cover = _cover(conn, policy, store, body, pieces, d)
-            except Exception:  # noqa: BLE001 - a post without a picked cover still ships (the publisher has a fallback)
-                cover = None
-        elif plan is not None:
-            captions.burn(raw, plan, out, workdir=d / "captions", policy=policy)
+                cover = _final_cover(conn, policy, store, post, out, d, avoid=text_windows(plan, ovs))
+            except Exception:  # noqa: BLE001 - unreadable frames: the pieces' keyframes, else the photos
+                try:
+                    cover = _cover(conn, policy, store, body, pieces, d)
+                except Exception:  # noqa: BLE001 - a post without a picked cover still ships (the publisher has a fallback)
+                    cover = None
+        elif text:
+            _burn_text(raw, out, d / "captions", plan, ovs, policy)
             passes += 1
         else:   # captions only and nothing said, but the sound was mixed
             import shutil
             shutil.copyfile(raw, out)
+        if llm is not None:   # the finished file judged once (review.final; body.final_review, updated in place)
+            from .review.final import review_final
+            try:
+                review_final(conn, policy, llm, post, out, joins=join_times(conn, video),
+                             text_spans=text_spans(plan, ovs))
+            except Exception as e:  # noqa: BLE001 - a judge outage never holds a finished post; the error is kept
+                body["final_review"] = {"error": f"{type(e).__name__}: {e}"[:500], "passed": True}
         stored = store.put_file(out, key)
     meta = {"finished": grade, "look": look, "captions": plan.style_name if plan else None,
             "placement": plan.placement if plan else None, "passes": passes, "raw": str(video["id"]), "cover": cover,
-            **({"sound": used} if used else {})}
+            **({"sound": used} if used else {}), **({"sound_error": sound_error} if sound_error else {}),
+            **({"on_screen_text": [{"kind": o.kind, "text": o.text, "position": o.position} for o in ovs]}
+               if ovs else {}),
+            **({"sound_design": {"room_tone": getattr(cues.get("room_tone_synth"), "preset", None),
+                                 "room_size": cues.get("room_size"), "mic": cues.get("mic")}} if mixed else {})}
     return conn.execute(
         """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
            VALUES (%s, 'video', %s, %s, %s, %s, %s) RETURNING id, uri, meta""",
         (post["creator_id"], stored.uri, stored.sha256, stored.bytes, Jsonb(meta),
-         Jsonb({"finished_from": video["uri"], "policy_version": policy.version}))).fetchone()
+         Jsonb({"finished_from": (source or video)["uri"], "policy_version": policy.version}))).fetchone()
+
+
+# The AI upscaler (finishing.upscaler, off until benchmarked): when it names a job kind, a made video is first upscaled
+# on a GPU worker (a Step of its own, not reviewed: done with a video is enough), and the finish works on that file.
+# One that keeps failing (production.max_job_failures_per_post) is given up: the finish pass's lanczos scales instead.
+def _upscale_job(conn, policy: Policy, post: dict, video: dict, spec: dict, attempt: int):
+    payload = {"video_uri": video["uri"], "model": spec.get("model"), "scale": spec.get("scale"),
+               "params": {k: v for k, v in spec.items() if k not in ("enabled", "kind", "model", "scale")},
+               "intermediate": True}   # the finish's source, not a post's output
+    return queue.enqueue(conn, str(spec["kind"]), payload, creator_id=post["creator_id"], batch=f"post-{post['id']}",
+                         post_id=post["id"], idempotency_key=f"post:{post['id']}:upscale:{attempt}")
+
+
+def _advance_upscale(conn, policy: Policy, post: dict, body: dict, video: dict) -> tuple[str, dict | None]:
+    """('chosen', the upscaled video) once made, ('waiting', None) while it is, ('chosen', None) when there is nothing
+    to upscale (the upscaler off, a format not finished) or it was given up."""
+    from . import finishing
+    spec = finishing.upscaler(policy)
+    if not spec or not finishes(policy, post["format"]) or body.get("upscale_skipped"):
+        return "chosen", None
+    step = Step(body.setdefault("upscale_jobs", []), lambda j: _edit_state(conn, j),
+                lambda attempt: _upscale_job(conn, policy, post, video, spec, attempt),
+                ("upscale_repairs", 0), ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))),
+                "upscale")
+    state, up = advance_step(body, step)
+    if state == "dropped":
+        body["upscale_skipped"] = body.pop("drop_reason", "the upscale failed")
+        return "chosen", None
+    return state, up
 
 
 def _finish_failed(conn, policy: Policy, post: dict, body: dict, error: Exception) -> bool:
@@ -1392,7 +1772,7 @@ def _finish_failed(conn, policy: Policy, post: dict, body: dict, error: Exceptio
     return True
 
 
-def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
+def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> str:
     body = dict(post["body"])
     results = []
     for step in _scene_steps(conn, policy, post, body):
@@ -1405,10 +1785,13 @@ def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
         if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
             if post["format"] == "talking_video" and "talk_segments" not in body:
                 hybrid = bool(_hybrid_cfg(policy).get("enabled")) and len(chosen) >= 2
-                takes = shot_takes(policy, body["shots"], cutaways=hybrid) if _directed(policy, body) else []
+                directed = _directed(policy, body)
+                takes = (shot_takes(policy, body["shots"], cutaways=hybrid) or script_takes(policy, body)
+                         if directed else [])
                 if takes:
                     # Directed: one take per shot that speaks, cut only where the shots change; cutaway shots are
-                    # narrated over their own photo (hybrid), the rest lip-synced from theirs.
+                    # narrated over their own photo (hybrid), the rest lip-synced from theirs. Never the hybrid's
+                    # short segments: a scene changes only where the shots do.
                     body["talk_shots"] = [i for _, _, i in takes]
                     if len(takes) > 1:
                         body["talk_segments"] = [text for text, _, _ in takes]
@@ -1451,8 +1834,12 @@ def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
     asset_ids = [a["id"] for a in chosen]
     if video:
         final = video
+        ustate, source = _advance_upscale(conn, policy, post, body, video)
+        if ustate == "waiting":
+            _set(conn, post["id"], "producing", body)
+            return "producing"
         try:
-            final = finish_video(conn, policy, {**post, "body": body}, body, video, store)
+            final = finish_video(conn, policy, {**post, "body": body}, body, video, store, source=source, llm=llm)
         except Exception as e:  # noqa: BLE001 - ffmpeg or storage: tried again next tick, then shipped unfinished
             if not _finish_failed(conn, policy, post, body, e):
                 _set(conn, post["id"], "producing", body)
@@ -1465,13 +1852,19 @@ def advance_post(conn, policy: Policy, post: dict, store=None) -> str:
                 body["cover"] = meta["cover"]
             if meta.get("sound"):   # what was mixed in, with licences and credits (CC-BY needs its credit)
                 body["sound"] = meta["sound"]
+            if meta.get("sound_error"):   # shipped unmixed: kept where the feed QA and the owner can see it
+                body["sound_error"] = meta["sound_error"]
         body["video"] = {"asset_id": str(final["id"]), "uri": final["uri"]}
         asset_ids = [final["id"], *asset_ids]
+        if (body.get("final_review") or {}).get("passed") is False:   # review.final.enforce: the finished file failed
+            body["drop_reason"] = "the finished video failed the final review"
+            _set(conn, post["id"], "dropped", body, qa_status="failed")
+            return "dropped"
     _set(conn, post["id"], "ready", body, qa_status="passed", asset_ids=asset_ids)
     return "ready"
 
 
-def advance(conn, policy: Policy, *, now: datetime | None = None, store=None) -> dict:
+def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, llm=None) -> dict:
     now = now or datetime.now(timezone.utc)
     lead = timedelta(hours=float(_cfg(policy).get("lead_hours", 48)))
     # Jobs that used their last attempt and lost the lease are dead, so their scene gets repaired
@@ -1495,5 +1888,5 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None) ->
         start(conn, policy, post)
         out["started"] += 1
     for post in conn.execute("SELECT * FROM posts WHERE status = 'producing' ORDER BY scheduled_for").fetchall():
-        out[advance_post(conn, policy, post, store)] += 1
+        out[advance_post(conn, policy, post, store, llm=llm)] += 1
     return out

@@ -7,25 +7,33 @@
              (`output.flags`, lanczos) until it covers it, keeping its aspect, and centre-cropped, so the grade,
              grain and burned-in captions all work at the delivery size; never scaled down. An AI upscaler on a
              GPU worker (`finishing.upscaler`, off) would run before this stage; then nothing is left to scale here
-  grade      a gentle natural look per creator or set (policy `finishing.looks`: neutral, daylight, warm_night),
-             built from ffmpeg eq, colorbalance and curves; every value is clamped to `finishing.limits`, so no
-             look can oversaturate or crush the image
-  sharpen    a slight luma unsharp mask, off by default
+  grade      a gentle natural look per creator or set (policy `finishing.looks`: phone_native and the other phone
+             looks, neutral, daylight, warm_night), built from ffmpeg eq, colorbalance and curves; every value is
+             clamped to `finishing.limits`, so no look can oversaturate or crush the image
+  sharpen    a slight luma unsharp mask: the look's own `sharpen` amount when it has one, else the global
+             `finishing.sharpen` block (off); clamped to `limits.sharpen`
   vignette   optional, off by default
-  grain      subtle temporal film grain (ffmpeg `noise`, strength in policy), so frames don't read as too clean
-  hook       a hook-text overlay for the first 1-2 s: an ASS file written by the captions module in one of its
-             named styles (policy `finishing.hook.style`); this module only burns it in, or skips it
-  loudness   -14 LUFS integrated, -1 dBTP true peak, two-pass loudnorm (measure, then apply linearly); one pass
-             when the measurement can't be used (silence)
-  cover      the cover frame: the sharpest keyframe with the face found, eyes open and mouth closed
-             (Laplacian variance, plus MediaPipe face landmarks where that is installed)
+  grain      subtle temporal film grain (ffmpeg `noise`): the look's own `grain` strength when it has one (0 = none),
+             else the global `finishing.grain` block; never over `grain.max_strength`
+  text       ONE ASS script burned in last (`ass=`, so text gets no grain): the spoken captions and the on-screen
+             texts together (manyworlds.overlays.make_script). The hook is an on-screen text of kind `hook`, styled
+             and timed by `on_screen_text.kinds.hook`. `hook_ass=` is the deprecated name of the same argument
+  loudness   a video with a voice: -14 LUFS integrated, -1 dBTP true peak, two-pass loudnorm (measure, then apply
+             linearly); one pass when the measurement can't be used (silence). A bed-only video (`has_voice=False`:
+             room tone or music, nobody speaks) is never pulled up to -14, which would turn a quiet room into loud
+             hiss: by `loudness.bed_only` it keeps its mixed level (`skip`) or gets a capped gain towards a quiet
+             target (`cap`)
+  cover      the cover frame, from the finished file (graded, at the delivery size) or from given frames: frames
+             with text on screen (`avoid` windows) are passed over, then a face with eyes open and mouth closed
+             wins, then the sharpest (Laplacian variance, plus MediaPipe face landmarks where that is installed)
 
 The builders (`scale_filter`, `filters`, `audio_filter`, `loudnorm_filter`, `parse_loudnorm`) are pure strings,
 tested in CI. `finish` runs ffmpeg (manyworlds.media.ffmpeg, the imageio-ffmpeg static build): scale, grade, grain
 and text in one pass, plus a loudness measurement. Production's finish stage (production.finish_video, for the formats
 in `finishing.formats`) calls it once a post's video is chosen: the burned-in captions (manyworlds.captions, planned
-at `finished_size`) ride in the same pass as the hook text where this ffmpeg has libass, else a second Pillow pass;
-the cover is picked from the pieces' keyframes and kept as the post's `body.cover` (the Reel's cover on Instagram).
+at `finished_size`) ride in the same pass as the on-screen texts where this ffmpeg has libass, else a second Pillow
+pass; the cover (`pick_cover`: a list of frames, or the finished video itself) is kept as the post's `body.cover`
+(the Reel's cover on Instagram).
 The finished file replaces the post's video (`body.video`; the unfinished one stays as `body.video_raw`).
 """
 
@@ -71,15 +79,21 @@ def look_for(policy: Policy, *, creator: str | None = None, set_id: str | None =
             or c.get("default_look") or "neutral")
 
 
+def look_spec(look: str | dict | None, policy: Policy) -> dict:
+    """A look's settings: the dict itself, else the named look; an unknown name falls back to `default_look`."""
+    if isinstance(look, dict):
+        return look
+    c = cfg(policy)
+    looks = c.get("looks") or {}
+    return looks.get(look or "") or looks.get(c.get("default_look") or "neutral") or {}
+
+
 def grade(look: str | dict | None, policy: Policy) -> list[str]:
     """The grade's filters for a named look (or a look dict), clamped to `finishing.limits`. An unknown name
-    falls back to `default_look`; a look with no settings is no filter at all."""
-    c = cfg(policy)
-    looks, limits = c.get("looks") or {}, c.get("limits") or {}
-    if isinstance(look, dict):
-        spec = look
-    else:
-        spec = looks.get(look or "") or looks.get(c.get("default_look") or "neutral") or {}
+    falls back to `default_look`; a look with no settings is no filter at all. (The look's `grain` and `sharpen`
+    strengths are applied by `filters`, after the grade.)"""
+    limits = cfg(policy).get("limits") or {}
+    spec = look_spec(look, policy)
     out = []
     eq = {k: _clamp(spec.get(k), limits.get(k), d)
           for k, d in (("contrast", 1.0), ("brightness", 0.0), ("saturation", 1.0), ("gamma", 1.0))}
@@ -172,41 +186,56 @@ def upscaler(policy: Policy | None) -> dict | None:
     return dict(u) if u.get("enabled") and u.get("kind") else None
 
 
+def _script(ass: Path | str | None, hook_ass: Path | str | None) -> Path | str | None:
+    """The one ASS script to burn: `ass`, or `hook_ass` (its deprecated name). Both, naming different files, is
+    refused: there is one text pass, so captions and on-screen texts must already be one script."""
+    if ass and hook_ass and Path(ass).resolve() != Path(hook_ass).resolve():
+        raise ValueError("give one ASS script (ass=); hook_ass is its old name, not a second script")
+    return ass or hook_ass
+
+
 def filters(look: str | dict | None, *, policy: Policy, grain: bool | float | None = None,
             sharpen: bool | float | None = None, vignette: bool | float | None = None,
-            hook_ass: Path | str | None = None, size: tuple[int, int] | None = None,
-            fps: float | None = None, seconds: float | None = None) -> str:
+            ass: Path | str | None = None, hook_ass: Path | str | None = None,
+            size: tuple[int, int] | None = None, fps: float | None = None, seconds: float | None = None) -> str:
     """The video filter chain: the frame rate (when `fps`, the input's rate, is given: 0 = unknown), the upscale to
     `finishing.output` (when `size`, the input's frame size, is smaller), grade, sharpen, vignette, grain, then the
-    hook text (so text gets no grain), and yuv420p. The rate comes first, so motion interpolation works on the
-    small source frames. `grain`, `sharpen` and `vignette`: None = policy, False or 0 = off, True = on at the
-    policy strength, a number = that strength."""
+    ASS script (`ass`: captions and on-screen texts in one script, last so text gets no grain; `hook_ass` is its
+    deprecated name), and yuv420p. The rate comes first, so motion interpolation works on the small source frames.
+    `grain` and `sharpen`: None = the look's own strength (its `grain` / `sharpen` key, 0 = none) when it has one,
+    else the policy block's when enabled; `vignette`: None = policy. False or 0 = off, True = on at the policy
+    block's strength, a number = that strength."""
     c = cfg(policy)
+    script = _script(ass, hook_ass)
     rate = rate_filter(fps, policy, seconds=seconds) if fps is not None else None
     scale = scale_filter(*size, policy) if size else None
     chain = ([rate] if rate else []) + ([scale] if scale else []) + grade(look, policy)
+    spec = look_spec(look, policy)
 
-    def strength(arg, key: str, field: str) -> float:
+    def strength(arg, key: str, field: str, per_look: bool = False) -> float:
         block = c.get(key) or {}
         if arg is None:
+            if per_look and spec.get(key) is not None:   # the look's own strength wins over the global block
+                return float(spec[key])
             return float(block.get(field, 0)) if block.get("enabled") else 0.0
         if arg is True:
             return float(block.get(field, 0))
         return float(arg or 0)
 
-    amount = strength(sharpen, "sharpen", "amount")
+    amount = strength(sharpen, "sharpen", "amount", per_look=True)
     if amount > 0:
+        amount = _clamp(amount, (c.get("limits") or {}).get("sharpen"), amount)
         size = int((c.get("sharpen") or {}).get("size", 5))
         chain.append(f"unsharp=luma_msize_x={size}:luma_msize_y={size}:luma_amount={_num(amount)}")
     angle = strength(vignette, "vignette", "angle")
     if angle > 0:
         chain.append(f"vignette=angle={_num(angle)}")
-    g = strength(grain, "grain", "strength")
+    g = strength(grain, "grain", "strength", per_look=True)
     g = min(g, float((c.get("grain") or {}).get("max_strength", g)))
     if g > 0:
         chain.append(f"noise=alls={int(round(g))}:allf=t+u")
-    if hook_ass:
-        opt = f"ass=filename={_filter_path(hook_ass)}"
+    if script:
+        opt = f"ass=filename={_filter_path(script)}"
         fonts = Path(c.get("fonts_dir") or FONTS_DIR)
         if fonts.is_dir():
             opt += f":fontsdir={_filter_path(fonts)}"
@@ -234,6 +263,36 @@ def loudnorm_filter(policy: Policy, measured: dict | None = None) -> str:
 def audio_filter(policy: Policy, measured: dict | None = None) -> str:
     """loudnorm, then back to the delivery sample rate (loudnorm works at 192 kHz internally)."""
     return f"{loudnorm_filter(policy, measured)},aresample={int(_loud_cfg(policy).get('sample_rate', 48000))}"
+
+
+BED_MODES = ("skip", "cap")
+
+
+def bed_mode(policy: Policy) -> str:
+    """How a bed-only track is levelled (`loudness.bed_only.mode`): skip (keep the mix's level) or cap."""
+    mode = str((_loud_cfg(policy).get("bed_only") or {}).get("mode") or "skip")
+    if mode not in BED_MODES:
+        raise ValueError(f"unknown finishing.loudness.bed_only.mode {mode!r}; known: {list(BED_MODES)}")
+    return mode
+
+
+def bed_gain_db(policy: Policy, measured: dict | None) -> float:
+    """The gain for a bed-only track: `skip` = 0 (it keeps the level the mix gave it); `cap` = towards
+    `bed_only.lufs` from the measured level, never more than `bed_only.max_gain_db` up (turning down is not
+    capped); 0 without a usable measurement (silence)."""
+    b = _loud_cfg(policy).get("bed_only") or {}
+    if bed_mode(policy) == "skip" or not measured or b.get("lufs") is None:
+        return 0.0
+    gain = float(b["lufs"]) - float(measured["input_i"])
+    return min(gain, float(b.get("max_gain_db", 0.0)))
+
+
+def bed_audio_filter(policy: Policy, measured: dict | None = None) -> str:
+    """A bed-only track (no voice): never loudnorm to the voice target; at most a constant, capped gain
+    (`bed_gain_db`), then the delivery sample rate."""
+    rate = f"aresample={int(_loud_cfg(policy).get('sample_rate', 48000))}"
+    gain = bed_gain_db(policy, measured)
+    return f"volume={_num(gain)}dB,{rate}" if abs(gain) >= 0.05 else rate
 
 
 _MEASURED = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
@@ -269,10 +328,14 @@ def measure(video: Path, policy: Policy, *, timeout: float = 600) -> dict | None
 
 
 def finish(video: Path, out: Path, *, look: str | dict | None, grain: bool | float | None = None,
-           hook_ass: Path | str | None = None, policy: Policy, timeout: float | None = None) -> Path:
+           ass: Path | str | None = None, hook_ass: Path | str | None = None, has_voice: bool = True,
+           policy: Policy, timeout: float | None = None) -> Path:
     """The delivery frame rate (`finishing.fps`, interpolated up when slower), the upscale to `finishing.output`
-    (when smaller), grade, grain (and sharpen / vignette per policy), the hook text, and loudness, into `out`
-    (H.264 + AAC), in one ffmpeg pass (plus a loudness measurement)."""
+    (when smaller), grade, grain and sharpen (the look's, else policy; vignette per policy), the ASS script (`ass`:
+    the captions and on-screen texts as one script, manyworlds.overlays.make_script; `hook_ass` is its deprecated
+    name), and loudness, into `out` (H.264 + AAC), in one ffmpeg pass (plus a loudness measurement).
+    `has_voice=False` (a bed-only video: room tone or music, nobody speaks) is not loudnormed to the voice target
+    but levelled by `loudness.bed_only` (bed_audio_filter)."""
     from .media import ffmpeg, probe
     c = cfg(policy)
     enc = c.get("encode") or {}
@@ -280,14 +343,19 @@ def finish(video: Path, out: Path, *, look: str | dict | None, grain: bool | flo
     video, out = Path(video), Path(out)
     info = probe(video, timeout=timeout)
     size = (info["width"], info["height"]) if info["width"] and info["height"] else None
-    vf = filters(look, policy=policy, grain=grain, hook_ass=hook_ass, size=size, fps=info.get("fps") or 0.0,
-                 seconds=info.get("seconds"))
+    vf = filters(look, policy=policy, grain=grain, ass=_script(ass, hook_ass), size=size,
+                 fps=info.get("fps") or 0.0, seconds=info.get("seconds"))
     cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video), "-map", "0:v:0", "-vf", vf,
            "-c:v", "libx264", "-preset", str(enc.get("preset", "veryfast")), "-crf", str(enc.get("crf", 18)),
            "-pix_fmt", "yuv420p"]
     if info["audio"]:
-        measured = measure(video, policy, timeout=timeout) if _loud_cfg(policy).get("two_pass", True) else None
-        cmd += ["-map", "0:a:0", "-af", audio_filter(policy, measured), "-c:a", "aac",
+        if has_voice:
+            measured = measure(video, policy, timeout=timeout) if _loud_cfg(policy).get("two_pass", True) else None
+            af = audio_filter(policy, measured)
+        else:
+            measured = measure(video, policy, timeout=timeout) if bed_mode(policy) == "cap" else None
+            af = bed_audio_filter(policy, measured)
+        cmd += ["-map", "0:a:0", "-af", af, "-c:a", "aac",
                 "-b:a", str(enc.get("audio_bitrate", "160k")), "-ac", "2"]
     cmd += ["-movflags", "+faststart", str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -388,12 +456,82 @@ def cover_scores(frames: list[Path], *, policy: Policy | None = None,
     return out
 
 
-def pick_cover(frames: list[Path], *, policy: Policy | None = None,
-               face: Callable[[Path], dict | None] | None = None) -> Path:
-    """The cover: among readable frames, a good cover face (eyes open, mouth closed) beats any face, which
-    beats no face; within that, the sharpest. With no face reader it is simply the sharpest frame."""
+def _best(scored: list[dict]) -> dict:
+    return max(scored, key=lambda s: (s["readable"], s.get("clear", True), s["good_face"], s["face"] is not None,
+                                      s["sharpness"]))
+
+
+def _on_screen(t: float, avoid, margin: float) -> bool:
+    return any(float(a) - margin <= t <= float(b) + margin for a, b in avoid or ())
+
+
+def cover_times(seconds: float | None, policy: Policy | None = None) -> list[float]:
+    """The times sampled for a cover from a video `seconds` long: every `cover.sample_every_s`, `cover.edge_s` in
+    from both ends, at most `cover.max_samples` (spread evenly over the video when there would be more)."""
+    cc = cfg(policy).get("cover") or {}
+    step, edge = float(cc.get("sample_every_s", 0.5)), float(cc.get("edge_s", 0.2))
+    most = max(1, int(cc.get("max_samples", 24)))
+    total = float(seconds or 0)
+    if total <= 0:
+        return [0.0]
+    lo = min(edge, total / 2)
+    hi = max(lo, total - edge)
+    span = hi - lo
+    stepped = int(round(span / step, 6)) + 1 if step > 0 else 1
+    if stepped <= most:
+        return [round(lo + i * step, 3) for i in range(stepped)]
+    if most == 1:
+        return [round(lo + span / 2, 3)]
+    return [round(lo + i * span / (most - 1), 3) for i in range(most)]
+
+
+def video_frames(video: Path, times: list[float], workdir: Path, *, timeout: float = 120) -> list[tuple[Path, float]]:
+    """One JPEG per time from `video` (plain ffmpeg, accurate seek): [(path, t)]; a time with no frame is left out."""
+    from .media import ffmpeg
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    out = []
+    for i, t in enumerate(times):
+        p = workdir / f"cover_{i:03d}.jpg"
+        r = subprocess.run([ffmpeg(), "-y", "-v", "error", "-ss", f"{float(t):.3f}", "-i", str(video),
+                            "-frames:v", "1", "-q:v", "2", str(p)], capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0 and p.exists() and p.stat().st_size > 0:
+            out.append((p, float(t)))
+    return out
+
+
+def cover_from_video(video: Path, *, workdir: Path, policy: Policy | None = None,
+                     face: Callable[[Path], dict | None] | None = None,
+                     avoid: list[tuple[float, float]] | None = None) -> dict:
+    """The cover from the finished video itself (graded, at the delivery size): {frame, t}. Frames at `cover_times`;
+    one inside an `avoid` window (start, end seconds: a caption or on-screen text showing; `cover.avoid_margin_s`
+    around each) is taken only when every frame is; then as `pick_cover`."""
+    from .media import probe
+    cc = cfg(policy).get("cover") or {}
+    info = probe(Path(video))
+    frames = video_frames(Path(video), cover_times(info.get("seconds"), policy), Path(workdir))
+    if not frames:
+        raise ValueError(f"no frames could be read from {Path(video).name} for a cover")
+    margin = float(cc.get("avoid_margin_s", 0.0))
+    at = {p: t for p, t in frames}
+    scored = cover_scores([p for p, _ in frames], policy=policy, face=face)
+    for s in scored:
+        s["clear"] = not _on_screen(at[s["frame"]], avoid, margin)
+    best = _best(scored)
+    return {"frame": best["frame"], "t": at[best["frame"]]}
+
+
+def pick_cover(source, *, policy: Policy | None = None, face: Callable[[Path], dict | None] | None = None,
+               avoid: list[tuple[float, float]] | None = None, workdir: Path | None = None) -> Path:
+    """The cover. `source` is a list of frames, or a video (the finished file: frames are sampled from it into
+    `workdir`, a new temporary directory when none is given, and those with text on screen per `avoid` passed
+    over, cover_from_video). Among readable frames, a good cover face (eyes open, mouth closed) beats any face,
+    which beats no face; within that, the sharpest. With no face reader (no MediaPipe) it is the sharpest frame."""
+    if isinstance(source, (str, os.PathLike)):
+        import tempfile
+        work = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="mw-cover-"))
+        return cover_from_video(Path(source), workdir=work, policy=policy, face=face, avoid=avoid)["frame"]
+    frames = list(source or [])
     if not frames:
         raise ValueError("no frames to pick a cover from")
-    scored = cover_scores(frames, policy=policy, face=face)
-    best = max(scored, key=lambda s: (s["readable"], s["good_face"], s["face"] is not None, s["sharpness"]))
-    return best["frame"]
+    return _best(cover_scores(frames, policy=policy, face=face))["frame"]

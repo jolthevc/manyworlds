@@ -206,17 +206,17 @@ def test_caption_style_resolution_order(raw_policy):
     assert f(raw_policy, creator="editorial", fmt="talking_video", shot=shot("karaoke")) == "karaoke"   # shot first
     assert f(raw_policy, creator="editorial", fmt="talking_video", shot=shot("bold pop, big and loud")) == "bold_pop"
     # Free text naming no style falls through: to the format's, then the creator's, then the default.
-    assert f(raw_policy, creator="editorial", fmt="storytime", shot=shot("small lowercase, bottom third")) == "bold_pop"
+    assert f(raw_policy, creator="editorial", fmt="talking_video", shot=shot("small lowercase, bottom third")) == "editorial"
     assert f(raw_policy, creator="editorial", fmt="talking_video") == "editorial"
     assert f(raw_policy, fmt="talking_video") == raw_policy.get("burned_captions", "default_style")
-    # Outfit formats carry labels, not captions; a shot can still ask for them.
-    assert f(raw_policy, creator="karaoke", fmt="outfit_check") is None
-    assert f(raw_policy, fmt="outfit_check", shot=shot("minimal")) == "minimal"
+    # A format can carry labels, not captions (story_clip: none); a shot can still ask for them.
+    assert f(raw_policy, creator="karaoke", fmt="story_clip") is None
+    assert f(raw_policy, fmt="story_clip", shot=shot("minimal")) == "minimal"
     assert f(raw_policy, fmt="talking_video", shot=shot("no captions, labels only")) is None
-    assert f(raw_policy, fmt=["ootd", "talking_video"]) is None                       # the first key listed wins
+    assert f(raw_policy, fmt=["story_clip", "talking_video"]) is None                       # the first key listed wins
     creator_first = policy_mod.from_dict({**raw_policy.body, "burned_captions": {
         **raw_policy.body["burned_captions"], "style_precedence": ["creator", "shot", "format"]}})
-    assert f(creator_first, creator="minimal", fmt="storytime", shot=shot("karaoke")) == "minimal"
+    assert f(creator_first, creator="minimal", fmt="talking_video", shot=shot("karaoke")) == "minimal"
 
 
 def test_word_timestamps_per_format(raw_policy):

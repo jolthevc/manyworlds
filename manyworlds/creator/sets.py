@@ -111,11 +111,15 @@ def _seed(creator_id, kind: str, eid: str, attempt: int) -> int:
 
 
 def plate_payload(policy: Policy, kind: str, entry: dict, seed: int) -> dict:
-    """The image job for a set plate (the empty room) or an outfit reference (the clothes, nobody wearing them)."""
+    """The image job for a set plate (the empty room) or an outfit reference (the clothes, nobody wearing them).
+    The prompt is worded positively (Z-Image Turbo at guidance 0 has no negative channel, and a negation summons
+    the thing): `{unbranded}` is the direction compiler's own stand-in for logos (`direction.positive_instead_of`)."""
     c = cfg(policy)
     prompts = c.get("prompts") or {}
     img = policy.get("generation", "image", default={}) or {}
-    words = {"name": entry.get("name") or "", "description": entry.get("description") or ""}
+    instead = policy.get("direction", "positive_instead_of", default={}) or {}
+    words = {"name": entry.get("name") or "", "description": entry.get("description") or "",
+             "unbranded": str(instead.get("logos") or "unbranded objects").strip()}
     return {"prompt": str(prompts.get(kind, "{description}")).format(**words),
             # the image gate scores the image against it (review.gates `scene`)
             "scene": str(prompts.get(f"{kind}_scene", "{description}")).format(**words),

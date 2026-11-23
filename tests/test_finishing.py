@@ -55,13 +55,52 @@ def test_grain_sharpen_and_vignette_follow_their_arguments(policy):
     assert "unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.3" in vf and "vignette=angle=0.35" in vf
 
 
-def test_the_hook_text_is_burned_in_last_so_it_gets_no_grain(policy, tmp_path):
-    ass = tmp_path / "hook.ass"
+def test_the_text_script_is_burned_in_last_so_it_gets_no_grain(policy, tmp_path):
+    ass = tmp_path / "text.ass"
     ass.write_text("[Script Info]\n", encoding="utf-8")
-    parts = finishing.filters("neutral", policy=policy, hook_ass=ass).split(",")
+    parts = finishing.filters("neutral", policy=policy, ass=ass).split(",")
     hook = next(i for i, p in enumerate(parts) if p.startswith("ass=filename='"))
     noise = next(i for i, p in enumerate(parts) if p.startswith("noise="))
     assert noise < hook == len(parts) - 2 and ass.resolve().as_posix() in parts[hook]
+    # hook_ass is the deprecated name of the same one script: same chain; two different scripts are refused
+    assert finishing.filters("neutral", policy=policy, hook_ass=ass) == ",".join(parts)
+    assert finishing.filters("neutral", policy=policy, ass=ass, hook_ass=ass) == ",".join(parts)
+    other = tmp_path / "other.ass"
+    try:
+        finishing.filters("neutral", policy=policy, ass=ass, hook_ass=other)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("two scripts must be refused: captions and on-screen texts are one script")
+
+
+def test_the_hook_defers_to_the_on_screen_text_hook(raw_policy):
+    assert raw_policy.get("finishing", "hook") == {"defer_to": "on_screen_text.kinds.hook"}
+    hook = raw_policy.get("on_screen_text", "kinds", "hook")
+    assert hook["style"] and hook["duration_s"] <= hook["max_duration_s"]       # timed and styled there
+    import inspect
+    params = inspect.signature(finishing.finish).parameters
+    assert {"ass", "hook_ass", "has_voice"} <= set(params) and params["has_voice"].default is True
+
+
+def test_a_looks_own_grain_and_sharpen_replace_the_global_blocks(policy):
+    looks = policy.get("finishing", "looks")
+    native = finishing.filters("phone_native", policy=policy)
+    assert looks["phone_native"]["grain"] == 0 and "noise=" not in native                 # this look has none
+    assert f"luma_amount={finishing._num(looks['phone_native']['sharpen'])}" in native
+    night = finishing.filters("phone_night_indoor", policy=policy)
+    assert f"noise=alls={looks['phone_night_indoor']['grain']}:" in night
+    assert f"luma_amount={finishing._num(looks['phone_night_indoor']['sharpen'])}" in night
+    assert night.index("curves=") < night.index("unsharp=") < night.index("noise=")       # after the grade
+    neutral = finishing.filters("neutral", policy=policy)                                 # no own keys: global
+    assert f"noise=alls={policy.get('finishing', 'grain', 'strength')}:" in neutral and "unsharp" not in neutral
+    # an explicit argument still wins over the look; no look can sharpen past limits.sharpen
+    assert "noise=" not in finishing.filters("phone_night_indoor", policy=policy, grain=False)
+    assert "unsharp" not in finishing.filters("phone_native", policy=policy, sharpen=False)
+    top = policy.get("finishing", "limits", "sharpen")[1]
+    assert f"luma_amount={finishing._num(top)}" in finishing.filters({"sharpen": 5}, policy=policy)
+    cap = policy.get("finishing", "grain", "max_strength")
+    assert f"noise=alls={cap}:" in finishing.filters({"grain": cap * 3}, policy=policy)
 
 
 def test_a_smaller_video_is_upscaled_to_the_output_size_first(policy):
@@ -170,6 +209,51 @@ def test_a_silent_or_missing_measurement_falls_back_to_one_pass(policy):
     assert finishing.audio_filter(policy, None) == "loudnorm=I=-14:TP=-1:LRA=11,aresample=48000"
 
 
+def test_a_bed_only_track_is_never_pulled_up_to_the_voice_target(policy):
+    bed = policy.get("finishing", "loudness", "bed_only")
+    assert bed["mode"] == "cap" and bed["lufs"] < policy.get("finishing", "loudness", "lufs") - 10
+    quiet = {**finishing.parse_loudnorm(STDERR), "input_i": "-46.0"}          # a -44 dB room tone, measured
+    up = finishing.bed_gain_db(policy, quiet)
+    assert up == bed["max_gain_db"] < bed["lufs"] + 46                          # capped, not the full lift
+    assert finishing.bed_audio_filter(policy, quiet) == f"volume={finishing._num(up)}dB,aresample=48000"
+    assert "loudnorm" not in finishing.bed_audio_filter(policy, quiet)
+    loud = {**quiet, "input_i": "-20.0"}                                        # a loud music bed is turned down
+    assert finishing.bed_gain_db(policy, loud) == bed["lufs"] + 20
+    assert finishing.bed_audio_filter(policy, None) == "aresample=48000"        # silence: left alone
+    skip = _with(policy, loudness={**policy.get("finishing", "loudness"), "bed_only": {**bed, "mode": "skip"}})
+    assert finishing.bed_audio_filter(skip, quiet) == "aresample=48000"
+    odd = _with(policy, loudness={**policy.get("finishing", "loudness"), "bed_only": {**bed, "mode": "boost"}})
+    try:
+        finishing.bed_audio_filter(odd, quiet)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown bed_only mode must be refused")
+
+
+def _clip(path, *, amplitude: float, seconds: float = 2.0):
+    import subprocess
+
+    from manyworlds import media
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                    f"testsrc=size=64x112:rate=30:duration={seconds:g}", "-f", "lavfi", "-i",
+                    f"anoisesrc=colour=pink:amplitude={amplitude}:duration={seconds:g}:sample_rate=48000",
+                    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
+                   check=True, capture_output=True)
+    return path
+
+
+def test_finish_keeps_a_bed_only_video_quiet_and_loudnorms_a_voiced_one(policy, tmp_path):
+    p = _with(policy, output=None, fps=None)                                     # small and fast: level only
+    src = _clip(tmp_path / "room.mp4", amplitude=0.005)
+    voiced = finishing.finish(src, tmp_path / "voiced.mp4", look="neutral", policy=p)
+    bed = finishing.finish(src, tmp_path / "bed.mp4", look="neutral", has_voice=False, policy=p)
+    level = {name: float(finishing.measure(f, p)["input_i"]) for name, f in (("voiced", voiced), ("bed", bed))}
+    assert abs(level["voiced"] - policy.get("finishing", "loudness", "lufs")) < 2.5   # the old behaviour, unchanged
+    assert level["bed"] <= policy.get("finishing", "loudness", "bed_only", "lufs") + 1.5
+    assert level["bed"] < level["voiced"] - 10
+
+
 # --- cover frame -------------------------------------------------------------------------------------------------
 
 def _frame(path, blur=0.0, seed=0):
@@ -213,3 +297,53 @@ def test_laplacian_sharpness_ranks_blur():
     flat = np.full((40, 40), 0.5)
     assert finishing.sharpness(crisp) > finishing.sharpness(flat) == 0.0
     assert finishing.sharpness(np.zeros((2, 2))) == 0.0
+
+
+# --- cover from the finished video ---------------------------------------------------------------------------------
+
+def test_cover_times_sample_the_video_inside_its_edges(policy):
+    assert finishing.cover_times(2.0, policy) == [0.2, 0.7, 1.2, 1.7]
+    long = finishing.cover_times(60.0, policy)
+    most = policy.get("finishing", "cover", "max_samples")
+    assert len(long) == most and long[0] == 0.2 and long[-1] == 59.8              # spread evenly, capped
+    assert finishing.cover_times(0.1, policy) == [0.05] and finishing.cover_times(None, policy) == [0.0]
+
+
+def _half_blurred(path):
+    """2 s at 10 fps: blurred for the first second, sharp after it."""
+    import subprocess
+
+    from manyworlds import media
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=128x224:rate=10:duration=2,boxblur=8:enable='lt(t,1)'",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], check=True, capture_output=True)
+    return path
+
+
+def test_the_cover_comes_from_the_finished_video_and_avoids_text_on_screen(policy, tmp_path):
+    video = _half_blurred(tmp_path / "final.mp4")
+    none = lambda p: None   # noqa: E731 - no face reader here: sharpness decides
+    best = finishing.cover_from_video(video, workdir=tmp_path / "a", policy=policy, face=none)
+    assert best["t"] >= 1.0 and best["frame"].exists()                           # the sharp second
+    # a caption over the sharp second: a clear (if softer) frame wins
+    clear = finishing.cover_from_video(video, workdir=tmp_path / "b", policy=policy, face=none, avoid=[(1.0, 2.0)])
+    assert clear["t"] < 1.0 - policy.get("finishing", "cover", "avoid_margin_s")
+    # text on screen the whole time: still a cover, the sharpest
+    always = finishing.cover_from_video(video, workdir=tmp_path / "c", policy=policy, face=none, avoid=[(0.0, 2.0)])
+    assert always["t"] >= 1.0
+    # pick_cover takes the video too (and still a list of frames, as before)
+    frame = finishing.pick_cover(video, policy=policy, face=none, workdir=tmp_path / "d", avoid=[(1.0, 2.0)])
+    assert frame.parent == tmp_path / "d" and frame.suffix == ".jpg"
+    assert finishing.pick_cover([frame], policy=policy, face=none) == frame
+
+
+def test_a_good_face_wins_among_the_frames_clear_of_text(policy, tmp_path):
+    video = _half_blurred(tmp_path / "final.mp4")
+    eyes_min = policy.get("finishing", "cover", "eyes_open_min")
+    mouth_max = policy.get("finishing", "cover", "mouth_closed_max")
+    good = {"eyes_open": eyes_min * 2, "mouth_open": mouth_max / 2}
+    talking = {"eyes_open": eyes_min * 2, "mouth_open": mouth_max * 4}
+    # the softer first frame has the good face; every other frame is mid-word
+    reader = lambda p: good if p.name == "cover_000.jpg" else talking   # noqa: E731
+    best = finishing.cover_from_video(video, workdir=tmp_path / "w", policy=policy, face=reader)
+    assert best["frame"].name == "cover_000.jpg"

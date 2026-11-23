@@ -6,7 +6,8 @@ has its own fix (policy `review.repair`):
   identity  the likeness LoRA gets stronger by `lora_scale_step` per identity repair, up to `lora_scale_max`,
             and the prompt asks for a clearly visible face with the signature details
   scene     the prompt leads with the scene, so the setting and action can't be lost
-  realism   the prompt steers away from what renders badly (hands, text)
+  realism   the prompt asks for what renders well (relaxed hands, plain surfaces) and the job's negative_prompt
+            names what renders badly (text, logos, warped hands): hints never put a negation in a positive prompt
   safety    never regenerated: the post is dropped
 A new seed always comes with it. Repairs still count against `review.max_repairs_per_post`.
 """
@@ -49,23 +50,62 @@ def diagnose(conn, job_id) -> dict:
     return {"cause": cause, "failed": dict(failed), "defects": [d for d, _ in defects.most_common(3)]}
 
 
+NEGATIONS = ("no ", "not ", "without ", "avoid ", "never ", "don't ", "do not ")
+
+
+def split_hint(hint) -> tuple[str, list[str]]:
+    """(positive text, things to avoid) of one repair hint (policy `review.repair.hints.<cause>`). A hint is a string
+    (positive wording) or {positive, avoid: [...]}. A negation never stays in a positive prompt (a model with no
+    negative channel tends to draw what it is told not to, manyworlds.direction): a clause of a string hint that
+    starts with one ("no text or logos") moves to the avoid list."""
+    if isinstance(hint, dict):
+        avoid = hint.get("avoid") or []
+        text, avoid = str(hint.get("positive") or ""), [avoid] if isinstance(avoid, str) else list(avoid)
+    else:
+        text, avoid = str(hint or ""), []
+    kept = []
+    for clause in text.split(","):
+        bare = clause.strip().lstrip(".").strip()
+        neg = next((n for n in NEGATIONS if bare.lower().startswith(n)), None)
+        if neg:
+            avoid.append(bare[len(neg):].strip().rstrip("."))
+        else:
+            kept.append(clause)
+    return ",".join(kept), [str(a).strip() for a in avoid if str(a).strip()]
+
+
+def with_negative(payload: dict, avoid: list[str]) -> dict:
+    """`payload` with `avoid` added to its `negative_prompt` (the workers' negative channel), each item once."""
+    if not avoid:
+        return payload
+    current = str(payload.get("negative_prompt") or "").strip()
+    have = {x.strip().lower() for x in current.split(",") if x.strip()}
+    extra = [a for a in dict.fromkeys(avoid) if a.lower() not in have]
+    if not extra:
+        return payload
+    return {**payload, "negative_prompt": ", ".join(x for x in (current, *extra) if x)}
+
+
 def plan(policy: Policy, cause: str, *, scene: str, identity_repairs: int):
-    """(adjust, action): a function that changes the next job's payload, and a description of it."""
+    """(adjust, action): a function that changes the next job's payload, and a description of it. Hints add only
+    positive wording to the prompt; what to avoid goes to the job's `negative_prompt`."""
     cfg = policy.get("review", "repair", default={}) or {}
     hints = cfg.get("hints") or {}
     if cause == "identity":
         step, cap = float(cfg.get("lora_scale_step", 0.1)), float(cfg.get("lora_scale_max", 1.4))
+        text, avoid = split_hint(hints.get("identity", ""))
 
         def adjust(p: dict) -> dict:
-            out = {**p, "prompt": p["prompt"] + hints.get("identity", "")}
+            out = with_negative({**p, "prompt": p["prompt"] + text}, avoid)
             if "lora_scale" in p:
                 out["lora_scale"] = round(min(cap, float(p["lora_scale"]) + step * (identity_repairs + 1)), 3)
             return out
         return adjust, f"stronger likeness (lora_scale +{step} per repair, max {cap}) and a face-visible prompt"
     if cause == "scene":
-        lead = hints.get("scene", "").format(scene=scene)
-        return (lambda p: {**p, "prompt": lead + p["prompt"]}), "prompt leads with the scene"
+        text, avoid = split_hint(hints.get("scene", ""))
+        lead = text.format(scene=scene)
+        return (lambda p: with_negative({**p, "prompt": lead + p["prompt"]}, avoid)), "prompt leads with the scene"
     if cause in ("realism", "hands", "teeth"):   # hands / teeth: the finer checks (review.detail), when enforced
-        hint = hints.get(cause, hints.get("realism", ""))
-        return (lambda p: {**p, "prompt": p["prompt"] + hint}), "anatomy and text hints"
+        text, avoid = split_hint(hints.get(cause, hints.get("realism", "")))
+        return (lambda p: with_negative({**p, "prompt": p["prompt"] + text}, avoid)), "anatomy and text hints"
     return None, "new seed"

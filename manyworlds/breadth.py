@@ -507,7 +507,7 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
         for post in conn.execute("SELECT * FROM posts WHERE body->>'breadth_run' = %s AND status = 'producing'",
                                  (rid,)).fetchall():
             try:
-                production.advance_post(conn, pol, post, store)
+                production.advance_post(conn, pol, post, store, llm=llm)
             except Exception as e:  # noqa: BLE001 - one post's bug must not stop the others
                 log.exception("advancing %s failed", post["id"])
                 errors[post["body"].get("breadth_item", str(post["id"]))] = f"{type(e).__name__}: {e}"[:300]

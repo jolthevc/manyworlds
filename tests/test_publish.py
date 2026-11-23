@@ -109,3 +109,47 @@ def test_paused_creators_publish_nothing(conn, policy):
     conn.execute("UPDATE creators SET status = 'paused' WHERE id = %s", (cid,))
     _post(conn, cid)
     assert scheduler.publish_due(conn, policy, now=NOW).get("simulated", 0) == 0
+
+
+# --- test posts never go out ------------------------------------------------------------------------------------
+def _test_post(conn, cid, body):
+    return conn.execute("INSERT INTO posts (creator_id, platform, format, status, caption, body, scheduled_for) "
+                        "VALUES (%s, 'instagram', 'photo', 'ready', 'c', %s, %s) RETURNING id",
+                        (cid, Jsonb({"platform_ai_label": True, **body}), NOW - timedelta(hours=1))).fetchone()["id"]
+
+
+def test_a_breadth_test_post_is_never_published_even_when_scheduled(conn, policy, monkeypatch):
+    monkeypatch.setitem(scheduler.PUBLISHERS, "instagram", FakeInstagram())
+    real, sandbox = creator(conn, publish_mode="instagram"), _sim(conn)
+    posts = [_test_post(conn, real, {"breadth_run": "r1"}), _test_post(conn, sandbox, {"breadth_run": "r1"}),
+             _test_post(conn, real, {"batch": "test-breadth-r1"})]
+    out = scheduler.publish_due(conn, policy, now=NOW)
+    assert out["test_posts"] == 3 and out["published"] == 0 and out["simulated"] == 0
+    assert {r["status"] for r in conn.execute("SELECT status FROM posts WHERE id = ANY(%s)", (posts,))} == {"ready"}
+    assert conn.execute("SELECT count(*) AS n FROM publications").fetchone()["n"] == 0
+
+
+def test_a_post_made_in_a_test_batch_is_never_published(conn, policy, monkeypatch):
+    monkeypatch.setitem(scheduler.PUBLISHERS, "instagram", FakeInstagram())
+    cid = creator(conn, publish_mode="instagram")
+    test, real = _post(conn, cid), _post(conn, cid)
+    prefix = policy.get("operations", "test_batch_prefixes")[0]
+    for pid, batch in ((test, f"{prefix}x"), (real, f"post-{real}")):
+        conn.execute("INSERT INTO jobs (kind, status, creator_id, post_id, batch) VALUES ('image.zimage', 'done', %s, "
+                     "%s, %s)", (cid, pid, batch))
+    out = scheduler.publish_due(conn, policy, now=NOW)
+    assert out["test_posts"] == 1 and out["published"] == 1
+    status = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM posts").fetchall()}
+    assert status == {test: "ready", real: "published"}
+
+
+def test_the_instagram_publisher_refuses_a_test_post_before_any_call(conn, policy, monkeypatch):
+    import pytest
+
+    from manyworlds.publish import NotForPublishing, instagram
+    monkeypatch.setattr(instagram, "graph", lambda *a, **k: pytest.fail("no Graph call for a test post"))
+    cid = creator(conn, publish_mode="instagram")
+    pid = _test_post(conn, cid, {"breadth_run": "r1"})
+    post = conn.execute("SELECT * FROM posts WHERE id = %s", (pid,)).fetchone()
+    with pytest.raises(NotForPublishing, match="breadth"):
+        instagram.InstagramPublisher().publish(conn, policy, post)

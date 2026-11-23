@@ -178,6 +178,82 @@ def _check_crops(d: Path) -> str:
     return "hand and mouth crops"
 
 
+NEGATIVE_PROBE = "smoke-test negative: waxy skin, logos"
+
+
+def _negative_graphs(negative: str) -> dict[str, dict]:
+    """Every ComfyUI graph a handler builds, each given a job's negative prompt."""
+    from . import comfy
+    size = {"width": 480, "height": 832}
+    return {
+        "InfiniteTalk": comfy.graph(image="x.png", audio="x.wav", prompt="a person talks", frames=125, seed=1,
+                                    params={**size, "steps": 6}, blocks_to_swap=20, negative=negative),
+        "V2V": comfy.graph_v2v(video="x.mp4", audio="x.wav", prompt="she walks and talks", frames=125, seed=1,
+                               params={**size, "steps": 4, "start_step": 2}, blocks_to_swap=20, negative=negative),
+        "story clip": comfy.graph_i2v(image="x.png", prompt="she smiles", seed=1, params=size, blocks_to_swap=20,
+                                      negative=negative),
+        "LongCat": comfy.graph_longcat(image="x.png", audio="x.wav", prompt="a person talks", frames=250, seed=1,
+                                       params={**size, "steps": 10, "frame_window": 93, "overlap": 13},
+                                       blocks_to_swap=25, negative=negative),
+    }
+
+
+def _check_negatives(info: dict | None = None) -> str:
+    """Each graph takes a job's negative prompt into its negative text encode (and, with ComfyUI's node catalogue
+    `info`, is still valid against it), so a shot's negatives reach the sampler and not the positive prompt."""
+    from . import comfy
+    for name, g in _negative_graphs(NEGATIVE_PROBE).items():
+        texts = [n["inputs"].get("negative_prompt") for n in g.values()
+                 if isinstance(n, dict) and "negative_prompt" in (n.get("inputs") or {})]
+        if texts != [NEGATIVE_PROBE]:
+            raise RuntimeError(f"the {name} graph does not encode the job's negative prompt: {texts}")
+        if any(NEGATIVE_PROBE in str(n.get("inputs", {}).get("positive_prompt", "")) for n in g.values()
+               if isinstance(n, dict)):
+            raise RuntimeError(f"the {name} graph puts the negative into the positive prompt")
+        if info is not None:
+            problems = comfy.missing_inputs(g, info)
+            if problems:
+                raise RuntimeError(f"the {name} graph with a negative doesn't match ComfyUI's nodes: "
+                                   + "; ".join(problems))
+    return "every graph encodes a job's negative prompt" + (" (valid against ComfyUI's nodes)" if info else "")
+
+
+def _check_interpolation(d: Path, interpolate: dict | None = None) -> str:
+    """Walk-and-talk's motion clip is motion-interpolated to the talk frame rate (talk_comfy.at_fps with the
+    policy's `generation.talk.motion_interpolate`, or `interpolate`; minterpolate) by this image's ffmpeg: the filter
+    exists, the step is minterpolate, and a 2 s 16 fps clip comes out at the talk rate and length."""
+    import re
+    import subprocess
+
+    from . import comfy
+    from .. import media
+    from .handlers import talk_comfy
+    if interpolate is None:
+        from .. import policy as policy_mod
+        interpolate = policy_mod.load().get("generation", "talk", "motion_interpolate", default={})
+    interp = dict(interpolate or {})
+    interp.update(enabled=True, method="minterpolate")   # checked even while the policy has it off
+    r = subprocess.run([media.ffmpeg(), "-hide_banner", "-filters"], capture_output=True, text=True, timeout=60)
+    if not re.search(r"^\s*\S+\s+minterpolate\s+V->V", r.stdout or "", re.M):
+        raise RuntimeError("this ffmpeg has no minterpolate filter (walk-and-talk would repeat frames)")
+    seconds, src_fps = 2.0, 16
+    src = Path(d) / "m16_interp.mp4"
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                    f"testsrc=size=160x288:rate={src_fps}:duration={seconds:g}", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(src)], check=True, capture_output=True, timeout=120)
+    step = media.fps_filter(src_fps, comfy.TALK_FPS, interp, seconds=seconds) or ""
+    if not step.startswith("minterpolate="):
+        raise RuntimeError(f"the motion clip's resample step is not minterpolate: {step!r}")
+    out = talk_comfy.at_fps(src, Path(d) / "m25_interp.mp4", comfy.TALK_FPS, interpolate=interp)
+    info = media.probe(out)
+    frames = media.frame_count(out)
+    want = seconds * comfy.TALK_FPS
+    if abs(frames - want) > 4 or abs(float(info.get("seconds") or 0) - seconds) > 0.15:
+        raise RuntimeError(f"a {seconds:g} s {src_fps} fps clip interpolated to {frames} frames "
+                           f"({info.get('seconds')} s), not ~{want:g} at {comfy.TALK_FPS} fps")
+    return "motion clip interpolated (minterpolate) to the talk frame rate"
+
+
 def check_talkcomfy() -> list[str]:
     """The ComfyUI talk worker: its imports, the handler, ComfyUI starting (on the CPU here) with WanVideoWrapper
     loaded, and the InfiniteTalk graph valid against ComfyUI's own node catalogue, so a wiring mistake fails the
@@ -246,11 +322,13 @@ def check_talkcomfy() -> list[str]:
             if problems:
                 raise RuntimeError(f"Wan-Animate-2 graph (cache={cached}) doesn't match ComfyUI's nodes: "
                                    + "; ".join(problems))
+        negatives = _check_negatives(info)
     finally:
         comfy.stop()
     handlers_for(["comfy.wan_i2v", "comfy.wan_animate2"])
     done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat), story-clip and "
                 "Wan-Animate-2 graphs")
+    done.append(negatives)
 
     # The motion clip is resampled to the talk's 25 fps before V2V (talk_comfy.at_fps), with the image's ffmpeg.
     import imageio.v3 as iio
@@ -263,6 +341,7 @@ def check_talkcomfy() -> list[str]:
     if abs(n - comfy.TALK_FPS) > 1:
         raise RuntimeError(f"a 1 s motion clip came out as {n} frames at {comfy.TALK_FPS} fps")
     done.append("motion clip resampled to the talk frame rate")
+    done.append(_check_interpolation(d))
 
     # The wrapper's own wav2vec encoder, as MultiTalkWav2VecEmbeds calls it, on a tiny random model: it must return
     # hidden states (with transformers 5 it returned None, after the weights had downloaded; 2026-11-22).

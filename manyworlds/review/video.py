@@ -14,6 +14,9 @@ per gate, written against the video asset:
   scene     (when the planner wrote one) the shot shows the scene and the movement intended
   direction (when the job carries a shot sheet, manyworlds.direction) the clip follows the shot and its beats,
             on rubric policy/rubrics/direction-v<n>.yaml; below review.direction.min_score it is rejected
+  dance_identity
+            (motion transfer: comfy.wan_animate2, or a payload `reference` motion clip) identity per keyframe over
+            `dance.identity.keyframes` keyframes, decided by manyworlds.dance.identity_check (worst and mean)
   finer checks (manyworlds.review.detail, policy review.detail; each rejects only when enforced):
     lip_closure, background  free, before the judge: lips closing on b/p/m (talking clips with a mouth series),
                              background edge flicker across the keyframes
@@ -70,11 +73,41 @@ class ClipReview(BaseModel):
                               "teeth in the worst keyframe; null when no teeth show")
     consistency: int | None = Field(default=None, description="only when SET / OUTFIT REFERENCE images are given: "
                                     "1-10, the same set and clothes as the references; null otherwise")
+    identity_per_frame: list[int] | None = Field(default=None, description="only when PER-KEYFRAME IDENTITY is "
+                                                "asked: one 1-10 identity score per keyframe, in keyframe order; "
+                                                "null otherwise")
     notes: str = Field(description="one sentence")
 
 
 def gates_for(scene: str | None, shot: dict | None = None) -> tuple[str, ...]:
     return GATES + (("scene",) if scene else ()) + (("direction",) if shot else ())
+
+
+MOTION_TRANSFER_KINDS = ("comfy.wan_animate2",)
+
+
+def is_motion_transfer(kind: str | None, payload: dict | None) -> bool:
+    """A clip driven by someone else's motion (dance and motion transfer): its kind, or a `reference` motion clip
+    in the payload (manyworlds.dance.reference; `references`, plural, are set and outfit images, not motion)."""
+    return kind in MOTION_TRANSFER_KINDS or bool((payload or {}).get("reference"))
+
+
+def _identity_frames(policy: Policy, store: ObjectStore, video_uri: str, frames: list[tuple[bytes, str]],
+                     workdir: Path) -> list[tuple[bytes, str]]:
+    """The keyframes the dance identity gate scores: `dance.identity.keyframes` spread over the clip. The worker's
+    own keyframes when it stored that many; else cut from the clip here (manyworlds.media.keyframes, plain ffmpeg);
+    the stored ones when the clip can't be read."""
+    from .. import dance, media
+    n = int((dance.cfg(policy).get("identity") or {}).get("keyframes", len(frames)) or len(frames))
+    if len(frames) >= n:
+        return frames
+    try:
+        clip = store.get_file(video_uri, workdir / f"clip{Path(video_uri).suffix or '.mp4'}")
+        d = workdir / "identity"
+        d.mkdir(parents=True, exist_ok=True)
+        return [(p.read_bytes(), "image/jpeg") for p, _, _ in media.keyframes(clip, d, n)]
+    except Exception:  # noqa: BLE001 - an unreadable clip is judged on the worker's keyframes
+        return frames
 
 
 def decide(r: ClipReview, cfg: dict, scene: str | None = None, *, shot: dict | None = None,
@@ -108,7 +141,7 @@ def _media_type(uri: str) -> str:
 def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, refs: list[bytes],
            start: bytes | None, frames: list[tuple[bytes, str]], scene: str | None,
            shot: dict | None = None, extra: tuple[list, list[str]] = ([], []),
-           crops: tuple[list, set[str]] = ([], set())) -> ClipReview:
+           crops: tuple[list, set[str]] = ([], set()), *, per_frame: bool = False) -> ClipReview:
     min_age = int(policy.get("scope", "creator_min_age", default=21))
     content: list = [{"type": "text", "text": f"The person: {appearance_prompt(creator['bible'])}. "
                                               f"Minimum age for this creator: {min_age}."}]
@@ -130,11 +163,17 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
     ask = detail.judge_prompt(policy, consistency=ref_labels, still=False, crops=crops[1])
     if ask:
         content.append({"type": "text", "text": ask})
+    if per_frame:   # motion transfer: the dance identity gate needs every keyframe's own score
+        content.append({"type": "text", "text": f"PER-KEYFRAME IDENTITY: also give `identity_per_frame`, one 1-10 "
+                                                f"score per keyframe ({len(frames)} numbers, in order) for how "
+                                                f"clearly that keyframe shows the REFERENCE person."})
     content.append({"type": "text", "text": "Review the clip as a whole from these keyframes."})
     r = llm.structured(role, system=SYSTEM, content=content, schema=ClipReview, effort=effort,
                        creator_id=creator["id"])
     for k in ("identity", "motion", "realism"):
         setattr(r, k, max(0, min(10, getattr(r, k))))
+    r.identity_per_frame = ([max(1, min(10, int(s))) for s in r.identity_per_frame]
+                            if (per_frame and r.identity_per_frame) else None)
     r.scene = max(0, min(10, r.scene)) if (scene and r.scene is not None) else None
     r.direction = max(1, min(10, r.direction)) if (shot and r.direction is not None) else None
     detail.clamp_scores(r, policy, consistency=bool(ref_labels))
@@ -143,14 +182,21 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
 
 def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job_id, workdir: Path,
                *, write: bool = True) -> list[dict]:
-    """Review the clip of one finished video job. Returns one dict per video asset (normally one)."""
+    """Review the clip of one finished video job. Returns one dict per video asset (normally one).
+
+    A job in a test-overlay batch (test-breadth-*) is judged under the overlay (common.policy_for). A motion-transfer
+    clip (comfy.wan_animate2, or any job driven by a `reference` motion clip) also gets the `dance_identity` gate:
+    the judge scores identity per keyframe (`dance.identity.keyframes` of them, cut from the clip when the worker
+    stored fewer) and manyworlds.dance.identity_check decides."""
+    job = conn.execute("SELECT creator_id, kind, batch, payload FROM jobs WHERE id = %s", (job_id,)).fetchone()
+    policy = common.policy_for(policy, job.get("batch"))
     cfg = policy.get("review", "video", default={})
     stages = common.stages(cfg)
-    job = conn.execute("SELECT creator_id, payload FROM jobs WHERE id = %s", (job_id,)).fetchone()
     payload = job["payload"] or {}
     scene = payload.get("scene")
     shot = payload.get("shot") if isinstance(payload.get("shot"), dict) else None   # a directed clip
-    gates = gates_for(scene, shot)
+    motion_ref = is_motion_transfer(job.get("kind"), payload)
+    gates = gates_for(scene, shot) + (("dance_identity",) if motion_ref else ())
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
     videos = conn.execute("SELECT id, uri, meta FROM assets WHERE job_id = %s AND kind = 'video' ORDER BY uri",
                           (job_id,)).fetchall()
@@ -164,6 +210,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
              if payload.get("image_uri") else None)
     frames = [(store.get_file(k["uri"], workdir / f"key_{i}{Path(k['uri']).suffix}").read_bytes(), _media_type(k["uri"]))
               for i, k in enumerate(keys)]
+    if motion_ref:
+        frames = _identity_frames(policy, store, videos[0]["uri"], frames, workdir)
 
     heard = _intelligibility(conn, policy, store, job_id, payload, job["creator_id"], workdir)
     extra = detail.reference_blocks(detail.references_for(payload, shot, policy), store, workdir, image_block)
@@ -204,16 +252,26 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             continue
         for role, effort, stage in stages:
             with common.charged_to(llm, job_id):   # review counts in this clip's cost
-                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene, shot, extra, crops)
+                r = _judge(llm, policy, role, effort, creator, refs, start, frames, scene, shot, extra, crops,
+                           per_frame=motion_ref)
             verdict = decide(r, cfg, scene, shot=shot, policy=policy)
             checks = detail.judged_verdicts(policy, r, consistency=bool(extra[1]))   # hands, teeth, consistency
             scores = {"identity": r.identity, "motion": r.motion, "realism": r.realism, "scene": r.scene}
             if shot:
                 scores["direction"] = r.direction
+            held = None
+            if motion_ref:   # motion transfer: every keyframe holds her face (manyworlds.dance.identity_check)
+                from .. import dance
+                per = r.identity_per_frame or []
+                held = dance.identity_check(per if len(per) >= len(frames) else [], policy)   # fails closed
+                if per and len(per) < len(frames):
+                    held["reason"] = f"{len(per)} identity scores for {len(frames)} keyframes"
+                verdict["dance_identity"], scores["dance_identity"] = held["passed"], held["min"]
             passed = all(verdict.values()) and all(ok for ok, _ in checks.values())
             clear = stage == "screen" and len(stages) > 1 and passed and clear_pass(r, cfg)
-            details = {**r.model_dump(exclude=detail.unasked(r, shot)), "model": llm.model_for(role),
-                       "stage": stage, "clear_pass": clear}
+            exclude = (detail.unasked(r, shot) or set()) | (set() if motion_ref else {"identity_per_frame"})
+            details = {**r.model_dump(exclude=exclude), "model": llm.model_for(role),
+                       "stage": stage, "clear_pass": clear, **({"dance_identity": held} if held else {})}
             rows += [(v["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
             rows += [(v["id"], g, ok, getattr(r, g), Jsonb({**details, **info})) for g, (ok, info) in checks.items()]
             res["stages"].append({"stage": stage, "model": details["model"], **scores,
@@ -313,7 +371,7 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
     return [r["id"] for r in conn.execute(
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
            WHERE j.status = 'done' AND (j.kind LIKE 'video.%%' OR j.kind LIKE 'talk.%%' OR j.kind = 'hosted.video'
-                                        OR j.kind = 'comfy.wan_i2v')
+                                        OR j.kind = 'comfy.wan_i2v' OR j.kind = 'comfy.wan_animate2')
              AND j.kind <> 'video.mirror'
              AND coalesce(j.payload->>'intermediate', '') <> 'true'
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0

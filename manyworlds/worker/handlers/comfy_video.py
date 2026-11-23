@@ -5,7 +5,8 @@ Same job as handlers/video_wan.py: one approved photo animated into a short clip
 gate. Self-hosted FastWan (5B, DMD) rendered in ~1 minute but passed 0 of 10 clips (2026-11-22); this is the
 community's proven 14B graph, at hourly GPU prices instead of a hosted API's per-clip price.
 
-Payload: image_uri, prompt, keyframes, seed; params{width, height, frames, fps, steps, high_steps, shift,
+Payload: image_uri, prompt, negative_prompt (the shot's negatives, manyworlds.direction.compile_prompts; else
+comfy.negative_text's fallbacks), keyframes, seed; params{width, height, frames, fps, steps, high_steps, shift,
 high_lora_strength, low_lora_strength, high_cfg, swap_below_gb, blocks_to_swap, timeout_s, fit_stretch_tolerance}
 (a photo at the frame's aspect is scaled whole, not cropped: talk_comfy.fit_box).
 """
@@ -52,7 +53,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     _prepare_image(start, inp / image_name, int(params["width"]), int(params["height"]),
                    stretch_tolerance=float(params.get("fit_stretch_tolerance") or 0))   # a 9:16 photo is not cropped
     g = comfy.graph_i2v(image=image_name, prompt=payload["prompt"], seed=seed, params=params,
-                        blocks_to_swap=_blocks_to_swap(params))
+                        blocks_to_swap=_blocks_to_swap(params), negative=payload.get("negative_prompt"))
     t0 = time.monotonic()
     out = comfy.run(g, timeout_s=float(params["timeout_s"]))
     render_s = round(time.monotonic() - t0, 1)
@@ -64,7 +65,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     keyframes = extract_keyframes(clip, work, int(payload.get("keyframes", 4)))
     keyframes += crops.crops_in_venv(keyframes, work, payload.get("crops"))
     recipe = {"model": [comfy.HIGH, comfy.LOW], "lora": comfy.LORA, "engine": "comfy+WanVideoWrapper",
-              "prompt": payload["prompt"], "image_uri": payload["image_uri"], "seed": seed, "params": params}
+              "prompt": payload["prompt"], "negative_prompt": comfy.negative_text(params, payload.get("negative_prompt")),
+              "image_uri": payload["image_uri"], "seed": seed, "params": params}
     return HandlerResult([OutputFile(clip, "video", {"seconds": seconds, "width": params["width"],
                                                      "height": params["height"], "engine": "comfy"}), *keyframes],
                          recipe=recipe, meta={"output_seconds": seconds, "render_seconds": render_s})

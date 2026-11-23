@@ -1,7 +1,7 @@
 """Dance and motion transfer rules on the control plane (plan docs/superpowers/plans/2026-11-22-dance-motion-transfer.md).
 
-OFF (policy `dance.enabled: false`); nothing calls this yet. Two rules a dance job must pass before it is enqueued,
-and one check its output must pass:
+Switched by policy `dance.enabled`. Two rules a dance job must pass before it is enqueued, and one check its output
+must pass (the video gate, manyworlds.review.video, runs it on every motion-transfer clip):
 
   reference        the driving clip comes from `dance.references` (empty by default) and must be ours or licensed:
                    an owner in `dance.allowed_owners`, a licence string, a source, and a source that is not a
@@ -11,8 +11,9 @@ and one check its output must pass:
                    its frames and frame rate).
   identity_check   per-keyframe identity scores (1-10, the video gate's identity row against the creator's
                    reference photos): the worst keyframe at `dance.identity.min_score` or more (like
-                   review.video.min_identity) and the mean at `min_mean` or more. Animate-2's card claims identity
-                   preservation but publishes no numbers, so this gate decides.
+                   review.video.min_identity) and the mean at `min_mean` or more, over `keyframes` keyframes
+                   (gate `dance_identity`). Animate-2's card claims identity preservation but publishes no numbers,
+                   so this gate decides.
 """
 
 from __future__ import annotations

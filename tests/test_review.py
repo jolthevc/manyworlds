@@ -221,3 +221,43 @@ def test_a_little_drift_is_fine_a_different_face_or_clear_defects_are_not(conn, 
     judge = JudgeStub([ok(identity=5, realism=5), ok(identity=3), ok(realism=3), ok(identity=6, realism=6)])
     results = gates.review_job(conn, policy, judge, store, job, tmp_path)
     assert [r["accepted"] for r in results] == [True, False, False, True]
+
+
+# --- repair hints: positive wording in the prompt, what to avoid in the negative prompt --------------------------
+NEGATION_STARTS = ("no ", "not ", "without ", "avoid ", "never ")
+
+
+def _clauses(text):
+    return [c.strip().lstrip(".").strip().lower() for c in text.split(",")]
+
+
+def test_repair_hints_never_put_a_negation_in_the_prompt(policy):
+    from manyworlds.review import repair
+    for cause in ("identity", "scene", "realism", "hands", "teeth"):
+        adjust, _ = repair.plan(policy, cause, scene="reading on a balcony", identity_repairs=0)
+        out = adjust({"prompt": "a woman reading", "negative_prompt": "blurry", "lora_scale": 1.0})
+        assert not any(c.startswith(NEGATION_STARTS) for c in _clauses(out["prompt"])), (cause, out["prompt"])
+        assert out["negative_prompt"].startswith("blurry")
+    adjust, _ = repair.plan(policy, "realism", scene="", identity_repairs=0)
+    out = adjust({"prompt": "p"})
+    avoid = policy.get("review", "repair", "hints", "realism", "avoid")
+    assert out["negative_prompt"] == ", ".join(avoid)
+    assert adjust(out)["negative_prompt"] == out["negative_prompt"]           # a second repair adds nothing twice
+
+
+def test_a_negated_clause_in_a_string_hint_moves_to_the_negative_prompt():
+    from manyworlds.review import repair
+    text, avoid = repair.split_hint(". Relaxed hands or hands out of frame, natural anatomy, no text or logos")
+    assert text == ". Relaxed hands or hands out of frame, natural anatomy" and avoid == ["text or logos"]
+    assert repair.split_hint({"positive": ". Plain wall", "avoid": "logos"}) == (". Plain wall", ["logos"])
+    assert repair.split_hint("The photo must clearly show: {scene}. ") == ("The photo must clearly show: {scene}. ", [])
+    assert repair.with_negative({"prompt": "p"}, []) == {"prompt": "p"}
+
+
+def test_an_image_in_a_breadth_batch_is_judged_under_the_test_overlay(conn, policy, store, tmp_path):
+    from test_video_review import SHOT
+    prefix = policy.get("operations", "test_overlay", "batches")[0]
+    _, job = creator_with_job(conn, store, tmp_path, n_images=1, batch=f"{prefix}r1")
+    conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"scene": "at a rainy bus stop", "shot": SHOT}), job))
+    [r] = gates.review_job(conn, policy, JudgeStub([ok(direction=1)], confirm=[ok(direction=1)]), store, job, tmp_path)
+    assert r["accepted"] and r["direction"] is True          # report-only in the overlay; production rejects a 1

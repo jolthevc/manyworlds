@@ -228,6 +228,9 @@ class InstagramPublisher:
         from datetime import datetime, timezone
         _POLICY.clear()
         _POLICY.update(_cfg(policy))
+        from . import NotForPublishing, unpublishable
+        if (test := unpublishable(conn, policy, post)):   # before any call: a test post never reaches Instagram
+            raise NotForPublishing(test)
         body = dict(post.get("body") or {})
         ig_id, token = self.account(conn, post["creator_id"])   # no account: the post just waits
         if (why := self.check(post)):

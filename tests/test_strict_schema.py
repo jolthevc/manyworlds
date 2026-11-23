@@ -98,6 +98,43 @@ def test_a_strict_answer_validates_back_with_empty_strings_unset():
     assert ShotSheet.model_validate(s.model_dump(mode="json")) == s                  # stored dicts read back the same
 
 
+def _grammar_size(schema) -> tuple[int, int]:
+    """What the structured-output grammar grows with: every object property, and every enum value."""
+    nodes = [n for _, n in _walk(schema) if isinstance(n, dict)]
+    props = sum(len(n["properties"]) for n in nodes if n.get("type") == "object")
+    enums = sum(len(n["enum"]) for n in nodes if isinstance(n.get("enum"), list))
+    return props, enums
+
+
+def test_the_strict_shot_schema_stays_small_enough_to_compile():
+    # Counted by hand from the models: the strict DirectedShots that compiled on 2026-11-22 had 64 properties and 21
+    # enum values; wave 2 (on-screen text items, motion_reference, mirror and pov devices) makes it 73 and 34. The
+    # ordinary ShotSheet schema failed ("compiled grammar is too large"); stay well under it, and look again before
+    # raising these ceilings.
+    props, enums = _grammar_size(strict_json_schema(DirectedShots))
+    assert props <= 80 and enums <= 40, (props, enums)
+    text_item = (strict_json_schema(DirectedShots)["properties"]["shots"]["items"]["properties"]["edit"]
+                 ["properties"]["on_screen_text"])
+    assert text_item["type"] == "array" and text_item["items"]["additionalProperties"] is False
+    assert text_item["items"]["properties"]["kind"]["enum"] == ["label", "hook", "timestamp", "question", ""]
+    assert text_item["items"]["properties"]["position"]["enum"][-1] == ""
+    assert text_item["items"]["properties"]["position"]["enum"].count("") == 1
+    shot = strict_json_schema(DirectedShots)["properties"]["shots"]["items"]["properties"]
+    assert shot["motion_reference"]["type"] == "string"
+
+
+def test_a_strict_answer_with_text_items_validates_back():
+    shot = _blank(strict_json_schema(DirectedShots)["properties"]["shots"]["items"])
+    item = _blank(strict_json_schema(DirectedShots)["properties"]["shots"]["items"]["properties"]["edit"]
+                  ["properties"]["on_screen_text"]["items"])
+    shot["edit"]["on_screen_text"] = [{**item, "kind": "hook", "text": "wait for it", "end_s": 1.5},
+                                      {**item, "text": "tight on baggy", "number": 2}]
+    s = DirectedShots.model_validate_json(json.dumps({"shots": [shot], "move_shot": -1})).shots[0]
+    hook, label = s.edit.on_screen_text
+    assert hook.kind == "hook" and hook.end_s == 1.5 and hook.number is None
+    assert label.kind == "label" and label.end_s is None and label.number == 2 and s.motion_reference == ""
+
+
 class _StrictClient:
     """Answers messages.create with a thinking block, then the JSON text."""
 

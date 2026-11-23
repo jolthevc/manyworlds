@@ -96,7 +96,7 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
                 "height": img.get("height", 1152), "seed": 1000 + i,
                 "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}
         elif kind == DANCE_KIND:
-            payload = {"prompt": DANCE_PROMPT, "seed": 4000 + i, "keyframes": 4,
+            payload = {"prompt": DANCE_PROMPT, "seed": 4000 + i, "keyframes": int(policy.get("dance", "identity", "keyframes", default=8)),
                        "params": dict(policy.get("dance", "generation", default={}) or {})}
         elif kind == "comfy.wan_i2v":
             payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage", "seed": 2000 + i,

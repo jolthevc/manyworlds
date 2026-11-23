@@ -43,7 +43,7 @@ def test_a_new_set_and_outfit_are_registered_from_the_directed_shot_with_their_p
     assert [outfit_job["kind"], set_job["kind"]] == ["image.zimage", "image.zimage"]
     assert str(set_job["id"]) == kitchen["plate_jobs"][0] and str(outfit_job["id"]) == hoodie["reference_jobs"][0]
     p = set_job["payload"]
-    assert DRESSING in p["prompt"] and "no people" in p["prompt"] and "lora_uri" not in p
+    assert DRESSING in p["prompt"] and "empty" in p["prompt"] and "lora_uri" not in p
     assert "nobody" in p["scene"] and DRESSING in p["scene"]       # what the image gate scores it against
     assert p["plate"] == {"kind": "set", "id": "home_kitchen"}
     assert HOODIE in outfit_job["payload"]["prompt"] and "hanger" in outfit_job["payload"]["prompt"]
@@ -210,3 +210,17 @@ def test_reference_conditioning_needs_the_edit_kind_in_policy(conn, policy):
     without = dataclasses.replace(on, body={**on.body, "job_kinds": kinds})
     _, job = _started_payload(conn, without, cid)
     assert job["kind"] == "image.zimage" and "images" not in job["payload"] and job["payload"]["references"]
+
+
+def test_plate_prompts_are_worded_positively_for_a_model_without_a_negative_channel(policy):
+    """Z-Image Turbo at guidance 0 has no negative channel: "no people, no text, no logos" would summon them, so the
+    plate prompts say what is there, with the direction compiler's own stand-in for logos."""
+    import re
+    unbranded = policy.get("direction", "positive_instead_of", "logos")
+    negation = re.compile(r"\b(no|not|nobody|none|without|never)\b", re.I)
+    for kind, entry in (("set", {"set_id": "home_kitchen", "name": "her kitchen", "description": DRESSING}),
+                        ("outfit", {"outfit_id": "grey_hoodie", "description": HOODIE})):
+        p = sets.plate_payload(policy, kind, entry, seed=1)
+        assert entry["description"] in p["prompt"] and unbranded in p["prompt"], kind
+        assert not negation.search(p["prompt"]), (kind, p["prompt"])
+        assert "nobody" in p["scene"]                     # the judge's text may say it: no generator reads it

@@ -74,6 +74,13 @@ def moves_for(policy, formats) -> dict:
     return {k: v for k, v in stagings_for(policy, formats, "moves").items() if v.get("readiness") in offered}
 
 
+def recipe_view(moves: dict) -> dict:
+    """The recipes as the showrunner sees them: what each is, its formats and readiness, the archetypes it suits,
+    the capabilities it uses and its length; its shot defaults are the director's business."""
+    keys = ("note", "formats", "readiness", "suits", "uses", "length_s")
+    return {name: {k: m[k] for k in keys if m.get(k)} for name, m in moves.items()}
+
+
 def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str, dict]:
     conn, policy = ctx.conn, ctx.policy
     cfg = policy.get("brain", "showrunner", default={}) or {}
@@ -106,9 +113,11 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     flavor_text = (f"Flavors you may give an idea (set `flavor` to its name; most posts need none): "
                    f"{json.dumps(flavors)}. " if flavors else "")
     moves = moves_for(policy, formats)
-    move_text = (f"Moves you may give an idea (set `move` to its name; most posts need none; only in a format the "
-                 f"move lists; the scene that performs it starts from the move's `shot` and stays short and simple "
-                 f"where its readiness is partial): {json.dumps(moves)}. " if moves else "")
+    move_text = (f"Recipes (moves) you may give an idea (set `move` to its name; most posts need none; examples composed "
+                 f"from the capabilities, each with the archetypes it suits and the length that works; only in a "
+                 f"format the recipe lists; the scene that performs it stays short and simple where its readiness is "
+                 f"partial): {json.dumps(recipe_view(moves))}. " if moves else "")
+    capability_text = planner.capability_brief(policy, who)
     staging_text = (f"Stagings you may give an idea (set `staging` to its name; most posts need none; the scene must "
                     f"show its setting, framing and wardrobe and the script follow its conventions): "
                     f"{json.dumps(stagings)}. {policy.get('stagings', 'rules', default='')} " if stagings else "")
@@ -152,7 +161,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"({planner._video_formats(policy)}), each in one of the creator's video series. "
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
         f"What each format is: {json.dumps({f: n for f, n in notes.items() if f in formats})}. "
-        f"{staging_text}{flavor_text}{move_text}"
+        f"{capability_text}{staging_text}{flavor_text}{move_text}"
         f"About {round(share * 100)}% of the ideas should try something this creator hasn't done yet (mark them "
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
         f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "

@@ -85,6 +85,28 @@ def test_moves_are_offered_only_when_ready_enough_and_made_now(conn, policy):
     assert set(showrunner.moves_for(ready_only, ["story_clip"])) == {"point_at_caption", "b_roll_detail"}
 
 
+def test_the_showrunner_thinks_in_capabilities_and_archetype(conn, policy):
+    cid = _maren(conn)
+    conn.execute("UPDATE creators SET bible = bible || %s WHERE id = %s",
+                 (Jsonb({"archetype": "slow living in a flat above a bakery", "niche": "lifestyle"}), cid))
+    llm = PlanLLM([idea(0)], conn=conn)
+    _run(conn, policy, cid, llm)
+    prompt = str(llm.calls[0]["content"])
+    assert "What the studio can render now" in prompt
+    assert policy.get("capabilities", "devices", "pov", "description") in prompt
+    lifestyle = policy.get("direction", "director", "archetypes")[2]["communicates"]
+    assert lifestyle in prompt                                                       # how this creator communicates
+    assert "suits" in prompt and "outfit_change_spin" in prompt                      # recipes, tagged by archetype
+    assert "CAPABILITIES" in showrunner.SYSTEM and "CAPABILITIES" in planner.system_prompt(policy)
+
+
+def test_the_planner_gets_the_capability_brief(conn, policy):
+    cid = creator(conn)
+    stub = PlanStub([post(0)])
+    planner.plan_period(conn, policy, stub, cid, start=START)
+    assert "What the studio can render now" in stub.calls[0]
+
+
 def test_the_showrunners_system_prompt_names_recurring_sets_for_the_director():
     assert "director" in showrunner.SYSTEM and "on_screen_text" in showrunner.SYSTEM
     assert "set_id" in showrunner.SYSTEM and "outfit_id" in showrunner.SYSTEM and "Hands" in showrunner.SYSTEM

@@ -157,5 +157,5 @@ def test_the_dance_benchmark_needs_dance_on_and_a_cleared_reference(conn, policy
     jobs = conn.execute("SELECT kind, payload FROM jobs WHERE batch = %s", (batch,)).fetchall()
     assert len(jobs) == 2 and {j["kind"] for j in jobs} == {"comfy.wan_animate2"}
     p = jobs[0]["payload"]
-    assert p["reference"] == "ours-1" and p["image_uri"] == "s3://b/photo.png" and p["keyframes"] == 4
+    assert p["reference"] == "ours-1" and p["image_uri"] == "s3://b/photo.png" and p["keyframes"] == on.get("dance", "identity", "keyframes")
     assert p["params"]["frames"] == on.get("dance", "generation", "frames")

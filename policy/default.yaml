@@ -299,10 +299,40 @@ review:
     # scaled to `size` px), stored as assets kind crop; the video judge sees them beside the keyframes for the
     # hands and teeth scores. A worker without MediaPipe or the hand model makes none (full frames, as before).
     crops: {enabled: true, hands: true, mouth: true, size: 384, margin: 0.5, max_per_clip: 8}
-  max_repairs_per_post: 4     # day 5: regenerations allowed before a post is dropped
+  # The finished file (manyworlds.review.final, 2026-11-23): final.mp4 after sound, captions, labels and the finish,
+  # judged once from frames cut out of it: text over the face or eyes, seams at the joins, sound vs picture at the end
+  # (stream ends measured, plus the judge on the last words), and "would a viewer think this is real phone footage".
+  # Report-only (enforce false) until calibrated by eye: scores land on the post (body.final_review), as review rows
+  # (gates final_*) and a review.final decision. Frames: `keyframes` spread over the file, one either side of each
+  # join (join_offset_seconds, at most max_joins), one per text span (max_text_frames), two at the end; frames
+  # closer than min_gap_seconds merge, at most max_frames, scaled to frame_height px.
+  final:
+    enabled: true
+    enforce: false
+    role: judge
+    effort: low
+    keyframes: 6
+    join_offset_seconds: 0.1
+    max_joins: 6
+    max_text_frames: 4
+    max_spans_listed: 12
+    end_window_seconds: 0.5
+    end_margin_seconds: 0.1
+    min_gap_seconds: 0.15
+    max_frames: 20
+    frame_height: 960
+    spoken_kinds: [caption]        # text_spans kinds that are the spoken words (the last one is checked at the end)
+    min_seams: 6
+    min_end_sync: 6
+    min_phone_real: 6
+    max_end_drift_seconds: 0.1     # audio and video streams of the file end within this of each other
+    timeout_seconds: 120
+  max_repairs_per_post: 4    # day 5: regenerations allowed before a post is dropped
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
-  # regenerated. {scene} is the scene text; `scene` leads the prompt, the others follow it.
+  # regenerated. {scene} is the scene text; `scene` leads the prompt, the others follow it. A hint is positive wording, or
+  # {positive, avoid}: `avoid` goes to the job's negative_prompt, never the prompt (a clause of a string hint that starts
+  # with "no", "without", "avoid"... is moved there too: manyworlds.review.repair.split_hint).
   repair:
     lora_scale_step: 0.1         # identity: each identity repair strengthens the likeness LoRA by this...
     lora_scale_max: 1.2          # ...up to this (mild: 1.3 did no better on Maren, 2026-11-14; the prompt hint does more)
@@ -310,7 +340,9 @@ review:
     hints:
       scene: "The photo must clearly show: {scene}. "
       identity: ". Face clearly visible, the same person as always, signature details present"
-      realism: ". Relaxed hands or hands out of frame, natural anatomy, no text or logos"
+      realism:
+        positive: ". Relaxed hands resting naturally or out of frame, natural anatomy, unbranded clothes and objects"
+        avoid: [text, logos, extra fingers, warped hands]
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
@@ -439,12 +471,13 @@ generation:
   # the hook, the sign-off and enough of the middle to reach on_camera_share are lip-synced, the rest are the cutaway
   # photos moving under the same voice (image.narrated). All segments are brought to `output` and joined. Only the
   # on-camera part pays for the lip-sync render (about a third of a 30 s reel costs a third as much).
-  # segment_by: scene = a post with shot sheets (body.shots) is cut only at scene changes: one take per shot that
-  # speaks, on camera unless the shot is a cutaway (narrated over that shot's photo); seconds = always the length-based
-  # split above. Posts without shots always use the length-based split.
+  # Only posts WITHOUT shot sheets get the length-based split. A directed post (body.shots) is always cut only at scene
+  # changes (2026-11-23, owner: cuts only where the shots change): one take per shot that speaks, on camera unless the
+  # shot is a cutaway (narrated over that shot's photo, while this is enabled), split only past
+  # generation.talk.max_take_seconds; each join gets the next shot's edit.transition_in (direction.transition_kind).
   # output: every segment is brought to the delivery size and rate (finishing.output, finishing.fps) before the join,
   # the slower lip-synced ones by motion interpolation (finishing.interpolate), so the finish stage scales nothing.
-  talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4, segment_by: scene,
+  talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4,
                 output: {width: 1080, height: 1920, fps: 30, lufs: -14}}
   # Walk-and-talk (plan 2026-11-22-video-quality-autonomous item 1; production, worker/comfy.py graph_v2v): a talking
   # take whose shot moves is made in two stages. First a silent motion clip from the take's photo (the story-clip
@@ -812,19 +845,91 @@ stagings:
     walk_and_talk: {formats: [talking_video], setting: "walking down a street or a path", framing: "selfie-held phone at arm's length", wardrobe: "the creator's usual outfit", script: "talking to the phone like to a friend: a story, an opinion, an update"}
     asmr: {formats: [talking_video], setting: "a quiet, softly lit room", framing: "close-up, soft focus behind", wardrobe: "cosy", script: "very softly spoken, slow, describing small things"}
 
-# Moves (owner 2026-11-22, manyworlds.direction): influencer actions a scene can perform, offered by the showrunner
-# like stagings (set `move`; recorded as an idea attribute) only when production makes one of their formats AND their
-# readiness is in direction.offer_readiness. readiness: ready (the models do it well), partial (short and slow only),
-# not_yet (hand-object work such as makeup or cooking, gym; not listed until a model carries it). `shot` holds the
-# shot-sheet defaults for the scene that performs the move (any ShotSheet field).
+# Capabilities (owner 2026-11-23: "have all the necessary weapons in our arsenal... exact content will depend on the
+# creator archetype"; manyworlds.direction.capabilities): what the pipeline can render, which the director composes
+# shots from and the planner and showrunner think in. Formats are containers, not recipes. Each entry:
+#   description  what it is, in a few words
+#   how          the pipeline paths that render it: photo (Z-Image), story_clip (Wan i2v from the scene photo), talk
+#                (lip-synced take), walk_and_talk (motion clip, then V2V lip sync), motion_reference (Wan-Animate from
+#                a licensed clip), narrated_edit (photos moving under the voice), joiner (media.concat transitions),
+#                finish_overlays (manyworlds.overlays), captions (burned_captions), sound_mix (manyworlds.sound)
+#   requires     policy switches that must be on ('a.b' truthy; 'a.b:x,y' a list containing x or y); one off = the
+#                entry is unavailable and the director is told not to use it
+#   limits       what the models do badly (from the 2026-11-23 research and our benchmarks)
+#   write        how a shot sheet asks for it
+# Only what production can render is listed (motion references: production renders a shot's motion_reference while
+# dance.enabled).
+capabilities:
+  devices:
+    propped: {description: "phone set down on a surface, locked off: talk to camera, GRWM, outfit checks", how: [photo, story_clip, talk], requires: [], limits: "the frame never moves, so the first frame must already have motion in it", write: "framing.device propped, framing.handheld none"}
+    locked_off: {description: "the same tripod-still frame repeated across shots, for outfit changes and cuts on motion", how: [photo, story_clip, talk], requires: [], limits: "matches only when set_id, shot_size, angle and light are repeated exactly", write: "device propped, camera_move static, the same set_id, shot_size and angle in every shot"}
+    mirror: {description: "she films her reflection, phone in hand at chest height: fit checks, mirror talk", how: [photo, story_clip, talk], requires: [], limits: "reflections and the phone in hand can warp: a plain mirror, the phone still, medium or full body", write: "framing.device mirror; name the mirror in set.set_dressing"}
+    selfie_arm: {description: "she holds the phone at arm's length: vlogs, quick updates, walk-and-talk", how: [photo, story_clip, talk, walk_and_talk], requires: [], limits: "close framing only (medium close-up); a light sway, never gimbal-smooth", write: "framing.device selfie, framing.handheld light"}
+    pov: {description: "the camera is her eyes: her hands, a cup, the view, the street; faceless B-roll", how: [photo, story_clip], requires: [], limits: "her face is never seen, so in a talking video it is a cutaway; hands stay simple", write: "framing.device pov; blocking names only her hands; cutaway true in a talking video"}
+    handheld_follow: {description: "someone walks with her holding the phone: walking vlog, street", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "short and slow; no crowds; motion clips are ~5 s", write: "framing.device held, framing.camera_move follow"}
+  framing:
+    close_up: {description: "face or a detail fills the frame", how: [photo, story_clip, talk], requires: [], limits: "hands in close-up read as AI; for a detail, a still object", write: "framing.shot_size close-up"}
+    medium_close_up: {description: "chest up: the talking frame", how: [photo, story_clip, talk], requires: [], limits: "the default for talk; captions sit low, under the chin", write: "framing.shot_size medium close-up"}
+    medium: {description: "waist up: gestures, a prop, a mirror", how: [photo, story_clip, talk], requires: [], limits: "", write: "framing.shot_size medium shot"}
+    full_body: {description: "head to toe: outfits, poses, walking in", how: [photo, story_clip, talk], requires: [], limits: "the face is small, so identity is weaker; captions and labels sit mid or upper", write: "framing.shot_size full body, a little headroom, the floor in frame"}
+    wide: {description: "she is small in the room or the street: the phone-native look of top clips", how: [photo, story_clip], requires: [], limits: "not for talk (the mouth is too small to read)", write: "framing.shot_size wide"}
+    low_angle: {description: "phone low, looking up: walk-ins, full body", how: [photo, story_clip], requires: [], limits: "never for close-ups (it exaggerates the chin)", write: "framing.angle low angle"}
+  camera_moves:
+    still_or_handheld: {description: "a locked-off frame or a phone held with natural micro-shake", how: [story_clip, talk], requires: [], limits: "", write: "framing.camera_move static or handheld"}
+    push_pull: {description: "slow push in or pull out", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "photos ignore camera moves; in talk any move makes the take a walk-and-talk", write: "framing.camera_move push_in or pull_out"}
+    pan_tilt: {description: "a slow pan or tilt across the set or an outfit", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "slow, one direction, ~5 s", write: "framing.camera_move pan_left, pan_right, tilt_up or tilt_down"}
+    follow: {description: "the camera moves with her", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "short and steady", write: "framing.camera_move follow"}
+    orbit: {description: "a slow half circle round her or an object", how: [story_clip], requires: ["production.formats:story_clip"], limits: "small arcs only; backgrounds can bend", write: "framing.camera_move orbit_slow"}
+  actions:
+    talk: {description: "she talks to the lens in her own voice, lip-synced", how: [talk], requires: ["production.formats:talking_video"], limits: "lip sync cannot hit timed beats: one continuous take per shot, its lines set its length; a still face talking from frame 1 is the weakest AI shape, so open on motion or a hook label", write: "performance.lines (the script's words), eyeline lens on the hook and punchlines"}
+    walk_and_talk: {description: "she talks while walking, standing up, turning", how: [walk_and_talk], requires: ["production.formats:talking_video", generation.talk_motion.enabled], limits: "motion clips are ~5 s, chained up to 3 for a longer line; slow steps, no crowds", write: "a beat that says walks, stands up, turns around; or a camera move"}
+    walk: {description: "a few slow steps: into frame, toward the lens, along a street", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "short, steady, no turns; feet can warp in full body", write: "a beat 'walks slowly toward the camera'"}
+    pose: {description: "small confident poses: hand on hip, hair touch, a step, a look away", how: [photo, story_clip], requires: [], limits: "one pose change per 5 s clip; hold the pose on a cut", write: "one beat per pose, eyeline lens or off"}
+    spin_or_hair_flip: {description: "a half spin or hair flip, the motion a match cut hides a change in", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "a quick half turn; full fast spins smear", write: "a beat 'does a quick half spin'; edit.transition_in 'match cut on the spin' on the next shot"}
+    motion_reference: {description: "she performs the motion of a licensed reference clip: a casual dance, a pose sequence, a twirl", how: [motion_reference], requires: [dance.enabled], limits: "only the listed clips; ~5 s; the identity gate decides; never the clip's audio", write: "motion_reference: a listed id"}
+    prop_work: {description: "a simple action with one prop: holds, lifts, sips, points", how: [photo, story_clip, talk], requires: [], limits: "hands doing fine work (typing, tying, cutting, writing) read as AI: hold, lift, brush only", write: "set.props names it; a beat with eyeline prop and simple hands"}
+    makeup: {description: "a brush or wand in hand while she talks (GRWM)", how: [photo, story_clip, talk], requires: [], limits: "application close-ups read as AI: show the tool raised or the result, talk between strokes", write: "set.props the tool; look.makeup the state now"}
+    outfit_change: {description: "a different outfit in the next shot of the same set and framing", how: [photo, story_clip, talk], requires: [], limits: "never the change itself; the cut hides it", write: "a new wardrobe.outfit_id per shot, the same set_id and framing"}
+    sit_stand: {description: "sits down, stands up, settles on the sofa", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "one movement per clip", write: "a beat 'sits down on the sofa'"}
+    stairs: {description: "a few steps up or down", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "short and slow; full body or from behind; feet can warp", write: "a beat 'walks down the stairs'"}
+  edits:
+    cut_on_motion: {description: "the cut lands inside a motion both shots share (spin, hair flip, hand over the lens)", how: [joiner], requires: ["production.formats:talking_video,narrated_edit"], limits: "only where shots are joined (talking-video takes and cutaways, narrated edits); a carousel or one clip has none; never mid-sentence", write: "edit.transition_in 'match cut on the spin' (or whip, blur, flash)"}
+    labels: {description: "a short label in the upper third: a tip, numbered looks '1.' '2.'", how: [finish_overlays], requires: [on_screen_text.enabled, finishing.enabled], limits: "video only (photos carry no overlays); a few words, 1-3 s each", write: "edit.on_screen_text item kind label (number for a numbered look)"}
+    hook_text: {description: "big text in the first second that opens the story", how: [finish_overlays], requires: [on_screen_text.enabled, finishing.enabled], limits: "first shot only, gone by 2 s", write: "edit.on_screen_text item kind hook at start_s 0 in the first shot"}
+    timestamps: {description: "a time per moment ('7:30 AM coffee'), day-in-the-life", how: [finish_overlays], requires: [on_screen_text.enabled, finishing.enabled], limits: "one per shot", write: "edit.on_screen_text item kind timestamp"}
+    question_bubbles: {description: "a question in a white bubble at the top, as if replying to a comment", how: [finish_overlays], requires: [on_screen_text.enabled, finishing.enabled], limits: "never a real username; the first seconds", write: "edit.on_screen_text item kind question"}
+    voiceover_broll: {description: "her voice over moving photos of the day, no lip sync", how: [narrated_edit], requires: ["production.formats:narrated_edit"], limits: "the photos move gently; the voice carries the story", write: "a narrated edit: the script is the voiceover, the shots are the B-roll"}
+    cutaways: {description: "B-roll under her voice inside a talking video", how: [talk, narrated_edit], requires: ["production.formats:talking_video", generation.talk_hybrid.enabled], limits: "never another face to camera; one per idea or two", write: "cutaway true on the shot"}
+  text:
+    word_captions: {description: "her spoken words burned in, word-timed, in a caption style", how: [captions], requires: [burned_captions.enabled], limits: "spoken formats only (burned_captions.formats); talk-led creators; outfit, pose and aesthetic videos carry labels instead", write: "edit.caption_style a caption style name, or empty for the creator's"}
+    labels_only: {description: "no word captions: only labels and the hook", how: [captions, finish_overlays], requires: [], limits: "", write: "edit.caption_style none"}
+  sound:
+    voice: {description: "her designed voice, on camera", how: [talk], requires: ["production.formats:talking_video"], limits: "", write: "performance.lines with a delivery"}
+    voiceover: {description: "her voice over B-roll", how: [narrated_edit, talk], requires: ["production.formats:narrated_edit,talking_video"], limits: "", write: "the script (narrated edit) or a cutaway's lines"}
+    room_tone: {description: "the room's own quiet sound under everything, so nothing ships dry", how: [sound_mix], requires: [sound.enabled, sound.room_tone.procedural], limits: "rooms, streets, rain, cars; no cafe murmur or crowds (noise can't fake voices)", write: "sound.room_tone in plain words that name the place ('her kitchen, fridge hum', 'rain on the window')"}
+    music_bed: {description: "a quiet instrumental bed", how: [sound_mix], requires: [sound.enabled, sound.library.entries], limits: "only licensed library beds; none shipped yet, so room tone carries silent clips", write: "sound.music in a few words ('quiet lo-fi bed')"}
+
+# Moves (owner 2026-11-22, manyworlds.direction): recipes a post may draw on, composed from `capabilities` (`uses`),
+# each tagged with the archetypes it suits (`suits`, plain words matched against the creator's archetype and niche)
+# and the length that works (`length_s`, from the 2026-11-23 research). Examples, never code paths or formats: the
+# director may follow one or compose its own. The showrunner offers them (set `move`; recorded as an idea attribute)
+# only when production makes one of their formats AND their readiness is in direction.offer_readiness. readiness:
+# ready (the models do it well), partial (short and slow only), not_yet (not offered). `shot` holds the shot-sheet
+# defaults for the scene that performs the move (any ShotSheet field).
 moves:
   library:
-    phone_down_reveal: {formats: [talking_video, story_clip], readiness: partial, note: "she lowers the phone she was holding in front of her face, revealing her expression; one slow motion, then still", shot: {framing: {shot_size: medium close-up, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "holds her phone up in front of her face", eyeline: screen, hands: "both hands on the phone"}, {at_s: 1.5, action: "slowly lowers the phone and looks into the lens", eyeline: lens}]}}
-    walk_to_camera: {formats: [talking_video, story_clip], readiness: partial, note: "she walks a few slow steps toward the propped phone and stops at medium shot; short, steady, no turns", shot: {framing: {shot_size: medium shot, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "walks slowly toward the camera", eyeline: lens, hands: "relaxed at her sides"}, {at_s: 3, action: "stops and settles", eyeline: lens}]}}
-    point_at_caption: {formats: [talking_video, story_clip], readiness: ready, note: "she points to the empty space where the on-screen text overlay goes; the text itself is edit.on_screen_text, never in the image", shot: {framing: {shot_size: medium close-up, device: propped, headroom: generous}, blocking: [{at_s: 0, action: "points up to the empty space above her head", eyeline: lens, hands: "one hand pointing, the other out of frame"}]}}
-    storytime_to_camera: {formats: [talking_video], readiness: ready, note: "seated, talking to the camera like to a friend; one continuous take", shot: {framing: {shot_size: medium close-up, angle: eye level, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "sits and talks to the camera", eyeline: lens, hands: "relaxed in her lap"}]}}
-    outfit_change_cut: {formats: [talking_video, carousel], readiness: partial, note: "the same spot and framing in two shots, a different outfit_id in each, joined by a hard cut; never the change itself", shot: {framing: {shot_size: full body, device: propped, camera_move: static}, edit: {transition_in: hard cut}}}
-    b_roll_detail: {formats: [talking_video, story_clip, carousel], readiness: ready, note: "a close detail of the place or the thing she talks about, no face; in a talking video a cutaway under her voice", shot: {cutaway: true, framing: {shot_size: close-up, camera_move: push_in}, set: {depth_of_field: shallow}}}
+    phone_down_reveal: {formats: [talking_video, story_clip], readiness: partial, suits: [lifestyle, fashion, comedy, beauty], uses: [devices.propped, actions.prop_work, edits.hook_text], length_s: [5, 15], note: "she lowers the phone she was holding in front of her face, revealing her expression; one slow motion, then still", shot: {framing: {shot_size: medium close-up, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "holds her phone up in front of her face", eyeline: screen, hands: "both hands on the phone"}, {at_s: 1.5, action: "slowly lowers the phone and looks into the lens", eyeline: lens}]}}
+    walk_to_camera: {formats: [talking_video, story_clip], readiness: partial, suits: [fashion, lifestyle, fitness], uses: [devices.propped, framing.full_body, actions.walk], length_s: [5, 15], note: "she walks a few slow steps toward the propped phone and stops at medium shot; short, steady, no turns", shot: {framing: {shot_size: medium shot, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "walks slowly toward the camera", eyeline: lens, hands: "relaxed at her sides"}, {at_s: 3, action: "stops and settles", eyeline: lens}]}}
+    point_at_caption: {formats: [talking_video, story_clip], readiness: ready, suits: [educator, commentary, lifestyle], uses: [devices.propped, actions.pose, edits.labels], length_s: [5, 30], note: "she points to the empty space where the on-screen text overlay goes; the text itself is edit.on_screen_text, never in the image", shot: {framing: {shot_size: medium close-up, device: propped, headroom: generous}, blocking: [{at_s: 0, action: "points up to the empty space above her head", eyeline: lens, hands: "one hand pointing, the other out of frame"}]}}
+    storytime_to_camera: {formats: [talking_video], readiness: ready, suits: [storyteller, commentary, comedy, educator], uses: [devices.propped, framing.medium_close_up, actions.talk, edits.hook_text, text.word_captions], length_s: [45, 90], note: "seated, talking to the camera like to a friend; one continuous take; the most surprising line first, as a hook label too; open on a small motion, not a still face", shot: {framing: {shot_size: medium close-up, angle: eye level, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "sits and talks to the camera", eyeline: lens, hands: "relaxed in her lap"}]}}
+    outfit_change_spin: {formats: [talking_video, carousel], readiness: partial, suits: [fashion, style, beauty, lifestyle], uses: [devices.locked_off, framing.full_body, actions.spin_or_hair_flip, actions.outfit_change, edits.cut_on_motion, edits.labels, text.labels_only, sound.room_tone], length_s: [9, 20], note: "outfit check: the same spot, framing and light in every shot, a different outfit_id in each; each shot opens inside a half spin or hair flip (edit.transition_in 'match cut on the spin'); numbered labels '1.' '2.' '3.' with a two-word note; one short line per look or none; caption_style none; never the change itself", shot: {framing: {shot_size: full body, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "does a quick half spin and settles into a pose", eyeline: lens, hands: "one hand on her hip"}], edit: {transition_in: match cut on the spin, caption_style: none}}}
+    talk_while_doing: {formats: [talking_video], readiness: partial, suits: [beauty, lifestyle, storyteller, wellness], uses: [devices.propped, framing.medium_close_up, actions.talk, actions.makeup, actions.prop_work, edits.question_bubbles, text.word_captions], length_s: [45, 95], note: "GRWM: she talks to the propped phone while doing something simple with her hands (a brush raised, hair being clipped up, a mug); the first frame is already in motion; a question bubble at the top in the first seconds; eyes to the lens on the hook and punchlines, down at her hands between; the finished look at the end", shot: {framing: {shot_size: medium close-up, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "already clipping her hair up as she starts to talk", eyeline: prop, hands: "both hands at her hair"}, {at_s: 2, action: "looks into the lens", eyeline: lens}]}}
+    pov_day_timestamps: {formats: [narrated_edit, talking_video], readiness: ready, suits: [lifestyle, wellness, food, student, home], uses: [devices.pov, framing.close_up, edits.voiceover_broll, edits.cutaways, edits.timestamps, sound.voiceover, sound.room_tone], length_s: [33, 75], note: "day in the life: open on the day's most unusual moment, then morning; 2-4 s per moment, mostly POV B-roll of her hands and the places; a timestamp label per shot ('7:30 AM coffee'); her voiceover tells one thread; she is rarely on camera", shot: {cutaway: true, framing: {shot_size: close-up, device: pov}}}
+    mirror_talk: {formats: [talking_video], readiness: partial, suits: [fashion, beauty, lifestyle], uses: [devices.mirror, framing.medium, actions.talk, text.word_captions], length_s: [10, 30], note: "she talks to her reflection, phone in hand at chest height, adjusting her outfit between lines; a plain mirror", shot: {framing: {shot_size: medium shot, device: mirror, camera_move: static}, blocking: [{at_s: 0, action: "adjusts her jacket in the mirror and starts talking", eyeline: screen, hands: "one hand on the phone, one on her jacket"}]}}
+    walking_vlog: {formats: [talking_video], readiness: partial, suits: [lifestyle, storyteller, commentary, travel], uses: [devices.selfie_arm, actions.walk_and_talk, framing.medium_close_up, text.word_captions, sound.room_tone], length_s: [20, 60], note: "she walks and talks to the phone at arm's length like to a friend; glances ahead at the path between lines, eyes to the lens on the key lines", shot: {framing: {shot_size: medium close-up, device: selfie, handheld: light}, blocking: [{at_s: 0, action: "walks along the pavement talking to the phone", eyeline: lens}, {at_s: 3, action: "glances ahead at the path", eyeline: "off"}]}}
+    pose_sequence: {formats: [carousel, story_clip], readiness: partial, suits: [fashion, fitness, lifestyle], uses: [devices.locked_off, framing.full_body, actions.pose, edits.labels, text.labels_only], length_s: [8, 19], note: "named poses, one per photo or per beat, the same spot and light; on video a short label names each pose; no talking", shot: {framing: {shot_size: full body, device: propped, camera_move: static}, blocking: [{at_s: 0, action: "holds a relaxed pose, weight on one leg", eyeline: "off"}, {at_s: 2.5, action: "shifts into a second pose and looks into the lens", eyeline: lens}], edit: {caption_style: none}}}
+    silent_aesthetic: {formats: [story_clip, carousel], readiness: partial, suits: [fashion, lifestyle, beauty, food, home], uses: [devices.pov, framing.close_up, actions.prop_work, edits.labels, text.labels_only, sound.room_tone, sound.music_bed], length_s: [7, 17], note: "one beautiful, legible action in a beautiful first frame (fabric in hand, light on a bag, steam from a cup); no voice, one label at most, room tone or a quiet bed; reads without sound", shot: {framing: {shot_size: close-up, camera_move: push_in}, set: {depth_of_field: shallow}, edit: {caption_style: none}}}
+    b_roll_detail: {formats: [talking_video, story_clip, carousel], readiness: ready, suits: [lifestyle, food, home, educator, storyteller], uses: [devices.pov, framing.close_up, camera_moves.push_pull, edits.cutaways], length_s: [2, 5], note: "a close detail of the place or the thing she talks about, no face; in a talking video a cutaway under her voice", shot: {cutaway: true, framing: {shot_size: close-up, camera_move: push_in}, set: {depth_of_field: shallow}}}
 
 # Captions, on-screen text and scripts (manyworlds.brain.planner): the rules go into the planner's and the
 # showrunner's prompts (`voice_rules`), and anything that still breaks them is dropped (`caption_issues`).
@@ -876,12 +981,13 @@ burned_captions:
   # Which style a video gets (captions.caption_style_for), first found in this order: the shot sheet's
   # edit.caption_style (a style name or free text naming one), the format's entry below, the creator's dial.
   style_precedence: [shot, format, creator]
-  # Format (or shot-sheet template) -> style; `none` = no spoken captions, on-screen labels only. Top clips: word
-  # captions belong to talking and storytime videos; outfit, posing and aesthetic videos carry a label, not karaoke
-  # (docs/research/2026-11-23-readiness-and-craft.md). Talking formats (talking_video, narrated_edit, grwm,
-  # mirror_talk, walk_and_talk) are left out on purpose: they take the creator's style, else default_style (clean).
-  style_by_format: {storytime: bold_pop, day_in_life: minimal, outfit_check: none, fit_check: none, ootd: none,
-                    posing_ideas: none, silent_aesthetic: none, dance: none}
+  # Post format -> style; `none` = no spoken captions, on-screen labels only. Keys are real post formats only (photo,
+  # carousel, story, story_clip, narrated_edit, talking_video): whether a video is talk-led (word captions) or
+  # label-led (an outfit check, a pose sequence, a silent aesthetic: labels, not karaoke) is the director's choice per
+  # post, written as the shot's edit.caption_style (a style name, or none), from the creator's archetype
+  # (direction.director.archetypes) and the capabilities it uses. Talking formats are left out on purpose: without a
+  # shot's style they take the creator's style, else default_style (clean). A story clip has no voice.
+  style_by_format: {story_clip: none}
   no_caption_words: ["no captions", "labels only", "no subtitles", "text only"]   # free text meaning `none`
   # Time captions from the voice line's transcript (review.video.intelligibility's hosted Whisper, verbose_json word
   # timestamps; paid once per voice line and cached on its asset as meta.words) instead of estimating them from
@@ -1187,7 +1293,7 @@ direction:
       none: "locked-off phone resting still on a surface"
       light: "handheld phone, slight natural micro-shake"
       held: "handheld phone, natural hand shake and small reframes"
-    device_shake: {propped: none, held: held, selfie: light}
+    device_shake: {propped: none, held: held, selfie: light, mirror: light, pov: held}
   style:
     photo: "realistic"
     i2v: "small natural movements, steady face, realistic"
@@ -1268,6 +1374,57 @@ direction:
   effort: medium
   memory_facts: 40             # creator memory facts shown to the director
   recent_posts: 20             # recent directed posts whose named sets and outfits are shown for reuse
+  # A shot's free-text edit.transition_in -> the joiner's kind (direction.transition_kind; media.TRANSITIONS): a
+  # kind's own name, else the first kind below one of whose words starts a word in the text; anything else is a cut
+  # ("hard cut", "jump cut"). Order matters: "whip on the spin" is a whip, "cut on the spin" a match.
+  transitions:
+    keywords:
+      whip: [whip, swish, "fast pan", "swipe pan"]
+      flash: [flash, "dip to white", "white out"]
+      blur: [blur, dissolve, "soft cross", fade]
+      match: [match, spin, twirl, "hair flip", "hand over the lens", "cover the lens", "covers the lens", "on motion",
+              "on the move", "mid motion", "inside the motion", "shoe kick"]
+  # The director's brief (manyworlds.brain.director): the craft rules it directs by, the "reads as AI" tells it
+  # avoids, length by intent, and how a creator communicates by archetype. From the 2026-11-23 research
+  # (docs/research/2026-11-23-readiness-and-craft.md; graded sources in the craft notes). Short: they go in every call.
+  director:
+    craft:
+      - "The first frame is moving (a hand, hair, a step, a door, a spin) or beautiful (an aesthetic plate), never a still face starting to talk."
+      - "The hook is on screen in the first second as hook text, and is the most surprising line or a story tease, never a greeting."
+      - "Eyes to the lens on the hook and the punchlines; motivated glances (hands, mirror, the path ahead) between; never a fixed stare."
+      - "Light is motivated: one real source (a window, a lamp, low sun) named with its direction; bright, flat, a little overexposed is fine; never studio light in a casual room."
+      - "Phone-native: ordinary rooms, the person often small in the frame, no cinematic grade; the device matches the genre (locked off for transitions, a light sway for selfie, walking bob for walk-and-talk)."
+      - "Cut on motion (a spin, a hair flip, a hand over the lens), never mid-sentence; same set, framing and light across an outfit change."
+      - "On-screen text is a short label in the upper third or centre, 1-3 s, not karaoke; word captions only for talk-led posts."
+      - "Every post has a point of view and one thing a viewer would send to a friend."
+    avoid:
+      - "a static talking face from frame 1"
+      - "waxy skin or a beauty-filter sheen"
+      - "unmotivated studio light"
+      - "a dead stare or a drifting eyeline"
+      - "a gimbal-smooth phone"
+      - "hair, clothes or jewellery changing between shots of one moment"
+      - "text on signs, screens or packaging"
+      - "hands doing fine work in close-up"
+      - "fast cuts to hide artefacts"
+      - "a glossy advert look"
+      - "a pretty face in a pretty place with nothing to say"
+    lengths:
+      visual: "7-20 s, built to loop (outfit checks, poses, silent aesthetic, dance)"
+      talk_led: "45-95 s when the story holds (GRWM ~95 s, talking head ~66 s, storytime ~63 s); hook in the first second"
+      day_in_life: "33-75 s, 2-4 s per moment"
+      quick_update: "10-30 s (mirror talk, a walk-and-talk thought)"
+    # How a creator communicates, by archetype: every entry whose words appear in the creator's archetype, niche or
+    # one-liner is shown to the director (several may match); none matching shows `archetype_default`.
+    archetypes:
+      - {words: [fashion, style, outfit, model, fit], communicates: "visual and label-led: outfit changes cut on motion, poses, full body, numbered labels; little talking (a short line per look or none); caption_style none"}
+      - {words: [beauty, makeup, skincare, grwm, hair], communicates: "talks while doing: propped chest-up, a tool in hand, question bubbles; word captions"}
+      - {words: [lifestyle, day, routine, home, cozy, wellness, slow], communicates: "voiceover-led: POV B-roll of the day with timestamps, her voice over it, on camera only at the hook or the end; minimal captions"}
+      - {words: [food, cook, recipe, baking, kitchen], communicates: "hands and results: close details and steam, a short voiceover or labels, little face to camera"}
+      - {words: [story, comedy, humour, humor, commentary, opinion, rant, educator, teach, explain, advice], communicates: "talk-led: to camera in one continuous take or walking, cutaways to what she talks about, word captions, a hook label"}
+      - {words: [fitness, gym, run, yoga, dance], communicates: "motion-led: movement, poses and motion references where available, labels, a bed; talking only between sets"}
+      - {words: [travel, city, explore, walk], communicates: "walk-and-talk and handheld follow outdoors, POV views, timestamps or place labels"}
+    archetype_default: "decide from the archetype and the idea; most posts lean visual (labels, motion, voiceover) rather than a talking face"
 
 # Set and wardrobe bibles (manyworlds.creator.sets, plan 2026-11-22 wave 2 item 5): a set or outfit the director names
 # for the first time is registered on the creator (anchors.sets / anchors.outfits) with its canonical description
@@ -1287,10 +1444,14 @@ sets:
   max_plate_attempts: 3        # plate jobs per set or outfit before giving up (it then has text only)
   min_plate_scene: 7           # the gate's scene score (matches the description, nobody in it)
   min_plate_realism: 6
-  prompts:                     # {name}, {description}
-    set: "Candid smartphone photo of an empty room with nobody in it: {name}. {description}. Natural light, realistic, no people, no text, no logos."
+  # {name}, {description}; {unbranded}: direction.positive_instead_of.logos. `set` and `outfit` go to Z-Image Turbo at
+  # guidance 0, which has no negative channel: a negation there ("no people, no text, no logos") summons the thing,
+  # so they say what IS there (an empty room, plain surfaces, unbranded objects). The `*_scene` texts are read by the
+  # image gate's judge, not a generator, so they may say "nobody".
+  prompts:
+    set: "Candid smartphone photo of an empty, quiet room: {name}. {description}. Natural light, realistic, plain unlabelled surfaces, {unbranded}."
     set_scene: "{name} with nobody in it, no people at all, matching: {description}"
-    outfit: "Smartphone photo of clothes on a hanger against a plain wall, nobody wearing them: {description}. Soft daylight, realistic, no people, no text, no logos."
+    outfit: "Smartphone photo of clothes hanging alone on a hanger against a plain wall: {description}. Soft daylight, realistic, {unbranded}."
     outfit_scene: "clothes on a hanger with nobody wearing them, no people at all: {description}"
   # Qwen-Image-Edit-2511 (Apache-2.0) with lightx2v's 4-step Lightning LoRA (Apache-2.0): 4 steps, true CFG 1.0. bf16
   # only (fp8 base + Lightning gave grid artifacts). Each input picture is named by its words below ({n}: 1-based).
@@ -1319,6 +1480,9 @@ production:
   routing:
     story_clip: {kinds: [comfy.wan_i2v, hosted.video], min_accepted: 5, explore: 0.1, days: 14}   # ComfyUI default
   talk_kind: talk.infinitetalk   # lip-synced talking video (talking_video posts)
+  # A shot with a motion_reference (dance.references) while dance.enabled: rendered by Wan-Animate-2 from its photo
+  # (a story clip's shot, or a talking take's silent motion clip that the talk job lip-syncs onto).
+  dance_kind: comfy.wan_animate2
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120
@@ -1340,8 +1504,8 @@ finishing:
   # Top clips look like plain phone footage: bright, flat, slightly overexposed, no cinematic grade, no vignette
   # (docs/research/2026-11-23-readiness-and-craft.md). So the default is phone_native; the phone_* looks are what a
   # phone's own processing does in that light. In a look, `grain` and `sharpen` are that look's strengths (phones
-  # denoise and sharpen a little); finishing.filters applies them only once it reads per-look strengths, until then
-  # the global `grain` / `sharpen` blocks below apply.
+  # denoise and sharpen a little): finishing.filters applies them in place of the global `grain` / `sharpen` blocks
+  # below (0 = none in that look); a look without them gets the global blocks.
   default_look: phone_native
   look_by_creator: {}          # handle -> look
   look_by_set: {}              # shot set.set_id -> look (wins over the creator's)
@@ -1369,17 +1533,26 @@ finishing:
     warm_night: {contrast: 1.04, brightness: -0.01, saturation: 0.97, gamma: 0.98,
                  balance: {rm: 0.04, bm: -0.03, rh: 0.03, bh: -0.02, bs: 0.02},
                  curves: {master: "0/0.02 0.25/0.23 0.75/0.76 1/0.98"}}
+  # sharpen: the unsharp amount any look or call may ask for (luma_amount; above ~1 halos show on upscaled 480p).
   limits: {contrast: [0.9, 1.12], brightness: [-0.05, 0.05], saturation: [0.85, 1.08], gamma: [0.9, 1.1],
-           balance: 0.08}
-  # Phones denoise: grain stays very light (it was 4). A look's own `grain` wins once finishing reads it.
+           balance: 0.08, sharpen: [0, 0.6]}
+  # Phones denoise: grain stays very light (it was 4). A look's own `grain` wins over this block.
   grain: {enabled: true, strength: 2, max_strength: 10}   # ffmpeg noise, temporal + uniform
-  # Phone processing sharpens mildly; globally off until finishing applies each look's `sharpen` (an upscaled
-  # 480p source sharpened globally would show halos: measure on the breadth test before switching on here).
+  # Phone processing sharpens mildly: the phone looks carry their own `sharpen` (0.15-0.25, applied after the lanczos
+  # upscale); this global block stays off for looks without one (an upscaled 480p source sharpened harder shows
+  # halos: check the phone looks' amounts on the breadth test).
   sharpen: {enabled: false, amount: 0.3, size: 5}         # luma unsharp mask; size odd, 3-23
   vignette: {enabled: false, angle: 0.35}                 # radians (PI/9 is subtle); phones add none: keep off
-  # The hook text over the first seconds: an ASS file from the captions module in its named style.
-  hook: {style: hook, seconds: 1.5, max_seconds: 2.0}
-  loudness: {lufs: -14, true_peak: -1.0, lra: 11, two_pass: true, sample_rate: 48000}
+  # The hook text is an on-screen text of kind `hook` (style, position and timing: on_screen_text.kinds.hook), in the
+  # one ASS script with the captions (overlays.make_script) that finishing.finish burns (`ass=`). Only a pointer here
+  # (the breadth test's `hooks` capability requires this key).
+  hook: {defer_to: on_screen_text.kinds.hook}
+  # Loudness: a video with a voice is loudnormed to `lufs`. A bed-only video (finish(has_voice=False): room tone or
+  # music, nobody speaks) is not: -14 LUFS would lift a -44 dB room tone ~30 dB into loud hiss. bed_only.mode:
+  # skip = keep the level the sound mix gave it; cap = a constant gain towards bed_only.lufs, never more than
+  # max_gain_db up (a bed louder than that target is turned down). First guesses: check on the breadth test.
+  loudness: {lufs: -14, true_peak: -1.0, lra: 11, two_pass: true, sample_rate: 48000,
+             bed_only: {mode: cap, lufs: -32, max_gain_db: 6}}
   encode: {preset: veryfast, crf: 18, audio_bitrate: 160k, timeout_seconds: 900}
   # Delivery size: 1080x1920, the platforms' native 9:16 (Reels, TikTok and Shorts all play it full screen; a 720p
   # upload is upscaled by the app and looks soft next to phone footage). A smaller video (480x832 talk and story clips,
@@ -1422,9 +1595,12 @@ finishing:
            xfade: {left: slideleft, right: slideright, up: slideup, down: slidedown}}
     blur: {frames: 8, sigma: 14, xfade: fade}
     flash: {frames: 4, xfade: fadewhite}
-  # Cover frame: the sharpest keyframe with the face, eyes open, mouth closed (face-mesh ratios: lid gap over eye
-  # width, inner-lip gap over mouth width). Without MediaPipe here it is the sharpest keyframe.
-  cover: {mediapipe: true, analysis_width: 512, eyes_open_min: 0.18, mouth_closed_max: 0.08}
+  # Cover frame: the sharpest frame with the face, eyes open, mouth closed (face-mesh ratios: lid gap over eye
+  # width, inner-lip gap over mouth width). Without MediaPipe here it is the sharpest frame. From the finished video
+  # (finishing.pick_cover(video, avoid=...)): a frame every sample_every_s, edge_s in from both ends, at most
+  # max_samples; a frame within avoid_margin_s of a caption or on-screen text window is taken only if all are.
+  cover: {mediapipe: true, analysis_width: 512, eyes_open_min: 0.18, mouth_closed_max: 0.08,
+          sample_every_s: 0.5, edge_s: 0.2, max_samples: 24, avoid_margin_s: 0.1}
 
 # Sound design (manyworlds.sound, plan 2026-11-22 wave 3 item 9; research 2026-11-22-video-quality-wave2-3.md s.2):
 # the shot sheet's `sound` (mic, room tone, effects, music) mixed under the voice in one ffmpeg pass before the finish
@@ -1494,7 +1670,7 @@ sound:
   # from the library (an entry with kind: music and the format in its `formats`), picked per post. The shipped
   # library has none, so room tone carries them.
   silent_beds:
-    formats: [story_clip, story, outfit_check, silent_aesthetic]
+    formats: [story_clip, story]   # post formats with no voice; the director decides when a talking format stays silent
     music: true
   mix:
     room_tone_gain_db: -30     # a low bed under everything
@@ -1551,8 +1727,7 @@ sound:
     library_licence: own-generated
     bed_captions:
       story_clip: "quiet lo-fi instrumental bed, soft felt piano and warm pads, slow, no drums, no vocals, no drops"
-      outfit_check: "light minimal instrumental, soft plucked guitar and gentle beat, mellow, no vocals"
-      silent_aesthetic: "ambient instrumental bed, soft synth pads and distant piano, calm, no vocals, no drums"
+      story: "light minimal instrumental, soft plucked guitar and gentle beat, mellow, no vocals"
     repo: ACE-Step/Ace-Step1.5
     code_ref: ca1e85fe9430179831e6bc6be790c332190a3866   # ace-step/ACE-Step-1.5, docs/en/INFERENCE.md read 2026-11-22
     config_path: acestep-v15-turbo
@@ -1597,7 +1772,9 @@ dance:
     - {id: dance-close, uri: "s3://manyworlds/references/motion/pexels-8347389.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8347389/", move: dance, notes: "arms-up dance, close framing"}
     - {id: twirl-dress, uri: "s3://manyworlds/references/motion/pexels-5777427.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/5777427/", move: twirl, notes: "twirls in a dress (2 s)"}
     - {id: twirl-hair-back, uri: "s3://manyworlds/references/motion/pexels-32152258.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/32152258/", move: twirl, notes: "twirls hair from behind"}
-  identity: {min_score: 6, min_mean: 7}   # video gate identity scores (1-10): worst keyframe, and the mean
+  # The video gate's dance_identity row (manyworlds.review.video): identity scored per keyframe (1-10) over `keyframes`
+  # keyframes (cut from the clip when the worker stored fewer); the worst at min_score or more, the mean at min_mean.
+  identity: {min_score: 6, min_mean: 7, keyframes: 8}
 
 # Hosted talking avatars, the quality ceiling (manyworlds.hosted_avatar; terms: docs/research/2026-11-22-hosted-avatar-
 # terms.md). OFF: refused unless BOTH enabled and terms_reviewed are true (the owner, after reading the provider's

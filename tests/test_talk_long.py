@@ -77,14 +77,16 @@ class _Joins(list):
     def __init__(self):
         super().__init__()
         self.trims: list[int] = []
+        self.transitions: list = []   # each join's `transitions` (None: a plain join)
 
 
 @pytest.fixture()
 def joined(monkeypatch):
     calls = _Joins()
 
-    def fake_concat(paths, out, timeout=600):
+    def fake_concat(paths, out, timeout=600, **k):
         calls.append(list(paths))
+        calls.transitions.append(k.get("transitions"))
         out.write_bytes(b"".join(p.read_bytes() for p in paths))
         return out
 
@@ -326,6 +328,38 @@ def test_one_take_per_shot(conn, policy, store, tmp_path, joined):
     video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
     assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
     assert len(joined[0]) == 2
+
+
+def test_the_join_between_shots_takes_the_next_shots_transition(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    whip_in = {**DOORWAY, "edit": {"transition_in": "whip pan back to her"}}
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, whip_in])
+    for j in _segment_jobs(conn, pid):
+        rendered(conn, store, tmp_path, j["id"])
+    video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
+    assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
+    assert joined.transitions == [["whip"]]
+    # Without a transition_in the shots are a plain cut (no transitions passed).
+    joined.clear()
+    joined.transitions.clear()
+    pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, DOORWAY])
+    for j in _segment_jobs(conn, pid):
+        rendered(conn, store, tmp_path, j["id"])
+    video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
+    production.advance(conn, policy, now=NOW, store=store)
+    assert joined.transitions == [None]
+
+
+def test_a_directed_post_is_never_split_into_hybrid_segments(policy):
+    hybrid = production.talk_segments(policy, LONG, hybrid=True)
+    assert len(hybrid) > 1                                                  # undirected: short segments
+    silent = [{**SHOP, "performance": {}}, {**WINDOW, "performance": {}}]
+    takes = production.script_takes(policy, {"shots": silent, "script": LONG})
+    max_words = policy.get("generation", "talk", "max_take_seconds") * policy.get("generation", "talk_long",
+                                                                                  "words_per_second")
+    assert len(takes) < len(hybrid) and all(len(t.split()) <= max_words for t, _, _ in takes)
+    assert {(mode, i) for _, mode, i in takes} == {("talk", 0)}            # on its first on-camera shot
+    assert production._directed(policy, {"shots": silent})
 
 
 def test_a_directed_cutaway_is_narrated_over_its_own_photo(conn, policy, store, tmp_path, joined):
@@ -792,10 +826,17 @@ def test_captions_use_word_timestamps_once_and_fall_back_to_estimates(conn, poli
     assert meta["words"] == heard                                                       # cached on the voice asset
     production.caption_words(conn, on, body, piece, store=_AudioStore(), transcriber=transcriber)
     assert len(calls) == 1                                                              # paid once
+    # The shipped policy times a talking video's captions from word timestamps (word_timestamps_formats).
+    from manyworlds import captions
+    assert captions.word_timestamps_for(policy, "talking_video")
+    shipped = production.caption_words(conn, policy, body, piece, store=_AudioStore(), transcriber=transcriber,
+                                       fmt="talking_video")
+    assert shipped[0].start == pytest.approx(0.4) and len(calls) == 1                  # from the cached words
 
-    # Off, or a failed transcription: the estimates.
+    # Off (another format, or the flag off), or a failed transcription: the estimates.
     estimated = production.caption_words(conn, policy, body, piece)
     assert estimated[0].start == pytest.approx(0.0)
+    assert production.caption_words(conn, policy, body, piece, fmt="narrated_edit")[0].start == pytest.approx(0.0)
     other = _piece(conn, cid, seconds=3.2, voice=voice)
 
     def broken(*a, **k):

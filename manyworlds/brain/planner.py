@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ..creator import profile as profile_mod
-from ..direction import ShotSheet, spoken, summary
+from ..direction import ShotSheet, capabilities, overlay_text, spoken, summary
 from ..llm import StructuredLLM
 from ..policy import Policy
 
@@ -43,10 +43,17 @@ scene concretely: the place and its light, what they wear, the framing, what the
 and outfits the same way every time, reusing what is known about the creator's life (the director files
 them as `set_id` and `outfit_id`: 'her galley kitchen' stays 'her galley kitchen'). Hands are relaxed or
 out of frame unless the action needs them. Text belongs in `on_screen_text` (added in post), never on
-signs, screens, packaging or other surfaces in a scene."""
+signs, screens, packaging or other surfaces in a scene.
+
+CAPABILITIES: a format is only the container. Think in what the studio can render (the capabilities you are
+given: camera devices, framing, actions such as talk, walk, pose, outfit changes, prop work, edits such as cuts
+on motion, labels, timestamps, hook text and voiceover over B-roll, and sound) and in how this creator
+communicates, which follows from their archetype: some are visual and label-led with little talking (fashion,
+lifestyle), some talk-led, some voiceover-led. Compose each idea from those, then pick the format that carries
+it. Never plan something listed as not available."""
 
 ANALYSIS_FIELDS = ("look", "persona", "audience", "content", "arc", "places", "home_and_places", "interests",
-                   "opinions_and_running_jokes", "display_name", "one_line", "niche")
+                   "opinions_and_running_jokes", "display_name", "one_line", "niche", "archetype")
 BIBLE_FIELDS = ("display_name", "archetype", "niche", "one_line", "style_and_wardrobe", "home_and_places",
                 "personality", "interests", "opinions_and_running_jokes", "caption_voice", "posting_habits", "never")
 EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿]")
@@ -150,8 +157,27 @@ def shot_voice_issues(policy: Policy, shots) -> list[str]:
     """The voice rules (`caption_issues`) applied to what shots say and show as text: a shot's lines are spoken
     and its overlay is read."""
     sheets = [s if isinstance(s, ShotSheet) else ShotSheet.model_validate(s) for s in shots or []]
-    text = " ".join(f"{spoken(s)} {s.edit.on_screen_text}".strip() for s in sheets)
+    text = " ".join(f"{spoken(s)} {overlay_text(s)}".strip() for s in sheets)
     return caption_issues(policy, text) if text.strip() else []
+
+
+def capability_brief(policy: Policy, who: dict | None = None) -> str:
+    """The prompt line that makes the planner and the showrunner think in capabilities and archetype, not formats:
+    what the studio can render now (policy `capabilities`, by group, name: description), what it can't, and how
+    this kind of creator communicates (manyworlds.brain.director.communication, from the archetype, niche and
+    one-liner in `who`). Empty without a catalogue."""
+    from .director import communication
+    cats = capabilities(policy)
+    if not cats:
+        return ""
+    usable = {g: {n: e.get("description", "") for n, e in entries.items() if e["available"]}
+              for g, entries in cats.items()}
+    usable = {g: v for g, v in usable.items() if v}
+    missing = [f"{g}.{n}" for g, entries in cats.items() for n, e in entries.items() if not e["available"]]
+    how = communication(policy, who or {})
+    return (f"What the studio can render now (compose ideas from these): {json.dumps(usable)}. "
+            + (f"Not available now (never plan them): {json.dumps(missing)}. " if missing else "")
+            + (f"How this kind of creator communicates: {json.dumps(how)}. " if how else ""))
 
 
 def _recent(conn, creator_id, n: int) -> list[dict]:
@@ -252,6 +278,7 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
         f"({_video_formats(policy)}), each in one of the creator's video series; the rest are photo posts. "
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
         f"What each format is: {json.dumps({f: n for f, n in cfg.get('format_notes', {}).items() if f in formats})}. "
+        + capability_brief(policy, who)
         + (f"Tone mix across the period: {tone_counts}. " if tone_counts else "")
         + f"Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "

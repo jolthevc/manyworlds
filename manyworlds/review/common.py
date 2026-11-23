@@ -9,6 +9,14 @@ from typing import Callable
 from ..storage import ObjectStore
 
 
+def policy_for(policy, batch: str | None):
+    """The policy a job is judged under: the test overlay for a batch it names (operations.test_overlay.batches,
+    manyworlds.policy.for_batch), else `policy`. Applying it to a policy that already carries the overlay (the
+    breadth driver's) changes nothing."""
+    from .. import policy as policy_mod
+    return policy_mod.for_batch(policy, batch) if policy is not None else policy
+
+
 def stages(cfg: dict, role: str | None = None) -> list[tuple[str, str, str]]:
     """(role, effort, name) per stage: a cheap screen on everything, then a stronger confirm on
     what the screen passed. Passing `role` runs that one model alone (calibration, dry runs)."""

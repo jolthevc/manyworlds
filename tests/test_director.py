@@ -159,6 +159,80 @@ def test_a_failed_director_call_leaves_the_post_undirected(conn, policy):
     assert conn.execute("SELECT status FROM ideas").fetchone()["status"] == "scheduled"
 
 
+def _fashion(conn):
+    cid = creator(conn)
+    conn.execute("UPDATE creators SET bible = bible || %s WHERE id = %s",
+                 (Jsonb({"archetype": "quiet-luxury fashion in a small city flat", "niche": "fashion",
+                         "one_line": "outfits that cost less than they look"}), cid))
+    return cid
+
+
+def _clips_only(policy):
+    """Photos and story clips made, no talking video, dance off."""
+    return dataclasses.replace(policy, body={
+        **policy.body, "production": {**policy.body["production"], "formats": ["photo", "carousel", "story_clip"]},
+        "dance": {**policy.body["dance"], "enabled": False}})
+
+
+def test_the_brief_is_the_capability_catalogue_and_the_archetype(conn, policy):
+    policy = _clips_only(policy)
+    cid = _fashion(conn)
+    llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
+    director.direct(conn, policy, llm, {"scenes": ["by the canal"], "script": ""}, cid, fmt="story_clip")
+    content, system = str(llm.calls[0]["content"]), llm.calls[0]["system"]
+    assert "quiet-luxury fashion" in content and "outfits that cost less" in content          # the archetype
+    fashion = policy.get("direction", "director", "archetypes")[0]["communicates"]
+    assert fashion in content                                                                  # how it communicates
+    cat = policy.get("capabilities")
+    assert cat["devices"]["mirror"]["description"] in content and cat["actions"]["pose"]["write"] in content
+    assert "actions.talk" in content.split("Not available now")[1]                 # named as unavailable
+    assert cat["actions"]["talk"]["description"] not in content.split("Not available now")[0]
+    assert "silent_aesthetic" in content and "pov_day_timestamps" not in content   # recipes for this format only
+    for name in list(policy.get("on_screen_text", "styles")) + list(policy.get("burned_captions", "styles")):
+        assert name in content
+    assert "rain_glass" in content and "match" in content                          # room tone words, transitions
+    assert "Motion references: none now" in content                                # dance is off
+    for rule in policy.get("direction", "director", "craft"):
+        assert rule in system
+    assert "a gimbal-smooth phone" in system and "with no people" not in system
+
+
+def test_without_a_matching_archetype_the_default_guidance_is_given(policy):
+    assert director.communication(policy, {"archetype": "retired lighthouse keeper"}) == [
+        policy.get("direction", "director", "archetype_default")]
+    both = director.communication(policy, {"niche": "beauty", "one_line": "storytelling while doing her makeup"})
+    assert len(both) == 2
+
+
+def test_a_motion_reference_is_kept_only_when_listed_and_rendered(conn, policy):
+    cid = creator(conn)
+    ref = policy.get("dance", "references")[0]["id"]
+    on = dataclasses.replace(policy, body={**policy.body, "dance": {**policy.body["dance"], "enabled": True}})
+    shots = director.direct(conn, on, DirectorLLM({"shots": [{**CANAL, "motion_reference": ref},
+                                                             {**CANAL, "motion_reference": "a-trend-video"}]},
+                                                  conn=conn), {"scenes": ["a", "b"]}, cid, fmt="carousel")
+    assert [s["motion_reference"] for s in shots] == [ref, ""]
+    llm = DirectorLLM({"shots": [{**CANAL, "motion_reference": ref}]}, conn=conn)
+    shots = director.direct(conn, _clips_only(policy), llm, {"scenes": ["a"]}, cid, fmt="photo")
+    assert shots[0]["motion_reference"] == ""                     # dance off: cleared
+    assert ref in str(_content(conn, on, cid))
+
+
+def _content(conn, policy, cid):
+    llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
+    director.direct(conn, policy, llm, {"scenes": ["a"]}, cid, fmt="photo")
+    return llm.calls[0]["content"]
+
+
+def test_overlay_items_keep_the_voice_rules(conn, policy):
+    cid = creator(conn)
+    salesy = {**CANAL, "edit": {"on_screen_text": [{"kind": "label", "text": "fine"},
+                                                    {"kind": "question", "text": "drop a comment below"}]}}
+    with pytest.raises(ValueError, match="read as AI"):
+        director.direct(conn, policy, DirectorLLM({"shots": [salesy]}, conn=conn), {"scenes": ["a"]}, cid,
+                        fmt="story_clip")
+
+
 def test_direction_can_be_switched_off(conn, policy):
     cid = _real_creator(conn)
     _ready_ideas(conn, cid, ("photo", {"scenes": ["walking along the canal at dusk"]}))

@@ -22,7 +22,16 @@ read 512 tokens and drop the rest, so a longer prompt is trimmed lowest priority
 and the positive stand-ins stay whole. A prompt within its budget is never touched.
 
 Words, defaults and the allowed camera moves come from policy `direction`. Text never goes on a generated
-surface: `edit.on_screen_text` is an overlay added in post and never reaches an image or video prompt.
+surface: `edit.on_screen_text` is a list of overlay items (label, hook, timestamp, question; manyworlds.overlays draws
+them in post; an older sheet's plain string reads as one label) and never reaches an image or video prompt.
+
+The rest of the edit is read by the finish: `edit.caption_style` (manyworlds.captions.caption_style_for),
+`edit.transition_in` mapped to the joiner's kinds by `transition_kind`, and `motion_reference`, a licensed
+`dance.references` clip whose motion the shot performs (`motion_reference` keeps only listed ids).
+
+What the pipeline can render is the capability catalogue (policy `capabilities`, `capabilities()`): devices, framing,
+camera moves, actions, edits, text and sound, each with how it is rendered, the switches it needs and its limits.
+The director composes shots from it (manyworlds.brain.director); formats are containers, not recipes.
 """
 
 import math
@@ -31,7 +40,7 @@ import types
 import typing
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Target = Literal["photo", "i2v", "talk"]
 
@@ -78,8 +87,9 @@ class SetSpec(_Sheet):
     practical_lights: str = Field(default="", description="lights visible in the frame: fairy lights, a desk lamp, "
                                                           "a fridge glow; empty if none")
     set_dressing: str = Field(default="", description="what the place looks like around her: clutter, furniture, "
-                                                      "plants; no legible signs or labels")
-    props: str = Field(default="", description="objects she uses or holds, if any; no readable text or logos")
+                                                      "plants; plain, unbranded surfaces, in positive words")
+    props: str = Field(default="", description="objects she uses or holds, if any: plain and unbranded, "
+                                               "in positive words")
     background_action: str = Field(default="", description="what moves behind her: traffic, steam from a pot; "
                                                            "empty if still")
     background_people: int = Field(default=0, description="how many other people are visible in the background; "
@@ -90,7 +100,7 @@ class SetSpec(_Sheet):
 class WardrobeSpec(_Sheet):
     outfit_id: str = Field(default="", description="a short name for a recurring outfit, reused across posts "
                                                    "(e.g. 'grey_hoodie'); empty for a one-off")
-    outfit: str = Field(default="", description="what she wears, visually: colours, fabrics, fit; no logos")
+    outfit: str = Field(default="", description="what she wears, visually: colours, fabrics, fit; plain, unbranded")
     accessories: str = Field(default="", description="extra accessories for this scene, beyond her signature ones")
     state: str = Field(default="", description="the clothes' condition: crisp, creased, rain-damp, sleeves rolled up")
 
@@ -114,9 +124,11 @@ class FramingSpec(_Sheet):
     handheld: Literal["none", "light", "held"] | None = Field(
         default=None, description="camera shake: none (propped or tripod), light (a little sway), held "
                                   "(clearly in someone's hand)")
-    device: Literal["propped", "held", "selfie"] | None = Field(
-        default=None, description="how the phone films her: propped (set down on something), held (someone "
-                                  "else holds it), selfie (she holds it at arm's length)")
+    device: Literal["propped", "held", "selfie", "mirror", "pov"] | None = Field(
+        default=None, description="how the phone films her: propped (set down on something, locked off), held "
+                                  "(someone else holds it, also following her), selfie (she holds it at arm's "
+                                  "length), mirror (she films her reflection, phone in hand), pov (what she sees, "
+                                  "phone at her eye level, only her hands in frame)")
     headroom: str = Field(default="", description="space above her head: tight, normal, generous")
 
 
@@ -158,15 +170,78 @@ class SoundSpec(_Sheet):
     music: str = Field(default="", description="music in the scene or under it; empty for none")
 
 
+TEXT_KINDS = ("label", "hook", "timestamp", "question")
+TEXT_POSITIONS = ("top_bubble", "upper_third", "upper_left", "centre", "lower")
+
+
+class OnScreenText(_Sheet):
+    """One piece of on-screen text drawn in post (manyworlds.overlays): a label, the hook, a timestamp or a
+    question bubble. Times are seconds from the start of the shot."""
+    kind: Literal["label", "hook", "timestamp", "question"] = Field(
+        default="label", description="label (a short line: a tip, a numbered look), hook (big text in the first "
+                                     "second), timestamp ('7:30 AM coffee'), question (a white bubble at the top, "
+                                     "like a reply to a comment)")
+    text: str = Field(default="", description="the words, short, in the creator's voice; never a real username")
+    start_s: float = Field(default=0.0, description="when it appears, seconds from the start of the shot")
+    end_s: float | None = Field(default=None, description="when it goes, seconds from the start of the shot; 0 for "
+                                                          "the end of the shot")
+    style: str = Field(default="", description="an on-screen text style name (listed in the brief), or empty for "
+                                               "the kind's default")
+    position: Literal["top_bubble", "upper_third", "upper_left", "centre", "lower", ""] = Field(
+        default="", description="where it sits, or empty for the kind's default; never over her face")
+    number: int | None = Field(default=None, description="for a numbered look or tip, its number; 0 for none")
+    time: str = Field(default="", description="for a timestamp whose text does not start with the time, the time "
+                                              "('7:30 AM'); else empty")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unset_zeros(cls, data):
+        """The strict schema's unset values: an empty kind is a label; a number of 0 is none; an end at 0 (or
+        not after the start) is the end of the shot."""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if out.get("kind") in ("", None):
+            out["kind"] = "label"
+        if out.get("number") in ("", 0):
+            out["number"] = None
+        try:
+            start = float(out.get("start_s") or 0.0)
+        except (TypeError, ValueError):
+            start = 0.0
+        end = out.get("end_s")
+        if end in ("", None):
+            out["end_s"] = None
+        else:
+            try:
+                out["end_s"] = float(end) if float(end) > start else None
+            except (TypeError, ValueError):
+                out["end_s"] = None
+        return out
+
+
 class EditSpec(_Sheet):
     hook: str = Field(default="", description="what grabs attention in the first second")
-    on_screen_text: str = Field(default="", description="text overlaid in post; the only place text may appear, "
-                                                        "never on surfaces in the image")
-    caption_style: str = Field(default="", description="how the overlay text looks: e.g. 'small lowercase, "
-                                                       "bottom third'")
-    transition_in: str = Field(default="", description="how this shot starts after the previous one: hard cut, "
-                                                       "match cut, whip")
+    on_screen_text: list[OnScreenText] = Field(
+        default_factory=list, description="text drawn in post, in time order; the only place text may appear, "
+                                          "never on surfaces in the image; empty for none")
+    caption_style: str = Field(default="", description="the spoken-word captions' style: a caption style name "
+                                                       "(listed in the brief), 'none' for no word captions (labels "
+                                                       "only), or empty for the creator's default")
+    transition_in: str = Field(default="", description="how this shot starts after the previous one: cut, match "
+                                                       "(cut inside a motion both shots share: a spin, a hair flip, "
+                                                       "a hand over the lens), whip, blur or flash")
     cover: bool = Field(default=False, description="true if this shot's frame should be the post's cover")
+
+    @field_validator("on_screen_text", mode="before")
+    @classmethod
+    def _plain_text_is_one_label(cls, value):
+        """The older sheets' plain string: one label for the whole shot (blank: none)."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [{"kind": "label", "text": value.strip()}] if value.strip() else []
+        return value
 
 
 class ContinuitySpec(_Sheet):
@@ -188,6 +263,9 @@ class ShotSheet(_Sheet):
     continuity: ContinuitySpec = Field(default_factory=ContinuitySpec, description="what carries over between shots")
     cutaway: bool = Field(default=False, description="true for a shot that shows something else (b-roll) while "
                                                      "her voice continues over it")
+    motion_reference: str = Field(default="", description="the id of a licensed motion reference clip (listed in "
+                                                          "the brief) whose movement this shot performs: a dance, "
+                                                          "a pose sequence, a twirl; empty for none")
 
 
 # What the director answers (manyworlds.brain.director). It is asked with a strict schema (`strict_required`,
@@ -268,10 +346,88 @@ def camera_move(shot: "ShotSheet | dict | None", policy: Any) -> str:
     return move if move and move in allowed else ""
 
 
+def overlay_text(shot: "ShotSheet | dict | None") -> str:
+    """Everything the shot's on-screen text says, in order (what the voice rules read)."""
+    return " ".join(t.text.strip() for t in _coerce(shot).edit.on_screen_text if t.text.strip())
+
+
+# The joiner's transitions (manyworlds.media.TRANSITIONS); a test keeps the two the same.
+TRANSITION_KINDS = ("cut", "match", "whip", "blur", "flash")
+
+
+def transition_kind(text: str, policy: Any) -> str:
+    """The joiner's transition for a shot's free-text `edit.transition_in`: a kind's own name, else the first kind
+    in policy `direction.transitions.keywords` (in order) one of whose words starts a word in the text ('whip pan'
+    -> whip, 'cut on the spin' -> match); anything else, or nothing, is a cut."""
+    low = " ".join(str(text or "").lower().replace("_", " ").replace("-", " ").split())
+    if not low:
+        return "cut"
+    if low in TRANSITION_KINDS:
+        return low
+    keywords = _policy(policy, "direction", "transitions", "keywords", default={}) or {}
+    for kind, words in keywords.items():
+        if kind in TRANSITION_KINDS and _mentions(low, words):
+            return kind
+    return "cut"
+
+
+def motion_reference_ids(policy: Any) -> list[str]:
+    """The motion reference clips a shot may name (policy `dance.references` ids), [] while `dance.enabled` is off."""
+    if not _policy(policy, "dance", "enabled", default=False):
+        return []
+    return [str(r["id"]) for r in (_policy(policy, "dance", "references", default=[]) or [])
+            if isinstance(r, dict) and r.get("id")]
+
+
+def motion_reference(shot: "ShotSheet | dict | None", policy: Any) -> str:
+    """The shot's motion reference if it is one of `motion_reference_ids`, else '' (unknown ids are dropped)."""
+    ref = _coerce(shot).motion_reference.strip()
+    return ref if ref and ref in motion_reference_ids(policy) else ""
+
+
+# --- the capability catalogue (policy `capabilities`) -------------------------------------------------------------
+
+def _switch_on(policy: Any, switch: str) -> bool:
+    """One `requires` entry: 'a.b.c' is on when that policy value is truthy; 'a.b:x,y' when that list (or value)
+    contains any of x, y."""
+    path, _, wanted = str(switch).partition(":")
+    value = _policy(policy, *[p for p in path.strip().split(".") if p], default=None)
+    if not wanted:
+        return bool(value)
+    options = {w.strip() for w in wanted.split(",") if w.strip()}
+    have = {str(v) for v in value} if isinstance(value, (list, tuple, set)) else {str(value)} if value else set()
+    return bool(options & have)
+
+
+def capability_available(entry: dict, policy: Any) -> bool:
+    """Whether the pipeline can render a capability now: every switch in its `requires` is on."""
+    return all(_switch_on(policy, s) for s in (entry or {}).get("requires") or [])
+
+
+def capabilities(policy: Any) -> dict[str, dict[str, dict]]:
+    """The catalogue (policy `capabilities`: group -> name -> {description, how, requires, limits, write}), each entry
+    with `available` set from its `requires`."""
+    out: dict[str, dict[str, dict]] = {}
+    for group, entries in (_policy(policy, "capabilities", default={}) or {}).items():
+        if not isinstance(entries, dict):
+            continue
+        out[group] = {name: {**e, "available": capability_available(e, policy)}
+                      for name, e in entries.items() if isinstance(e, dict)}
+    return out
+
+
+def capability_ids(policy: Any, *, available_only: bool = False) -> list[str]:
+    """Every catalogue entry as 'group.name' (only those the pipeline can render now, with `available_only`)."""
+    return [f"{g}.{n}" for g, entries in capabilities(policy).items() for n, e in entries.items()
+            if e["available"] or not available_only]
+
+
 _EYELINE = {"lens": "looking into the lens", "off": "looking off-camera", "prop": "looking at the object in hand",
             "screen": "looking at a screen"}
 _DEVICE = {"propped": "phone propped up", "held": "phone held by someone else",
-           "selfie": "selfie, phone at arm's length"}
+           "selfie": "selfie, phone at arm's length",
+           "mirror": "filmed in a mirror, she holds the phone at chest height",
+           "pov": "point of view from her eyes, only her hands in frame"}
 _MIC = {"phone": "phone microphone", "lav": "clip-on microphone", "room": "distant room sound"}
 
 

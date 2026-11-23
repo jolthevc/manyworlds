@@ -400,3 +400,80 @@ def test_a_directed_photo_is_rejected_below_the_direction_minimum(conn, policy, 
     assert [r["accepted"] for r in results] == [False, True] and [r["direction"] for r in results] == [False, True]
     brief = next(b["text"] for b in judge.calls[0]["content"] if str(b.get("text", "")).startswith("DIRECTED SHOT"))
     assert "checks the timetable" in brief and "shrugs" not in brief                # a photo is its first beat
+
+
+# --- the breadth test's batches are judged under the test overlay ------------------------------------------------
+def test_a_clip_in_a_breadth_batch_is_judged_under_the_test_overlay(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    test, prod = _directed_clip(conn, store, tmp_path, cid), _directed_clip(conn, store, tmp_path, cid)
+    conn.execute("UPDATE jobs SET batch = %s WHERE id = %s", (f"{policy.get('operations', 'test_overlay', 'batches')[0]}r1", test))
+    conn.execute("UPDATE jobs SET batch = 'post-1' WHERE id = %s", (prod,))
+    low = clip(direction=1)
+    [r] = video.review_job(conn, policy, ClipStub(low), store, test, tmp_path)
+    assert r["accepted"] and r["direction"] is True          # direction is report-only in the overlay
+    [r] = video.review_job(conn, policy, ClipStub(low), store, prod, tmp_path)
+    assert not r["accepted"] and r["direction"] is False     # production keeps its bar
+
+
+# --- motion transfer: every keyframe must still be her ----------------------------------------------------------
+def _dance_job(conn, store, tmp_path, cid, *, kind="comfy.wan_animate2", video_file=None):
+    job = clip_job(conn, store, tmp_path, cid, kind=kind, scene=None)
+    conn.execute("UPDATE jobs SET payload = payload || %s WHERE id = %s", (Jsonb({"reference": "dance-casual"}), job))
+    rendered(conn, store, tmp_path, job)
+    if video_file is not None:
+        conn.execute("UPDATE assets SET uri = %s WHERE job_id = %s AND kind = 'video'",
+                     (store.put_file(video_file, f"v/{uuid.uuid4().hex}.mp4").uri, job))
+    return job
+
+
+def test_a_motion_transfer_clip_fails_when_any_keyframe_loses_her_face(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    drifts, holds = _dance_job(conn, store, tmp_path, cid), _dance_job(conn, store, tmp_path, cid)
+    assert set(video.pending_jobs(conn, policy)) == {drifts, holds}      # animate-2 clips are reviewed
+    ic = policy.get("dance", "identity")
+    llm = ClipStub(clip(identity_per_frame=[9, 9, ic["min_score"] - 1, 9]))
+    [r] = video.review_job(conn, policy, llm, store, drifts, tmp_path)
+    assert not r["accepted"] and r["dance_identity"] is False and r["identity"] is True
+    assert any(str(b.get("text", "")).startswith("PER-KEYFRAME IDENTITY") for b in llm.calls[0]["content"])
+    row = conn.execute("SELECT passed, score, details FROM reviews WHERE asset_id = %s AND gate = 'dance_identity'",
+                       (r["asset_id"],)).fetchone()
+    assert row["passed"] is False and float(row["score"]) == ic["min_score"] - 1
+    assert row["details"]["dance_identity"]["failed_frames"] == [2]
+    [r] = video.review_job(conn, policy, ClipStub(clip(identity_per_frame=[9] * 4)), store, holds, tmp_path)
+    assert r["accepted"] and r["dance_identity"] is True
+
+
+def test_a_motion_transfer_review_fails_closed_without_per_keyframe_scores(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    job = _dance_job(conn, store, tmp_path, cid, kind="video.wan_i2v")   # any clip driven by a reference motion
+    [r] = video.review_job(conn, policy, ClipStub(clip()), store, job, tmp_path)
+    assert not r["accepted"] and r["dance_identity"] is False
+    [r2] = video.review_job(conn, policy, ClipStub(clip(identity_per_frame=[9, 9])), store,
+                            _dance_job(conn, store, tmp_path, cid), tmp_path)
+    assert not r2["accepted"]                                         # 2 scores for 4 keyframes
+
+
+def test_a_plain_clip_has_no_dance_identity_gate(conn, policy, store, tmp_path):
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    job = clip_job(conn, store, tmp_path, cid)
+    rendered(conn, store, tmp_path, job)
+    llm = ClipStub(clip(identity_per_frame=[1, 1, 1, 1]))   # ignored: not motion transfer
+    [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
+    assert r["accepted"] and "dance_identity" not in r
+    assert not any(str(b.get("text", "")).startswith("PER-KEYFRAME") for b in llm.calls[0]["content"])
+
+
+def test_the_dance_gate_cuts_its_keyframes_from_the_clip_when_the_worker_stored_fewer(conn, policy, store, tmp_path):
+    from test_media import _clip
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    job = _dance_job(conn, store, tmp_path, cid, video_file=_clip(tmp_path / "dance.mp4", seconds=1.0, audio=False))
+    n = int(policy.get("dance", "identity", "keyframes"))
+    llm = ClipStub(clip(identity_per_frame=[9] * n))
+    [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
+    texts = [str(b.get("text", "")) for b in llm.calls[0]["content"]]
+    assert sum(t.startswith("KEYFRAME") for t in texts) == n > 4 and r["accepted"]

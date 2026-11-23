@@ -5,7 +5,8 @@ lip-sync score, the spoken line as its own output), rendered by the community's 
 InfiniteTalk with the 4-step lightx2v LoRA and SageAttention. The talk worker image chooses this engine
 (MW_TALK_ENGINE=comfy). Weights download once into MW_MODEL_DIR/comfy (the pool's network volume if it has one).
 
-Payload as for talk_infinitetalk; params{model, width, height, steps, shift, cfg, scheduler, audio_scale, audio_cfg,
+Payload as for talk_infinitetalk, plus negative_prompt (the shot's negatives, manyworlds.direction.compile_prompts,
+into every graph's negative text encode; without one, comfy.negative_text's fallbacks); params{model, width, height, steps, shift, cfg, scheduler, audio_scale, audio_cfg,
 frame_window, motion_frame, overlap, longcat_version, lora_strength, attention, swap_below_gb, blocks_to_swap,
 timeout_s}. params.model picks the graph: infinitetalk (the default) or longcat (comfy.graph_longcat, LongCat-Video-
 Avatar; its weights download only when a LongCat job runs). LongCat saves one clip per window; they are joined
@@ -186,24 +187,25 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     shutil.copy(audio, inp / audio_name)
 
     prompt = payload.get("prompt") or "a person talks to the camera"
+    negative = payload.get("negative_prompt")   # the shot's negatives (direction.compile_prompts); else the graph's default
     clip = work / "talk.mp4"
     t0 = time.monotonic()
     if video_uri:
         g = comfy.graph_v2v(video=video_name, audio=audio_name, prompt=prompt,
                             frames=math.ceil(seconds * comfy.TALK_FPS), seed=seed, params=params,
-                            blocks_to_swap=_blocks_to_swap(params))
+                            blocks_to_swap=_blocks_to_swap(params), negative=negative)
         shutil.move(str(comfy.run(g, timeout_s=float(params["timeout_s"]))), clip)
     elif model == "longcat":
         g = comfy.graph_longcat(image=image_name, audio=audio_name, prompt=prompt,
                                 frames=math.ceil(seconds * comfy.LONGCAT_FPS[version]), seed=seed, params=params,
-                                blocks_to_swap=_blocks_to_swap(params))
+                                blocks_to_swap=_blocks_to_swap(params), negative=negative)
         windows = comfy.run_all(g, timeout_s=float(params["timeout_s"]))
         join_windows(windows, audio, seconds, clip)
         for f in windows:
             f.unlink(missing_ok=True)
     else:
         g = comfy.graph(image=image_name, audio=audio_name, prompt=prompt, frames=math.ceil(seconds * 25), seed=seed,
-                        params=params, blocks_to_swap=_blocks_to_swap(params))
+                        params=params, blocks_to_swap=_blocks_to_swap(params), negative=negative)
         shutil.move(str(comfy.run(g, timeout_s=float(params["timeout_s"]))), clip)
     render_s = round(time.monotonic() - t0, 1)
     for f in (inp / image_name, inp / audio_name, inp / video_name):
@@ -223,6 +225,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     else:
         names = {"model": comfy.MODEL, "adapter": comfy.ADAPTER, "lora": comfy.LORA}
     recipe = {**names, "engine": "comfy+WanVideoWrapper", "talk_model": model, "prompt": payload.get("prompt"),
+              "negative_prompt": comfy.negative_text(params, negative),
               "image_uri": payload["image_uri"], "audio_uri": payload.get("audio_uri"), "script": payload.get("script"), "voice": payload.get("voice"), "video_uri": video_uri, "seed": seed,
               "params": params}
     return HandlerResult(outputs, recipe=recipe, meta={"output_seconds": seconds, "render_seconds": render_s,

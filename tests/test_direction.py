@@ -482,3 +482,136 @@ def test_lab_prompts_give_the_payloads_prompt_and_negative(policy):
         lab.prompts("dance", BIBLE, "x")
     with pytest.raises(ValueError):
         lab.prompts("talk", BIBLE, "x", shot=shot)                  # a shot needs the policy
+
+
+# --- wave 2: the capability toolbox (on-screen text items, transitions, motion references, the catalogue) ---
+
+def _with(policy, **blocks):
+    from manyworlds import policy as policy_mod
+    return policy_mod.from_dict({**policy.body, **blocks})
+
+
+def test_transition_kind_maps_free_text_by_keywords(policy):
+    from manyworlds import media
+    assert direction.TRANSITION_KINDS == media.TRANSITIONS
+    k = direction.transition_kind
+    assert k("", policy) == "cut" and k("hard cut", policy) == "cut" and k("jump cut", policy) == "cut"
+    assert k("whip", policy) == "whip" and k("Whip pan to the left", policy) == "whip"
+    assert k("match cut on the spin", policy) == "match" and k("cut on the hair flip", policy) == "match"
+    assert k("she covers the lens with her hand", policy) == "match"
+    assert k("whip on the spin", policy) == "whip"                       # the first kind listed wins
+    assert k("slow dissolve", policy) == "blur" and k("flash to white", policy) == "flash"
+    assert k("something new", policy) == "cut" and k("MATCH", policy) == "match"
+    assert k("whip", {}) == "whip" and k("whip pan", {}) == "cut"         # no keywords: only the kinds' names
+
+
+def test_on_screen_text_takes_the_plain_string_or_items():
+    old = ShotSheet.model_validate({"edit": {"on_screen_text": " lazy ootd "}})
+    assert [(t.kind, t.text, t.end_s) for t in old.edit.on_screen_text] == [("label", "lazy ootd", None)]
+    assert ShotSheet.model_validate({"edit": {"on_screen_text": "  "}}).edit.on_screen_text == []
+    assert ShotSheet.model_validate({"edit": {"on_screen_text": None}}).edit.on_screen_text == []
+    items = ShotSheet.model_validate({"edit": {"on_screen_text": [
+        {"kind": "hook", "text": "wait for 3", "start_s": 0, "end_s": 1.5, "position": "upper_third"},
+        {"kind": "label", "text": "tight on baggy", "number": 2, "style": "numbered"},
+        {"kind": "timestamp", "text": "coffee", "time": "7:30 AM", "start_s": 1}]}}).edit.on_screen_text
+    assert [t.kind for t in items] == ["hook", "label", "timestamp"]
+    assert items[0].end_s == 1.5 and items[1].number == 2 and items[2].time == "7:30 AM"
+    assert direction.overlay_text({"edit": {"on_screen_text": [{"text": "one"}, {"text": "two"}]}}) == "one two"
+    with pytest.raises(ValueError):
+        ShotSheet.model_validate({"edit": {"on_screen_text": [{"kind": "subtitle", "text": "x"}]}})
+    with pytest.raises(ValueError):
+        ShotSheet.model_validate({"edit": {"on_screen_text": [{"text": "x", "position": "bottom_left"}]}})
+
+
+def test_strict_unset_values_in_a_text_item_read_as_unset():
+    item = {"kind": "", "text": "1.", "start_s": 2, "end_s": 0, "style": "", "position": "", "number": 0, "time": ""}
+    t = ShotSheet.model_validate({"edit": {"on_screen_text": [item]}}).edit.on_screen_text[0]
+    assert t.kind == "label" and t.end_s is None and t.number is None and t.position == "" and t.start_s == 2
+    early = ShotSheet.model_validate({"edit": {"on_screen_text": [{**item, "end_s": 1.0}]}}).edit.on_screen_text[0]
+    assert early.end_s is None                                            # an end before the start: the shot's end
+    dumped = ShotSheet.model_validate({"edit": {"on_screen_text": [item]}}).model_dump(mode="json")
+    assert ShotSheet.model_validate(dumped).model_dump(mode="json") == dumped
+
+
+def test_the_overlay_module_reads_the_items_as_dumped():
+    from manyworlds import overlays
+    edit = ShotSheet.model_validate({"edit": {"on_screen_text": [{"kind": "hook", "text": "wait", "end_s": 1.5}]}}
+                                    ).model_dump(mode="json")["edit"]
+    assert overlays.items_for_shot(edit, 4.0, 9.0) == [{**edit["on_screen_text"][0], "start_s": 4.0, "end_s": 5.5}]
+
+
+def test_motion_reference_only_from_the_listed_ids(policy):
+    ids = direction.motion_reference_ids(policy)
+    assert ids and ids == [r["id"] for r in policy.get("dance", "references")]
+    assert direction.motion_reference({"motion_reference": ids[0]}, policy) == ids[0]
+    assert direction.motion_reference({"motion_reference": "tiktok-trend-42"}, policy) == ""
+    off = _with(policy, dance={**policy.body["dance"], "enabled": False})
+    assert direction.motion_reference_ids(off) == []
+    assert direction.motion_reference({"motion_reference": ids[0]}, off) == ""
+
+
+def test_mirror_and_pov_devices_compile(policy):
+    mirror = direction.compile_prompts(ShotSheet(framing=FramingSpec(device="mirror")), BIBLE, "i2v", policy)
+    assert "mirror" in mirror["prompt"] and "mirror reflections" not in mirror["negative"]   # it asks for the mirror
+    pov = direction.compile_prompt(ShotSheet(framing=FramingSpec(device="pov")), BIBLE, "i2v", policy)
+    assert "point of view" in pov and policy.get("direction", "realism", "shake", "held") in pov
+
+
+PATHS = {"photo", "story_clip", "talk", "walk_and_talk", "motion_reference", "narrated_edit", "joiner",
+         "finish_overlays", "captions", "sound_mix"}
+
+
+def test_the_capability_catalogue_is_complete_and_names_real_paths(policy):
+    cats = direction.capabilities(policy)
+    assert {"devices", "framing", "camera_moves", "actions", "edits", "text", "sound"} <= set(cats)
+    for group, entries in cats.items():
+        for name, e in entries.items():
+            assert e.get("description") and e.get("how") and "requires" in e and "limits" in e, (group, name)
+            assert set(e["how"]) <= PATHS, (group, name)
+    for wanted in ("devices.propped", "devices.mirror", "devices.selfie_arm", "devices.pov", "devices.handheld_follow",
+                   "devices.locked_off", "actions.talk", "actions.walk", "actions.pose", "actions.motion_reference",
+                   "actions.prop_work", "actions.makeup", "actions.outfit_change", "actions.sit_stand",
+                   "actions.stairs", "edits.cut_on_motion", "edits.labels", "edits.timestamps", "edits.hook_text",
+                   "edits.question_bubbles", "edits.voiceover_broll", "edits.cutaways", "sound.voice",
+                   "sound.voiceover", "sound.room_tone", "sound.music_bed"):
+        assert wanted in direction.capability_ids(policy), wanted
+
+
+def test_availability_follows_the_switches(policy):
+    photos = _with(policy, production={**policy.body["production"], "formats": ["photo", "carousel", "story"]},
+                   dance={**policy.body["dance"], "enabled": False},
+                   sound={**policy.body["sound"], "library": {**policy.body["sound"]["library"], "entries": []}})
+    now = set(direction.capability_ids(photos, available_only=True))
+    assert "devices.propped" in now and "actions.pose" in now
+    assert "actions.talk" not in now and "actions.walk" not in now   # no talking video, no story clip
+    assert "actions.motion_reference" not in now and "sound.music_bed" not in now
+    talk = _with(policy, production={**policy.body["production"],
+                                     "formats": [*policy.get("production", "formats"), "talking_video"]},
+                 dance={**policy.body["dance"], "enabled": True})
+    on = set(direction.capability_ids(talk, available_only=True))
+    assert {"actions.talk", "actions.walk_and_talk", "actions.motion_reference", "edits.cutaways"} <= on
+    assert direction.capability_available({"requires": ["production.formats:nope,talking_video"]}, talk)
+    assert not direction.capability_available({"requires": ["production.formats:nope"]}, talk)
+    assert direction.capability_available({}, talk)
+
+
+def test_every_recipe_is_composed_from_the_catalogue(policy):
+    ids = set(direction.capability_ids(policy))
+    formats = {"photo", "carousel", "story", "story_clip", "narrated_edit", "talking_video"}
+    for name, m in policy.get("moves", "library").items():
+        assert m.get("uses") and set(m["uses"]) <= ids, name
+        assert m.get("suits") and m.get("note") and set(m["formats"]) <= formats, name
+        lo, hi = m["length_s"]
+        assert 0 < lo <= hi, name
+        ShotSheet.model_validate(m.get("shot") or {})                 # shot defaults are valid shot-sheet fields
+    for wanted in ("outfit_change_spin", "talk_while_doing", "pov_day_timestamps", "mirror_talk", "walking_vlog",
+                   "pose_sequence", "silent_aesthetic"):
+        assert wanted in policy.get("moves", "library"), wanted
+
+
+def test_caption_styles_by_format_name_real_formats_only(raw_policy):
+    formats = {"photo", "carousel", "story", "story_clip", "narrated_edit", "talking_video"}
+    by_format = raw_policy.get("burned_captions", "style_by_format") or {}
+    assert set(by_format) <= formats
+    styles = set(raw_policy.get("burned_captions", "styles") or {}) | {"none"}
+    assert set(by_format.values()) <= styles

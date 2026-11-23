@@ -145,9 +145,10 @@ def fake_ffmpeg(monkeypatch):
     from manyworlds import captions, finishing, media
     calls = []
 
-    def fake_finish(video, out, *, look, grain=None, hook_ass=None, policy, timeout=None):
-        calls.append(("finish", {"video": video, "out": out, "look": look, "policy": policy,
-                                 "ass": hook_ass and open(hook_ass, encoding="utf-8").read()}))
+    def fake_finish(video, out, *, look, grain=None, ass=None, hook_ass=None, has_voice=True, policy, timeout=None):
+        script = ass or hook_ass
+        calls.append(("finish", {"video": video, "out": out, "look": look, "policy": policy, "has_voice": has_voice,
+                                 "ass": script and open(script, encoding="utf-8").read()}))
         out.write_bytes(b"finished")
         return out
 

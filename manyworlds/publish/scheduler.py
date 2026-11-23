@@ -11,6 +11,9 @@ Gates, all from policy:
 - A real post more than `publishing.max_late_hours` past its time is left `ready` (`stale`) rather than
   sent with others in a burst (e.g. a backlog when an account is first connected).
 - Paused or retired creators publish nothing.
+- Test posts are never published, simulated or real, even with a scheduled_for: the breadth test's (body.breadth_run)
+  and any made in a test batch (operations.test_batch_prefixes; manyworlds.publish.unpublishable). They are counted
+  as `test_posts` and left as they are.
 `simulation.fast_forward` (sandbox only) also publishes `planned` posts without making them. After each
 simulated publication the scenario engine produces its outcomes.
 """
@@ -19,7 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import instagram
+from . import NotForPublishing, instagram, unpublishable
 from .simulated import SimulatedPublisher
 
 PUBLISHERS = {"simulated": SimulatedPublisher(), "instagram": instagram.InstagramPublisher()}
@@ -32,7 +35,7 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
     fast = bool(policy.get("simulation", "fast_forward", default=False))
     max_late = timedelta(hours=float(policy.get("publishing", "max_late_hours", default=6)))
     out = {"simulated": 0, "published": 0, "waiting_for_adapter": 0, "waiting_for_account": 0,
-           "awaiting_approval": 0, "stale": 0, "pending": 0, "failed": 0, "quota": 0}
+           "awaiting_approval": 0, "stale": 0, "pending": 0, "failed": 0, "quota": 0, "test_posts": 0}
     rows = conn.execute(
         """SELECT p.*, c.publish_mode, c.anchors FROM posts p JOIN creators c ON c.id = p.creator_id
            WHERE p.scheduled_for <= %s AND c.status NOT IN ('paused', 'retired')
@@ -40,6 +43,9 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
              AND (%s::uuid IS NULL OR p.creator_id = %s)
            ORDER BY p.scheduled_for""", (now, fast, creator_id, creator_id)).fetchall()
     for post in rows:
+        if unpublishable(conn, policy, post):
+            out["test_posts"] += 1   # a test post: never published, whatever its schedule
+            continue
         sim = (post["anchors"] or {}).get("simulation") or {}
         if post["publish_mode"] == "simulated":
             if not sim.get("scenario"):
@@ -60,6 +66,9 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
                 continue
         try:
             result = publisher.publish(conn, policy, post)
+        except NotForPublishing:
+            out["test_posts"] += 1   # the publisher's own guard (the same rule, checked again before any call)
+            continue
         except instagram.Pending:
             out["pending"] += 1            # container processing at Instagram: published on a later tick
             continue

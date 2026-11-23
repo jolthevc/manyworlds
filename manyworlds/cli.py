@@ -513,7 +513,7 @@ def produce_tick(conn, pol, llm=None) -> dict:
     except Exception as e:  # noqa: BLE001 - a scene without its plate is made from the canonical text
         plates = {"error": f"{type(e).__name__}: {e}"[:300]}
     result = {"mirrors": models.ensure_mirrored(conn, pol, storage.from_url()),
-              "planned": planned, **({"plates": plates} if plates else {}), **production.advance(conn, pol)}
+              "planned": planned, **({"plates": plates} if plates else {}), **production.advance(conn, pol, llm=llm)}
     from .publish import scheduler
     try:
         published = scheduler.publish_due(conn, pol, now=_dt.now(_tz.utc))

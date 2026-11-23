@@ -481,7 +481,7 @@ def fake_finish(monkeypatch):
     from manyworlds import finishing
     calls = []
 
-    def fake(video, out, *, look, grain=None, hook_ass=None, policy, timeout=None):
+    def fake(video, out, *, look, grain=None, hook_ass=None, ass=None, has_voice=True, policy, timeout=None, **_):
         calls.append(("finish", Path(video).name))
         Path(out).write_bytes(b"finished")
         return out
@@ -530,12 +530,17 @@ def test_cues_that_resolve_in_the_library_are_mixed_before_the_finish(conn, poli
     assert all(s["licence"] for s in meta["sound"])
 
 
-def test_an_empty_library_or_sound_off_mixes_nothing(conn, policy, store, tmp_path, fake_finish):
+def test_sound_off_mixes_nothing_and_an_empty_library_still_gets_room_tone(conn, policy, store, tmp_path,
+                                                                           fake_finish):
     from manyworlds import production
-    for p in (_finish_policy(policy, []), _finish_policy(policy, [KETTLE, HUM], enabled=False),
-              _finish_policy(policy, [{**KETTLE, "licence": "CC-BY-NC-4.0"}])):   # refused: never mixed
+    post, body, video = _made_video(conn, store, tmp_path)
+    final = production.finish_video(conn, _finish_policy(policy, [KETTLE, HUM], enabled=False), post, body, video, store)
+    assert "sound" not in final["meta"] and final["meta"]["passes"] == 1
+    assert [name for name, _ in fake_finish] == ["finish"]
+    for p in (_finish_policy(policy, []), _finish_policy(policy, [{**KETTLE, "licence": "CC-BY-NC-4.0"}])):
         post, body, video = _made_video(conn, store, tmp_path)
-        assert production.sound_cues(conn, p, body, video) is None
         final = production.finish_video(conn, p, post, body, video, store)
-        assert "sound" not in final["meta"] and final["meta"]["passes"] == 1
-    assert [name for name, _ in fake_finish] == ["finish"] * 3
+        assert final["meta"]["passes"] == 2          # never ships dry: a synthesised room tone at least
+    mixes = [kw for name, kw in fake_finish if name == "mix"]
+    assert len(mixes) == 2 and all(kw.get("room_tone_synth") is not None for kw in mixes)
+    assert all("CC-BY-NC" not in str(kw) for kw in mixes)   # the refused cue is never mixed

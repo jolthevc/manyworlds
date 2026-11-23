@@ -136,12 +136,16 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     Two stages: a cheap screen (policy review.image.role) on every image, then a stronger
     confirm (confirm_role) only on the images the screen passed. Rejects stay cheap;
     anything accepted has passed both. Each stage writes its own rows per gate, so an
-    asset is accepted only when no row failed."""
-    cfg = policy.get("review", "image", default={})
-    stages = common.stages(cfg, role)
-    job = conn.execute("SELECT creator_id, payload->>'scene' AS scene, payload->'shot' AS shot, "
+    asset is accepted only when no row failed.
+
+    A job in a test-overlay batch (operations.test_overlay.batches, e.g. test-breadth-*) is judged under that
+    overlay (policy.for_batch: the breadth test's direction gate is report-only), wherever it is reviewed."""
+    job = conn.execute("SELECT creator_id, batch, payload->>'scene' AS scene, payload->'shot' AS shot, "
                        "payload->'references' AS refs, payload->'plate' AS plate FROM jobs WHERE id = %s",
                        (job_id,)).fetchone()
+    policy = common.policy_for(policy, job.get("batch"))
+    cfg = policy.get("review", "image", default={})
+    stages = common.stages(cfg, role)
     shot = job["shot"] if isinstance(job["shot"], dict) else None   # a directed scene (manyworlds.direction)
     plate = bool(job["plate"])   # a set plate or outfit reference (creator.sets): nobody in it, no identity gate
     scene, gates = job["scene"], gates_for(job["scene"], shot, plate=plate)

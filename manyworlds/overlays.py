@@ -108,7 +108,9 @@ def items_for_shot(edit: dict | None, start_s: float, end_s: float | None = None
         it = dict(it.model_dump() if hasattr(it, "model_dump") else it)
         a = float(it.get("start_s") or 0.0) + float(start_s)
         b = it.get("end_s")
-        b = float(b) + float(start_s) if b is not None else end_s
+        rel = float(it.get("start_s") or 0.0)
+        # an end at or before the item's start (the strict schema's unset 0) means "to the end of the shot"
+        b = float(b) + float(start_s) if b is not None and float(b) > rel else end_s
         if end_s is not None and b is not None:
             b = min(float(b), float(end_s))
         out.append({**it, "start_s": a, "end_s": b})
