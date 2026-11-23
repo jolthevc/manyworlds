@@ -439,7 +439,7 @@ def test_walk_and_talk_interpolates_the_motion_clip_instead_of_repeating_frames(
     vf = next(c[c.index("-vf") + 1] for c in seen if "-vf" in c)
     assert vf.startswith(f"minterpolate=fps={comfy.TALK_FPS}:mi_mode=mci")
     frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
-    assert abs(frames - 2 * comfy.TALK_FPS) <= 1 and abs(seconds - 2.0) < 0.1
+    assert abs(frames - 2 * comfy.TALK_FPS) <= 4 and abs(seconds - 2.0) < 0.15   # minterpolate may add edge frames
     seen.clear()
     talk_comfy.at_fps(src, tmp_path / "dup.mp4", comfy.TALK_FPS, interpolate={**interp, "enabled": False})
     assert next(c[c.index("-vf") + 1] for c in seen if "-vf" in c) == f"fps={comfy.TALK_FPS}"   # switched off
