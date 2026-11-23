@@ -98,7 +98,7 @@ def production_stats(conn, creator_id, days: int) -> dict:
         "AND created_at > now() - %s GROUP BY 1 ORDER BY 2 DESC LIMIT 5", (creator_id, timedelta(days=days))).fetchall()
         if r["why"]]
     spend = conn.execute("SELECT coalesce(sum(usd), 0) u FROM cost_entries WHERE creator_id = %s AND category <> 'gpu' "
-                         "AND at > now() - %s", (creator_id, timedelta(days=days))).fetchone()["u"]
+                         "AND created_at > now() - %s", (creator_id, timedelta(days=days))).fetchone()["u"]
     ready = sum(v.get("ready", 0) + v.get("published", 0) for v in by.values())
     return {"by_format": by, "top_drop_reasons": drops, "usd": round(float(spend), 2),
             "usd_per_ready_post": round(float(spend) / ready, 2) if ready else None}

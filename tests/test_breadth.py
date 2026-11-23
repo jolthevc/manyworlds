@@ -260,7 +260,7 @@ def test_test_work_across_voice_comfy_and_talk_starts_one_merged_machine(conn, p
     imgs = [pol.get("worker_images", f) for f in ("voice", "comfy", "talk", "dance")]
     newest = max((i["tag"] for i in imgs), key=autoscale._tag_order)
     assert spec.image == f"docker.io/example/mw-worker-talkcomfy:{newest}"
-    assert spec.ram_gb == pol.get("autoscale", "merge_families", "talkcomfy", "ram_gb")   # the group's own size
+    assert spec.ram_gb == breadth.test_policy(pol).get("autoscale", "merge_families", "talkcomfy", "ram_gb")   # its own size
     g = conn.execute("SELECT family, job_kinds, max_usd, max_attempt_minutes FROM gpu_groups WHERE name = %s",
                      (name,)).fetchone()
     runs = pol.get("gpu_runs")

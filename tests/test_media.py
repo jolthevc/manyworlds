@@ -149,10 +149,8 @@ def test_every_input_reaches_one_size_and_rate_and_a_silent_one_gets_silence(raw
 def test_transitions_really_render(tmp_path, raw_policy):
     parts = [_clip(tmp_path / f"t{i}.mp4", size="160x288", seconds=1) for i in range(4)]
     out = media.concat(parts, tmp_path / "t.mp4", transitions=["whip", "blur", "flash"], policy=raw_policy)
-    blocks = raw_policy.get("finishing", "transitions")
-    overlap = sum(blocks[k]["frames"] for k in ("whip", "blur", "flash"))
     frames, _ = _frames(out)
-    assert abs(frames - (4 * 30 - overlap)) <= 3 and media.probe(out)["audio"]
+    assert abs(frames - 4 * 30) <= 3 and media.probe(out)["audio"]   # held frames: no segment is shortened
     mixed = [_clip(tmp_path / "m0.mp4", rate=25, seconds=2), _clip(tmp_path / "m1.mp4", size="320x576", audio=False)]
     out = media.concat(mixed, tmp_path / "m.mp4", transitions=[{"type": "match", "out_at": 1.5}], policy=raw_policy)
     info = media.probe(out)
