@@ -1836,7 +1836,7 @@ llm:
     # Haiku since 2026-11-22 (owner): 16 shadowed calls 0.59 points from Sonnet on average, all valid, at 5% of the
     # cost. Sonnet stays as a 10% shadow (llm.shadow.evaluator) to catch drift.
     evaluator: claude-haiku-5-5      # creative scoring at volume (manyworlds.brain.evaluation)
-    evaluator_check: claude-opus-5-5 # scores a sample of the same items, to measure agreement
+    evaluator_check: claude-sonnet-5-5   # scores a sample of the same items, to measure agreement (Opus was ~$0.15 a call, 40% of evaluator spend)
     review: claude-haiku-5-5     # first-pass image screen (manyworlds.review); every image
     comment_reply: {model: qwen4-max, fallback: claude-sonnet-5-5}   # replies in the creator's voice (publish/comments.py); same writing as the showrunner
     trend_features: {model: qwen3.8-flash, fallback: claude-haiku-5-5}   # describes public posts from cover, caption, speech (research/trends.py)
@@ -1851,6 +1851,9 @@ llm:
     claude-sonnet-5-5: [2.00, 10.00, 0.10, 2.50]
     claude-haiku-5-5:  [0.10, 0.50, 0.01, 0.125]
   max_output_tokens: 16000
+  # System prompts at least this long go out as a cached block (llm._system): ~1000+ tokens, the smallest prefix
+  # the API caches. Shorter ones are sent as plain text (caching would not apply anyway).
+  cache_system_min_chars: 4000
   # Open-weight models (manyworlds.llm): a role may name one, as `{model: <open model>, fallback: <Claude model>}`.
   # hosts: OpenAI-compatible endpoints; the key lives in .env/Fly secrets under key_env (never in policy).
   # open_models: id is the host's model name; usd_per_mtok is [input, output]; vision: accepts images.

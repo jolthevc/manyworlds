@@ -267,3 +267,14 @@ def test_a_timed_out_open_call_is_charged_an_estimate_and_a_refused_one_is_not(c
     with pytest.raises(OpenModelError):
         llm._open(llm.route("review")[0], system="s", content="look", schema=Verdict, creator_id=None)
     assert conn.execute("SELECT count(*) n FROM cost_entries WHERE category = 'llm'").fetchone()["n"] == 1
+
+
+def test_a_long_system_prompt_is_sent_as_a_cached_block(conn, policy):
+    client = FakeAnthropic()
+    llm = LLM(conn, policy, client=client)
+    floor = policy.get("llm", "cache_system_min_chars")
+    llm.structured("director", system="x" * floor, content="c", schema=Verdict)
+    llm.structured("director", system="short", content="c", schema=Verdict)
+    long_call, short_call = client.calls[-2], client.calls[-1]
+    assert long_call["system"] == [{"type": "text", "text": "x" * floor, "cache_control": {"type": "ephemeral"}}]
+    assert short_call["system"] == "short"

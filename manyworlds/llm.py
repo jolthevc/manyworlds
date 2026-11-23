@@ -301,8 +301,18 @@ class LLM:
         return self._claude(model, system=system, content=content, schema=schema, effort=effort,
                             creator_id=creator_id, agent=agent)
 
+    def _system(self, system):
+        """The system prompt as a cached block when it is long enough to cache (policy
+        llm.cache_system_min_chars): agents send the same long instructions on every call (showrunner, director,
+        evaluator rubrics, talent manager), so the repeats are read from the cache at a tenth of the input price."""
+        floor = int(self.policy.get("llm", "cache_system_min_chars", default=0) or 0)
+        if not floor or not isinstance(system, str) or len(system) < floor:
+            return system
+        return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
     def _claude(self, model: str, *, system, content, schema: type[T], effort: str, creator_id,
                 agent: str | None = None) -> T:
+        system = self._system(system)
         # Server-side refusal fallback exists only for some models (not Haiku); policy lists them.
         fallback = {}
         if model in (self.policy.get("llm", "server_fallback_models", default=[]) or []):
