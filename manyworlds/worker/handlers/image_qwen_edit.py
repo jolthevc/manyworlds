@@ -190,3 +190,17 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
 
 
 HANDLERS = {"image.qwen_edit": generate}
+
+
+def release() -> None:
+    """Give the GPU back before another family's job (manyworlds.worker.runner._switch_to)."""
+    if _state.get("pipe") is None:
+        return
+    _state["pipe"] = None
+    import gc
+    gc.collect()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - no torch or no GPU: nothing to free
+        pass

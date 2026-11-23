@@ -493,9 +493,10 @@ def brain_steps(conn, pol, llm=None) -> dict:
         return [{"events": r}] if r else []
 
     def portfolio_cycle():
-        if not pol.get("brain", "strategist", "enabled", default=False):
-            return []
-        portfolio.ensure_daily(conn, pol)          # the daily portfolio cycle (one strategist job a day)
+        # Each step has its own switch: turning the CEO off (no launches) must not stop careers, predictions or
+        # approved launches.
+        if pol.get("brain", "strategist", "enabled", default=False):
+            portfolio.ensure_daily(conn, pol)      # the daily portfolio cycle (one strategist job a day)
         talent_manager.ensure_reviews(conn, pol, now=now)   # each creator's career review, on its stage's cadence
         market_lead.ensure_reviews(conn, pol, now=now)      # each market that warrants a lead
         chief_of_staff.tick(conn, pol, now=now)             # predictions resolved, stalled requests and agents reported

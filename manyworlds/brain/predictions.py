@@ -11,8 +11,10 @@ simulated outcomes and stay labelled `sandbox`, so the real scorecard never mixe
                    a claim with no posts to measure stays open until `brain.predictions.give_up_days` after due
     scorecard()    per role and month: n, mean Brier, hit rate, and calibration (claims grouped by probability)
 
-Metrics: median_reach (median latest reach of posts published in the window), posts_published (count),
-reach_growth (log of median reach in the window over the creator's median before it).
+Metrics: median_reach (median reach at the target age, brain.analysis.target_age_s, of posts published in the
+window), reach_growth (log of that median over the creator's median before the window). Nothing the agents control
+themselves (how many posts they publish) is a metric: a claim about it would only flatter the scorecard. A claim
+resolves once the window's last posts have reached the target age, and its horizon is clamped to policy.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from ..policy import Policy
 from . import evidence
 
-METRICS = ("median_reach", "posts_published", "reach_growth")
+METRICS = ("median_reach", "reach_growth")
 
 
 def record(conn, *, role: str, claim: str, metric: str, comparator: str, threshold: float, probability: float,
@@ -34,6 +36,8 @@ def record(conn, *, role: str, claim: str, metric: str, comparator: str, thresho
     if metric not in METRICS or comparator not in ("above", "below") or creator_id is None:
         return None
     p = min(max(float(probability), 0.0), 1.0)
+    cfg = _cfg_p()
+    horizon_days = min(max(int(horizon_days), int(cfg["min_horizon_days"])), int(cfg["max_horizon_days"]))
     mode = evidence.mode_for(conn, creator_id)
     return conn.execute(
         "INSERT INTO predictions (role, creator_id, market_id, claim, metric, comparator, threshold, probability, "
@@ -43,12 +47,28 @@ def record(conn, *, role: str, claim: str, metric: str, comparator: str, thresho
          decision_id, now + timedelta(days=int(horizon_days)), now)).fetchone()["id"]
 
 
+_POLICY: dict = {"min_horizon_days": 7, "max_horizon_days": 180, "target_age_s": 259200}
+
+
+def _cfg_p() -> dict:
+    return _POLICY
+
+
+def configure(policy: Policy) -> None:
+    """Horizon bounds and the reach age from policy (brain.predictions, brain.analysis.target_age_s)."""
+    _POLICY.update({k: v for k, v in (policy.get("brain", "predictions", default={}) or {}).items()
+                    if k in ("min_horizon_days", "max_horizon_days")})
+    _POLICY["target_age_s"] = int(policy.get("brain", "analysis", "target_age_s", default=259200))
+
+
 def _reach(conn, post_id, mode) -> float | None:
-    rows = evidence.metrics(conn, post_id, mode=mode)
+    """Reach at the target age (the first snapshot at or after it): a young post's reach would read as failure."""
+    target = int(_POLICY["target_age_s"])
+    rows = [r for r in evidence.metrics(conn, post_id, mode=mode) if (r.get("post_age_s") or 0) >= target]
     if not rows:
         return None
-    last = max(rows, key=lambda r: r.get("post_age_s") or 0)
-    v = (last.get("metrics") or {}).get("reach")
+    first = min(rows, key=lambda r: r.get("post_age_s") or 0)
+    v = (first.get("metrics") or {}).get("reach")
     return float(v) if v is not None else None
 
 
@@ -62,11 +82,8 @@ def _reaches(conn, creator_id, mode, start, end) -> list[float]:
 
 def measure(conn, pred: dict) -> float | None:
     start, end, mode = pred["created_at"], pred["resolve_at"], pred["mode"]
-    if pred["metric"] == "posts_published":
-        return float(conn.execute("SELECT count(*) n FROM posts p JOIN publications u ON u.post_id = p.id "
-                                  "WHERE p.creator_id = %s AND u.simulated = %s AND u.published_at > %s "
-                                  "AND u.published_at <= %s", (pred["creator_id"], mode == "sandbox", start, end)
-                                  ).fetchone()["n"])
+    if pred["metric"] not in METRICS:
+        return None
     window = _reaches(conn, pred["creator_id"], mode, start, end)
     if not window:
         return None
@@ -80,12 +97,15 @@ def measure(conn, pred: dict) -> float | None:
 
 def resolve_due(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
+    configure(policy)
     give_up = timedelta(days=float(policy.get("brain", "predictions", "give_up_days", default=14)))
+    mature = timedelta(seconds=int(_POLICY["target_age_s"]))   # the window's last posts have reached the target age
     out = {"resolved": 0, "unmeasurable": 0}
-    for pred in conn.execute("SELECT * FROM predictions WHERE resolved_at IS NULL AND resolve_at <= %s", (now,)).fetchall():
+    for pred in conn.execute("SELECT * FROM predictions WHERE resolved_at IS NULL AND resolve_at <= %s",
+                             (now - mature,)).fetchall():
         observed = measure(conn, pred)
         if observed is None:
-            if now - pred["resolve_at"] > give_up:   # nothing published to judge it by: closed, no score
+            if now - pred["resolve_at"] - mature > give_up:   # nothing published to judge it by: closed, no score
                 conn.execute("UPDATE predictions SET resolved_at = %s WHERE id = %s", (now, pred["id"]))
                 out["unmeasurable"] += 1
             continue
@@ -102,15 +122,15 @@ def scorecard(conn, *, mode: str = "real", role: str | None = None) -> list[dict
     rows = conn.execute(
         "SELECT role, to_char(created_at, 'YYYY-MM') AS month, count(*) n, avg(brier) brier, "
         "avg(CASE WHEN outcome THEN 1 ELSE 0 END) held, avg(probability) mean_p FROM predictions "
-        "WHERE mode = %s AND outcome IS NOT NULL AND (%s::text IS NULL OR role = %s) GROUP BY 1, 2 ORDER BY 1, 2",
-        (mode, role, role)).fetchall()
+        "WHERE mode = %s AND outcome IS NOT NULL AND metric = ANY(%s) AND (%s::text IS NULL OR role = %s) "
+        "GROUP BY 1, 2 ORDER BY 1, 2", (mode, list(METRICS), role, role)).fetchall()
     out = []
     for r in rows:
         buckets = conn.execute(
             "SELECT width_bucket(probability, 0, 1, 5) b, count(*) n, avg(probability) p, "
             "avg(CASE WHEN outcome THEN 1 ELSE 0 END) held FROM predictions WHERE mode = %s AND role = %s "
-            "AND to_char(created_at, 'YYYY-MM') = %s AND outcome IS NOT NULL GROUP BY 1 ORDER BY 1",
-            (mode, r["role"], r["month"])).fetchall()
+            "AND to_char(created_at, 'YYYY-MM') = %s AND outcome IS NOT NULL AND metric = ANY(%s) GROUP BY 1 ORDER BY 1",
+            (mode, r["role"], r["month"], list(METRICS))).fetchall()
         out.append({"role": r["role"], "month": r["month"], "n": r["n"], "brier": round(float(r["brier"]), 4),
                     "hit_rate": round(float(r["held"]), 3), "mean_probability": round(float(r["mean_p"]), 3),
                     "calibration": [{"said": round(float(b["p"]), 2), "happened": round(float(b["held"]), 2),

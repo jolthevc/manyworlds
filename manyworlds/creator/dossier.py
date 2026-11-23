@@ -230,6 +230,35 @@ def build_section(conn, policy: Policy, llm: StructuredLLM, creator_id, section:
     return clean(policy, section, out, prof)
 
 
+def checked_change(policy: Policy, prof: dict, path: str, value) -> dict:
+    """A profile change inside a dossier section, put through the same checks as building it (schema, library
+    archetypes, capabilities that render now, a normalised mix): {path: value} to save. Raises ValueError when the
+    value doesn't fit. A path outside the dossier is returned as is."""
+    section, _, rest = path.partition(".")
+    if section not in SECTIONS:
+        return {path: value}
+    if section == "archetypes":
+        lib = set(arch.names(policy))
+        names = value if isinstance(value, list) else [value]
+        if rest or not names or any(n not in lib for n in names):
+            raise ValueError(f"archetypes must be a list of library names ({sorted(lib)})")
+        return {"archetypes": list(dict.fromkeys(names))}
+    current = dict(prof.get(section) or {})
+    if rest:
+        if "." in rest:
+            raise ValueError("change a dossier field, not part of one")
+        current[rest] = value
+    elif isinstance(value, dict):
+        current = value
+    else:
+        raise ValueError(f"{section} is a section: its value must be an object")
+    try:
+        model = SCHEMAS[section].model_validate(current)
+    except Exception as e:  # noqa: BLE001 - pydantic's error, said in one line
+        raise ValueError(f"{section} does not fit its schema: {str(e).splitlines()[0]}") from e
+    return clean(policy, section, model, prof)
+
+
 def planning_view(prof: dict | None) -> dict:
     """What the showrunner and director need of the dossier, compact."""
     if not prof:

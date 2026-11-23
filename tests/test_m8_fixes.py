@@ -4,7 +4,7 @@ can't touch an existing creator, and approved stage moves are applied."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 
@@ -133,3 +133,17 @@ def test_a_killed_sandbox_run_does_not_block_the_next_one(conn, policy, monkeypa
     monkeypatch.setattr(runtime, "run_job", run_job)
     sandbox._drain(conn, policy, None, cid, "sandbox-test")
     assert ran == [job]
+
+
+def test_test_posts_and_stale_posts_do_not_count_as_a_backlog(conn, policy):
+    cid = creator(conn)
+    conn.execute("UPDATE creators SET status = 'active', profile_version = 1, anchors = %s WHERE id = %s",
+                 (Jsonb({"reference_images": [{"uri": "s3://b/r"}]}), cid))
+    now = datetime(2026, 11, 19, 8, tzinfo=timezone.utc)
+    cap = int(policy.get("production", "max_ready_unpublished"))
+    for i in range(cap):   # half a breadth run's posts, half posts that missed their slot days ago
+        breadth = i % 2 == 0
+        conn.execute("INSERT INTO posts (creator_id, format, status, scheduled_for, body) VALUES (%s, 'photo', 'ready', %s, %s)",
+                     (cid, now if breadth else now - timedelta(days=3),
+                      Jsonb({"breadth_run": "r1"} if breadth else {})))
+    assert showrunner_loop.ensure_batches(conn, policy, now=now) != []

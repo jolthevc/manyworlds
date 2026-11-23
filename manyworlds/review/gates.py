@@ -215,6 +215,10 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         top = int(cfg.get("confirm_top_per_job", 0)) or len(still)
         still.sort(key=lambda a: -sum(results[a["id"]][f"{k}_score"] or 0 for k in ("identity", "realism", "scene")))
         remaining = still[:top]
+    # A clear pass is stored on its screen rows, so production can choose it without a confirm row.
+    clear = {str(i) for i, r in results.items() if r.get("clear_pass")}
+    rows = [(aid, g, ok, sc, Jsonb({**j.obj, "clear_pass": True})
+             if str(aid) in clear and j.obj.get("stage") == "screen" else j) for aid, g, ok, sc, j in rows]
     if write:
         common.write_rows(conn, rows)
     for r in results.values():

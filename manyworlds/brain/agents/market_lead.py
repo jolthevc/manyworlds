@@ -46,15 +46,15 @@ class CohortConcept(BaseModel):
 
 
 class MarketRequest(BaseModel):
-    kind: Literal["cohort", "budget", "escalate"]
-    subject: str = Field(description='as JSON: {"size": 5, "concepts": [...], "usd": 30} or {"usd": 10} or {"ask": "..."}')
+    kind: Literal["cohort", "escalate"]
+    subject: str = Field(description='as JSON: {"size": 5, "concepts": [...]} or {"ask": "..."}')
     argument: str
 
 
 class MarketClaim(BaseModel):
     creator_handle: str
     claim: str
-    metric: Literal["median_reach", "posts_published", "reach_growth"]
+    metric: Literal["median_reach", "reach_growth"]
     comparator: Literal["above", "below"]
     threshold: float
     probability: float
@@ -87,8 +87,11 @@ def _creators(conn, market_id) -> list[dict]:
     out = []
     for r in rows:
         b = latest_brief(conn, r["id"])
+        mode = evidence.mode_for(conn, r["id"])
+        if mode == "sandbox":   # simulated outcomes are not evidence: a sandbox creator's brief never shapes a market
+            continue
         out.append({"handle": r["handle"], "creator_id": str(r["id"]), "stage": r["stage"], "tier": r["tier"],
-                    "mode": evidence.mode_for(conn, r["id"]),
+                    "mode": mode,
                     "brief": {k: (b["output"] or {}).get(k) for k in ("state", "focus", "conviction")} if b else None})
     return out
 

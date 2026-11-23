@@ -287,3 +287,19 @@ def test_a_clear_screen_pass_skips_the_paid_confirm_and_scene_never_rejects(conn
     assert [r["accepted"] for r in results] == [True, True]            # scene 0 never rejects
     assert results[0].get("clear_pass") and results[0]["confirmed"]
     assert len(judge.calls) == 2 and judge.calls[1]["n"] == 1          # only the close call is confirmed
+
+
+def test_production_chooses_an_image_that_only_cleared_the_screen(conn, raw_policy, store, tmp_path):
+    """Every candidate a clear pass: no confirm row exists, and production must still choose one (it used to call
+    the scene rejected and repair it until the post was dropped)."""
+    from manyworlds import policy as policy_mod, production
+    pol = policy_mod.from_dict({**raw_policy.body, "operations": {**raw_policy.body["operations"], "mode": "live"},
+                                "llm": {**raw_policy.body["llm"], "shadow": {}}})
+    cfg = pol.get("review", "image")
+    _, job = creator_with_job(conn, store, tmp_path, n_images=1)
+    m = int(cfg["clear_pass_margin"])
+    judge = JudgeStub([ok(identity=int(cfg["min_identity"]) + m, realism=int(cfg["min_realism"]) + m)])
+    [r] = gates.review_job(conn, pol, judge, store, job, tmp_path)
+    assert r["clear_pass"] and len(judge.calls) == 1                   # no confirm was paid for
+    state, best = production._scene_state(conn, [str(job)])
+    assert state == "chosen" and best["uri"] == r["uri"]

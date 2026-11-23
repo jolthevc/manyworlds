@@ -145,3 +145,17 @@ def mirror_model(payload: dict, ctx: JobContext) -> HandlerResult:
 
 
 HANDLERS = {"image.zimage": generate, "image.mirror": mirror_model}
+
+
+def release() -> None:
+    """Give the GPU back before another family's job (manyworlds.worker.runner._switch_to)."""
+    if _state.get("pipe") is None:
+        return
+    _state["pipe"], _state["lora_uri"] = None, None   # a reload starts without the LoRA
+    import gc
+    gc.collect()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - no torch or no GPU: nothing to free
+        pass

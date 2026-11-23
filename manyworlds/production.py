@@ -196,13 +196,17 @@ def start(conn, policy: Policy, post: dict) -> None:
 
 
 def _best_confirmed(conn, job_ids: list[str]) -> dict | None:
-    """The best image of these jobs that passed every review row and was confirmed."""
+    """The best image of these jobs that passed every review row and was confirmed, or cleared the screen by the
+    clear-pass margin (no confirm needed: review.image.clear_pass_margin)."""
     return conn.execute(
-        """SELECT a.id, a.uri, sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm') AS score
+        """SELECT a.id, a.uri,
+                  coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm'),
+                           sum(r.score) FILTER (WHERE r.details->>'clear_pass' = 'true')) AS score
            FROM assets a JOIN reviews r ON r.asset_id = a.id
            WHERE a.job_id = ANY(%s::uuid[]) AND a.kind = 'image'
            GROUP BY a.id, a.uri
-           HAVING bool_and(r.passed) AND bool_or(r.details->>'stage' = 'confirm')
+           HAVING bool_and(r.passed)
+              AND bool_or(r.details->>'stage' = 'confirm' OR r.details->>'clear_pass' = 'true')
            ORDER BY score DESC NULLS LAST, a.uri LIMIT 1""", (job_ids,)).fetchone()
 
 

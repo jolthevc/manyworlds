@@ -14,6 +14,8 @@ def test_a_code_fault_fails_once_and_a_machine_fault_is_still_released():
     assert runner.is_code_fault(TypeError("process() takes no keyword arguments"))
     assert runner.is_code_fault(RuntimeError("ComfyUI failed: Failed to find C compiler"))
     assert not runner.is_code_fault(RuntimeError("CUDA error: out of memory"))
+    assert not runner.is_code_fault(RuntimeError("ComfyUI exited at start (1): CUDA error: no CUDA GPUs are available"))
+    assert not runner.is_code_fault(AttributeError("'NoneType' object has no attribute 'json'"))
     assert runner.is_worker_fault(OSError("[Errno 122] Disk quota exceeded"))
 
 
@@ -42,10 +44,23 @@ def test_a_worker_prefers_the_loaded_models_kind_within_a_priority(conn):
 
 def test_switching_family_releases_the_last_engine(policy, monkeypatch):
     freed = []
-    monkeypatch.setitem(runner.RELEASE, "voice.speak", lambda: freed.append("voice"))
-    monkeypatch.setitem(runner.RELEASE, "voice.design", lambda: freed.append("voice"))
+    voice = lambda: freed.append("voice")                                # one module's release()
+    monkeypatch.setitem(runner.RELEASE, "voice.speak", voice)
+    monkeypatch.setitem(runner.RELEASE, "voice.design", voice)
     w = runner.Worker.__new__(runner.Worker)
-    w.policy, w.last_kind = policy, None
+    w.policy, w.last_kind, w.ran = policy, None, []
     for kind in ("voice.speak", "voice.design", "talk.infinitetalk", "talk.infinitetalk"):
         w._switch_to(kind)
     assert freed == ["voice"]                                            # once, at the voice -> talk switch
+
+
+def test_an_engine_loaded_earlier_in_the_family_is_freed_too(policy, monkeypatch):
+    """Z-Image stays loaded through an image.narrated job (no engine of its own): the switch to ComfyUI frees it."""
+    freed = []
+    monkeypatch.setitem(runner.RELEASE, "image.zimage", lambda: freed.append("zimage"))
+    monkeypatch.delitem(runner.RELEASE, "image.narrated", raising=False)
+    w = runner.Worker.__new__(runner.Worker)
+    w.policy, w.last_kind, w.ran = policy, None, []
+    for kind in ("image.zimage", "image.narrated", "comfy.wan_i2v"):
+        w._switch_to(kind)
+    assert freed == ["zimage"]

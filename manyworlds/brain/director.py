@@ -295,6 +295,13 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None,
             s["motion_reference"] = ""
     issues = planner.shot_voice_issues(policy, shots)
     if issues:
+        # The edit call's text (labels, hooks) can break a voice rule on its own: the shots keep their direction
+        # without it. Only shots that still fail make the post undirected.
+        blank = ShotSheet().model_dump(mode="json")["edit"]
+        log.warning("the edit reads as AI (%s); edits cleared, shots kept", ", ".join(issues))
+        shots = [{**s, "edit": blank} for s in shots]
+        issues = planner.shot_voice_issues(policy, shots)
+    if issues:
         raise ValueError("the shots read as AI: " + ", ".join(issues))
     if fmt == "talking_video":
         said = _words(" ".join(spoken(s) for s in shots))

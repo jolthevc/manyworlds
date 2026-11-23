@@ -54,12 +54,17 @@ def ensure_batches(conn, policy: Policy, *, now: datetime | None = None) -> list
     out = []
     # A creator with this many made-but-unpublished posts (e.g. waiting for its account) gets no new batch:
     # rendering more would spend GPU on posts that may go stale before they can publish.
+    # Test posts (the breadth test's) and posts past their slot (stale: never published) don't count, or one
+    # test run or one stale backlog would stop the creator's planning for good.
     backlog = int(policy.get("production", "max_ready_unpublished", default=6))
+    stale = now - timedelta(hours=float(policy.get("publishing", "max_late_hours", default=6)))
     for c in conn.execute(
             "SELECT c.id, c.handle FROM creators c WHERE c.status = ANY(%s) AND c.profile_version IS NOT NULL "
             "AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0 "
-            "AND (SELECT count(*) FROM posts p WHERE p.creator_id = c.id AND p.status = 'ready') < %s",
-            (list(cfg.get("auto_statuses", ["active"])), backlog)).fetchall():
+            "AND (SELECT count(*) FROM posts p WHERE p.creator_id = c.id AND p.status = 'ready' "
+            "     AND NOT coalesce(p.body, '{}'::jsonb) ? 'breadth_run' "
+            "     AND coalesce(p.scheduled_for, now()) >= %s) < %s",
+            (list(cfg.get("auto_statuses", ["active"])), stale, backlog)).fetchall():
         start = planner.next_start(conn, c["id"], now.date())
         if datetime.combine(start, time(0), tzinfo=timezone.utc) - now > ahead:
             continue

@@ -42,9 +42,11 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
                            dedupe_key=f"agent_failing:{r['kind']}:{day}")
     idle_spend = conn.execute(
         "SELECT c.agent, round(sum(c.usd)::numeric, 2)::float usd FROM cost_entries c WHERE c.category = 'llm' "
-        "AND c.agent IS NOT NULL AND c.created_at > %s AND NOT EXISTS (SELECT 1 FROM decisions d "
-        "WHERE d.agent = split_part(c.agent, ':', 1) AND d.created_at > %s) GROUP BY 1 HAVING sum(c.usd) >= %s",
-        (window, window, float(cfg.get("idle_spend_usd", 0.5)))).fetchall()
+        "AND split_part(regexp_replace(c.agent, '^sandbox:', ''), ':', 1) = ANY(%s) "
+        "AND c.created_at > %s AND NOT EXISTS (SELECT 1 FROM decisions d "
+        "WHERE d.agent = split_part(regexp_replace(c.agent, '^sandbox:', ''), ':', 1) AND d.created_at > %s) "
+        "GROUP BY 1 HAVING sum(c.usd) >= %s",
+        (list(cfg.get("decision_agents") or []), window, window, float(cfg.get("idle_spend_usd", 0.5)))).fetchall()
     for r in idle_spend:
         notify.owner_event(conn, "agent_spend_without_output", subject={"agent": r["agent"]}, payload={"usd": r["usd"]},
                            dedupe_key=f"agent_spend_without_output:{r['agent']}:{day}")

@@ -32,6 +32,7 @@ def dataset(conn, creator_id, *, mode: evidence.Mode, policy: Policy) -> list[di
     """Published (or simulated) posts in time order with their idea's scores and attributes and their reach
     at the target age, read in the creator's mode. Posts not yet observed at the target age are left out."""
     target = int(_cfg(policy).get("target_age_s", 259200))
+    tolerance = int(_cfg(policy).get("target_age_tolerance_s", 86400))
     posts = conn.execute(
         """SELECT p.id, p.published_at, p.format, i.attributes, i.experiment_id, i.arm, e.scores
            FROM posts p LEFT JOIN ideas i ON i.post_id = p.id
@@ -41,13 +42,13 @@ def dataset(conn, creator_id, *, mode: evidence.Mode, policy: Policy) -> list[di
            ORDER BY p.published_at""", (creator_id,)).fetchall()
     rows = []
     for p in posts:
+        # The first snapshot at or after the target age (real metrics are collected on a tick, so never exactly
+        # at it), within the tolerance. None yet: too young, its reach would read as failure.
         obs = [m for m in evidence.metrics(conn, p["id"], mode=mode)
-               if m.get("post_age_s") is not None and m["post_age_s"] <= target]
+               if m.get("post_age_s") is not None and target <= m["post_age_s"] <= target + tolerance]
         if not obs:
             continue
-        latest = max(obs, key=lambda m: m["post_age_s"])
-        if latest["post_age_s"] < target:
-            continue   # too young: its reach is still a fraction of what it will be, and would read as failure
+        latest = min(obs, key=lambda m: m["post_age_s"])
         rows.append({"post_id": str(p["id"]), "published_at": p["published_at"], "format": p["format"],
                      "scores": p["scores"] or {}, "attributes": p["attributes"] or {},
                      "reach": latest["metrics"].get("reach"), "age_s": latest["post_age_s"],

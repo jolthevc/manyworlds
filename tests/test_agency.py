@@ -203,3 +203,81 @@ def test_the_chief_of_staff_expires_stale_requests_and_reports_failing_agents(co
     assert out["expired_requests"] == 1 and out["failing_agents"] == 1
     types = {r["type"] for r in conn.execute("SELECT type FROM events").fetchall()}
     assert {"requests_expired", "agent_failing"} <= types
+
+
+# ------------------------------------------------------------------------------------------- request effects
+
+def test_requests_waiting_on_the_owner_never_block_a_creators_other_requests(conn, policy):
+    cid = creator(conn)
+    cap = int(policy.get("brain", "rights", "max_open_per_creator"))
+    for i in range(cap + 1):
+        proposals.file(conn, policy, kind="escalate", from_role="talent_manager", creator_id=cid,
+                       subject={"ask": f"a set {i}"}, argument="repetition", now=NOW)
+    r = proposals.file(conn, policy, kind="research", from_role="talent_manager", creator_id=cid,
+                       subject={"question": "why"}, argument="stalled", now=NOW)
+    assert r.get("status") == "accepted"
+
+
+def test_an_escalated_tier_tells_the_owner_at_once(conn, policy):
+    cid = creator(conn)
+    broke = _with(policy, ("budget", "master_usd_per_month"), 0)
+    r = proposals.file(conn, broke, kind="tier_change", from_role="talent_manager", creator_id=cid,
+                       subject={"tier": "premium"}, argument="more", now=NOW)
+    proposals.decide(conn, broke, r["id"], decided_by="strategist", accept=True, reason="yes", now=NOW)
+    assert conn.execute("SELECT count(*) n FROM events WHERE type = 'request_for_owner'").fetchone()["n"] == 1
+
+
+def test_a_rerun_job_files_its_request_once(conn, policy):
+    cid = creator(conn)
+    job = queue.enqueue(conn, "brain.talent_manager", {"creator_id": str(cid)})
+    first = proposals.file(conn, policy, kind="research", from_role="talent_manager", creator_id=cid,
+                           subject={"question": "why"}, argument="stalled", job_id=job, now=NOW)
+    again = proposals.file(conn, policy, kind="research", from_role="talent_manager", creator_id=cid,
+                           subject={"question": "why"}, argument="stalled", job_id=job, now=NOW)
+    assert again["id"] == first["id"] and again["repeat"]
+    assert conn.execute("SELECT count(*) n FROM jobs WHERE kind = 'brain.analyst'").fetchone()["n"] == 1
+
+
+def test_a_reworded_tier_request_is_the_same_request(conn, policy):
+    cid = creator(conn)
+    proposals.file(conn, policy, kind="tier_change", from_role="talent_manager", creator_id=cid,
+                   subject={"tier": "standard"}, argument="a", now=NOW)
+    again = proposals.file(conn, policy, kind="tier_change", from_role="talent_manager", creator_id=cid,
+                           subject={"tier": "standard", "why": "worded differently"}, argument="b", now=NOW)
+    assert "already open" in again["refused"]
+
+
+def test_tier_upgrades_in_one_run_share_the_months_budget(conn, policy):
+    levels = policy.get("brain", "tiers", "levels")
+    per = (float(levels["premium"]["usd_per_day"]) - float(levels["economy"]["usd_per_day"])) * 30
+    from manyworlds.brain import portfolio
+    spent = portfolio.budget(conn, policy, NOW)["spent_usd"]
+    reserve = float(policy.get("budget", "reserve_share", default=0.15))
+    room = _with(policy, ("budget", "master_usd_per_month"), (per * 1.5 + spent) / (1 - reserve))   # room for one
+    got = []
+    for _ in range(3):
+        cid = creator(conn)
+        r = proposals.file(conn, room, kind="tier_change", from_role="talent_manager", creator_id=cid,
+                           subject={"tier": "premium"}, argument="earned", now=NOW)
+        got.append(proposals.decide(conn, room, r["id"], decided_by="strategist", accept=True, reason="y", now=NOW)["status"])
+    assert got == ["accepted", "open", "open"]                                      # the rest go to the owner
+
+
+def test_an_accepted_experiment_opens_one_and_a_cohort_becomes_theses(conn, policy):
+    cid = creator(conn)
+    r = proposals.file(conn, policy, kind="experiment", from_role="talent_manager", creator_id=cid,
+                       subject={"effect": "format:carousel", "hypothesis": "carousels earn saves"}, argument="x", now=NOW)
+    assert r.get("status") == "accepted"
+    exp = conn.execute("SELECT effect_key, status FROM experiments WHERE creator_id = %s", (cid,)).fetchone()
+    assert exp["effect_key"] == "format:carousel" and exp["status"] == "open"
+    bad = proposals.file(conn, policy, kind="experiment", from_role="talent_manager", creator_id=creator(conn),
+                         subject={"hypothesis": "vibes"}, argument="x", now=NOW)
+    assert bad.get("status") == "rejected"
+    m = conn.execute("INSERT INTO markets (name) VALUES ('slow living') RETURNING id").fetchone()["id"]
+    c = proposals.file(conn, policy, kind="cohort", from_role="market_lead", market_id=m, argument="a gap",
+                       subject={"size": 2, "concepts": [{"concept": "a potter in Leeds", "archetype": "maker",
+                                                         "why_distinct": "clay"}, "a night baker"]}, now=NOW)
+    out = proposals.decide(conn, policy, c["id"], decided_by="strategist", accept=True, reason="go", now=NOW)
+    assert out["status"] == "accepted" and len(out["applied"]["theses"]) == 2
+    t = conn.execute("SELECT status, body FROM theses WHERE body->>'market_id' = %s", (str(m),)).fetchall()
+    assert {x["status"] for x in t} == {"proposed"} and t[0]["body"]["archetype"] in ("maker", "")

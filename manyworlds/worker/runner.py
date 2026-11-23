@@ -98,7 +98,11 @@ def is_worker_fault(exc: BaseException) -> bool:
 
 
 def is_code_fault(exc: BaseException) -> bool:
+    """A machine's fault wins (ComfyUI exiting at start because the card is broken is retried elsewhere), and an
+    attribute of None is a transient empty answer, not wrong code."""
     text = f"{type(exc).__name__}: {exc}"
+    if is_worker_fault(exc) or (type(exc).__name__ == "AttributeError" and "'NoneType'" in str(exc)):
+        return False
     return type(exc).__name__ in CODE_FAULT_TYPES or any(m.lower() in text.lower() for m in CODE_FAULT_MARKERS)
 
 
@@ -192,20 +196,29 @@ class Worker:
         self._busy = False
         self._idle_since = time.monotonic()
         self.last_kind: str | None = None   # model affinity: claim the loaded model's kinds first, free on a switch
+        self.ran: list[str] = []            # kinds run since the last switch: every engine they loaded is freed
 
     def _switch_to(self, kind: str) -> None:
         """Before a job of another family than the last (a merged machine: voice, motion, lip sync), the last
         family's engine gives its GPU memory back (handler module `release()`, e.g. ComfyUI /free)."""
         last, self.last_kind = self.last_kind, kind
         if last is None or family_of(self.policy, last) == family_of(self.policy, kind):
+            if kind not in self.ran:
+                self.ran.append(kind)
             return
-        release = RELEASE.get(last)
-        if release is not None:
+        # Every engine the last family loaded (Z-Image stays loaded through an image.narrated job), once each.
+        ran, self.ran = self.ran, [kind]
+        done = set()
+        for k in ran:
+            release = RELEASE.get(k)
+            if release is None or release in done:
+                continue
+            done.add(release)
             try:
                 release()
-                log.info("released %s's models before %s", last, kind)
+                log.info("released %s's models before %s", k, kind)
             except Exception as e:  # noqa: BLE001 - freeing is best effort; the next load may still fit
-                log.warning("could not release %s: %s", last, e)
+                log.warning("could not release %s: %s", k, e)
 
     def stop(self, *_):
         log.info("stop requested; finishing current job")

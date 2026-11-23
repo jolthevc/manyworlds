@@ -18,7 +18,7 @@ A review writes:
   - the brief the showrunner plans from (decision `talent_brief`; the strategist reads the latest per creator)
   - its conviction: the probability she reaches the next stage within a horizon, with an interval and the case
     for it (a `convictions` row). A creator with little traction but real upside can be argued for here.
-  - typed requests (manyworlds.brain.proposals): a tier change or budget to the CEO, research to the analyst,
+  - typed requests (manyworlds.brain.proposals): a tier change to the CEO, research to the analyst,
     escalations to the owner. Code checks the rights and the money; a rejected request comes back only with new
     evidence.
   - predictions (manyworlds.brain.predictions): checkable claims about her next weeks, scored later
@@ -62,15 +62,16 @@ class Conviction(BaseModel):
 
 
 class Request(BaseModel):
-    kind: Literal["tier_change", "budget", "research", "experiment", "production_upgrade", "escalate"]
-    subject: str = Field(description='what is asked, as JSON: {"tier": "standard"}, {"usd": 5}, '
-                                     '{"question": "..."}, {"hypothesis": "..."}, {"ask": "..."}')
+    kind: Literal["tier_change", "research", "experiment", "production_upgrade", "escalate"]
+    subject: str = Field(description='what is asked, as JSON: {"tier": "standard"}, {"question": "..."}, '
+                                     '{"effect": "format:carousel" | "attribute:<key>=<value>" | "dimension:<name>", '
+                                     '"hypothesis": "..."}, {"ask": "..."}')
     argument: str = Field(description="why, with the evidence; for money, what it buys and what it should show")
 
 
 class Claim(BaseModel):
     claim: str = Field(description="what you expect, in words")
-    metric: Literal["median_reach", "posts_published", "reach_growth"]
+    metric: Literal["median_reach", "reach_growth"]
     comparator: Literal["above", "below"]
     threshold: float
     probability: float = Field(description="0-1: how sure you are")
@@ -270,9 +271,15 @@ def _review(ctx: AgentContext, creator_id, mode: str, event: dict | None) -> dic
         if not editable(policy, ch["path"]):
             needs_owner.append(ch)
             continue
-        try:
-            profile_mod.set_path(conn, policy, creator_id, ch["path"], _value(ch["value"]), author=ROLE,
-                                 reason=ch["reason"] or "career review")
+        def change(ch=ch):
+            saved = dossier.checked_change(policy, prof, ch["path"], _value(ch["value"]))
+            for path, value in saved.items():
+                profile_mod.set_path(conn, policy, creator_id, path, value, author=ROLE,
+                                     reason=ch["reason"] or "career review")
+            return {"kind": "profile_change", "creator_id": creator_id, "inputs": {"path": ch["path"]},
+                    "output": {"saved": sorted(saved)}, "rationale": ch["reason"] or ""}
+        try:   # once per job: a rerun finds the recorded change and saves no duplicate version
+            remember(ctx, f"change:{ch['path']}", change)
             applied.append(ch)
         except (ValueError, LookupError) as e:
             needs_owner.append({**ch, "refused": str(e)})
@@ -364,6 +371,9 @@ def ensure_reviews(conn, policy, *, now: datetime | None = None) -> list:
     for r in rows:
         days = max(int(cadence.get(r["stage"], cadence.get("default", 7))), 1)
         period = int(now.timestamp() // (days * 86400))
-        out.append(queue.enqueue(conn, "brain.talent_manager", {"creator_id": str(r["id"]), "mode": "review"},
+        cur = profile_mod.current(conn, r["id"])
+        # A creator from before the agency (or whose launch skipped it) has no dossier: build it first.
+        mode = "onboard" if cur and dossier.missing(cur[1]) else "review"
+        out.append(queue.enqueue(conn, "brain.talent_manager", {"creator_id": str(r["id"]), "mode": mode},
                                  creator_id=r["id"], idempotency_key=f"talent:{r['id']}:{days}d:{period}"))
     return out
