@@ -1,6 +1,6 @@
 """Review gate for story clips: does the creator stay herself, does the motion hold up.
 
-The video worker stores evenly spaced keyframes beside each clip (video.wan_i2v). The judge
+The video worker stores evenly spaced keyframes beside each clip (comfy.wan_i2v, talk.*). The judge
 sees the creator's reference photos, the approved start photo the clip was made from, and
 the keyframes in order, and scores the clip as a whole. Every clip gets one `reviews` row
 per gate, written against the video asset:
@@ -377,7 +377,7 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
            WHERE j.status = 'done' AND (j.kind LIKE 'video.%%' OR j.kind LIKE 'talk.%%' OR j.kind = 'hosted.video'
                                         OR j.kind = 'comfy.wan_i2v' OR j.kind = 'comfy.wan_animate2')
-             AND j.kind <> 'video.mirror'
+             AND j.kind NOT LIKE '%%.mirror'
              AND coalesce(j.payload->>'intermediate', '') <> 'true'
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0
              AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)

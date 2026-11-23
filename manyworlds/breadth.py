@@ -226,7 +226,7 @@ def expected_jobs(policy: Policy, item: Item, creator) -> list[dict]:
     designed = voices.engine((creator or {}).get("anchors") if creator else None) == "voxcpm"
     if item.format == "story_clip":
         routing = (prod.get("routing") or {}).get("story_clip") or {}
-        kind = (routing.get("kinds") or [prod.get("video_kind", "video.wan_i2v")])[0]
+        kind = (routing.get("kinds") or [prod.get("video_kind", "comfy.wan_i2v")])[0]
         out.append({"kind": kind, "n": 1, "output_seconds": None})
     elif item.format == "narrated_edit":
         out.append({"kind": "image.narrated", "n": 1, "output_seconds": None})

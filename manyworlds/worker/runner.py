@@ -402,8 +402,6 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import image_qwen_edit as mod
         elif family == "image":
             from .handlers import image_zimage as mod
-        elif family == "video":
-            from .handlers import video_wan as mod
         elif family == "train":
             from .handlers import train_lora as mod
         elif family == "talk":           # the image chooses the engine: ComfyUI + WanVideoWrapper, or the research script

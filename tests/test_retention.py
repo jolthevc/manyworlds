@@ -39,7 +39,7 @@ def test_rejected_media_past_the_window_is_deleted_and_everything_else_kept(conn
     cid = creator(conn)
     job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('image.zimage', 'done', %s, '{}') "
                        "RETURNING id", (cid,)).fetchone()["id"]
-    clip_job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('video.wan_i2v', 'done', %s, "
+    clip_job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('comfy.wan_i2v', 'done', %s, "
                             "'{}') RETURNING id", (cid,)).fetchone()["id"]
     gone, gone_uri = _asset(conn, store, tmp_path, cid, job, "image", days_old=days + 1, review=False)
     chosen, chosen_uri = _asset(conn, store, tmp_path, cid, job, "image", days_old=days + 1, review=True)

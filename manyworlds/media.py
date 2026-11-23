@@ -429,7 +429,7 @@ def frame_count(path: Path) -> int:
 def keyframes(video: Path, workdir: Path, n: int, *, timeout: float = 120) -> list[tuple[Path, int, int]]:
     """`n` frames spread over the clip, ending on its last (the video gate's keyframes), as JPEGs:
     [(path, frame index, total frames)]. Plain ffmpeg, so it runs where there is no GPU stack (hosted video)."""
-    from .worker.handlers.video_wan import keyframe_indices
+    from .worker.keyframes import keyframe_indices
     total = frame_count(video)
     out = []
     for i, idx in enumerate(keyframe_indices(total, n)):

@@ -104,14 +104,6 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
         elif kind == "hosted.video":
             payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage", "seed": 2000 + i,
                        "keyframes": 4, "params": dict(gen.get("hosted_video", {}))}
-        elif kind.endswith("video") or kind.startswith("video."):
-            vid = {**gen.get("video", {}), **_profile(gen, "video_profiles", profile)}
-            payload = {"prompt": "she turns toward the camera and smiles, handheld phone footage",
-                       "width": vid.get("width", 480), "height": vid.get("height", 832),
-                       "frames": vid.get("frames", 81), "seed": 2000 + i, "keyframes": 4,
-                       "params": {"steps": vid.get("steps", 4), "guidance": vid.get("guidance", 1.0),
-                                  "fps": vid.get("fps", 16),
-                                  **{k: vid[k] for k in ("model", "dmd_timesteps") if vid.get(k)}}}
         elif kind.startswith("talk."):
             # The start photo is the creator's: pass it with --extra '{"image_uri": "..."}'.
             talk = {**gen.get("talk", {}), **_profile(gen, "talk_profiles", profile)}

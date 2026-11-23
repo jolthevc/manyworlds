@@ -75,7 +75,7 @@ def generate(payload: dict, ctx: JobContext, *, policy: Policy | None = None) ->
     ref, params, frames = check(payload, policy)
     from .. import comfy, comfy_animate, crops
     from .talk_comfy import _models_dir, _prepare_image
-    from .video_wan import extract_keyframes
+    from ..keyframes import extract_keyframes
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else random.randrange(1 << 31)
     work = Path(ctx.workdir)

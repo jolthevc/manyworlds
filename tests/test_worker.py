@@ -67,7 +67,7 @@ def test_many_workers_share_a_batch_without_duplicates(conn, database_url, store
 def test_bench_report_counts_only_videos_as_a_clips_outputs(conn, policy):
     """A clip job also stores keyframes and crops for review; seconds per output is per video."""
     batch = "bench-video-outputs"
-    for kind in ("video.wan_i2v", "talk.infinitetalk", "comfy.wan_i2v", "hosted.avatar", "fake.image"):
+    for kind in ("talk.infinitetalk", "comfy.wan_i2v", "hosted.avatar", "fake.image"):
         job = queue.enqueue(conn, kind, {}, batch=batch)
         conn.execute("INSERT INTO attempts (job_id, worker_id, pool, gpu_type, outcome, gpu_seconds) "
                      "VALUES (%s, 'w', 'vast_3090', 'RTX 3090', 'done', 600)", (job,))
@@ -75,7 +75,7 @@ def test_bench_report_counts_only_videos_as_a_clips_outputs(conn, policy):
             conn.execute("INSERT INTO assets (job_id, kind, uri, sha256, bytes) VALUES (%s, %s, %s, 'x', 1)",
                          (job, a, f"s3://t/{job}/{i}"))
     measured = {m["kind"]: m for m in bench.report(conn, policy, batch)["measured"]}
-    for kind in ("video.wan_i2v", "talk.infinitetalk", "comfy.wan_i2v", "hosted.avatar"):
+    for kind in ("talk.infinitetalk", "comfy.wan_i2v", "hosted.avatar"):
         assert measured[kind]["outputs"] == 1 and measured[kind]["sec_per_output_median"] == 600
     assert measured["fake.image"]["outputs"] == 6          # other kinds: everything but crops, as before
 

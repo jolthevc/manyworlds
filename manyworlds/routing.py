@@ -1,7 +1,7 @@
 """Which way of making an output to use: the one that measurably costs least per accepted output.
 
 A story clip can come from a hosted API (hosted.video), the ComfyUI worker's Wan 2.2 graph (comfy.wan_i2v) or the
-older self-hosted pipeline (video.wan_i2v). Pool scoring (deploy/scoring.py) already picks the cheapest GPU pool for
+older self-hosted pipeline (video.wan_i2v, retired 2026-11-22). Pool scoring (deploy/scoring.py) already picks the cheapest GPU pool for
 one job kind; this is the same idea one level up, across job kinds that make the same thing.
 
 A kind's cost over the window is everything its jobs cost: hosted API charges and review LLM calls charged to them,

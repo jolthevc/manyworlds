@@ -231,7 +231,7 @@ def test_every_finished_video_is_mixed_with_room_tone_and_a_silent_one_gets_its_
     # A silent story clip: the same bed, plus the format's music bed (no voice: levelled as a bed).
     fake_finish.clear()
     body = {"scenes": ["a rooftop"], "shots": [{"set": {"location": "a rooftop"}}]}
-    post, video = _made(conn, store, tmp_path, "story_clip", "video.wan_i2v", body)
+    post, video = _made(conn, store, tmp_path, "story_clip", "comfy.wan_i2v", body)
     final = production.finish_video(conn, p, post, body, video, _Sounds(store))
     [mix] = [kw for name, kw in fake_finish if name == "mix"]
     assert mix["music"] is not None and mix["room_tone_synth"] is not None

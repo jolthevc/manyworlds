@@ -10,7 +10,7 @@ from psycopg.types.json import Jsonb
 
 from manyworlds import production
 from manyworlds.review import video
-from manyworlds.worker.handlers.video_wan import keyframe_indices
+from manyworlds.worker.keyframes import keyframe_indices
 
 from test_production import NOW, START, PlanStub, creator, finish, post, real_refs
 from test_review import JudgeStub, ok
@@ -51,7 +51,7 @@ def rendered(conn, store, tmp_path, job_id, keyframes=4):
                      (job_id, j["creator_id"], _put(store, tmp_path, b"jpg %d" % k, ".jpg")))
 
 
-def clip_job(conn, store, tmp_path, cid, *, kind="video.wan_i2v", scene="pouring tea; steam rises"):
+def clip_job(conn, store, tmp_path, cid, *, kind="comfy.wan_i2v", scene="pouring tea; steam rises"):
     start = _put(store, tmp_path, b"\x89PNG start")
     return conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES (%s, 'queued', %s, %s) RETURNING id",
                         (kind, cid, Jsonb({"image_uri": start, "scene": scene}))).fetchone()["id"]
@@ -101,7 +101,7 @@ def test_only_finished_clips_with_keyframes_await_review(conn, policy, store, tm
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
     ready, no_keys, mirror = (clip_job(conn, store, tmp_path, cid), clip_job(conn, store, tmp_path, cid),
-                              clip_job(conn, store, tmp_path, cid, kind="video.mirror"))
+                              clip_job(conn, store, tmp_path, cid, kind="image.mirror"))
     rendered(conn, store, tmp_path, ready)
     rendered(conn, store, tmp_path, no_keys, keyframes=0)
     rendered(conn, store, tmp_path, mirror)
@@ -136,7 +136,7 @@ def _story_post(conn, policy, store, tmp_path):
 
 
 def _clip_jobs(conn, pid):
-    return conn.execute("SELECT id, payload, status FROM jobs WHERE post_id = %s AND kind = 'video.wan_i2v' "
+    return conn.execute("SELECT id, payload, status FROM jobs WHERE post_id = %s AND kind = 'comfy.wan_i2v' "
                         "ORDER BY created_at", (pid,)).fetchall()
 
 
@@ -351,7 +351,7 @@ SHOT = {"set": {"location": "a rainy bus stop"}, "framing": {"shot_size": "mediu
 
 def _directed_clip(conn, store, tmp_path, cid):
     payload = {"image_uri": _put(store, tmp_path, b"\x89PNG start"), "scene": "at a rainy bus stop", "shot": SHOT}
-    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('video.wan_i2v', 'queued', %s, %s) "
+    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('comfy.wan_i2v', 'queued', %s, %s) "
                        "RETURNING id", (cid, Jsonb(payload))).fetchone()["id"]
     rendered(conn, store, tmp_path, job)
     return job
@@ -448,7 +448,7 @@ def test_a_motion_transfer_clip_fails_when_any_keyframe_loses_her_face(conn, pol
 def test_a_motion_transfer_review_fails_closed_without_per_keyframe_scores(conn, policy, store, tmp_path):
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
-    job = _dance_job(conn, store, tmp_path, cid, kind="video.wan_i2v")   # any clip driven by a reference motion
+    job = _dance_job(conn, store, tmp_path, cid, kind="comfy.wan_i2v")   # any clip driven by a reference motion
     [r] = video.review_job(conn, policy, ClipStub(clip()), store, job, tmp_path)
     assert not r["accepted"] and r["dance_identity"] is False
     [r2] = video.review_job(conn, policy, ClipStub(clip(identity_per_frame=[9, 9])), store,

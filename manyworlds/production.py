@@ -378,7 +378,7 @@ def dance_payload(policy: Policy, bible: dict, scene: str, shot: dict | None, *,
 
 
 def _story_clip_kind(conn, policy: Policy, post: dict) -> str:
-    kind = _cfg(policy).get("video_kind", "video.wan_i2v")
+    kind = _cfg(policy).get("video_kind", "comfy.wan_i2v")
     if (_cfg(policy).get("routing") or {}).get("story_clip"):   # the cheapest per accepted clip (manyworlds.routing)
         from . import routing
         kind, _ = routing.choose(conn, policy, "story_clip", key=str(post["id"]))

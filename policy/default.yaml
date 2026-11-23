@@ -36,7 +36,7 @@ gpu_runs:
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
   max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, edit: 60}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
-  max_attempt_minutes_by_kind: {image.mirror: 120, video.mirror: 120}  # one-time copy into our bucket; resumes across machines
+  max_attempt_minutes_by_kind: {image.mirror: 120}  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
   serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
 
@@ -97,8 +97,8 @@ job_kinds:
   image.mirror:    {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 0}   # copies model weights into R2 once
   image.narrated:  {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # CPU edit (voice + ffmpeg) on image machines
   # Wan 2.2 TI2V-5B. RunPod 3090 measured 2026-11-14: 720p x 5 s in 859 s (cpu offload + tiled VAE), ~$0.05.
-  video.wan_i2v:   {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 1}
-  video.mirror:    {pools: [vast_4090, vast_5090, runpod_comm_3090], outputs_per_job: 0}
+  # video.wan_i2v (diffusers Wan 2.2 TI2V-5B, ~14 min a 5 s clip on a 3090; FastWan: 0 of 10 clips passed) retired
+  # 2026-11-22: story clips are comfy.wan_i2v (ComfyUI, Wan 2.2 I2V A14B + lightx2v), with hosted.video as fallback.
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
   train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
@@ -133,10 +133,6 @@ worker_images:
   # download_gb: what a machine downloads at boot (compressed image + model weights), priced per GB on Vast.
   image: {image: mw-worker-image, tag: v27, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80, download_gb: 30,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
-  # video runs on the image worker image (same diffusers stack) with the video model selected by env.
-  video: {image: mw-worker-image, tag: v27, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
-          env: {MW_VIDEO_MODEL: Wan-AI/Wan2.2-TI2V-5B-Diffusers, HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
-                MW_VIDEO_OFFLOAD_BELOW_GB: 40}}   # 40: offload on 24-32 GB cards until measured
   # edit: reference-conditioned scene photos (image.qwen_edit, job_kinds family edit) on the image worker image:
   # Qwen-Image-Edit-2511 bf16 (~41 GB transformer, ~17 GB text encoder) + Lightning LoRA, ~58 GB downloaded at the
   # first job. With cpu offload (below MW_EDIT_OFFLOAD_BELOW_GB free, an L40S) the whole model sits in RAM.
@@ -359,14 +355,8 @@ generation:
     talking_video: *video_scene_photo
     story_clip: *video_scene_photo
     narrated_edit: *video_scene_photo
-  video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; measured 2026-11-14
-  # Settings to benchmark against `video` (mw bench video.wan_i2v --profile NAME). fast: FastWan2.2-TI2V-5B
-  # (FastVideo, Apache-2.0), the same model DMD-distilled to 3 steps with no guidance: one pass per step instead of
-  # two, 3 steps instead of 30, so ~20x less compute per clip on paper.
-  video_profiles:
-    # dmd_timesteps: the model card's --dmd-denoising-steps; its default UniPC scheduler at 3 steps gave 0 of 5 passing
-    # clips (2026-11-22, ~58 s each on an L40S), so it samples with worker/dmd.py.
-    fast: {model: FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers, steps: 3, guidance: 1.0, dmd_timesteps: [1000, 757, 522]}
+  # Base clip payload (size, length, fps); each engine's own block (comfy_video, hosted_video) overrides it.
+  video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}
   # Lip-sync (talk.infinitetalk) on ComfyUI + WanVideoWrapper (worker image mw-worker-talkcomfy, worker/comfy.py):
   # fp8-scaled InfiniteTalk with the 4-step lightx2v LoRA and SageAttention, at Kijai's example settings (6 steps,
   # cfg 1, shift 11, dpm++_sde, 81-frame windows, 9 motion frames). 480x832 is Wan's 480p vertical bucket (2.6% narrower
@@ -658,7 +648,6 @@ creator_lab:
 models:
   mirror:
     - {repo: Tongyi-MAI/Z-Image-Turbo, kind: image.mirror}
-    - {repo: Wan-AI/Wan2.2-TI2V-5B-Diffusers, kind: video.mirror}
   max_mirror_jobs: 8           # each try resumes from what the bucket already has
   priority: 10
 

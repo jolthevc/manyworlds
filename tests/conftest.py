@@ -44,8 +44,8 @@ def policy(raw_policy):
         **(raw_policy.body.get("operations") or {}), "mode": "live"},
         "llm": {**raw_policy.body["llm"], "shadow": {}},
         # output routing off: tests use production.video_kind (test_routing.py covers routing)
-        # the clip flow is the same whichever engine renders; tests use the video.wan_i2v kind
-        "production": {**raw_policy.body["production"], "routing": {}, "video_kind": "video.wan_i2v"},
+        # the clip flow is the same whichever engine renders; tests use the ComfyUI story clip kind
+        "production": {**raw_policy.body["production"], "routing": {}, "video_kind": "comfy.wan_i2v"},
         # the finish stage (grade, grain, burned-in captions) off: most tests stand in fake bytes for videos;
         # the finish tests (test_production.py, test_talk_long.py, test_edit.py) turn it on
         "finishing": {**raw_policy.body["finishing"], "enabled": False},

@@ -36,7 +36,7 @@ from typing import Any
 from .. import comfy, crops, lipsync
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 from .talk_infinitetalk import _speak, audio_seconds
-from .video_wan import extract_keyframes
+from ..keyframes import extract_keyframes
 
 REQUIRED = ("width", "height", "steps", "timeout_s")
 MODELS = ("infinitetalk", "longcat")

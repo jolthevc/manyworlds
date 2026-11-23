@@ -26,7 +26,7 @@ from typing import Any
 
 from .. import crops, lipsync, models
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
-from .video_wan import extract_keyframes
+from ..keyframes import extract_keyframes
 
 MODEL = "MeiGen-AI/InfiniteTalk"
 BASE = "Wan-AI/Wan2.1-I2V-14B-480P"

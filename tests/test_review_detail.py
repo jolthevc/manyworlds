@@ -239,7 +239,7 @@ def test_references_are_only_those_the_shot_names(policy):
 def _directed_clip(conn, store, tmp_path, cid, references):
     payload = {"image_uri": _put(store, tmp_path, b"\x89PNG start"), "scene": "in the bodega", "shot": BODEGA,
                "references": references}
-    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('video.wan_i2v', 'queued', %s, %s) "
+    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('comfy.wan_i2v', 'queued', %s, %s) "
                        "RETURNING id", (cid, Jsonb(payload))).fetchone()["id"]
     rendered(conn, store, tmp_path, job)
     return job

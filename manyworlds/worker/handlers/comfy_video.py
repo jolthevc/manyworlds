@@ -1,7 +1,7 @@
 """Story clips (job kind comfy.wan_i2v) on ComfyUI + WanVideoWrapper: Wan 2.2 I2V A14B with the lightx2v LoRA
 (manyworlds.worker.comfy.graph_i2v), on the same worker image as talking video.
 
-Same job as handlers/video_wan.py: one approved photo animated into a short clip, with keyframes for the video
+The story clip job: one approved photo animated into a short clip, with keyframes for the video
 gate. Self-hosted FastWan (5B, DMD) rendered in ~1 minute but passed 0 of 10 clips (2026-11-22); this is the
 community's proven 14B graph, at hourly GPU prices instead of a hosted API's per-clip price.
 
@@ -22,7 +22,7 @@ from typing import Any
 from .. import comfy, crops
 from ..runner import HandlerResult, JobContext, NonRetryable, OutputFile
 from .talk_comfy import _blocks_to_swap, _models_dir, _prepare_image
-from .video_wan import extract_keyframes
+from ..keyframes import extract_keyframes
 
 REQUIRED = ("width", "height", "timeout_s")
 _ready: dict = {"weights": False}
