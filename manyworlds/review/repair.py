@@ -83,7 +83,10 @@ def with_negative(payload: dict, avoid: list[str], policy: Policy | None = None,
         return payload
     from .. import direction
     if policy is not None and not direction.has_negative_channel(target, policy):
-        tail = direction._stand_ins(list(avoid), policy)
+        instead = {**(policy.get("direction", "positive_instead_of", default={}) or {}),
+                   **(policy.get("review", "repair", "stand_ins", default={}) or {})}
+        tail = direction._capitalised(direction._join(list(dict.fromkeys(
+            str(instead[a]).strip() for a in avoid if str(instead.get(a) or "").strip()))))
         if tail and tail not in str(payload.get("prompt") or ""):
             payload = {**payload, "prompt": f"{str(payload.get('prompt') or '').rstrip()}. {tail}"}
     current = str(payload.get("negative_prompt") or "").strip()

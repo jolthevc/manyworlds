@@ -37,7 +37,7 @@ def test_no_identity_gate_for_a_faceless_shot():
 
 def test_props_beyond_the_feasible_number_are_cut_from_the_prompt(policy):
     cap = policy.get("direction", "feasibility", "max_props")
-    shot = {**FACE, "set": {"location": "a small kitchen", "props": "a mug, a kettle, a cat, a scarf, a lamp"}}
+    props = ["a mug", "a kettle", "a cat", "a scarf", "a teapot"]
+    shot = {**FACE, "set": {"location": "a small kitchen", "props": ", ".join(props)}}
     prompt = direction.compile_prompt(shot, BIBLE, "photo", policy)
-    kept = ["a mug", "a kettle", "a cat", "a scarf", "a lamp"][:cap]
-    assert all(p in prompt for p in kept) and "a lamp" not in prompt
+    assert all(p in prompt for p in props[:cap]) and not any(p in prompt for p in props[cap:])

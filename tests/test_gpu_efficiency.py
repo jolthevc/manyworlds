@@ -43,6 +43,7 @@ def test_a_worker_prefers_the_loaded_models_kind_within_a_priority(conn):
 def test_switching_family_releases_the_last_engine(policy, monkeypatch):
     freed = []
     monkeypatch.setitem(runner.RELEASE, "voice.speak", lambda: freed.append("voice"))
+    monkeypatch.setitem(runner.RELEASE, "voice.design", lambda: freed.append("voice"))
     w = runner.Worker.__new__(runner.Worker)
     w.policy, w.last_kind = policy, None
     for kind in ("voice.speak", "voice.design", "talk.infinitetalk", "talk.infinitetalk"):

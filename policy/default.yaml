@@ -346,6 +346,12 @@ review:
       realism:
         positive: ". Relaxed hands resting naturally or out of frame, natural anatomy, unbranded clothes and objects"
         avoid: [text, logos, extra fingers, warped hands]
+    # Positive wording of a repair's avoid items for scene photos, which have no negative channel (review.repair
+    # with_negative); added only to a repaired prompt, on top of direction.positive_instead_of.
+    stand_ins:
+      text: "blank, unprinted surfaces"
+      extra fingers: "five fingers on each hand"
+      warped hands: "natural, relaxed hands"
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
@@ -1339,10 +1345,6 @@ direction:
     extra people: "the only person in the frame"
     waxy skin: "real skin with pores and fine lines"
     studio lighting: "lit only by real sources in the scene, a window, a lamp or daylight"
-    # the realism repair's avoid list (review.repair.hints.realism.avoid), for scene photos, which have no negative channel
-    text: "blank, unprinted surfaces"
-    extra fingers: "five fingers on each hand"
-    warped hands: "natural, relaxed hands"
   camera_moves: [static, handheld, push_in, pull_out, pan_left, pan_right, tilt_up, tilt_down, follow, orbit_slow]
   offer_readiness: [ready, partial]
   # Natural eyes (plan 2026-11-22 wave 2): added to the action of talk prompts, and of i2v prompts unless the shot is
