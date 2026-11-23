@@ -29,7 +29,7 @@ import re
 from typing import Any
 
 from .. import direction
-from ..direction import TEXT_KINDS, TRANSITION_KINDS, DirectedShots, ShotSheet, spoken
+from ..direction import TEXT_KINDS, TRANSITION_KINDS, DirectedEdits, DirectedShots, ShotSheet, spoken
 from . import budget, memory, planner
 
 log = logging.getLogger("manyworlds.director")
@@ -277,6 +277,7 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None,
     if not shots:
         raise ValueError("the director answered no shots")
     shots = shots[:len(scenes)] + [ShotSheet().model_dump(mode="json") for _ in range(len(scenes) - len(shots))]
+    _edit(conn, policy, llm, content, shots, creator_id, agent, cfg)
     if move and move.get("shot"):
         k = int(getattr(out, "move_shot", -1))
         k = k if 0 <= k < len(shots) else (0 if len(shots) == 1 else -1)
@@ -303,6 +304,29 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None,
                 s["performance"]["lines"] = []
     _register(conn, policy, creator_id, shots, post_id)
     return shots
+
+
+EDIT_ASK = ("THE SHOTS ARE DIRECTED (below). Now write each shot's edit, one per shot in order: the on-screen text "
+            "(hook, labels, timestamps, question bubbles, in her voice), how the shot is cut into, the caption style, "
+            "and whether its frame is the cover. Follow the brief above; most shots need little or no text.")
+
+
+def _edit(conn, policy, llm, content, shots: list[dict], creator_id, agent: str, cfg: dict) -> None:
+    """The edit pass (DirectedEdits): a second, small call that sees the brief and the directed shots and fills each
+    shot's `edit`. If it fails, the shots keep an empty edit (no text, cuts by default) rather than losing direction."""
+    view = [{k: s.get(k) for k in ("framing", "blocking", "performance", "cutaway", "motion_reference")} for s in shots]
+    ask = list(content) if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+    ask = ask + [{"type": "text", "text": f"{EDIT_ASK}\n{json.dumps(view, default=str)}"}]
+    try:
+        with llm.tagged(agent, None, before_call=lambda: budget.check(conn, policy, agent)):
+            out = llm.structured(str(cfg.get("role", AGENT)), system=system_prompt(policy), content=ask,
+                                 schema=DirectedEdits, effort=str(cfg.get("edit_effort", "low")),
+                                 creator_id=creator_id)
+    except Exception as e:  # noqa: BLE001 - direction without an edit beats no direction
+        log.warning("the edit pass failed (%s: %s); shots keep an empty edit", type(e).__name__, str(e)[:300])
+        return
+    for s, e in zip(shots, getattr(out, "edits", None) or []):
+        s["edit"] = e.model_dump(mode="json")
 
 
 def _register(conn, policy, creator_id, shots: list[dict], post_id) -> None:

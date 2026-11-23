@@ -28,6 +28,8 @@ class DirectorLLM(StubLLM):
         self.calls[-1]["system"] = system
         if self.error is not None:
             raise self.error
+        if schema.__name__ == "DirectedEdits":   # the edit pass: each answered shot's edit, as the director wrote it
+            return schema.model_validate({"edits": [sh.get("edit") or {} for sh in self.answer.get("shots") or []]})
         return schema.model_validate(self.answer)
 
 
@@ -131,7 +133,7 @@ def test_scheduling_directs_new_posts(conn, policy):
                  ("story", {"scenes": ["the view from the roof"]}))                  # story: not directed
     llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
     out = ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc), llm=llm)
-    assert out["scheduled"] == 2 and out["directed"] == 1 and len(llm.calls) == 1
+    assert out["scheduled"] == 2 and out["directed"] == 1 and len(llm.calls) == 2   # shots, then their edit
     photo, story = [r["body"] for r in conn.execute("SELECT body FROM posts ORDER BY scheduled_for").fetchall()]
     assert photo["shots"][0]["set"]["set_id"] == "canal_path" and photo["scenes"] == ["walking along the canal at dusk"]
     assert photo["platform_ai_label"] is True and "shots" not in story

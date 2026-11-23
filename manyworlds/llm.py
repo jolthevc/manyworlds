@@ -168,7 +168,17 @@ def strict_json_schema(model: type[BaseModel]) -> dict:
             out["additionalProperties"] = False
         return out
 
-    return conv({k: v for k, v in raw.items() if k != "$defs"})
+    out = conv({k: v for k, v in raw.items() if k != "$defs"})
+    # `strict_omit` (a model ClassVar): property paths left out of what the model is asked to fill, each a tuple of
+    # property names through objects and arrays, e.g. ("shots", "edit"); the model's own defaults fill them.
+    for path in getattr(model, "strict_omit", ()) or ():
+        node = out
+        for name in path[:-1]:
+            node = node["properties"][name]
+            node = node.get("items", node)
+        node["properties"].pop(path[-1], None)
+        node["required"] = [r for r in node["required"] if r != path[-1]]
+    return out
 
 
 def _first_text(response) -> str:

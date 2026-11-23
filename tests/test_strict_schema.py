@@ -82,6 +82,16 @@ def test_refs_are_inlined_nulls_collapsed_and_enums_take_an_empty_string():
     assert shot["properties"]["blocking"]["items"]["properties"]["eyeline"]["enum"][-1] == ""
 
 
+def test_the_shots_call_leaves_the_edit_to_its_own_call():
+    """2026-11-23: with each shot's edit (a list of on-screen text items) the grammar was too large (HTTP 400);
+    the edit is a second call (direction.DirectedEdits)."""
+    from manyworlds.direction import DirectedEdits
+    shot = strict_json_schema(DirectedShots)["properties"]["shots"]["items"]
+    assert "edit" not in shot["properties"] and "edit" not in shot["required"]
+    edit = strict_json_schema(DirectedEdits)["properties"]["edits"]["items"]
+    assert "on_screen_text" in edit["properties"] and edit["additionalProperties"] is False
+
+
 def test_a_strict_answer_validates_back_with_empty_strings_unset():
     shot = _blank(strict_json_schema(DirectedShots)["properties"]["shots"]["items"])
     shot["set"]["location"] = "her galley kitchen"

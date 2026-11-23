@@ -274,9 +274,18 @@ class ShotSheet(_Sheet):
 class DirectedShots(BaseModel):
     """One shot sheet per scene of an accepted post idea, in the scenes' order."""
     strict_required: ClassVar[bool] = True
+    # Each shot's `edit` (text on screen, cuts, caption style) is a second, small call (DirectedEdits): with it the
+    # grammar is too large again (HTTP 400, measured 2026-11-23: any list nested in a shot, even of strings, failed).
+    strict_omit: ClassVar[tuple] = (("shots", "edit"),)
     shots: list[ShotSheet] = Field(description="one shot sheet per scene, in the same order as the scenes")
     move_shot: int = Field(default=-1, description="the index (from 0) of the shot that performs the move; "
                                                    "-1 when there is no move")
+
+
+class DirectedEdits(BaseModel):
+    """The edit of each shot, in the shots' order: the on-screen text, the cut into it, the caption style."""
+    strict_required: ClassVar[bool] = True
+    edits: list[EditSpec] = Field(description="one edit per shot, in the same order as the shots")
 
 
 def _join(parts, sep: str = ", ") -> str:
