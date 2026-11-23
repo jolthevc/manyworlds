@@ -11,7 +11,7 @@ concurrency:
 jobs:
   pytest:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17
@@ -36,8 +36,8 @@ jobs:
       - name: pytest
         run: |
           set -o pipefail
-          pytest -q -rfE --tb=line 2>&1 | tee pytest.txt
+          pytest -q -rfE --tb=line --timeout=120 2>&1 | tee pytest.txt
       - name: failures as annotations (readable without log access)
         if: failure()
         run: |
-          grep -E "^(FAILED|ERROR) |^E  |^/.*:[0-9]+: " pytest.txt | head -40 | sed 's/^/::error::/'
+          grep -E "^(FAILED|ERROR) |^E  |^/.*:[0-9]+: |Timeout" pytest.txt | head -60 | sed 's/^/::error::/'
