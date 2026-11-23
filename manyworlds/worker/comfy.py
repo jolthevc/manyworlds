@@ -363,6 +363,17 @@ def stop() -> None:
     _server["proc"] = None
 
 
+def free() -> bool:
+    """Ask the running ComfyUI server to unload its models and free GPU memory (before another engine on the same
+    machine loads: the merged test machine runs voice, motion and lip sync in turn). False when no server runs."""
+    if _server.get("proc") is None or _server["proc"].poll() is not None:
+        return False
+    req = urllib.request.Request(URL + "/free", data=json.dumps({"unload_models": True, "free_memory": True}).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=60):
+        return True
+
+
 def _submit(g: dict) -> str:
     req = urllib.request.Request(URL + "/prompt", data=json.dumps({"prompt": g}).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")

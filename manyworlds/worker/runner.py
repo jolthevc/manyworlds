@@ -81,13 +81,53 @@ class WorkerUnhealthy(RuntimeError):
 WORKER_FAULT_MARKERS = ("CUDA error", "out of memory", "CUDA out of memory", "cuDNN error",
                         "CUBLAS_STATUS", "NCCL error", "device-side assert", "no CUDA GPUs",
                         "CUDA unknown error", "CUDA driver", "NVML", "no NVIDIA driver",
-                        "CUDA-capable device")
+                        "CUDA-capable device", "Disk quota exceeded", "No space left on device")
+
+# Errors that mean the code (or the image) is wrong, not the machine or luck: a retry fails the same way on any
+# machine, so the job fails at once instead of paying for two more attempts (2026-11-22: 24 package/signature
+# errors and 49 InfiniteTalk failures of ~5 GPU-minutes each were retried).
+CODE_FAULT_TYPES = ("TypeError", "ImportError", "ModuleNotFoundError", "AttributeError", "NameError", "SyntaxError")
+CODE_FAULT_MARKERS = ("Failed to find C compiler", "takes no keyword arguments", "unexpected keyword argument",
+                      "ComfyUI exited at start", "No module named")
 
 
 def is_worker_fault(exc: BaseException) -> bool:
     text = f"{type(exc).__name__}: {exc}"
     return any(m.lower() in text.lower() for m in WORKER_FAULT_MARKERS) or type(exc).__name__ in (
         "OutOfMemoryError", "AcceleratorError")
+
+
+def is_code_fault(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return type(exc).__name__ in CODE_FAULT_TYPES or any(m.lower() in text.lower() for m in CODE_FAULT_MARKERS)
+
+
+def family_of(policy: Policy, kind: str) -> str:
+    """A kind's worker family: job_kinds.<kind>.family, else its prefix."""
+    return str((policy.get("job_kinds", kind, default={}) or {}).get("family") or kind.split(".")[0])
+
+
+def gpu_memory_gb() -> float | None:
+    """Total memory of the first GPU in GB (nvidia-smi), or None without one: kinds whose policy floor
+    (job_kinds.<kind>.min_vram_gb) the card can't meet are not served (2026-11-22: 320 Z-Image attempts died of
+    out-of-memory on consumer cards with less usable memory than advertised)."""
+    import shutil
+    import subprocess
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=20).stdout.split()
+        return round(float(out[0]) / 1024, 1) if out else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def kinds_that_fit(kinds: list[str], policy: Policy, memory_gb: float | None) -> list[str]:
+    if memory_gb is None:
+        return kinds
+    return [k for k in kinds
+            if float((policy.get("job_kinds", k, default={}) or {}).get("min_vram_gb") or 0) <= memory_gb]
 
 
 NO_GPU_POOLS = ("local", "hosted")
@@ -151,6 +191,21 @@ class Worker:
         self._self_destroy = self_destroy
         self._busy = False
         self._idle_since = time.monotonic()
+        self.last_kind: str | None = None   # model affinity: claim the loaded model's kinds first, free on a switch
+
+    def _switch_to(self, kind: str) -> None:
+        """Before a job of another family than the last (a merged machine: voice, motion, lip sync), the last
+        family's engine gives its GPU memory back (handler module `release()`, e.g. ComfyUI /free)."""
+        last, self.last_kind = self.last_kind, kind
+        if last is None or family_of(self.policy, last) == family_of(self.policy, kind):
+            return
+        release = RELEASE.get(last)
+        if release is not None:
+            try:
+                release()
+                log.info("released %s's models before %s", last, kind)
+            except Exception as e:  # noqa: BLE001 - freeing is best effort; the next load may still fit
+                log.warning("could not release %s: %s", last, e)
 
     def stop(self, *_):
         log.info("stop requested; finishing current job")
@@ -223,8 +278,10 @@ class Worker:
             threading.Thread(target=self._watchdog, daemon=True, name="self-stop").start()
         handled, idle_since = 0, time.monotonic()
         while not self._stop.is_set() and (max_jobs is None or handled < max_jobs):
+            prefer = [k for k in self.handlers if self.last_kind and
+                      family_of(self.policy, k) == family_of(self.policy, self.last_kind)]
             job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease, self.pool,
-                              batches=operations.test_batch_patterns(self.policy))
+                              batches=operations.test_batch_patterns(self.policy), prefer=prefer)
             if job is None:
                 if idle_exit_seconds is not None and time.monotonic() - idle_since > idle_exit_seconds:
                     break
@@ -232,6 +289,7 @@ class Worker:
                 continue
             self._busy = True
             try:
+                self._switch_to(job.kind)
                 self._run_one(job)
             finally:
                 self._busy = False
@@ -319,7 +377,10 @@ class Worker:
         except Exception as e:  # noqa: BLE001 - any handler error is recorded and retried
             error = f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=5)}"
             self._charge(job, attempt_id, time.monotonic() - t0)
-            if is_worker_fault(e):
+            if is_code_fault(e) and not is_worker_fault(e):
+                log.error("code fault on job %s (fails the same on any machine): %s", job.id, e)
+                queue.fail(self.conn, job.id, self.worker_id, f"code fault: {error}", retryable=False)
+            elif is_worker_fault(e):
                 outcome = "worker_fault"
                 self.consecutive_faults += 1
                 log.error("machine fault on job %s (%d in a row): %s", job.id, self.consecutive_faults, e)
@@ -387,6 +448,9 @@ def kinds_from_env(policy: Policy, env=None) -> list[str]:
     return kinds
 
 
+RELEASE: dict[str, Callable[[], None]] = {}   # kind -> its module's release() (frees the GPU between families)
+
+
 def handlers_for(kinds: list[str]) -> dict[str, Handler]:
     """Import only the handlers this container needs (GPU libraries are heavy)."""
     found: dict[str, Handler] = {}
@@ -424,6 +488,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
         else:
             raise ValueError(f"no handler family for {kind!r}")
         found[kind] = mod.HANDLERS[kind]
+        if callable(getattr(mod, "release", None)):
+            RELEASE[kind] = mod.release
     return found
 
 
@@ -433,6 +499,19 @@ def start(kinds: list[str], *, pool: str, policy: Policy, store: ObjectStore, co
     registered machine, retries the database a few times, and if the queue stays unreachable destroys its own
     machine: one that can't reach the queue can never do work, so it must not be paid for."""
     check_registered(pool)
+    if pool not in NO_GPU_POOLS:
+        memory = gpu_memory_gb()
+        fit = kinds_that_fit(kinds, policy, memory)
+        if not fit:   # nothing this card can run: give the machine up rather than pay for it idling
+            if self_destroy is None:
+                from ..deploy.providers import self_destroy
+            log.error("GPU has %s GB, below every kind's floor %s; destroyed own machine: %s", memory, kinds,
+                      self_destroy())
+            raise SystemExit(3)
+        if fit != kinds:
+            log.warning("GPU has %s GB: not serving %s (below their min_vram_gb)", memory,
+                        sorted(set(kinds) - set(fit)))
+        kinds = fit
     handlers = handlers_for(kinds)
     timeout = float(policy.get("queue", "connect_timeout_seconds", default=20))
     for attempt in range(int(policy.get("queue", "startup_connect_attempts", default=3))):

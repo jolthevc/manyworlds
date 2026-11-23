@@ -96,7 +96,6 @@ job_kinds:
   image.qwen_edit: {pools: [runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 4, family: edit}
   image.mirror:    {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 0}   # copies model weights into R2 once
   image.narrated:  {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # CPU edit (voice + ffmpeg) on image machines
-  # Wan 2.2 TI2V-5B. RunPod 3090 measured 2026-11-14: 720p x 5 s in 859 s (cpu offload + tiled VAE), ~$0.05.
   # video.wan_i2v (diffusers Wan 2.2 TI2V-5B, ~14 min a 5 s clip on a 3090; FastWan: 0 of 10 clips passed) retired
   # 2026-11-22: story clips are comfy.wan_i2v (ComfyUI, Wan 2.2 I2V A14B + lightx2v), with hosted.video as fallback.
   image.voice:     {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # Kokoro voice sample on image machines
@@ -107,10 +106,12 @@ job_kinds:
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
+  # min_vram_gb (any kind): a worker whose card has less total memory doesn't serve the kind (worker.runner
+  # kinds_that_fit); a card that can serve none destroys its own machine at start.
   comfy.wan_i2v:   {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_comm_3090, vast_4090, vast_5090, runpod_secure_a40], outputs_per_job: 1}
   # Dance (handlers/dance_animate.py, policy `dance`, OFF: the handler refuses): Wan-Animate-2 14B int8 on the same ComfyUI
   # image, its own family so story-clip machines never load it. 48 GB+ cards until benchmarked; only `mw bench` queues it.
-  comfy.wan_animate2: {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1, family: dance}
+  comfy.wan_animate2: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1, family: dance}
   # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
   voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
   voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}

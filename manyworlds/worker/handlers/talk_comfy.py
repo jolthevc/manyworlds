@@ -233,3 +233,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
 
 
 HANDLERS = {"talk.infinitetalk": generate}
+
+def release() -> None:
+    """Give the GPU back before another family's job (manyworlds.worker.runner._switch_to)."""
+    from .. import comfy
+    comfy.free()

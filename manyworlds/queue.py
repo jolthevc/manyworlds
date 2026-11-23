@@ -58,10 +58,13 @@ def enqueue(
 
 
 def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str | None = None,
-          exclude: list | None = None, only_test: bool = False, batches: list[str] | None = None) -> Job | None:
+          exclude: list | None = None, only_test: bool = False, batches: list[str] | None = None,
+          prefer: list[str] | None = None) -> Job | None:
     """Atomically take the next runnable job of the given kinds, or None. Jobs pinned to
     other pools are left for workers in those pools. `batches` (SQL LIKE patterns) limits it to those
-    batches: while operations are paused, only tests and benchmarks run (manyworlds.operations)."""
+    batches: while operations are paused, only tests and benchmarks run (manyworlds.operations). Within a
+    priority, kinds in `prefer` (the model the worker has loaded) come first, so a machine serving several
+    families runs one model's work back to back instead of reloading 16-30 GB at every switch."""
     row = conn.execute(
         """
         UPDATE jobs SET status = 'running',
@@ -78,14 +81,14 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
               AND NOT (id = ANY(%(exclude)s::uuid[]))
               AND (NOT %(only_test)s OR payload->>'test' = 'true')
               AND (%(batches)s::text[] IS NULL OR batch LIKE ANY(%(batches)s::text[]))
-            ORDER BY priority DESC, created_at
+            ORDER BY priority DESC, (kind = ANY(%(prefer)s::text[])) DESC, created_at
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
         RETURNING id, kind, payload, attempts, max_attempts, creator_id, batch
         """,
         {"worker": worker_id, "lease": lease_seconds, "kinds": kinds, "pool": pool, "exclude": list(exclude or []),
-         "only_test": only_test, "batches": batches},
+         "only_test": only_test, "batches": batches, "prefer": list(prefer or [])},
     ).fetchone()
     return Job(**row) if row else None
 

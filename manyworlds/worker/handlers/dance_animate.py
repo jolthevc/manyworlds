@@ -117,3 +117,8 @@ def generate(payload: dict, ctx: JobContext, *, policy: Policy | None = None) ->
 
 
 HANDLERS = {KIND: generate}
+
+def release() -> None:
+    """Give the GPU back before another family's job (manyworlds.worker.runner._switch_to)."""
+    from .. import comfy
+    comfy.free()

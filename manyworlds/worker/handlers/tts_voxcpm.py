@@ -604,3 +604,13 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
 
 
 HANDLERS = {"voice.design": design, "voice.speak": speak}
+
+
+def release() -> None:
+    """Drop VoxCPM, Whisper and the embedder before another family's job, and hand their GPU memory back."""
+    _state.clear()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - no torch or no GPU: nothing to free
+        pass
