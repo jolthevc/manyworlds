@@ -55,7 +55,7 @@ def test_direct_returns_shot_dicts_and_merges_the_moves_defaults(conn, policy):
     assert "walk_to_camera" in str(call["content"]) and "orbit_slow" in str(call["content"])   # move and camera moves
     assert "walking along the canal" in str(call["content"])
     cost = conn.execute("SELECT count(*) n FROM cost_entries WHERE agent = 'director'").fetchone()["n"]
-    assert cost == 1                                                           # charged to the director
+    assert cost == 2                                         # both calls (shots, then their edit) charged to it
 
 
 def test_a_move_lands_only_on_the_shot_that_performs_it(conn, policy):

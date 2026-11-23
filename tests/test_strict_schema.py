@@ -117,14 +117,14 @@ def _grammar_size(schema) -> tuple[int, int]:
 
 
 def test_the_strict_shot_schema_stays_small_enough_to_compile():
-    # Counted by hand from the models: the strict DirectedShots that compiled on 2026-11-22 had 64 properties and 21
-    # enum values; wave 2 (on-screen text items, motion_reference, mirror and pov devices) makes it 73 and 34. The
-    # ordinary ShotSheet schema failed ("compiled grammar is too large"); stay well under it, and look again before
-    # raising these ceilings.
+    # Measured on the API: the strict DirectedShots compiled on 2026-11-22 at 64 properties and 21 enum values; at 73
+    # and 34 (wave 2's on-screen text items inside each shot) it failed ("compiled grammar is too large", 2026-11-23),
+    # and so did any list added inside a shot, even of strings. Without the edit (its own call) it compiles again.
+    # Raise these ceilings only after a live call proves the larger schema.
+    from manyworlds.direction import DirectedEdits
     props, enums = _grammar_size(strict_json_schema(DirectedShots))
-    assert props <= 80 and enums <= 40, (props, enums)
-    text_item = (strict_json_schema(DirectedShots)["properties"]["shots"]["items"]["properties"]["edit"]
-                 ["properties"]["on_screen_text"])
+    assert props <= 64 and enums <= 24, (props, enums)
+    text_item = (strict_json_schema(DirectedEdits)["properties"]["edits"]["items"]["properties"]["on_screen_text"])
     assert text_item["type"] == "array" and text_item["items"]["additionalProperties"] is False
     assert text_item["items"]["properties"]["kind"]["enum"] == ["label", "hook", "timestamp", "question", ""]
     assert text_item["items"]["properties"]["position"]["enum"][-1] == ""
@@ -134,15 +134,18 @@ def test_the_strict_shot_schema_stays_small_enough_to_compile():
 
 
 def test_a_strict_answer_with_text_items_validates_back():
-    shot = _blank(strict_json_schema(DirectedShots)["properties"]["shots"]["items"])
-    item = _blank(strict_json_schema(DirectedShots)["properties"]["shots"]["items"]["properties"]["edit"]
-                  ["properties"]["on_screen_text"]["items"])
-    shot["edit"]["on_screen_text"] = [{**item, "kind": "hook", "text": "wait for it", "end_s": 1.5},
-                                      {**item, "text": "tight on baggy", "number": 2}]
-    s = DirectedShots.model_validate_json(json.dumps({"shots": [shot], "move_shot": -1})).shots[0]
-    hook, label = s.edit.on_screen_text
+    from manyworlds.direction import DirectedEdits
+    edit = _blank(strict_json_schema(DirectedEdits)["properties"]["edits"]["items"])
+    item = _blank(strict_json_schema(DirectedEdits)["properties"]["edits"]["items"]["properties"]["on_screen_text"]
+                  ["items"])
+    edit["on_screen_text"] = [{**item, "kind": "hook", "text": "wait for it", "end_s": 1.5},
+                              {**item, "text": "tight on baggy", "number": 2}]
+    e = DirectedEdits.model_validate_json(json.dumps({"edits": [edit]})).edits[0]
+    hook, label = e.on_screen_text
     assert hook.kind == "hook" and hook.end_s == 1.5 and hook.number is None
-    assert label.kind == "label" and label.end_s is None and label.number == 2 and s.motion_reference == ""
+    assert label.kind == "label" and label.end_s is None and label.number == 2
+    shot = _blank(strict_json_schema(DirectedShots)["properties"]["shots"]["items"])
+    assert DirectedShots.model_validate_json(json.dumps({"shots": [shot], "move_shot": -1})).shots[0].motion_reference == ""
 
 
 class _StrictClient:
