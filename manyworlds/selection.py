@@ -238,15 +238,8 @@ def _judge_preferences(conn, policy: Policy, llm, role: str, rc: dict, *, usd: f
                 flip = int(hashlib.sha256(str(row["id"]).encode()).hexdigest(), 16) % 2 == 1
                 a, b = ((row["candidate_output"], row["primary_output"]) if flip
                         else (row["primary_output"], row["candidate_output"]))
-                content = (f"The request:
-{row['request']}
-
-=== Answer A ===
-{_dumps(a)[:limit]}
-
-"
-                           f"=== Answer B ===
-{_dumps(b)[:limit]}")
+                content = (f"The request:\n{row['request']}\n\n=== Answer A ===\n{_dumps(a)[:limit]}\n\n"
+                           f"=== Answer B ===\n{_dumps(b)[:limit]}")
                 v = llm.structured(str(rc.get("judge_role", "judge")), system=PREFER_SYSTEM, content=content,
                                    schema=Preference, effort=str(rc.get("judge_effort", "medium")),
                                    creator_id=row["creator_id"])

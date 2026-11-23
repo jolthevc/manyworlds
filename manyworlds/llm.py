@@ -487,9 +487,7 @@ class LLM:
             usd = sum(c.usd for c in self.calls[n0:])
             self.trial_spent += usd
             system = call.get("system")
-            request = (f"{system if isinstance(system, str) else json.dumps(system, default=str)}
----
-"
+            request = (f"{system if isinstance(system, str) else json.dumps(system, default=str)}\n---\n"
                        f"{llm_batch.content_text(call.get('content'))}")
             limit = int(self.policy.get("llm", "shadow_request_chars", default=12000))
             self.conn.execute(
