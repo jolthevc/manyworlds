@@ -108,7 +108,8 @@ def snapshot(conn, policy: Policy, now: datetime | None = None) -> dict:
             "creator_id": str(r["id"]), "handle": r["handle"], "status": r["status"], "publish_mode": r["publish_mode"],
             "stage": r["stage"] or "exploring", "adjustments": r["adj"], "real_posts": r["real_posts"],
             "days_live": (now - r["first_real"]).days if r["first_real"] else 0, "cost_usd": round(float(r["cost"]), 2),
-            "account": r["account"], "conviction": conv, "value": value(policy, conv)})
+            "account": r["account"], "conviction": conv, "value": value(policy, conv),
+            "talent": _talent(conn, r["id"])})
     week = now - timedelta(days=7)
     launches = {
         "running": conn.execute("SELECT count(*) n FROM launches WHERE status = 'running'").fetchone()["n"],
@@ -117,6 +118,17 @@ def snapshot(conn, policy: Policy, now: datetime | None = None) -> dict:
         "last_7_days": conn.execute("SELECT count(*) n FROM approvals WHERE kind = 'launch' AND status IN "
                                     "('pending', 'approved') AND created_at > %s", (week,)).fetchone()["n"]}
     return {"creators": creators, "budget": budget(conn, policy, now), "launches": launches}
+
+
+def _talent(conn, creator_id) -> dict | None:
+    """The talent manager's latest brief, as the CEO reads it: state, focus and what it asks of the strategist."""
+    from .agents.talent_manager import latest_brief
+    b = latest_brief(conn, creator_id)
+    if not b:
+        return None
+    o = b["output"] or {}
+    return {"state": o.get("state"), "focus": o.get("focus"), "asks": o.get("asks_for_strategist"),
+            "at": b["created_at"].isoformat()}
 
 
 def ensure_daily(conn, policy: Policy, *, now: datetime | None = None):

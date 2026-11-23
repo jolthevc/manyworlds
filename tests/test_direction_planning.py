@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from psycopg.types.json import Jsonb
 
-from manyworlds.brain import ideas, planner
+from manyworlds.brain import archetypes, ideas, planner
 from manyworlds.brain.agents import showrunner
 
 from brain_helpers import creator as bare_creator
@@ -94,7 +94,7 @@ def test_the_showrunner_thinks_in_capabilities_and_archetype(conn, policy):
     prompt = str(llm.calls[0]["content"])
     assert "What the studio can render now" in prompt
     assert policy.get("capabilities", "devices", "pov", "description") in prompt
-    lifestyle = policy.get("direction", "director", "archetypes")[2]["communicates"]
+    lifestyle = archetypes.get(policy, "lifestyle_slow")["communicates"]
     assert lifestyle in prompt                                                       # how this creator communicates
     assert "suits" in prompt and "outfit_change_spin" in prompt                      # recipes, tagged by archetype
     assert "CAPABILITIES" in showrunner.SYSTEM and "CAPABILITIES" in planner.system_prompt(policy)

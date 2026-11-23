@@ -711,12 +711,14 @@ notify:
 budget: {master_usd_per_month: 750, reserve_share: 0.15}
 
 brain:
+  # The archetype library (manyworlds.brain.archetypes): playbooks the talent manager, showrunner and director read.
+  archetypes: {file: archetypes-v1.yaml}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
-                    creator_lab: 5.0, director: 2.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    creator_lab: 5.0, director: 2.0, talent_manager: 2.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
-  llm_usd_per_creator_day: {showrunner: 0.10, evaluator: 0.10, director: 0.20}
+  llm_usd_per_creator_day: {showrunner: 0.10, evaluator: 0.10, director: 0.20, talent_manager: 0.05}
   runtime: {loop_seconds: 30, max_jobs_per_tick: 10, lease_seconds: 600}
   # Experiments (manyworlds.brain.experiments): a tentative finding becomes a randomised two-arm test. Slots are
   # assigned per batch; the result is read once, when each arm has its sample (no peeking). The sample per arm
@@ -775,6 +777,14 @@ brain:
   # only place a score drops an idea. At thousands of creators, three calls per idea tripled the largest Brain bill.
   evaluation: {samples: 1, resample: {margin: 1, extra: 2}, check_rate: 0.1, check_samples: 1, effort: low,
                prompt_version: "eval-v1", max_spread: 2, reference_images: 2}
+  # The talent manager (brain/agents/talent_manager.py): one per creator, reports to the strategist. Onboard builds
+  # the dossier (manyworlds.creator.dossier) at launch; a weekly review (review_weekday, 0 = Monday) writes the brief
+  # the showrunner plans from and changes the profile only under `editable` (path prefixes; identity, the never-list,
+  # disclosure and handle never). max_overlap: positioning word overlap with a sibling above which it is rewritten.
+  talent_manager: {enabled: true, role: talent_manager, effort: medium, review_weekday: 0, recent_posts: 30, stats_days: 14,
+                   max_overlap: 0.35,
+                   editable: [look.wardrobe, look.situational_looks, look.makeup, persona.traits, persona.humour,
+                              content, content_system, arc, story, audience_insight, positioning, dials.tone_mix]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
@@ -1414,17 +1424,7 @@ direction:
       talk_led: "45-95 s when the story holds (GRWM ~95 s, talking head ~66 s, storytime ~63 s); hook in the first second"
       day_in_life: "33-75 s, 2-4 s per moment"
       quick_update: "10-30 s (mirror talk, a walk-and-talk thought)"
-    # How a creator communicates, by archetype: every entry whose words appear in the creator's archetype, niche or
-    # one-liner is shown to the director (several may match); none matching shows `archetype_default`.
-    archetypes:
-      - {words: [fashion, style, outfit, model, fit], communicates: "visual and label-led: outfit changes cut on motion, poses, full body, numbered labels; little talking (a short line per look or none); caption_style none"}
-      - {words: [beauty, makeup, skincare, grwm, hair], communicates: "talks while doing: propped chest-up, a tool in hand, question bubbles; word captions"}
-      - {words: [lifestyle, day, routine, home, cozy, wellness, slow], communicates: "voiceover-led: POV B-roll of the day with timestamps, her voice over it, on camera only at the hook or the end; minimal captions"}
-      - {words: [food, cook, recipe, baking, kitchen], communicates: "hands and results: close details and steam, a short voiceover or labels, little face to camera"}
-      - {words: [story, comedy, humour, humor, commentary, opinion, rant, educator, teach, explain, advice], communicates: "talk-led: to camera in one continuous take or walking, cutaways to what she talks about, word captions, a hook label"}
-      - {words: [fitness, gym, run, yoga, dance], communicates: "motion-led: movement, poses and motion references where available, labels, a bed; talking only between sets"}
-      - {words: [travel, city, explore, walk], communicates: "walk-and-talk and handheld follow outdoors, POV views, timestamps or place labels"}
-    archetype_default: "decide from the archetype and the idea; most posts lean visual (labels, motion, voiceover) rather than a talking face"
+    # How a creator communicates comes from the archetype library (policy/archetypes, brain.archetypes.file).
 
 # Set and wardrobe bibles (manyworlds.creator.sets, plan 2026-11-22 wave 2 item 5): a set or outfit the director names
 # for the first time is registered on the creator (anchors.sets / anchors.outfits) with its canonical description
@@ -1837,6 +1837,8 @@ llm:
     trend_analyst: {model: qwen4-max, fallback: claude-sonnet-5-5}      # the daily niche brief
     # Shot sheets for accepted ideas (manyworlds.brain.director), asked with a strict schema (llm.strict_json_schema).
     director: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    # The talent manager (brain/agents/talent_manager.py): a few calls per creator a week, judgement-heavy.
+    talent_manager: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

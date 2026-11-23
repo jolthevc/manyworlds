@@ -1,0 +1,168 @@
+# Creator archetypes (manyworlds.brain.archetypes; owner direction 2026-11-23: the Brain thinks in archetypes, and the
+# archetype decides how a creator communicates and what their content mix is; formats are only examples).
+#
+# An archetype is a playbook, not a template: what the audience comes for, how this kind of creator communicates,
+# the mix of content shapes, which capabilities carry it (names from policy `capabilities`, group.name), recurring
+# series patterns, hooks, edit grammar, what success looks like and what kills it. A creator has a primary archetype
+# and may have a secondary one (a cozy lifestyle creator who also cooks). The talent manager builds the dossier from
+# the archetype; the showrunner and the director read it on every batch.
+#
+# Grounded in the 2026-11-23 top-clip study and craft research (docs/research/2026-11-23-readiness-and-craft.md):
+# outfit clips ~9-12 s propped full body cut on movement; GRWM 60-95 s talking while doing; day-in-life POV B-roll
+# with timestamps; an AI presenter talking to camera from frame 1 is the weakest AI shape (open on motion or a label).
+#
+# `words` match the creator's archetype, niche and one-liner (start of a word); `communicates` is the line the
+# director reads. `mix` shares are of posts and sum to 1 (photo = single image, carousel, story, video).
+# `talk_share` is the share of videos where the creator speaks to camera. Never touch scope.excluded_topics:
+# fitness and wellness are movement and routine, never health advice; educators never give medical or financial advice.
+version: archetypes-v1
+default_communicates: "decide from the archetype and the idea; most posts lean visual (labels, motion, voiceover) rather than a talking face"
+archetypes:
+  fashion_style:
+    words: [fashion, style, outfit, model, fits, thrift, wardrobe]
+    summary: "personal style: outfits, combinations, a recognisable silhouette and taste"
+    audience_promise: "outfit ideas they can steal, a taste they trust, the satisfaction of a clean transition"
+    communicates: "visual and label-led: outfit changes cut on motion, poses, full body, numbered labels; little talking (a short line per look or none); caption_style none"
+    mix: {photo: 0.25, carousel: 0.3, story: 0.1, video: 0.35}
+    talk_share: 0.1
+    lean_on: [devices.propped, devices.locked_off, devices.mirror, framing.full_body, actions.pose, actions.outfit_change, actions.spin_or_hair_flip, edits.cut_on_motion, edits.labels, sound.room_tone]
+    avoid: [actions.talk]
+    series_patterns:
+      - {name: "outfits of the week", premise: "the same propped frame, one look per weekday, cut on a spin", uses: [actions.outfit_change, edits.cut_on_motion, edits.labels]}
+      - {name: "one piece, three ways", premise: "a single item styled three times", uses: [actions.outfit_change, edits.labels]}
+      - {name: "fit check", premise: "a single look, full body, a few poses, the details close up", uses: [actions.pose, framing.close_up]}
+    hooks: ["the finished look in frame 1, then how it was built", "a numbered label: 'look 1 of 5'", "a before outfit that is obviously wrong"]
+    edit_grammar: ["cut on the spin or the hair flip", "hold each look 1.5-2.5 s", "locked-off frame across looks", "9-15 s total"]
+    success_signals: [saves, shares, completion rate, rewatches]
+    pitfalls: ["garments drifting between shots of the same look", "talking over outfit content", "slow intros"]
+  beauty_grwm:
+    words: [beauty, makeup, skincare, grwm, hair, nails]
+    summary: "get-ready-with-me and beauty routines told while doing them"
+    audience_promise: "company while they get ready, a story or opinion, a technique they can copy"
+    communicates: "talks while doing: propped chest-up, a tool in hand, question bubbles; word captions"
+    mix: {photo: 0.15, carousel: 0.15, story: 0.15, video: 0.55}
+    talk_share: 0.7
+    lean_on: [devices.propped, framing.medium_close_up, actions.makeup, actions.prop_work, actions.talk, edits.question_bubbles, text.word_captions, sound.voice]
+    avoid: []
+    series_patterns:
+      - {name: "grwm while I tell you", premise: "a story or a hot take told through a whole routine", uses: [actions.makeup, actions.talk, edits.question_bubbles]}
+      - {name: "five-minute face", premise: "the fastest routine, labels per step", uses: [actions.makeup, edits.labels]}
+      - {name: "answering your question", premise: "a comment as a bubble, answered while doing her hair", uses: [edits.question_bubbles, actions.talk]}
+    hooks: ["a question bubble from a follower", "the finished face first, then rewind", "a strong opinion in the first line"]
+    edit_grammar: ["one continuous take per step, cut between steps", "60-95 s for storytime GRWM, 15-30 s for a technique", "punch-in on the detail"]
+    success_signals: [watch time, comments, follows from the post]
+    pitfalls: ["product names or brands", "skin or health claims", "a still face talking with nothing in her hands"]
+  lifestyle_slow:
+    words: [lifestyle, day, routine, home, cozy, slow, wellness, night, morning, apartment]
+    summary: "the texture of an ordinary life: routines, small rituals, a home and a neighbourhood"
+    audience_promise: "calm, belonging, a life that feels like theirs but a little more intentional"
+    communicates: "voiceover-led: POV B-roll of the day with timestamps, her voice over it, on camera only at the hook or the end; minimal captions"
+    mix: {photo: 0.3, carousel: 0.25, story: 0.15, video: 0.3}
+    talk_share: 0.2
+    lean_on: [devices.pov, devices.locked_off, framing.close_up, edits.voiceover_broll, edits.timestamps, edits.labels, sound.voiceover, sound.room_tone, actions.prop_work]
+    avoid: []
+    series_patterns:
+      - {name: "a day in timestamps", premise: "POV details of the day with times on screen and her voice over", uses: [edits.timestamps, edits.voiceover_broll, devices.pov]}
+      - {name: "small rituals", premise: "one recurring ritual (tea, a walk, a reset) shot the same way each time", uses: [framing.close_up, sound.room_tone]}
+      - {name: "photo dump", premise: "a carousel of the week's small moments in order", uses: []}
+    hooks: ["a time stamp and a promise ('5:40am, before anyone is up')", "a moving detail in frame 1 (steam, a door, light)", "one honest line over the first shot"]
+    edit_grammar: ["2-3 s per detail", "room tone always", "her voice once, not wall to wall", "20-45 s"]
+    success_signals: [saves, completion rate, profile visits]
+    pitfalls: ["aspirational luxury", "repeating the same room and angle every post", "self-care or health advice"]
+  food_home:
+    words: [food, cook, recipe, baking, kitchen, meal, coffee]
+    summary: "cooking and eating at home: simple food, process, results"
+    audience_promise: "something they can make tonight, and the pleasure of watching it come together"
+    communicates: "hands and results: close details and steam, a short voiceover or labels, little face to camera"
+    mix: {photo: 0.25, carousel: 0.3, story: 0.1, video: 0.35}
+    talk_share: 0.15
+    lean_on: [framing.close_up, actions.prop_work, edits.labels, edits.voiceover_broll, sound.room_tone, sound.voiceover, devices.pov]
+    avoid: [actions.walk_and_talk]
+    series_patterns:
+      - {name: "one-pan dinner", premise: "steps as labelled close-ups, the result held at the end", uses: [framing.close_up, edits.labels]}
+      - {name: "what I eat after work", premise: "voiceover over the cooking, a bite at the end", uses: [edits.voiceover_broll, sound.voiceover]}
+    hooks: ["the finished dish first", "the satisfying moment (a pour, a crack, steam)", "a label with the time or cost"]
+    edit_grammar: ["cut on the action (pour, flip, slice)", "1-2 s per step", "15-40 s"]
+    success_signals: [saves, shares]
+    pitfalls: ["hands holding tools wrongly", "branded packaging", "diet or health claims"]
+  storyteller:
+    words: [story, storytime, comedy, humour, humor, commentary, opinion, rant, yap, chat]
+    summary: "a voice and a point of view: stories, opinions, observations, jokes"
+    audience_promise: "a friend talking to them: entertainment, a take, a laugh"
+    communicates: "talk-led: to camera in one continuous take or walking, cutaways to what she talks about, word captions, a hook label"
+    mix: {photo: 0.15, carousel: 0.1, story: 0.15, video: 0.6}
+    talk_share: 0.85
+    lean_on: [actions.talk, actions.walk_and_talk, devices.selfie_arm, devices.propped, framing.medium_close_up, edits.hook_text, edits.cutaways, text.word_captions, sound.voice]
+    avoid: []
+    series_patterns:
+      - {name: "storytime", premise: "one story from start to punchline, cutaways to what she describes", uses: [actions.talk, edits.cutaways]}
+      - {name: "hot take on the walk", premise: "an opinion while walking somewhere ordinary", uses: [actions.walk_and_talk, devices.selfie_arm]}
+      - {name: "replying to you", premise: "a comment as a bubble, answered to camera", uses: [edits.question_bubbles, actions.talk]}
+    hooks: ["the punchline or the stakes in line 1", "a hook label over motion (never a still face from frame 1)", "start mid-sentence"]
+    edit_grammar: ["punch-in on the punchline", "cut dead air", "cutaway every 6-10 s", "30-90 s"]
+    success_signals: [watch time, comments, shares, follows]
+    pitfalls: ["a still AI face talking from frame 1 (the weakest AI format)", "real people, news or politics", "long setups"]
+  educator:
+    words: [educator, teach, explain, tips, guide, learn, study, career]
+    summary: "explains one useful thing at a time in a way people remember"
+    audience_promise: "one thing they didn't know, said simply, worth saving"
+    communicates: "talk-led with proof on screen: a hook question, labels or numbered steps, cutaways to what she explains"
+    mix: {photo: 0.1, carousel: 0.35, story: 0.1, video: 0.45}
+    talk_share: 0.6
+    lean_on: [actions.talk, edits.labels, edits.cutaways, edits.hook_text, text.word_captions, devices.propped, framing.medium_close_up]
+    avoid: []
+    series_patterns:
+      - {name: "one thing a day", premise: "a single tip, a hook question, three numbered points", uses: [edits.labels, edits.hook_text]}
+      - {name: "carousel explainer", premise: "a slide per point, a strong first slide", uses: []}
+    hooks: ["a question the viewer has", "a surprising number or mistake", "'stop doing X'"]
+    edit_grammar: ["one point per cut", "labels match the words", "20-60 s"]
+    success_signals: [saves, shares, follows]
+    pitfalls: ["medical, legal or financial advice", "claims that need sources", "talking without anything on screen"]
+  movement:
+    words: [fitness, gym, running, runner, yoga, dance, pilates, stretch, movement]
+    summary: "movement and routine: dance, stretches, training days shown, never prescribed"
+    audience_promise: "energy, motivation, a routine to move along with"
+    communicates: "motion-led: movement, poses and motion references where available, labels, a bed; talking only between sets"
+    mix: {photo: 0.2, carousel: 0.15, story: 0.15, video: 0.5}
+    talk_share: 0.15
+    lean_on: [actions.motion_reference, actions.pose, devices.propped, framing.full_body, edits.cut_on_motion, edits.labels, sound.music_bed, sound.room_tone]
+    avoid: [actions.talk]
+    series_patterns:
+      - {name: "move with me", premise: "a short sequence, full body, labels per move", uses: [actions.motion_reference, edits.labels]}
+      - {name: "the routine", premise: "the same propped frame each session, cut on the movement", uses: [devices.locked_off, edits.cut_on_motion]}
+    hooks: ["the hardest move first", "a label with the time or count", "movement from frame 1"]
+    edit_grammar: ["cut on the beat or the movement", "full body, feet in frame", "8-20 s"]
+    success_signals: [shares, saves, completion rate]
+    pitfalls: ["health or weight claims", "warped feet and hands in full body", "fast spins that smear"]
+  city_explorer:
+    words: [travel, city, explore, walk, neighbourhood, neighborhood, commute, street]
+    summary: "places through her eyes: streets, cafes, small discoveries, the walk there"
+    audience_promise: "a place they want to be, and a guide they trust"
+    communicates: "walk-and-talk and handheld follow outdoors, POV views, timestamps or place labels"
+    mix: {photo: 0.3, carousel: 0.3, story: 0.1, video: 0.3}
+    talk_share: 0.4
+    lean_on: [actions.walk_and_talk, actions.walk, devices.handheld_follow, devices.pov, framing.wide, edits.timestamps, edits.labels, sound.room_tone]
+    avoid: []
+    series_patterns:
+      - {name: "walk with me", premise: "a slow walk somewhere ordinary, her voice and the street", uses: [actions.walk_and_talk, sound.room_tone]}
+      - {name: "the spot", premise: "one place, a carousel of details and a line why", uses: [framing.close_up]}
+    hooks: ["the view first", "a label with the place type and time", "movement into frame"]
+    edit_grammar: ["handheld but steady", "a wide, then details", "15-40 s"]
+    success_signals: [saves, shares, profile visits]
+    pitfalls: ["real signage, real businesses or identifiable strangers", "crowds", "long motion takes that drift"]
+  maker:
+    words: [art, craft, diy, maker, draw, paint, knit, sew, design, build]
+    summary: "making things by hand: process, mistakes, the finished piece"
+    audience_promise: "the satisfaction of watching something get made, and permission to try"
+    communicates: "process-led: hands and tools close up, time-lapse feel, labels per stage, a short voiceover or none"
+    mix: {photo: 0.25, carousel: 0.3, story: 0.1, video: 0.35}
+    talk_share: 0.2
+    lean_on: [framing.close_up, actions.prop_work, devices.locked_off, edits.labels, edits.voiceover_broll, sound.room_tone]
+    avoid: []
+    series_patterns:
+      - {name: "start to finish", premise: "stages as labelled close-ups, the piece held up at the end", uses: [framing.close_up, edits.labels]}
+      - {name: "made a mistake", premise: "what went wrong and how it was fixed", uses: [sound.voiceover]}
+    hooks: ["the finished piece first", "the most satisfying moment of the process", "a label: 'day 1 of 7'"]
+    edit_grammar: ["cut on each stage", "locked-off over the work", "15-45 s"]
+    success_signals: [saves, completion rate, comments]
+    pitfalls: ["hands and tools deforming", "branded materials"]

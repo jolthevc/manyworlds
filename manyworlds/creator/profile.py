@@ -141,7 +141,7 @@ def render_bible(profile: dict, base: dict | None = None) -> dict:
              personality=f"{persona['vibe']} {', '.join(persona['traits'])}. {persona['humour']}",
              style_and_wardrobe=f"{look['wardrobe']} Makeup: {look['makeup']}")
     for k in ("display_name", "handle", "disclosure_line", "kokoro_voice", "home_and_places", "interests",
-              "opinions_and_running_jokes", "one_line", "archetype", "niche"):
+              "opinions_and_running_jokes", "one_line", "archetype", "niche", "archetypes"):
         if k in profile:
             b[k] = profile[k]
     return b

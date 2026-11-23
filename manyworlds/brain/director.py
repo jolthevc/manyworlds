@@ -107,19 +107,12 @@ def craft_rules(policy) -> str:
     return "".join(parts)
 
 
-def _words_in(text: str, words) -> bool:
-    low = (text or "").lower()
-    return any(re.search(rf"\b{re.escape(str(w).lower())}", low) for w in words or [] if str(w).strip())
-
-
 def communication(policy, bible: dict) -> list[str]:
-    """How this kind of creator communicates (policy `direction.director.archetypes`): every entry whose words start
-    a word in the bible's archetype, niche or one-liner; none matching gives `archetype_default`."""
-    b = _brief(policy)
-    text = " ".join(str(bible.get(k) or "") for k in ("archetype", "niche", "one_line"))
-    found = [str(a.get("communicates") or "") for a in b.get("archetypes") or []
-             if isinstance(a, dict) and a.get("communicates") and _words_in(text, a.get("words"))]
-    return found or ([str(b["archetype_default"])] if b.get("archetype_default") else [])
+    """How this kind of creator communicates, from the archetype library (manyworlds.brain.archetypes): the
+    profile's named archetypes, else every archetype whose words start a word in the bible's archetype, niche or
+    one-liner; none matching gives the library default."""
+    from . import archetypes
+    return archetypes.communicates(policy, bible)
 
 
 def catalogue(policy) -> tuple[dict, list[str]]:

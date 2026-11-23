@@ -24,7 +24,9 @@ from ..creator import lab
 from ..policy import Policy
 
 LLM_STEPS = ("bible", "anchors", "profile")
-NEXT = {"bible": "references", "references": "anchors", "anchors": "lora", "lora": "profile", "profile": "ready"}
+NEXT = {"bible": "references", "references": "anchors", "anchors": "lora", "lora": "profile", "profile": "dossier",
+        "dossier": "ready"}
+AGENT_STEPS = {"dossier": "talent_manager"}   # steps another Brain agent runs (a new job on retry, like LLM_STEPS)
 
 
 def _cfg(policy: Policy) -> dict:
@@ -73,6 +75,10 @@ def _status(conn, job_ids: list[str], *, min_done: int | None = None) -> str:
 
 
 def _start_step(conn, policy: Policy, launch: dict, step: str, attempt: int) -> list[str]:
+    if step in AGENT_STEPS:
+        job = queue.enqueue(conn, f"brain.{AGENT_STEPS[step]}", {"creator_id": str(launch["creator_id"]), "mode": "onboard"},
+                            creator_id=launch["creator_id"], idempotency_key=f"launch:{launch['id']}:{step}:{attempt}")
+        return [str(job)]
     if step in LLM_STEPS:
         job = queue.enqueue(conn, "brain.creator_lab", {"launch_id": str(launch["id"]), "step": step},
                             creator_id=launch["creator_id"], idempotency_key=f"launch:{launch['id']}:{step}:{attempt}")
@@ -111,7 +117,7 @@ def _retry(conn, policy: Policy, launch: dict, step: str, jobs: dict) -> str:
         _fail(conn, launch, step, f"step {step} failed {launch['retries'] + 1} times")
         return "failed"
     # Failed jobs of a GPU step are put back (the lab's own idempotency keys are reused); a Claude step gets a new job.
-    if step in LLM_STEPS:
+    if step in LLM_STEPS or step in AGENT_STEPS:
         jobs[step] = _start_step(conn, policy, launch, step, launch["retries"] + 1)
     else:
         conn.execute("UPDATE jobs SET status = 'queued', attempts = 0, worker_faults = 0, error = NULL, worker_id = NULL, "

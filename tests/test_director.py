@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import pytest
 from psycopg.types.json import Jsonb
 
-from manyworlds.brain import director, ideas
+from manyworlds.brain import archetypes, director, ideas
 
 from brain_helpers import StubLLM, creator as bare_creator
 from test_production import START, creator
@@ -181,7 +181,7 @@ def test_the_brief_is_the_capability_catalogue_and_the_archetype(conn, policy):
     director.direct(conn, policy, llm, {"scenes": ["by the canal"], "script": ""}, cid, fmt="story_clip")
     content, system = str(llm.calls[0]["content"]), llm.calls[0]["system"]
     assert "quiet-luxury fashion" in content and "outfits that cost less" in content          # the archetype
-    fashion = policy.get("direction", "director", "archetypes")[0]["communicates"]
+    fashion = archetypes.get(policy, "fashion_style")["communicates"]
     assert fashion in content                                                                  # how it communicates
     cat = policy.get("capabilities")
     assert cat["devices"]["mirror"]["description"] in content and cat["actions"]["pose"]["write"] in content
@@ -199,7 +199,7 @@ def test_the_brief_is_the_capability_catalogue_and_the_archetype(conn, policy):
 
 def test_without_a_matching_archetype_the_default_guidance_is_given(policy):
     assert director.communication(policy, {"archetype": "retired lighthouse keeper"}) == [
-        policy.get("direction", "director", "archetype_default")]
+        archetypes.library(policy)["default_communicates"]]
     both = director.communication(policy, {"niche": "beauty", "one_line": "storytelling while doing her makeup"})
     assert len(both) == 2
 

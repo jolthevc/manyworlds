@@ -1,5 +1,5 @@
 """Launching creators with no bespoke code (Brain M8): an approved launch walks the creator lab's steps by
-itself (bible, reference pack, anchors, LoRA, profile) and ends with a creator ready to plan in the sandbox and
+itself (bible, reference pack, anchors, LoRA, profile, dossier) and ends with a creator ready to plan in the sandbox and
 an account request for the owner. A step that keeps failing stops the launch and tells the owner."""
 
 from __future__ import annotations
@@ -87,6 +87,11 @@ def test_an_approved_launch_becomes_a_ready_sandbox_creator_with_an_account_requ
     _finish(conn, "train.")
     launches.advance(conn, policy)                                     # -> profile
     _run_lab(conn, policy, monkeypatch)
+    launches.advance(conn, policy)                                     # -> dossier, by the talent manager
+    tm = _jobs(conn, "brain.talent_manager")
+    assert [j["payload"]["mode"] for j in tm] == ["onboard"] and conn.execute(
+        "SELECT step FROM launches").fetchone()["step"] == "dossier"
+    _finish(conn, "brain.talent_manager")
     out = launches.advance(conn, policy)
     row = conn.execute("SELECT l.step, l.status, c.status cs, c.publish_mode FROM launches l "
                        "JOIN creators c ON c.id = l.creator_id").fetchone()

@@ -19,9 +19,9 @@ from pydantic import BaseModel, Field
 
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import events, evidence, experiments, exploration, memory, planner
+from .. import archetypes, events, evidence, experiments, exploration, memory, planner
 from ..agent import AgentContext, commission, record_decision, register
-from . import analyst
+from . import analyst, talent_manager
 
 SYSTEM = planner.SYSTEM + """
 
@@ -118,6 +118,14 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
                  f"format the recipe lists; the scene that performs it stays short and simple where its readiness is "
                  f"partial): {json.dumps(recipe_view(moves))}. " if moves else "")
     capability_text = planner.capability_brief(policy, who)
+    plays = archetypes.playbooks(policy, prof or c["bible"])
+    play_text = (f"Her archetype playbooks (how this kind of creator wins: mix, series patterns, hooks, edit grammar, "
+                 f"pitfalls; a guide, not a template): {json.dumps(plays)}
+" if plays else "")
+    brief = talent_manager.latest_brief(conn, creator_id)
+    brief_text = (f"Her talent manager's brief for these batches (follow it: it sets the focus, the series to run and "
+                  f"what to stop): {json.dumps(brief['output'], default=str)}
+" if brief else "")
     staging_text = (f"Stagings you may give an idea (set `staging` to its name; most posts need none; the scene must "
                     f"show its setting, framing and wardrobe and the script follow its conventions): "
                     f"{json.dumps(stagings)}. {policy.get('stagings', 'rules', default='')} " if stagings else "")
@@ -151,7 +159,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"or captions):\n{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}\n"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
-        f"{niche_text}"
+        f"{niche_text}{play_text}{brief_text}"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
         f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
@@ -169,6 +177,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"The creator's face is visible in most images, wearing their signature item.")
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,
             "analysis_decision_id": str(last["id"]) if last else None,
+            "talent_brief_id": str(brief["id"]) if brief else None,
             "finding_ids": [str(f["id"]) for f in evidence.findings(conn, mode=mode, creator_id=creator_id)],
             "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings, "flavors": flavors,
             "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore}
@@ -243,6 +252,7 @@ class Showrunner:
             record_decision(ctx, "content_batch", step="plan", creator_id=creator_id, model=ctx.llm.model_for("brain"),
                             inputs={"start": str(start), "days": days, "profile_version": meta["profile_version"],
                                     "requested": meta["counts"], "analysis_decision_id": meta["analysis_decision_id"],
+                                    "talent_brief_id": meta["talent_brief_id"],
                                     "finding_ids": meta["finding_ids"], "exploration": meta["exploration"],
                                     "experiment_slots": {"offered": len(meta["slots"]), "filled": len(used)}},
                             output=output, rationale=out.rationale)

@@ -454,6 +454,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
 
     from . import notify
     from .brain import events, ideas, launches, portfolio, showrunner_loop
+    from .brain.agents import talent_manager
     from .deploy.providers import redact
 
     now = datetime.now(timezone.utc)
@@ -471,6 +472,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
         if not pol.get("brain", "strategist", "enabled", default=False):
             return []
         portfolio.ensure_daily(conn, pol)          # the daily portfolio cycle (one strategist job a day)
+        talent_manager.ensure_reviews(conn, pol, now=now)   # each creator's weekly career review
         r = launches.advance(conn, pol)            # approved launches walk the creator lab's steps
         return [{"launches": r}] if any(r.values()) else []
 
