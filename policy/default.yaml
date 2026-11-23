@@ -23,19 +23,19 @@ fixed_costs:
 gpu_runs:
   default_max_hours: 2
   default_max_usd: 1.0
-  max_hours_by_family: {train: 3, talk: 2.5, comfy: 2.5, edit: 2, dance: 2}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
-  max_usd_by_family: {talk: 3.0, comfy: 3.0, edit: 3.0, dance: 3.0}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders); edit: an L40S for 2 h, or an H100 for ~1 h
+  max_hours_by_family: {train: 3, talk: 2.5, comfy: 2.5, edit: 2, dance: 2, finish: 2}   # train: boot + model download + ~1h of training; talk: ~94 GB of weights first
+  max_usd_by_family: {talk: 3.0, comfy: 3.0, edit: 3.0, dance: 3.0, finish: 0.25}   # an L40S at ~$1.09/h for its 2.5 h limit (full-precision download, load, renders); edit: an L40S for 2 h, or an H100 for ~1 h; finish: the finisher for its 2 h at ~$0.09/h, with room
   max_hours_limit: 12          # the launcher refuses anything longer
   idle_stop_minutes: 20        # no open jobs for this long -> stop (SaladCloud: nodes pull images slowly)
   # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
   # more than starting a fresh one when work returns.
-  idle_stop_minutes_by_provider: {vast: 5, runpod: 5}
+  idle_stop_minutes_by_provider: {vast: 5, runpod: 5, fly: 5}   # fly: the finisher starts in seconds
   boot_grace_minutes: 45       # until its first job, a machine may take this long (image pull + model download)
-  boot_grace_minutes_by_provider: {runpod: 20, vast: 30}   # working machines started within 8 / 21 min (2026-11-14)
+  boot_grace_minutes_by_provider: {runpod: 20, vast: 30, fly: 5}   # working machines started within 8 / 21 min (2026-11-14); fly: the finisher boots in seconds
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
-  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, edit: 60}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, edit: 60, finish: 30}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
   max_attempt_minutes_by_kind: {image.mirror: 120}  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
   serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
@@ -76,6 +76,13 @@ gpu_pools:
   # Hosted APIs (Together): jobs run on the control plane (fly.toml process `hosted`); the host bills per output
   # (ledger `hosted_api`), so no machine is rented and nothing idles.
   hosted:            {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
+  # The finisher (finish.video: production's finish encodes, worker/handlers/finish_video.py): a machine of this Fly app
+  # (fly.toml process `finisher`, performance-2x, 4 GB) that the autoscaler starts while finish jobs wait
+  # (deploy/autoscale.ensure_finisher: it starts the stopped machine of `process_group`, never creates one) and that
+  # exits once its queue has been empty for idle_exit_seconds. usd_per_hour is an ESTIMATE for performance-2x with 4 GB
+  # (2026-11-23): the owner should confirm it on Fly's pricing page (fly.io/docs/about/pricing).
+  fly_finisher:      {provider: fly,    gpu: none,    usd_per_hour: 0.09, interruptible: false, process_group: finisher,
+                      idle_exit_seconds: 120}
 
 # Job kinds and the pools allowed to run them. The autoscaler orders them by measured cost
 # per accepted output (autoscale.scoring); this order only breaks ties and decides which
@@ -105,6 +112,9 @@ job_kinds:
   talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
+  # The finish of a made video (production.finish_mode: queue): ffmpeg on the finisher, no GPU. Its outputs are the
+  # post's (written by the producer), so the job itself has none.
+  finish.video:    {pools: [fly_finisher], outputs_per_job: 0}
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   # min_vram_gb (any kind): a worker whose card has less total memory doesn't serve the kind (worker.runner
   # kinds_that_fit); a card that can serve none destroys its own machine at start.
@@ -1581,10 +1591,14 @@ production:
   # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
   reroute_failed_video: {story_clip: photo, talking_video: photo}
   edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
+  # Where a video post's finish (production.finish: mix, grade, captions, cover) renders: `queue`, a finish.video job on the
+  # finisher (a Fly machine the autoscaler starts; gpu_pools.fly_finisher), so minutes of 1080x1920 encodes never block
+  # the producer's loop or its 512 MB VM; `inline`, in the producer's own tick (as before 2026-11-23).
+  finish_mode: queue
 
 # Finishing (manyworlds.finishing, 2026-11-22): grade, grain, hook text, loudness and the cover frame of a finished
-# video, on the control plane: production's finish stage (production.finish_video) runs it once per video post of
-# the formats listed, with the burned-in captions in the same ffmpeg pass where ffmpeg has libass. A finish that fails
+# video: production's finish stage (production.finish; on the finisher machine while production.finish_mode is queue)
+# runs it once per video post of the formats listed, with the burned-in captions in the same ffmpeg pass where ffmpeg has libass. A finish that fails
 # max_failures times ships the unfinished video and tells the owner.
 # Looks are gentle and natural: every value is clamped to `limits`, so no look can oversaturate.
 finishing:

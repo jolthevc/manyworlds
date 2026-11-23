@@ -30,7 +30,8 @@ only past generation.talk.max_take_seconds); each join between shots is the next
 by direction.transition_kind (cut, match, whip, blur, flash) and rendered by media.concat. Undirected posts keep the
 hybrid split (generation.talk_hybrid) behind its switch.
 Finish (`finish_video`, policy `finishing` and `burned_captions`, each with its `formats`): once a video post's video
-is made (and joined), it is finished once on the control plane: the sound mix (policy `sound`: procedural room tone,
+is made (and joined), it is finished once (production.finish_mode queue: a finish.video job on the finisher machine; inline:
+in the producer): the sound mix (policy `sound`: procedural room tone,
 voice polish, library cues, a bed for silent formats), then grade, grain and loudness (manyworlds.finishing) with the
 spoken words (manyworlds.captions, timed from the voice lines, in the style captions.caption_style_for picks, placed
 off the face) and the shots' on-screen text (manyworlds.overlays: labels, the hook, timestamps, question bubbles) in
@@ -53,7 +54,8 @@ The package (one module per stage; this module re-exports every name, so `from m
   followups   the one video made from the chosen photos (FOLLOW_UPS) and its voice and motion first
   captioning  the captions plan: spoken words timed in the finished video, style, placement
   mixing      the sound under a finished video
-  finish      the upscale Step and finish_video (mix, grade, captions, on-screen text, cover)
+  finish      the upscale Step, the finish Step (a finish.video job) and finish_video (mix, grade, captions,
+              on-screen text, cover): finish_plan, render_finish, record_finish
   core        advance_post, advance (the tick) and counting posts whose advance raises
   locks       one producer per post (a lease row per post; a held post is skipped this tick)
   state       every production state key kept in posts.body, beside the brief's own fields
@@ -73,20 +75,24 @@ from ..policy import Policy  # noqa: F401
 from ..review import repair  # noqa: F401
 from .captioning import (  # noqa: F401
     _audio_meta, _caption_style, _drop_unscripted, _fillers, _piece_timing, _style_keys, _transcribed, _voice_audio,
-    caption_lines, caption_placement, caption_plan, caption_style, caption_words, voice_words,
+    caption_lines, caption_placement, caption_plan, caption_style, caption_words, captions_from_words, voice_words,
 )
 from .common import (  # noqa: F401
     FOLLOW_UP_FORMATS, SPOKEN, _cfg, _pieces, _seed, _set, _shot, _with_crops, _with_prompts, _with_shot, log, unmarked,
 )
 from .core import _advance_failed, _slide_formats, advance, advance_post  # noqa: F401
 from .finish import (  # noqa: F401
-    _advance_upscale, _burn_text, _cover, _final_cover, _finish_failed, _piece_keyframes, _switched_on, _text_fonts,
-    _upscale_job, captions_burned, face_box, finish_video, finishes, join_times, overlay_items, shot_spans,
-    text_spans, text_windows,
+    FINISH_KIND, FINISH_SECTIONS, _advance_finish, _advance_upscale, _burn_text, _cover_row, _cover_upload,
+    _existing_final, _fetch_frames, _final_key, _finish_failed, _finish_job, _finish_state, _give_up_finish, _jsonable,
+    _keyframe_cover, _overlay_items_from, _spans_from, _switched_on, _text_fonts, _upscale_job, captions_burned,
+    face_box, finish_mode, finish_plan, finish_video, finishes, join_times, overlay_items, record_finish,
+    render_finish, shot_spans, text_spans, text_windows,
 )
 from .followups import FOLLOW_UPS, _advance_follow_up, _edit_job, _follow_up  # noqa: F401
 from .locks import lease_name, post_lease, release_post_lease, take_post_lease  # noqa: F401
-from .mixing import _mix_sound, _sound_ref, sound_cues, sound_plan  # noqa: F401
+from .mixing import (  # noqa: F401
+    _mix_sound, _piece_loader, _sound_cues_from, _sound_plan_from, _sound_ref, sound_cues, sound_plan,
+)
 from .motion import (  # noqa: F401
     _advance_clip_edit, _advance_motion, _chain_jobs, _clip_job, _clip_params, _dance_kind, _last_frame, _motion_cfg,
     _motion_job, _motion_pattern, _needs_motion, _story_clip_kind, _take_seconds, _wan_frames, clip_edit,

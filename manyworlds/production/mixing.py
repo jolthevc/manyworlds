@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from ..policy import Policy
 from .common import _pieces, _shot
 from .takes import _take_index
+
+
+def _piece_loader(conn, video: dict) -> Callable[[], tuple[dict, list[dict]]]:
+    """(the made video's asset meta, its pieces), read when first needed: the finish's cue and span helpers also run
+    on the finisher (finish.video) from the pieces the producer read for it."""
+    def load():
+        row, pieces = _pieces(conn, video)
+        return row["meta"] or {}, pieces
+    return load
 
 
 # Sound (policy `sound`, on as shipped for the parts that need no GPU): before finishing, every finished video is mixed
@@ -33,14 +44,19 @@ def _sound_ref(lib, cue: str):
 def sound_cues(conn, policy: Policy, body: dict, video: dict) -> dict | None:
     """What to mix under a post's video: {room_tone, music, effects: [(SoundRef, at_s)], ir, mic}, or None when
     sound is off, the post has no shot sheets, or none of their cues resolve in the library."""
+    return _sound_cues_from(policy, body, _piece_loader(conn, video))
+
+
+def _sound_cues_from(policy: Policy, body: dict, load: Callable[[], tuple[dict, list[dict]]]) -> dict | None:
+    """sound_cues from `load()`: (the video's asset meta, its pieces), called only when the cues need them."""
     from .. import sound
     if not sound.enabled(policy) or not body.get("shots"):
         return None
     lib = sound.library(policy)
     if not lib.tags():
         return None
-    row, pieces = _pieces(conn, video)
-    measured = (row["meta"] or {}).get("segment_seconds") or []
+    meta, pieces = load()
+    measured = (meta or {}).get("segment_seconds") or []
     segmented = len(body.get("talk_segments") or []) == len(pieces) > 1
     at = float(((sound.cfg(policy).get("mix") or {}).get("effect_at_s", 0.5)))
     out: dict = {"room_tone": None, "music": None, "effects": [], "ir": None, "mic": None}
@@ -80,12 +96,18 @@ def sound_plan(conn, policy: Policy, post: dict, body: dict, video: dict) -> dic
     """Everything mixed under a post's video: the library cues (sound_cues) over the procedural design (sound.design):
     {room_tone, room_tone_synth (only when no library room tone resolves), room_size, music (a library cue, else the
     silent format's bed), effects, ir, mic}. None only when sound is off."""
+    return _sound_plan_from(policy, post, body, _piece_loader(conn, video))
+
+
+def _sound_plan_from(policy: Policy, post: dict, body: dict,
+                     load: Callable[[], tuple[dict, list[dict]]]) -> dict | None:
+    """sound_plan from `load()` (see _sound_cues_from): the same plan with no database, on the finisher."""
     from .. import sound
     design = sound.design(body.get("shots"), seed_key=str(post["id"]), policy=policy)
     if design is None:
         return None
-    cues = sound_cues(conn, policy, body, video) or {"room_tone": None, "music": None, "effects": [], "ir": None,
-                                                     "mic": None}
+    cues = _sound_cues_from(policy, body, load) or {"room_tone": None, "music": None, "effects": [], "ir": None,
+                                                    "mic": None}
     if cues["music"] is None:
         cues["music"] = sound.bed_music(sound.library(policy), post["format"], policy, seed_key=str(post["id"]))
     return {**cues, "room_tone_synth": design.room_tone if cues["room_tone"] is None else None,

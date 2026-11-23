@@ -9,6 +9,7 @@ API shapes follow each provider's public docs as of Nov 2026:
   SaladCloud  https://api.salad.com/api/public   (container groups)
   Vast.ai     https://console.vast.ai/api/v0     (offers -> instances)
   RunPod      https://api.runpod.io/v2           (pods; v1 retired 2026-11-15)
+  Fly         http://flaps/v1 over /.fly/api      (Machines API from inside the app: the finisher, started not created)
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ class LaunchSpec:
     # RunPod only: {id, data_center, path}: a network volume holding model weights across machines, so each boot
     # loads them instead of downloading ~82 GB (talk). Machines then run in the volume's data center.
     network_volume: dict | None = None
+    process_group: str | None = None   # Fly only: the app's process group whose stopped machine is started
 
 
 @dataclass
@@ -352,9 +354,134 @@ class RunPod:
         self._req("DELETE", f"/pods/{ref}")
 
 
+# --- Fly Machines (the finisher) ----------------------------------------------------
+
+FLY_API_SOCKET = "/.fly/api"     # Fly's in-machine proxy to the Machines API, scoped to this app (no token here)
+FLY_RUN_KEY = "mw_group"         # machine metadata: the gpu_groups row of the run the autoscaler started it for
+FLY_LIVE_STATES = ("starting", "started")
+FLY_STOPPED_STATES = ("stopped", "suspended")
+
+
+def unix_transport(socket_path: str, timeout: float = 60):
+    """HTTP over a unix socket (Fly's /.fly/api): call(method, path, body) -> the JSON answer. ProviderError on any
+    failure, with the response body (never request headers)."""
+    def call(method: str, path: str, body: dict | None = None):
+        import http.client
+        import socket
+
+        class _Conn(http.client.HTTPConnection):
+            def connect(self):
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(self.timeout)
+                s.connect(socket_path)
+                self.sock = s
+
+        conn = _Conn("flaps", timeout=timeout)
+        try:
+            conn.request(method, path, body=json.dumps(body).encode() if body is not None else None,
+                         headers={"Content-Type": "application/json", "Accept": "application/json",
+                                  "User-Agent": USER_AGENT})
+            r = conn.getresponse()
+            status, raw = r.status, r.read()
+        except OSError as e:
+            raise ProviderError(f"{method} {path} -> {e}") from None
+        finally:
+            conn.close()
+        if status >= 300:
+            raise ProviderError(redact(f"{method} {path} -> {status}: {raw.decode(errors='replace')[:1500]}"))
+        return json.loads(raw) if raw.strip() else None
+    return call
+
+
+class FlyMachines:
+    """Machines of this Fly app (the finisher: fly.toml process group `finisher`), through the in-machine Machines API
+    proxy (/.fly/api, http://flaps/v1/apps/<app>/machines). `launch` starts a STOPPED machine of the pool's process
+    group, after writing the run's group name into its metadata (mw_group), so list_live names it as registered and
+    its worker knows its group; it never creates one (fly deploy owns the machines and their size). `list_live`: the
+    started machines of those groups (one without a run name gets an mw- name, so the enforcer stops it as
+    unregistered). `destroy` stops one. Where there is no socket (the GitHub backstop) it is not configured: the
+    enforcer then keeps the registered runs as they are and leaves stopping them to the autoscaler on Fly."""
+    name = "fly"
+
+    def __init__(self, process_groups: list[str] | None = None, *, app: str | None = None, transport=None,
+                 socket_path: str = FLY_API_SOCKET):
+        self.process_groups = [str(g) for g in (process_groups or []) if g]
+        self.app = app or os.environ.get("FLY_APP_NAME")
+        self.socket_path = socket_path
+        self._transport = transport
+
+    def configured(self) -> bool:
+        return bool(self.app) and (self._transport is not None or os.path.exists(self.socket_path))
+
+    def _req(self, method: str, path: str, body: dict | None = None):
+        call = self._transport or unix_transport(self.socket_path)
+        return call(method, f"/v1/apps/{self.app}{path}", body)
+
+    @staticmethod
+    def _meta(m: dict) -> dict:
+        return (m.get("config") or {}).get("metadata") or {}
+
+    def _machines(self) -> list[dict]:
+        res = self._req("GET", "/machines") or []
+        return res if isinstance(res, list) else list(res.get("machines") or [])
+
+    def launch(self, name: str, spec: LaunchSpec) -> Machine:
+        group = spec.process_group or (self.process_groups[0] if len(self.process_groups) == 1 else None)
+        if not group:
+            raise ProviderError("no Fly process group for this pool (gpu_pools.<pool>.process_group)")
+        stopped = [m for m in self._machines()
+                   if self._meta(m).get("fly_process_group") == group and m.get("state") in FLY_STOPPED_STATES]
+        if not stopped:
+            raise NoCapacity(f"no stopped machine in Fly process group {group!r} (fly deploy makes it; never created here)")
+        ref = str(stopped[0]["id"])
+        self._req("POST", f"/machines/{ref}/metadata/{FLY_RUN_KEY}", {"value": name})
+        self._req("POST", f"/machines/{ref}/start")
+        return Machine(name, ref, spec.max_usd_per_hour)
+
+    def list_live(self) -> dict[str, str]:
+        live = {}
+        for m in self._machines():
+            group = self._meta(m).get("fly_process_group")
+            if group in self.process_groups and m.get("state") in FLY_LIVE_STATES:
+                live[str(self._meta(m).get(FLY_RUN_KEY) or f"mw-fly-{group}-{m['id']}")] = str(m["id"])
+        return live
+
+    def destroy(self, name: str, ref: str | None) -> None:
+        if not ref:
+            ref = self.list_live().get(name)
+            if not ref:
+                return
+        self._req("POST", f"/machines/{ref}/stop")
+
+    def own_group(self) -> str | None:
+        """The run this machine was started for (its mw_group metadata), or None (not on Fly, or not started by the
+        autoscaler): the finisher's worker takes it as MW_GROUP."""
+        mid = os.environ.get("FLY_MACHINE_ID")
+        if not mid or not self.configured():
+            return None
+        group = self._meta(self._req("GET", f"/machines/{mid}") or {}).get(FLY_RUN_KEY)
+        return str(group) if group else None
+
+    def stop_self(self) -> str | None:
+        """Stop the machine this process runs on (the worker's self-stop: deadline, stopped by the autoscaler, or a
+        database it can't reach); None when not on a Fly machine."""
+        mid = os.environ.get("FLY_MACHINE_ID")
+        if not mid or not self.configured():
+            return None
+        self._req("POST", f"/machines/{mid}/stop")
+        return self.name
+
+
+def fly_process_groups(policy) -> list[str]:
+    """The Fly process groups of the policy's fly pools (gpu_pools.<pool>.process_group)."""
+    return [str(p["process_group"]) for p in (policy.get("gpu_pools", default={}) or {}).values()
+            if p.get("provider") == "fly" and p.get("process_group")]
+
+
 def all_providers(policy) -> dict[str, Provider]:
     v = policy.get("autoscale", "vast", default={})
-    return {"salad": Salad(),
+    return {"fly": FlyMachines(fly_process_groups(policy)),
+            "salad": Salad(),
             "vast": Vast(float(v.get("min_reliability", 0.98)), bool(v.get("verified_only", True)),
                          int(v.get("offers_to_try", 3)), float(v.get("min_inet_down_mbps", 0)),
                          list(v.get("exclude_countries", [])),

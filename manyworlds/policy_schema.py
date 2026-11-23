@@ -12,7 +12,7 @@ then). Sections not named here are not validated.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -237,6 +237,7 @@ class Production(_Strict):
     max_ready_unpublished: int
     reroute_failed_video: dict[str, str]
     edit: Free
+    finish_mode: Literal["queue", "inline"]   # where the finish renders (production.finish)
 
 
 # --- finishing -------------------------------------------------------------------------------------------------------

@@ -28,11 +28,31 @@ primary_region = "iad"     # next to Neon us-east-2
   hosted = "worker --pool hosted --kinds hosted.video"
   # The trend watcher (manyworlds.research.trends): runs only while policy trends.enabled; at most trends.daily_usd_max.
   trends = "trends loop"
+  # The finisher (production.finish_mode: queue): video finishing (mix, grade, captions, cover) as finish.video jobs, off
+  # the producer's loop. The autoscaler starts its stopped machine while finish jobs wait (ensure_finisher; the
+  # machine is never created there, only by deploy) and the worker exits once its queue has been empty for
+  # gpu_pools.fly_finisher.idle_exit_seconds, so the machine stops until the next finish. After a deploy (which may
+  # start it), a run the autoscaler did not register is refused at start and stopped by the enforcer.
+  finisher = "worker --pool fly_finisher --kinds finish.video"
 
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"
+  processes = ["autoscaler", "brain", "reviewer", "producer", "hosted", "trends"]
+
+# The finisher encodes 1080x1920 video: two dedicated CPUs and 4 GB, billed only while it runs.
+[[vm]]
+  size = "performance-2x"
+  memory = "4gb"
+  processes = ["finisher"]
 
 [[restart]]
   policy = "always"
   retries = 10
+  processes = ["autoscaler", "brain", "reviewer", "producer", "hosted", "trends"]
+
+# A clean exit (its queue is empty) leaves the finisher stopped; only a crash restarts it.
+[[restart]]
+  policy = "on-failure"
+  retries = 3
+  processes = ["finisher"]

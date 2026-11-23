@@ -301,10 +301,113 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
             "usd_per_hour": m.usd_per_hour, "deadline_hours": hours, "max_usd": max_usd}
 
 
+def _work_pools(policy: Policy, w: dict) -> list[str]:
+    return list(w["pools"] or policy.get("job_kinds", w["kind"], "pools", default=[]) or [])
+
+
+def fly_work(policy: Policy, w: dict) -> bool:
+    """Waiting work that only machines of this Fly app run (the finisher's finish.video)."""
+    pools = _work_pools(policy, w)
+    return bool(pools) and all(policy.get("gpu_pools", p, "provider") == "fly" for p in pools)
+
+
+# The finisher (finish.video, worker/handlers/finish_video.py): a machine of this Fly app (fly.toml process group
+# `finisher`, a larger VM than the control plane's), not a rented GPU. The GPU launch path assumes a worker image, a
+# GPU name, a registry and scoped worker credentials, none of which apply, so it has this step of its own. Like every
+# machine it is registered (deadline and spend cap: gpu_runs.*_by_family.finish) before it starts, metered into the
+# ledger as gpu_billed by the enforcer every tick, and stopped by it (deadline, cap, idle, stuck, the day's budget);
+# its worker also exits when its queue has been empty for the pool's idle_exit_seconds (the machine then stops and is
+# marked gone) and stops its own machine past its deadline. It is started, never created: fly deploy makes the
+# machine (its size and restart policy are fly.toml's).
+def ensure_finisher(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime) -> list[dict]:
+    """Start the stopped finisher when its jobs wait and none is up; one machine per fly pool."""
+    provider = providers.get("fly")
+    pools = [name for name, p in (policy.get("gpu_pools", default={}) or {}).items() if p.get("provider") == "fly"]
+    if provider is None or not pools or not provider.configured():
+        return []
+    from .. import operations
+    work = [w for w in waiting_work(conn, operations.test_batch_patterns(policy)) if fly_work(policy, w)]
+    cooldown = timedelta(minutes=float(policy.get("autoscale", "relaunch_cooldown_minutes", default=15)))
+    actions: list[dict] = []
+    for pool in pools:
+        waiting = [w for w in work if pool in _work_pools(policy, w)]
+        if not waiting:
+            continue
+        kinds = sorted({w["kind"] for w in waiting})
+        if conn.execute("SELECT 1 FROM gpu_groups WHERE pool = %s AND stopped_at IS NULL", (pool,)).fetchone():
+            continue   # already up (or starting): it serves the queue
+        over = over_budget(conn, policy)
+        if over:
+            actions.append({"action": "not_launching", "reason": over, "pool": pool,
+                            "waiting": {w["kind"]: w["n"] for w in waiting}})
+            continue
+        # A run that finished no job (it crashed at start, or failed everything) waits out the relaunch cooldown, so
+        # a broken release can't start the finisher in a loop. A run that did work may stop for any reason: its worker
+        # exits once the queue is empty, and the machine is then marked gone.
+        recent = conn.execute(
+            """SELECT g.name, g.stop_reason FROM gpu_groups g
+               WHERE g.pool = %s AND g.stopped_at > %s AND coalesce(g.stop_reason, '') <> 'manual'
+                 AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.gpu_group = g.name AND a.outcome = 'done')
+               ORDER BY g.stopped_at DESC LIMIT 1""", (pool, now - cooldown)).fetchone()
+        if recent:
+            actions.append({"action": "cooldown", "kind": kinds[0], "after": recent["name"],
+                            "reason": recent["stop_reason"]})
+            continue
+        family = _family(policy, kinds[0])
+        streak = no_output_streak(conn, policy, family, now, [pool])
+        if streak:
+            actions.append({"action": "not_launching", "reason": "no_output_streak", "kind": kinds[0], **streak})
+            continue
+        try:
+            actions.append(launch_fly(conn, policy, provider, pool, family, now))
+        except (NoCapacity, ProviderError) as e:
+            actions.append({"action": "no_capacity", "kind": kinds[0], "waiting": sum(int(w["n"]) for w in waiting),
+                            "tried": [{"pool": pool, "error": redact(str(e))[:200]}]})
+    return actions
+
+
+def launch_fly(conn, policy: Policy, provider: Provider, pool: str, family: str, now: datetime) -> dict:
+    """Register then start the stopped machine of a fly pool's process group. Raises NoCapacity / ProviderError (the
+    registration is then removed)."""
+    p = policy.pool(pool)
+    runs = policy.get("gpu_runs", default={})
+    hours = min(_limit(policy, family, "max_hours_by_family", "max_hours", "default_max_hours", 2),
+                float(runs.get("max_hours_limit", 12)))
+    max_usd = _limit(policy, family, "max_usd_by_family", "max_usd", "default_max_usd", 1.0)
+    name = f"mw-{family}-{provider.name}-{uuid.uuid4().hex[:4]}"
+    usd = float(p["usd_per_hour"])
+    # Registered first, as every machine: if anything after this dies, the enforcer knows its deadline and cap.
+    conn.execute(
+        """INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, replicas, job_kinds, deadline, max_usd,
+                                   started_at, billed_until, last_busy_at, family, image, max_attempt_minutes)
+           VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, NULL, %s)""",
+        (name, provider.name, pool, usd, _family_kinds(policy, family), now + timedelta(hours=hours), max_usd,
+         now, now, now, family, attempt_limit_minutes(policy, family)))
+    spec = LaunchSpec(image="", gpu_name=str(p.get("gpu") or "none"), cpu=0, ram_gb=0, disk_gb=0,
+                      max_usd_per_hour=usd, process_group=p.get("process_group"))
+    try:
+        m = provider.launch(name, spec)
+    except Exception:
+        conn.execute("DELETE FROM gpu_groups WHERE name = %s", (name,))  # never started
+        raise
+    conn.execute("UPDATE gpu_groups SET provider_ref = %s, usd_per_hour = %s WHERE name = %s",
+                 (m.ref, m.usd_per_hour, name))
+    return {"group": name, "action": "launched", "kind": ",".join(_family_kinds(policy, family)), "pool": pool,
+            "usd_per_hour": m.usd_per_hour, "deadline_hours": hours, "max_usd": max_usd}
+
+
+def over_budget(conn, policy: Policy) -> str | None:
+    """Why no machine may start now (today's GPU spend or today's whole bill at its cap), or None."""
+    from .. import ledger
+    daily_cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
+    total_cap = policy.get("budgets", "daily_usd")
+    return ("daily_gpu_budget" if enforce.billed_today(conn) >= daily_cap else
+            "daily_total_budget" if total_cap is not None and ledger.bill_today(conn) >= float(total_cap) else None)
+
+
 def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime) -> list[dict]:
     cfg = policy.get("autoscale", default={})
     cooldown = timedelta(minutes=float(cfg.get("relaunch_cooldown_minutes", 15)))
-    daily_cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
     actions: list[dict] = []
     unfunded: set[str] = set()   # providers whose account is out of credit this tick
     from . import serverless
@@ -312,17 +415,15 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         actions += serverless.poll(conn, policy, now=now)
     from .. import operations
     allowed = operations.test_batch_patterns(policy)   # None when live; else tests and benchmarks only
-    from .. import ledger
-    total_cap = policy.get("budgets", "daily_usd")
-    over = ("daily_gpu_budget" if enforce.billed_today(conn) >= daily_cap else
-            "daily_total_budget" if total_cap is not None and ledger.bill_today(conn) >= float(total_cap) else None)
+    over = over_budget(conn, policy)
     if over:
         work = waiting_work(conn, allowed)
         if work:
             actions.append({"action": "not_launching", "reason": over,
                             "waiting": {w["kind"]: w["n"] for w in work}})
         return actions
-    work = waiting_work(conn, allowed)
+    # Work for a machine of this Fly app (the finisher) is ensure_finisher's: no rented machine, no worker credentials.
+    work = [w for w in waiting_work(conn, allowed) if not fly_work(policy, w)]
     gaps = credentials.missing(policy)
     if gaps and work:   # say it once, plainly, instead of as every pool's launch error
         actions.append({"action": "not_launching", "reason": "worker_credentials", "missing": gaps,
@@ -477,6 +578,7 @@ def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime 
         actions += enforce.tick(conn, policy, api, now=now, dry_run=dry_run)
         if launch and not dry_run:
             actions += scale_up(conn, policy, providers, now=now)
+            actions += ensure_finisher(conn, policy, providers, now=now)
         if not dry_run:
             actions += maybe_reconcile(conn, policy, providers)
         return actions

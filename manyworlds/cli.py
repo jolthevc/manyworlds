@@ -15,6 +15,18 @@ def _print(obj) -> None:
     print(json.dumps(obj, indent=2, default=str))
 
 
+def _open_run(group: str | None, connect=None) -> bool:
+    """Whether `group` is a registered machine run that is not stopped (gpu_groups): the finisher works only then."""
+    if not group:
+        return False
+    conn = (connect or db.connect)()
+    try:
+        row = conn.execute("SELECT stopped_at FROM gpu_groups WHERE name = %s", (group,)).fetchone()
+    finally:
+        conn.close()
+    return row is not None and row["stopped_at"] is None
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mw")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -194,9 +206,32 @@ def main(argv: list[str] | None = None) -> int:
         from .worker import runner
         kinds = ([k.strip() for k in args.kinds.split(",") if k.strip()] if args.kinds
                  else runner.kinds_from_env(pol))
-        worker = runner.start(kinds, pool=args.pool or os.environ.get("MW_POOL", "local"), policy=pol,
-                              store=storage.from_url())
-        n = worker.run(max_jobs=args.max_jobs, idle_exit_seconds=args.idle_exit)
+        pool = args.pool or os.environ.get("MW_POOL", "local")
+        idle_exit, self_destroy = args.idle_exit, None
+        info = pol.get("gpu_pools", pool, default={}) or {}
+        if info.get("provider") == "fly":
+            # A machine of this Fly app the autoscaler started (the finisher): its run's name is in the machine's
+            # metadata, and it stops its own machine at its deadline. It exits once its queue has been empty for the
+            # pool's idle_exit_seconds; the machine then stops and stays stopped (fly.toml restarts it only on failure).
+            from .deploy.providers import FlyMachines, ProviderError
+            fly = FlyMachines()
+            group = os.environ.get("MW_GROUP")
+            if not group:
+                try:
+                    group = fly.own_group()
+                except ProviderError as e:
+                    logging.getLogger("manyworlds.worker").warning("could not read this machine's run: %s", e)
+            if not _open_run(group):
+                # Started by something other than the autoscaler (a deploy), or for a run already closed: a clean
+                # exit, so the machine stops and is not restarted (the enforcer stops it too).
+                print(f"no open run for this machine ({group or 'none'}): not working pool {pool}")
+                return 0
+            os.environ["MW_GROUP"] = group
+            self_destroy = fly.stop_self
+            if idle_exit is None and info.get("idle_exit_seconds") is not None:
+                idle_exit = float(info["idle_exit_seconds"])
+        worker = runner.start(kinds, pool=pool, policy=pol, store=storage.from_url(), self_destroy=self_destroy)
+        n = worker.run(max_jobs=args.max_jobs, idle_exit_seconds=idle_exit)
         print(f"worker {worker.worker_id} handled {n} jobs")
         return 0
 

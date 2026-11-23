@@ -10,7 +10,7 @@ from psycopg.types.json import Jsonb
 from .. import queue
 from ..policy import Policy
 from .common import _cfg, _set, log
-from .finish import _advance_upscale, _finish_failed, finish_video
+from .finish import _advance_finish, _advance_upscale, _finish_failed, finish_mode, finish_video
 from .followups import FOLLOW_UPS, _advance_follow_up
 from .locks import post_lease
 from .motion import _advance_clip_edit, clip_edit
@@ -104,7 +104,14 @@ def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> s
             _set(conn, post["id"], "producing", body)
             return "producing"
         try:
-            final = finish_video(conn, policy, {**post, "body": body}, body, video, store, source=source, llm=llm)
+            if finish_mode(policy) == "queue":   # a finish.video job on the finisher (production.finish: _advance_finish)
+                fstate, done = _advance_finish(conn, policy, post, body, video, store, source=source, llm=llm)
+                if fstate == "waiting":
+                    _set(conn, post["id"], "producing", body)
+                    return "producing"
+                final = done or video
+            else:
+                final = finish_video(conn, policy, {**post, "body": body}, body, video, store, source=source, llm=llm)
         except Exception as e:  # noqa: BLE001 - ffmpeg or storage: tried again next tick, then shipped unfinished
             if not _finish_failed(conn, policy, post, body, e):
                 _set(conn, post["id"], "producing", body)

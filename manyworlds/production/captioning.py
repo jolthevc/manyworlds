@@ -235,12 +235,20 @@ def caption_plan(conn, policy: Policy, post: dict, body: dict, video: dict, *, w
                  transcriber=None, face_box=None):
     """The captions for a post's finished video of width x height, or None when nothing is said (or can't be timed)
     or its style is none. Placed by the opening shot's size, off the face (`face_box`, shares of the frame)."""
-    from .. import captions
     style = caption_style(conn, policy, post, body)
     if style is None:
         return None
     words = caption_words(conn, policy, body, video, store=store, transcriber=transcriber, fmt=post["format"])
-    if not words:
+    return captions_from_words(policy, body, words, style=style, width=width, height=height, face_box=face_box)
+
+
+def captions_from_words(policy: Policy, body: dict, words, *, style: str | None, width: int, height: int,
+                        face_box=None):
+    """The captions plan from the post's timed words (caption_words) and style (caption_style), or None when either
+    is missing: the half of caption_plan that needs no database (the finisher runs it from the words the producer
+    timed)."""
+    from .. import captions
+    if style is None or not words:
         return None
     shot = _shot(body, _take_index(body, 0 if body.get("talk_segments") else None))
     return captions.make_plan(words, policy, width=width, height=height, style=style,
