@@ -189,7 +189,8 @@ def test_room_tone_is_deterministic_per_post_and_varies_between_posts(policy):
     mod = policy.get("sound", "room_tone", "modulation")
     for rt in (a, b):
         assert mod["rate_hz"][0] <= rt.rate_hz <= mod["rate_hz"][1] and mod["depth"][0] <= rt.depth <= mod["depth"][1]
-    assert "duration=" not in sound.room_tone_graph(a, sample_rate=48000)       # ends with the voice instead
+    assert "amplitude=" in (g := sound.room_tone_graph(a, sample_rate=48000))
+    assert not any("duration=" in part for part in g.split(",") if part.startswith("anoisesrc"))   # ends with the voice
 
 
 def test_a_bad_colour_is_refused(policy):

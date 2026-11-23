@@ -96,7 +96,10 @@ def with_overlay(base: Policy, path: str | os.PathLike) -> Policy:
     """`base` with the overlay file at `path` deep-merged over it (a new version). Applying the same overlay twice
     gives the same policy."""
     p = resolve(path)
-    key = (base.version, str(p), p.stat().st_mtime_ns)
+    import hashlib
+    import json
+    body = hashlib.sha256(json.dumps(base.body, sort_keys=True, default=str).encode()).hexdigest()
+    key = (body, str(p), p.stat().st_mtime_ns)   # the body, not the version: a replaced body can keep its version
     if key not in _OVERLAYS:
         over = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         if not isinstance(over, dict):

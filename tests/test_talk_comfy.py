@@ -414,7 +414,7 @@ def test_the_motion_clip_is_resampled_to_the_talk_frame_rate(tmp_path):
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
     out = talk_comfy.at_fps(src, tmp_path / "m25.mp4", comfy.TALK_FPS)
     frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
-    assert abs(frames - 2 * comfy.TALK_FPS) <= 1 and abs(seconds - 2.0) < 0.1      # same length, 25 fps
+    assert abs(frames - 2 * comfy.TALK_FPS) <= 4 and abs(seconds - 2.0) < 0.15   # minterpolate may add edge frames      # same length, 25 fps
 
 
 def test_walk_and_talk_interpolates_the_motion_clip_instead_of_repeating_frames(tmp_path, raw_policy, monkeypatch):
