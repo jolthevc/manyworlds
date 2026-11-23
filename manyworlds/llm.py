@@ -486,13 +486,19 @@ class LLM:
                 got, error = None, f"{type(e).__name__}: {e}"[:500]
             usd = sum(c.usd for c in self.calls[n0:])
             self.trial_spent += usd
+            system = call.get("system")
+            request = (f"{system if isinstance(system, str) else json.dumps(system, default=str)}
+---
+"
+                       f"{llm_batch.content_text(call.get('content'))}")
+            limit = int(self.policy.get("llm", "shadow_request_chars", default=12000))
             self.conn.execute(
                 "INSERT INTO llm_shadow (role, primary_model, candidate_model, primary_output, candidate_output, "
-                "candidate_error, primary_usd, candidate_usd, candidate_seconds, agent, creator_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "candidate_error, primary_usd, candidate_usd, candidate_seconds, agent, creator_id, request) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (role, model, candidate, Jsonb(out.model_dump(mode="json")), Jsonb(got) if got is not None else None,
                  error, primary_usd, usd, round(time.monotonic() - t0, 3), self._tag.get("agent"),
-                 call.get("creator_id")))
+                 call.get("creator_id"), request[-limit:] if limit else None))
         except Exception as e:  # noqa: BLE001 - shadow bookkeeping must never fail the real call
             log.warning("shadow call for %s failed: %s", role, type(e).__name__)
 

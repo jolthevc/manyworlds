@@ -30,7 +30,7 @@ class StubLLM:
         return f"stub-{role}"
 
     @contextlib.contextmanager
-    def tagged(self, agent, job_id, before_call=None):
+    def tagged(self, agent, job_id, before_call=None, attempt=None):
         before, self._tag = self._tag, {"agent": agent, "job_id": job_id, "before_call": before_call}
         try:
             yield

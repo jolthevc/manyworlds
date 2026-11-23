@@ -12,6 +12,10 @@ Two ways a candidate qualifies (policy `llm.selection.roles.<role>.mode`):
   quality    generative roles (the showrunner): different answers are fine if they are as good. The evaluator
              scores both answers' items blind on a rubric (`judge`); the candidate qualifies when its mean
              score is at most `max_score_drop` below the primary's and it breaks the voice rules no more often
+  preference open-ended roles with no rubric (director, talent manager, style director, market lead): a judge
+             model (`judge_role`) is shown the request and both answers, unlabelled and in a random order, and
+             says which does the job better or that they are equal (`judge`); the candidate qualifies when it is
+             no worse in at least `min_not_worse` of the judged calls
 
 Either way it must answer validly (`min_valid`), have enough calls (`min_calls`), and cost at most
 `max_cost_ratio` of the role's model. The cheapest qualifying candidate is proposed.
@@ -22,8 +26,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from statistics import mean
+from typing import Literal
 
 from psycopg.types.json import Jsonb
+from pydantic import BaseModel
 
 from . import shadow
 from .policy import Policy
@@ -58,7 +64,20 @@ def assess(conn, policy: Policy, role: str, r: dict, *, since: datetime) -> dict
     if r["cost_ratio"] is None or r["cost_ratio"] > float(rc.get("max_cost_ratio", 0.7)):
         why.append(f"cost ratio {r['cost_ratio']} > {rc.get('max_cost_ratio', 0.7)}")
     evidence: dict = {}
-    if rc.get("mode") == "quality":
+    if rc.get("mode") == "preference":
+        judged = [j for j in _judged(conn, role, r["primary"], r["candidate"], since) if "preference" in j]
+        evidence["judged"] = len(judged)
+        if len(judged) < int(rc.get("min_judged", 8)):
+            why.append(f"{len(judged)} judged < {rc.get('min_judged', 8)}")
+        else:
+            wins = sum(j["preference"] == "candidate" for j in judged)
+            ties = sum(j["preference"] == "tie" for j in judged)
+            not_worse = (wins + ties) / len(judged)
+            evidence.update(candidate_wins=wins, ties=ties, primary_wins=len(judged) - wins - ties,
+                            not_worse=round(not_worse, 3))
+            if not_worse < float(rc.get("min_not_worse", 0.8)):
+                why.append(f"no worse in only {not_worse:.0%} of judged calls")
+    elif rc.get("mode") == "quality":
         judged = _judged(conn, role, r["primary"], r["candidate"], since)
         evidence["judged"] = len(judged)
         if len(judged) < int(rc.get("min_judged", 5)):
@@ -162,8 +181,10 @@ def judge(conn, policy: Policy, llm, role: str, *, usd: float) -> dict:
     from .brain import rubrics
     from .llm import SHADOW_AGENT
     rc = _role_cfg(policy, role) or {}
+    if rc.get("mode") == "preference":
+        return _judge_preferences(conn, policy, llm, role, rc, usd=usd)
     if rc.get("mode") != "quality":
-        return {"role": role, "judged": 0, "note": "not a quality-mode role"}
+        return {"role": role, "judged": 0, "note": "not a quality- or preference-mode role"}
     rubric = rubrics.load(rc.get("rubric", "idea"))
     rows = conn.execute("SELECT id, creator_id, primary_output, candidate_output FROM llm_shadow WHERE role = %s "
                         "AND candidate_output IS NOT NULL AND judged IS NULL AND creator_id IS NOT NULL "
@@ -178,6 +199,62 @@ def judge(conn, policy: Policy, llm, role: str, *, usd: float) -> dict:
                 sides = {side: _judge_answer(conn, policy, llm, rubric, rc, row["creator_id"], row[f"{side}_output"])
                          for side in ("primary", "candidate")}
                 conn.execute("UPDATE llm_shadow SET judged = %s WHERE id = %s", (Jsonb(sides), row["id"]))
+                done += 1
+    finally:
+        llm.shadowing = was
+    return {"role": role, "judged": done, "usd": round(llm.spent - spent0, 4)}
+
+
+class Preference(BaseModel):
+    reason: str
+    better: Literal["A", "B", "tie"]
+
+
+PREFER_SYSTEM = (
+    "You compare two answers to the same request, written by two different systems for an automated studio that "
+    "makes social content. Judge which answer does the job the request asks for better: correct, specific, usable "
+    "as it stands, faithful to every constraint in the request, with judgement and taste where the request needs "
+    "them. Length and polish are not quality in themselves. Say 'tie' when neither is clearly better. Give your "
+    "reason first, in two or three sentences.")
+
+
+def _judge_preferences(conn, policy: Policy, llm, role: str, rc: dict, *, usd: float) -> dict:
+    """One blind comparison per unjudged shadow row of a preference-mode role (with a stored request), until `usd`
+    is spent: the answers as A and B in an order fixed by the row's id (so half the rows put the candidate first),
+    by the `judge_role` model. The verdict lands in llm_shadow.judged as {preference: primary|candidate|tie}."""
+    import hashlib
+    from .llm import SHADOW_AGENT
+    rows = conn.execute("SELECT id, creator_id, request, primary_output, candidate_output FROM llm_shadow "
+                        "WHERE role = %s AND candidate_output IS NOT NULL AND judged IS NULL AND request IS NOT NULL "
+                        "ORDER BY created_at DESC", (role,)).fetchall()
+    limit = int(rc.get("judge_answer_chars", 12000))
+    spent0, done, was = llm.spent, 0, llm.shadowing
+    llm.shadowing = False
+    try:
+        with llm.tagged(SHADOW_AGENT, None):
+            for row in rows:
+                if llm.spent - spent0 >= usd:
+                    break
+                flip = int(hashlib.sha256(str(row["id"]).encode()).hexdigest(), 16) % 2 == 1
+                a, b = ((row["candidate_output"], row["primary_output"]) if flip
+                        else (row["primary_output"], row["candidate_output"]))
+                content = (f"The request:
+{row['request']}
+
+=== Answer A ===
+{_dumps(a)[:limit]}
+
+"
+                           f"=== Answer B ===
+{_dumps(b)[:limit]}")
+                v = llm.structured(str(rc.get("judge_role", "judge")), system=PREFER_SYSTEM, content=content,
+                                   schema=Preference, effort=str(rc.get("judge_effort", "medium")),
+                                   creator_id=row["creator_id"])
+                side = "tie" if v.better == "tie" else (
+                    ("candidate" if v.better == "A" else "primary") if flip else
+                    ("primary" if v.better == "A" else "candidate"))
+                conn.execute("UPDATE llm_shadow SET judged = %s WHERE id = %s",
+                             (Jsonb({"preference": side, "reason": v.reason[:600]}), row["id"]))
                 done += 1
     finally:
         llm.shadowing = was

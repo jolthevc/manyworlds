@@ -1988,12 +1988,19 @@ llm:
   shadow:
     showrunner: {candidates: [claude-opus-5-5], share: 0.1}   # quality check on the Qwen4-Max showrunner
     # Kimi out of all trials (owner 2026-11-22): it timed out often, cost the most, and lost its trials.
-    brain:      {candidates: [glm-5.3, qwen4-max], share: 0.2}   # strategist, analyst
+    # Sonnet added 2026-11-23: the low-risk step down from Opus (half the price) beside the open models.
+    brain:      {candidates: [glm-5.3, qwen4-max, claude-sonnet-5-5], share: 0.2}   # strategist, analyst
     creator:    {candidates: [qwen4-max, glm-5.3], share: 0.2}   # creator bibles and profiles (rare)
     evaluator:  {candidates: [claude-sonnet-5-5, qwen3.8-flash], share: 0.1}   # drift check on the Haiku evaluator
     review:     {candidates: [nemotron-3.5-vl, qwen3.8-flash], share: 0.2}
     judge:      {candidates: [qwen4-max, qwen3.7-plus], share: 0.2}   # judging sends images: vision models only
+    # The open-ended Sonnet roles (2026-11-23): judged by preference (llm.selection), so they can move too.
+    director:       {candidates: [qwen4-max, glm-5.3], share: 0.15}
+    talent_manager: {candidates: [qwen4-max, glm-5.3], share: 0.2}
+    style_director: {candidates: [qwen4-max, glm-5.3], share: 0.2}
+    market_lead:    {candidates: [qwen4-max, glm-5.3], share: 0.2}
   shadow_usd_per_day: 0.5
+  shadow_request_chars: 12000   # the end of the request kept with each shadow row, for preference judging
   # Message Batches (manyworlds.llm_batch, 2026-11-23): on the brain worker, every call a brain job makes is journaled
   # (a rerun replays it for nothing) and the roles below, on a Claude model, go through Anthropic's batch API at
   # half price; the job steps aside until its answer lands (most within the hour). Only work nobody waits on by the
@@ -2030,6 +2037,13 @@ llm:
       brain:      {mode: agreement, min_calls: 20, min_agreement: 0.85}
       showrunner: {mode: quality, min_calls: 10, min_judged: 8, items: ideas, rubric: idea, max_items: 6,
                    max_score_drop: 0.3}
+      # Open-ended answers (2026-11-23): `mw llm judge <role> --usd N` has the judge model (Opus, another family
+      # than both the Sonnet primary and the open candidates) compare each pair blind; a candidate qualifies when it
+      # is no worse in min_not_worse of the judged calls.
+      director:       {mode: preference, min_calls: 10, min_judged: 8, min_not_worse: 0.8, judge_role: judge}
+      talent_manager: {mode: preference, min_calls: 10, min_judged: 8, min_not_worse: 0.8, judge_role: judge}
+      style_director: {mode: preference, min_calls: 10, min_judged: 8, min_not_worse: 0.8, judge_role: judge}
+      market_lead:    {mode: preference, min_calls: 10, min_judged: 8, min_not_worse: 0.8, judge_role: judge}
 
 # Logs (manyworlds.logs): one JSON object a line (ts, level, logger, msg, role, process group, and the post/job/
 # attempt/creator/kind being worked on) when json is true or MW_LOG_JSON=1; plain text otherwise (MW_LOG_JSON=0 forces it).

@@ -43,3 +43,7 @@ CREATE TABLE IF NOT EXISTS llm_batches (
     checked_at     timestamptz,
     collected_at   timestamptz
 );
+
+-- The request a shadow test compared (system prompt and prompt text, cut to llm.shadow_request_chars), so a judge can
+-- say which of two open-ended answers does the job better (model selection's preference mode).
+ALTER TABLE llm_shadow ADD COLUMN IF NOT EXISTS request text;

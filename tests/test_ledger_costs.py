@@ -54,7 +54,7 @@ def test_review_calls_are_charged_to_the_job_they_review(conn, policy, store, tm
     class Recording:
         tags = []
 
-        def tagged(self, agent, job_id, before_call=None):
+        def tagged(self, agent, job_id, before_call=None, attempt=None):
             import contextlib
             Recording.tags.append((agent, job_id))
             return contextlib.nullcontext()
