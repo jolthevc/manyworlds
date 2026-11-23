@@ -59,7 +59,8 @@ def test_only_the_owner_role_decides_and_an_accepted_tier_is_applied_within_budg
     out = proposals.decide(conn, policy, r["id"], decided_by="strategist", accept=True, reason="earned", now=NOW)
     assert out["status"] == "accepted" and proposals.tier_of(conn, policy, cid) == "standard"
     broke = _with(policy, ("budget", "master_usd_per_month"), 0)
-    r2 = proposals.file(conn, broke, kind="tier_change", from_role="talent_manager", creator_id=cid,
+    other = creator(conn)                                  # one tier request a week per creator (the allowance)
+    r2 = proposals.file(conn, broke, kind="tier_change", from_role="talent_manager", creator_id=other,
                         subject={"tier": "premium"}, argument="more", now=NOW)
     out = proposals.decide(conn, broke, r2["id"], decided_by="strategist", accept=True, reason="yes", now=NOW)
     assert out["status"] == "open" and "left" in out["refused"]                    # money: up to the owner
