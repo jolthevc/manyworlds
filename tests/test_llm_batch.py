@@ -179,7 +179,7 @@ def test_a_call_that_waited_too_long_is_answered_directly(conn, bpolicy):
     with llm.tagged("echo", job, attempt=1), pytest.raises(Deferred):
         llm.structured("brain", system="s", content="x", schema=Score)
     wait = float(bpolicy.get("llm", "batch", "max_wait_minutes"))
-    conn.execute("UPDATE llm_journal SET created_at = now() - make_interval(mins => %s)", (wait + 1,))
+    conn.execute("UPDATE llm_journal SET created_at = now() - %s * interval '1 minute'", (wait + 1,))
     with llm.tagged("echo", job, attempt=1):
         assert llm.structured("brain", system="s", content="x", schema=Score).score == 7
     assert len(client.parsed) == 1
