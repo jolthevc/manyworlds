@@ -30,7 +30,7 @@ SECTION_OUT = {
               "recurring_people": []},
     "ContentSystem": {"mix": {"photo": 2, "carousel": 1, "story": 1, "video": 4}, "talk_share": 1.7,
                       "series": [{"name": "2am tea", "premise": "the same ritual each night", "archetype": "storyteller",
-                                  "capabilities": ["edits.timestamps", "edits.not_a_thing"], "per_week": 30,
+                                  "capabilities": ["devices.pov", "edits.not_a_thing"], "per_week": 30,
                                   "hook": "a time stamp", "why_it_works": "calm"}],
                       "hooks": ["a time stamp"], "never_makes": ["hauls"]},
 }
@@ -47,7 +47,7 @@ class DossierLLM(StubLLM):
         super().structured(role, system=system, content=content, schema=schema)
         if schema.__name__ == "CareerReview":
             base = {"state": "early", "working": [], "not_working": [], "focus": ["rituals"], "series_next": ["2am tea"],
-                    "capabilities_to_try": ["edits.timestamps", "edits.nope"], "stop": [], "hypotheses": [],
+                    "capabilities_to_try": ["devices.pov", "edits.nope"], "stop": [], "hypotheses": [],
                     "brief_for_showrunner": "more 2am tea", "profile_changes": [], "asks": []}
             return schema.model_validate({**base, **self.review})
         return schema.model_validate(SECTION_OUT[schema.__name__])
@@ -95,13 +95,13 @@ def test_onboarding_builds_every_section_once_with_code_checks(conn, policy):
     assert prof["archetypes"] == ["lifestyle_slow"]                           # unknown archetype dropped
     s = prof["content_system"]
     assert abs(sum(s["mix"].values()) - 1) < 0.01 and s["talk_share"] == 1.0
-    assert s["series"][0]["capabilities"] == ["edits.timestamps"]             # unknown capability dropped
+    assert s["series"][0]["capabilities"] == ["devices.pov"]             # unknown capability dropped
     assert s["series"][0]["archetype"] == "lifestyle_slow" and s["series"][0]["per_week"] == 7.0
     authors = {r["author"] for r in conn.execute("SELECT author FROM creator_profiles WHERE creator_id = %s "
                                                  "AND version > 1", (cid,)).fetchall()}
     assert authors == {"talent_manager"}
     brief = talent_manager.latest_brief(conn, cid)["output"]
-    assert brief["capabilities_to_try"] == ["edits.timestamps"]
+    assert brief["capabilities_to_try"] == ["devices.pov"]
     calls = len(llm.calls)
     talent_manager.TalentManager().run(_ctx_again(conn, policy, job, llm))
     assert len(llm.calls) == calls                                            # a rerun asks nothing again

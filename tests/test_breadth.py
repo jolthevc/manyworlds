@@ -267,8 +267,8 @@ def test_test_work_across_voice_comfy_and_talk_starts_one_merged_machine(conn, p
     assert g["family"] == "talkcomfy"
     assert float(g["max_attempt_minutes"]) == max(float(runs["max_attempt_minutes_by_family"].get(
         f, runs["max_attempt_minutes_by_family"]["default"])) for f in ("voice", "comfy", "talk", "dance"))
-    assert float(g["max_usd"]) == max(float(runs["max_usd_by_family"].get(f, runs["default_max_usd"]))
-                                      for f in ("voice", "comfy", "talk", "dance"))
+    group = breadth.test_policy(pol).get("autoscale", "merge_families", "talkcomfy")
+    assert float(g["max_usd"]) == float(group["max_usd"])   # the merged machine's own cap, not its members'
     autoscale.tick(conn, pol, ps, now=NOW)   # the merged machine serves all three: nothing else starts
     assert len(ps["runpod"].launched) == 1
 
