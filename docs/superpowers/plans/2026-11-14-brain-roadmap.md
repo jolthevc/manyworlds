@@ -329,3 +329,17 @@ Build order to consider after the breadth test:
 3. the brand strategist, once an account has an audience
 
 Each is an agent under `brain/agents/` with its own budget tag.
+
+**Built 2026-11-23 (owner: "focus on the brain... the agents that build out each dossier, all modular"):**
+- Archetype library (`policy/archetypes/archetypes-v1.yaml`, `brain/archetypes.py`): nine playbooks. The director,
+  showrunner and talent manager read the same file. Creators name their archetypes in `profile.archetypes`; others
+  are matched by words, as before.
+- Creator dossier (`creator/dossier.py`): archetypes, positioning, audience insight, story, content system. Each is
+  one small structured call, checked by code (library names, capabilities that render now, mix normalised), and kept
+  apart from sibling creators (word overlap, one rewrite).
+- Talent manager (`brain/agents/talent_manager.py`): it builds the dossier at launch (new launch step `dossier`). A
+  weekly review writes the `talent_brief` the showrunner plans from. It edits only `brain.talent_manager.editable`;
+  other changes go to the owner (`talent_needs_owner`). The strategist reads every creator's latest brief in its
+  snapshot.
+- Not built: the brand strategist (waits for an audience), the community manager beyond comment drafts, and the
+  trend desk as its own agent (niche trends already reach the showrunner).
