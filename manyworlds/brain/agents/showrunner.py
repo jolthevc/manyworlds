@@ -120,12 +120,10 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     capability_text = planner.capability_brief(policy, who)
     plays = archetypes.playbooks(policy, prof or c["bible"])
     play_text = (f"Her archetype playbooks (how this kind of creator wins: mix, series patterns, hooks, edit grammar, "
-                 f"pitfalls; a guide, not a template): {json.dumps(plays)}
-" if plays else "")
+                 f"pitfalls; a guide, not a template): {json.dumps(plays)}\n" if plays else "")
     brief = talent_manager.latest_brief(conn, creator_id)
     brief_text = (f"Her talent manager's brief for these batches (follow it: it sets the focus, the series to run and "
-                  f"what to stop): {json.dumps(brief['output'], default=str)}
-" if brief else "")
+                  f"what to stop): {json.dumps(brief['output'], default=str)}\n" if brief else "")
     staging_text = (f"Stagings you may give an idea (set `staging` to its name; most posts need none; the scene must "
                     f"show its setting, framing and wardrobe and the script follow its conventions): "
                     f"{json.dumps(stagings)}. {policy.get('stagings', 'rules', default='')} " if stagings else "")
