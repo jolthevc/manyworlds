@@ -102,6 +102,12 @@ applies migrations at start. Never start a second autoscaler anywhere else.
   review, mostly for brief mismatch, not bad media; judging cost more than the useful GPU work. Fixed in code
   2026-11-23 (code faults, memory floors, model affinity, face-only identity, report-only direction, cheaper
   confirms, prompt caching); unproven on a GPU.
+- 2026-11-24 (later): an architecture review and its fixes, deployed: production is a package with declared state
+  and a per-post lease; the policy is checked (every path the code reads exists; a schema for hot sections); JSON
+  logs with post/job ids (`logs.py`); producer and reviewer wake on job/review notifications (`wakeup.py`,
+  migration 033, Neon's direct endpoint); richer director context with a cached static brief; reliability fixes
+  (poison posts, failing reviews, lost leases, retry backoff). Finishing can run as `finish.video` on an on-demand
+  Fly finisher, but ships `inline` until an app-scoped `FLY_API_TOKEN` lets the autoscaler start it.
 - 2026-11-24: a three-way review (pipeline seams, agency bugs, creative gaps) and its fixes: clear passes are
   chosen, real metrics reach analysis, accepted requests have effects, model memory is freed on a family switch.
   Built the style layer (style director, aesthetics library, aspirational faceless shots, branded carousel
