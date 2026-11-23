@@ -1,6 +1,8 @@
 """Paid smoke test of the Brain's newest LLM paths, no GPU (owner-approved overnight test spend, under $5):
 the talent manager onboarding a sandbox clone (dossier sections + first brief), and one director call that proves
-the shot-sheet schema still compiles. Run on the control plane: python scripts/agent_smoke.py <sandbox handle>.
+the shot-sheet schema still compiles. With --style (2026-11-24): the style director (style, world, season) and a
+director call on a carousel of aesthetic shots instead; the talent manager is skipped when a dossier exists.
+Run on the control plane: python scripts/agent_smoke.py <sandbox handle> [--style].
 Prints what was built and what it cost; queues nothing for a GPU (plates the director registers are cancelled)."""
 
 from __future__ import annotations
@@ -12,12 +14,12 @@ from datetime import datetime, timezone
 from manyworlds import db, policy as policy_mod, queue
 from manyworlds.brain import director
 from manyworlds.brain.agent import AgentContext
-from manyworlds.brain.agents import talent_manager
+from manyworlds.brain.agents import style_director, talent_manager
 from manyworlds.creator import profile
 from manyworlds.llm import LLM
 
 
-def main(handle: str) -> None:
+def main(handle: str, style: bool = False) -> None:
     pol = policy_mod.load()
     conn = db.connect()
     c = conn.execute("SELECT id, anchors FROM creators WHERE handle = %s", (handle,)).fetchone()
@@ -27,7 +29,25 @@ def main(handle: str) -> None:
     t0 = datetime.now(timezone.utc)
     llm = LLM(conn, pol)
     out: dict = {"creator": handle}
-    if profile.current(conn, cid):
+    def _agent_job(kind: str, payload: dict):
+        job = queue.enqueue(conn, kind, payload, creator_id=cid, batch="test-agent-smoke")
+        conn.execute("UPDATE jobs SET status = 'running', worker_id = 'smoke', attempts = 1 WHERE id = %s", (job,))
+        row = conn.execute("SELECT id, kind, payload, attempts, max_attempts, creator_id, batch FROM jobs WHERE id = %s",
+                           (job,)).fetchone()
+        return job, AgentContext(conn=conn, policy=pol, llm=llm, job=queue.Job(**row), now=t0)
+
+    if style:
+        job, ctx = _agent_job("brain.style_director", {"creator_id": str(cid), "test": True})
+        try:
+            with llm.tagged("style_director", job):
+                out["style_director"] = style_director.StyleDirector().run(ctx)
+            conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (job,))
+        except Exception as e:  # noqa: BLE001 - report it
+            out["style_director_error"] = f"{type(e).__name__}: {e}"[:800]
+            conn.execute("UPDATE jobs SET status = 'failed', error = %s WHERE id = %s", (str(e)[:500], job))
+        prof = profile.current(conn, cid)[1]
+        out["look"] = {k: prof.get(k) for k in ("style", "world", "season")}
+    if profile.current(conn, cid) and not (style and profile.current(conn, cid)[1].get("positioning")):
         job = queue.enqueue(conn, "brain.talent_manager", {"creator_id": str(cid), "mode": "onboard", "test": True},
                             creator_id=cid, batch="test-agent-smoke")
         conn.execute("UPDATE jobs SET status = 'running', worker_id = 'smoke', attempts = 1 WHERE id = %s", (job,))
@@ -47,10 +67,19 @@ def main(handle: str) -> None:
         out["brief"] = b["output"] if b else None
     body = {"scenes": ["behind an empty bar at closing time, talking to her propped phone about the night"],
             "script": "Closing playlist, rate it. Slow songs only, lights up, everybody out.", "format": "talking_video"}
+    fmt = "talking_video"
+    if style:
+        body = {"format": "carousel", "caption": "a slow sunday, mostly",
+                "scenes": ["her walking away down a quiet street at golden hour", "a glass of red on a small bar table",
+                           "her ringed hand on a book in a cafe window", "a mirror selfie in a hallway before dinner",
+                           "the view from a tram window at dusk"]}
+        fmt = "carousel"
     try:
         with llm.tagged("director", None):
-            shots = director.direct(conn, pol, llm, body, cid, fmt="talking_video")
-        out["director"] = {"shots": len(shots), "first": shots[0] if shots else None}
+            shots = director.direct(conn, pol, llm, body, cid, fmt=fmt)
+        out["director"] = {"shots": len(shots), "first": shots[0] if shots else None,
+                           "types": [(s.get("shot_type"), s.get("subject"), (s.get("wardrobe") or {}).get("outfit"),
+                                      (s.get("set") or {}).get("location")) for s in shots]}
     except Exception as e:  # noqa: BLE001
         out["director_error"] = f"{type(e).__name__}: {e}"[:800]
     cancelled = conn.execute("UPDATE jobs SET status = 'failed', error = 'agent smoke: not for rendering' "
@@ -63,4 +92,4 @@ def main(handle: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], style="--style" in sys.argv[2:])
