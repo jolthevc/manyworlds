@@ -25,8 +25,8 @@ from ..policy import Policy
 
 LLM_STEPS = ("bible", "anchors", "profile")
 NEXT = {"bible": "references", "references": "anchors", "anchors": "lora", "lora": "profile", "profile": "dossier",
-        "dossier": "ready"}
-AGENT_STEPS = {"dossier": "talent_manager"}   # steps another Brain agent runs (a new job on retry, like LLM_STEPS)
+        "dossier": "style", "style": "ready"}
+AGENT_STEPS = {"dossier": "talent_manager", "style": "style_director"}   # steps another Brain agent runs (a new job on retry, like LLM_STEPS)
 
 
 def _cfg(policy: Policy) -> dict:

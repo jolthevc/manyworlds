@@ -47,7 +47,7 @@ def from_post(conn, post_id) -> uuid.UUID:
 # Plan fields a scheduled post carries (the reasoning stays on the idea, never on the post).
 _POST_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series", "staging", "flavor")
 # Direction (manyworlds.direction), carried only when the idea has it: an undirected post's body stays as before.
-_DIRECTED_FIELDS = ("shots", "move")
+_DIRECTED_FIELDS = ("shots", "move", "slides")
 
 
 def direct_posts(conn, policy, llm, creator_id, posts) -> int:

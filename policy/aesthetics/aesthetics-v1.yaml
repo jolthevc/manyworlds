@@ -1,0 +1,115 @@
+# The aesthetics library (manyworlds.brain.aesthetics; policy `brain.aesthetics.file`).
+#
+# What makes a creator's feed aspirational rather than a row of straight-on portraits: a vocabulary of shot types
+# (most of them without her face), the rules that keep a style consistent while outfits and places change, the
+# photo-dump order, and the carousel templates the slide renderer draws (manyworlds.slides).
+# Grounded in docs/research/2026-11-24-creator-aesthetics.md. The mixes are starting priors, not findings.
+#
+# Each shot: category, face (yes | partial | no), subject (what of her is in frame: face, hands, back, figure,
+# reflection, feet, shadow, none), framing (how it is shot and lit), use (where it belongs).
+# A shot whose face is not `yes` is drawn without her face and is never judged on identity (direction.faceless).
+version: aesthetics-v1
+
+shots:
+  # detail and hands
+  ringed_hand_glass:      {category: detail_hands, face: no, subject: hands, framing: "close-up of a ringed hand holding a glass, soft bokeh behind, warm side or golden light", use: "dinner, bar, the middle of a travel dump"}
+  hand_coffee_table:      {category: detail_hands, face: no, subject: hands, framing: "top-down or 45 degrees, a cup in her hand on a textured table, window light", use: "morning, cafe, slow living"}
+  hand_turning_page:      {category: detail_hands, face: no, subject: hands, framing: "close, a book open on her lap or a table, her fingers on a page, soft daylight", use: "slow living, reading"}
+  hands_keyboard_topdown: {category: detail_hands, face: no, subject: hands, framing: "top-down desk, laptop, coffee and notebook, her hands typing", use: "a work day, educator b-roll"}
+  jewellery_closeup:      {category: detail_hands, face: partial, subject: hands, framing: "macro on wrist, neck or ear with her signature jewellery, shallow depth of field", use: "fashion detail, the signature item"}
+  hands_making:           {category: detail_hands, face: no, subject: hands, framing: "close on her hands mid-task (kneading, pouring, stitching, potting)", use: "maker, food, process reels"}
+  # back and silhouette
+  walk_away_sunset:       {category: back_silhouette, face: no, subject: back, framing: "full body from behind walking away down a street or path, backlit golden hour, a little lens flare", use: "travel, mood, an alternative cover"}
+  balcony_lookout:        {category: back_silhouette, face: no, subject: back, framing: "from behind or three-quarter back at a railing, the view filling two thirds of the frame", use: "hotel, city, travel"}
+  over_shoulder_view:     {category: back_silhouette, face: partial, subject: back, framing: "over her shoulder, hair and shoulder soft in the foreground, what she looks at in focus", use: "arrival, a menu, a view, a screen"}
+  doorway_silhouette:     {category: back_silhouette, face: no, subject: back, framing: "her figure dark against a bright doorway or window", use: "editorial, moody grades"}
+  hair_motion_back:       {category: back_silhouette, face: no, subject: back, framing: "medium from behind, hair or dress moving in the wind", use: "fashion, beach"}
+  # scenery
+  window_view:            {category: scenery, face: no, subject: none, framing: "the window frame and sill in shot, the outside exposed bright", use: "arrival, morning, a rainy day"}
+  street_blue_hour:       {category: scenery, face: no, subject: none, framing: "eye-level street at blue hour, lit windows, wet pavement", use: "city, the tail of a dump"}
+  tiny_figure_landscape:  {category: scenery, face: no, subject: figure, framing: "wide landscape or plaza with her small in the frame for scale, rule of thirds", use: "travel hero, a reel opener"}
+  architecture_detail:    {category: scenery, face: no, subject: none, framing: "tight on a facade, tiles or a door, flat even light", use: "city, the middle of a dump"}
+  sky_through_leaves:     {category: scenery, face: no, subject: none, framing: "low angle up through leaves, dappled light", use: "slow-living transitions"}
+  # food and drink
+  table_flatlay_hands:    {category: food_drink, face: no, subject: hands, framing: "top-down table with several plates, hands reaching in", use: "dinner with friends, the middle of a dump"}
+  plate_45:               {category: food_drink, face: no, subject: none, framing: "one dish at 45 degrees, window side light", use: "food posts, recipes"}
+  drink_against_view:     {category: food_drink, face: no, subject: hands, framing: "a glass held up, the view soft behind it", use: "travel, aperitivo"}
+  coffee_window_shadow:   {category: food_drink, face: no, subject: none, framing: "cup and pastry on a table, hard window shadows across them", use: "morning, slow living"}
+  market_produce:         {category: food_drink, face: no, subject: hands, framing: "close on a market stall, her hand choosing fruit", use: "food, travel"}
+  after_the_meal:         {category: food_drink, face: no, subject: none, framing: "top-down table after dinner: crumbs, half-empty glasses, candles burned low", use: "night, the tail of a dump"}
+  # objects and still life
+  nightstand_still_life:  {category: objects_still_life, face: no, subject: none, framing: "eye level, lamp light, a book, a glass and jewellery on a nightstand", use: "night routine, beauty"}
+  beach_towel_objects:    {category: objects_still_life, face: no, subject: none, framing: "top-down towel with sunglasses, a book and fruit", use: "summer, travel"}
+  vanity_tray:            {category: objects_still_life, face: no, subject: none, framing: "top-down or 45 degrees, unbranded products and a perfume bottle on a tray", use: "beauty, a GRWM cover"}
+  flowers_vase:           {category: objects_still_life, face: no, subject: none, framing: "medium shot of flowers in a vase, window light", use: "home, slow living"}
+  suitcase_packing:       {category: objects_still_life, face: no, subject: none, framing: "top-down open suitcase with folded outfits", use: "a travel teaser, an outfit reveal"}
+  # mirror and self
+  mirror_outfit_phone:    {category: mirror_self, face: partial, subject: reflection, framing: "full-length mirror, the phone held up in front of her face", use: "outfit of the day, slide 2 of a dump"}
+  mirror_outfit_face:     {category: mirror_self, face: yes, subject: face, framing: "full-length mirror with her face visible", use: "an outfit cover"}
+  elevator_mirror:        {category: mirror_self, face: partial, subject: reflection, framing: "lift mirror, on-camera flash, metal walls", use: "a night out, a hotel"}
+  bathroom_grwm:          {category: mirror_self, face: yes, subject: face, framing: "waist-up at the bathroom mirror, vanity light (an anchor set)", use: "beauty, talking while getting ready"}
+  shadow_selfie:          {category: mirror_self, face: no, subject: shadow, framing: "her shadow on a wall or the ground in hard sun", use: "dump filler, mood"}
+  shopwindow_reflection:  {category: mirror_self, face: partial, subject: reflection, framing: "her reflection laid over the street in a shop window", use: "city"}
+  # motion and candid
+  blurred_walk:           {category: motion_candid, face: partial, subject: figure, framing: "slow-shutter motion blur as she walks down a street", use: "fashion, slide 3 of a dump"}
+  mid_laugh_candid:       {category: motion_candid, face: yes, subject: face, framing: "medium, looking off camera, mid-laugh", use: "personality, slide 3 of a dump"}
+  flash_night:            {category: motion_candid, face: yes, subject: face, framing: "direct on-camera flash, hard shadow behind, digicam look", use: "a night out, the tail of a dump"}
+  car_passenger:          {category: motion_candid, face: no, subject: hands, framing: "her hands and knees in a car seat, the window and passing light", use: "travel, transit"}
+  shoes_cobblestones:     {category: motion_candid, face: no, subject: feet, framing: "top-down at her shoes on textured ground", use: "outfit detail, travel"}
+  dress_spin:             {category: motion_candid, face: partial, subject: figure, framing: "full body, the fabric in motion, face turned or blurred", use: "fashion reel or carousel"}
+  taxi_exit:              {category: motion_candid, face: no, subject: feet, framing: "low angle, one leg and shoe stepping out of a car door", use: "arrival, an event"}
+  # portraits: the face anchors
+  outfit_full_body:       {category: portrait, face: yes, subject: face, framing: "full body, eye level or slightly low, the location behind", use: "a cover"}
+  portrait_off_camera:    {category: portrait, face: yes, subject: face, framing: "waist-up, gaze off camera, natural light", use: "a cover, aspirational"}
+  talking_anchor:         {category: portrait, face: yes, subject: face, framing: "medium close-up in a fixed home set, key light plus window", use: "talking, podcast, GRWM"}
+
+# How each subject is written into a prompt when the face is not shown ({hands}: her skin and signature details).
+subjects:
+  hands: "her hands and forearms in frame, {hands}"
+  back: "seen from behind, her face turned away from the camera: her hair, shoulders and figure, {hands}"
+  figure: "her whole figure small in the frame, too far away or too blurred to make out her face"
+  reflection: "her reflection in a mirror, her phone held up in front of her face, her hair and outfit visible"
+  feet: "her feet and lower legs in frame"
+  shadow: "her shadow cast on the ground or a wall"
+  none: ""
+
+# Grade families a creator's style picks one of: the words added to every image prompt of hers (one feed, one look).
+grades:
+  raw_phone: "natural phone colour, true-to-life white balance"
+  warm_film: "warm film tones, soft highlights, fine grain"
+  soft_pastel_grain: "soft pastel tones, lifted shadows, light grain"
+  moody_grain: "muted moody tones, deep shadows, visible grain"
+  flash_digicam: "direct compact-camera flash look, crisp shadows, slight grain"
+  clean_bright: "clean bright daylight, airy whites, gentle contrast"
+
+rules:
+  consistency: >-
+    What stays the same: her face and appearance, her style (silhouettes, fabrics, colours she wears), one grade
+    family, a palette of 3-5 colours, 2-3 signature items that appear in about a third of the posts that show her,
+    3-5 recurring motifs, and 1-2 anchor sets (the home spaces where she talks, gets ready or records). Her tastes
+    (foods, drinks, places) recur in props and captions.
+  variety: >-
+    What changes: outfits (a new one most posts, built from her style; a re-wear only after a week or more, styled
+    differently), every place that is not an anchor set (cafes, streets, friends' flats, trips: she travels and has
+    a life outside her flat), light and time of day, and shot types. Travel comes in arcs: a trip every 4-6 weeks
+    over 4-8 posts, home weeks between.
+  carousel: >-
+    No shot type twice in a row or more than twice in a carousel; alternate wide and close; at least three shot
+    categories; at least one imperfect frame (motion blur, flash, an off-centre crop, grain); her face clearly
+    on 2-3 slides at most; gaze off camera in at least half of the face shots.
+  anti_tells: >-
+    No legible text inside generated images (text goes on as an overlay or a slide); hands close-up only in hand
+    shots; a centred smile to camera at most once per carousel and once in three posts.
+
+# The photo-dump order (7-10 slides): the cover is the strongest image, never camera-roll order.
+photo_dump: [cover_face, context_wide_or_mirror, personality_candid_or_motion, details_3_to_4, tail_night_scenery_or_object]
+
+# Carousel slide templates (manyworlds.slides): 1080x1350, faces and text in the centre 1080x1080.
+templates:
+  cover: "a photo (her or an aesthetic shot) with a headline of 8 words or fewer over a soft scrim; a swipe cue"
+  list_item: "a big numeral, a short heading, one line, a small photo"
+  step: "step n of N, a verb heading, one or two lines, a photo of her hands doing it"
+  quote: "a pull quote in her voice on a plain colour"
+  comparison: "two halves with two labels: this or that, before and after, do and don't"
+  recap: "a checklist of every point (the slide people save)"
+  cta: "an ask to save or send it to someone, or a question for the comments"

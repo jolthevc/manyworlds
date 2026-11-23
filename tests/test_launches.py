@@ -92,6 +92,9 @@ def test_an_approved_launch_becomes_a_ready_sandbox_creator_with_an_account_requ
     assert [j["payload"]["mode"] for j in tm] == ["onboard"] and conn.execute(
         "SELECT step FROM launches").fetchone()["step"] == "dossier"
     _finish(conn, "brain.talent_manager")
+    launches.advance(conn, policy)                                     # -> style, by the style director
+    assert _jobs(conn, "brain.style_director") and conn.execute("SELECT step FROM launches").fetchone()["step"] == "style"
+    _finish(conn, "brain.style_director")
     out = launches.advance(conn, policy)
     row = conn.execute("SELECT l.step, l.status, c.status cs, c.publish_mode FROM launches l "
                        "JOIN creators c ON c.id = l.creator_id").fetchone()

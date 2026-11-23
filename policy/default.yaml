@@ -122,6 +122,7 @@ job_kinds:
   brain.creator_lab: {pools: [local], outputs_per_job: 0}
   brain.strategist: {pools: [local], outputs_per_job: 0}
   brain.talent_manager: {pools: [local], outputs_per_job: 0}
+  brain.style_director: {pools: [local], outputs_per_job: 0}
   brain.market_lead: {pools: [local], outputs_per_job: 0}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
@@ -717,8 +718,13 @@ budget: {master_usd_per_month: 750, reserve_share: 0.15}
 brain:
   # The archetype library (manyworlds.brain.archetypes): playbooks the talent manager, showrunner and director read.
   archetypes: {file: archetypes-v1.yaml}
+  # The aesthetics library (policy/aesthetics): shot vocabulary, consistency and variety rules, grades, carousel templates.
+  aesthetics: {file: aesthetics-v1.yaml}
+  # The style director (brain/agents/style_director.py): each creator's style, world (anchor sets, travel, carousel
+  # brand) and a monthly season (capsule wardrobe, trips). A launch step; existing creators get one when missing.
+  style_director: {enabled: true, role: style_director, effort: medium, season_days: 30, min_faceless_families: 4}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
-                    creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -824,7 +830,7 @@ brain:
   # decision_agents: the agents that record a decision every run (brain/runtime); only they can spend "without output"
   # (the director, evaluator, reviewers and comment drafts spend without decisions by design).
   chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3,
-                   decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab]}
+                   decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
@@ -943,6 +949,7 @@ capabilities:
     sit_stand: {description: "sits down, stands up, settles on the sofa", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "one movement per clip", write: "a beat 'sits down on the sofa'"}
     stairs: {description: "a few steps up or down", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "short and slow; full body or from behind; feet can warp", write: "a beat 'walks down the stairs'"}
   edits:
+    text_slides: {description: "branded text slides in a carousel: a cover headline, numbered tips, steps, a quote, a comparison, a recap, a save-this ask; her photos sit inside or between them", how: [slides], requires: [slides.enabled], limits: "carousels only; 1-8 slides, short words (a cover 8 words or fewer); for instructive and list posts, never every post", write: "the idea's slides (template, heading, text, items, photo = a scene index)"}
     cut_on_motion: {description: "the cut lands inside a motion both shots share (spin, hair flip, hand over the lens)", how: [joiner], requires: ["production.formats:talking_video,narrated_edit"], limits: "only where shots are joined (talking-video takes and cutaways, narrated edits); a carousel or one clip has none; never mid-sentence", write: "edit.transition_in 'match cut on the spin' (or whip, blur, flash)"}
     labels: {description: "a short label in the upper third: a tip, numbered looks '1.' '2.'", how: [finish_overlays], requires: [on_screen_text.enabled, finishing.enabled], limits: "video only (photos carry no overlays); a few words, 1-3 s each", write: "edit.on_screen_text item kind label (number for a numbered look)"}
     hook_text: {description: "big text in the first second that opens the story", how: [finish_overlays], requires: [on_screen_text.enabled, finishing.enabled], limits: "first shot only, gone by 2 s", write: "edit.on_screen_text item kind hook at start_s 0 in the first shot"}
@@ -1477,6 +1484,10 @@ direction:
 # them (nobody to match), so a plate is chosen from its realism, safety and scene rows at the bars below.
 # Every later scene in that set gets the canonical description in its prompt and the plate and outfit reference as
 # `references` for the consistency check (review.detail.consistency).
+# Carousel text slides (manyworlds.slides): drawn on the producer in the creator's carousel brand (profile.world.carousel,
+# the style director's), 1080x1350 with text inside the centre square the grid shows.
+slides: {enabled: true, formats: [carousel], width: 1080, height: 1350, margin: 96, cover_size: 104, max_slides: 8}
+
 sets:
   enabled: true
   generate_plates: true
@@ -1885,6 +1896,7 @@ llm:
     director: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     # The talent manager (brain/agents/talent_manager.py): a few calls per creator a week, judgement-heavy.
     talent_manager: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    style_director: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     market_lead: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}   # one run per active market a week
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write

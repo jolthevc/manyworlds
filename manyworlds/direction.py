@@ -266,6 +266,12 @@ class ShotSheet(_Sheet):
     motion_reference: str = Field(default="", description="the id of a licensed motion reference clip (listed in "
                                                           "the brief) whose movement this shot performs: a dance, "
                                                           "a pose sequence, a twirl; empty for none")
+    shot_type: str = Field(default="", description="the shot type from her shot vocabulary (the brief), e.g. "
+                                                   "walk_away_sunset or ringed_hand_glass; empty for a plain shot of her")
+    # Filled by code from shot_type and her style (manyworlds.brain.director), never asked of the model:
+    subject: str = Field(default="", description="what of her is in frame (aesthetics subjects); '' or 'face' shows "
+                                                 "her face")
+    grade: str = Field(default="", description="her grade family's prompt words")
 
 
 # What the director answers (manyworlds.brain.director). It is asked with a strict schema (`strict_required`,
@@ -276,7 +282,7 @@ class DirectedShots(BaseModel):
     strict_required: ClassVar[bool] = True
     # Each shot's `edit` (text on screen, cuts, caption style) is a second, small call (DirectedEdits): with it the
     # grammar is too large again (HTTP 400, measured 2026-11-23: any list nested in a shot, even of strings, failed).
-    strict_omit: ClassVar[tuple] = (("shots", "edit"),)
+    strict_omit: ClassVar[tuple] = (("shots", "edit"), ("shots", "subject"), ("shots", "grade"))
     shots: list[ShotSheet] = Field(description="one shot sheet per scene, in the same order as the scenes")
     move_shot: int = Field(default=-1, description="the index (from 0) of the shot that performs the move; "
                                                    "-1 when there is no move")
@@ -309,7 +315,7 @@ def faceless(shot: "ShotSheet | dict | None") -> bool:
         s = _coerce(shot)
     except Exception:  # noqa: BLE001 - a malformed sheet is judged as before
         return False
-    return s.framing.device == "pov" or bool(s.cutaway)
+    return s.framing.device == "pov" or bool(s.cutaway) or (s.subject or "") not in ("", "face")
 
 
 def _hands_subject(bible: dict) -> str:
@@ -317,6 +323,18 @@ def _hands_subject(bible: dict) -> str:
     a = bible.get("appearance") or {}
     return _join(["seen from her own eyes, her hands and forearms in frame", str(a.get("ethnicity_and_skin") or ""),
                   str(a.get("signature_details") or "")])
+
+
+def _faceless_subject(s: "ShotSheet", bible: dict, policy: Any) -> str:
+    """A shot without her face: an aesthetic shot's subject (her back, hands, reflection, a small figure, or no one;
+    manyworlds.brain.aesthetics), else her own point of view (her hands)."""
+    if (s.subject or "") not in ("", "face"):
+        from .brain import aesthetics
+        a = bible.get("appearance") or {}
+        hands = _join([str(a.get("ethnicity_and_skin") or ""), str(a.get("signature_details") or "")])
+        return aesthetics.subject_text(policy if hasattr(policy, "get") and not isinstance(policy, dict) else None,
+                                       s.subject, hands)
+    return _hands_subject(bible)
 
 
 def _lighting(s: SetSpec) -> str:
@@ -678,7 +696,7 @@ def _style(s: ShotSheet, target: Target, policy: Any) -> str:
     st = s.set
     unlit = not any(x.strip() for x in (st.light_direction, st.light_quality, st.color_temp, st.practical_lights))
     return _join([realism.get(target, "") or "", (realism.get("light_fallback", "") or "") if unlit else "",
-                  style_words.get(target, "") or ""])
+                  style_words.get(target, "") or "", s.grade or ""])
 
 
 def _mentions(text: str, words) -> bool:
@@ -789,7 +807,7 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
 
     head = f"{trigger}, " if trigger else ""
     no_face = faceless(s)
-    sections = {"camera": camera, "subject": _hands_subject(bible) if no_face else appearance_prompt(bible),
+    sections = {"camera": camera, "subject": _faceless_subject(s, bible, policy) if no_face else appearance_prompt(bible),
                 "wardrobe": wardrobe, "action": action,
                 "set": set_, "style": style, "sound": sound}
     items = negative_items(s, target, policy, positive=_render(head, sections, ""))

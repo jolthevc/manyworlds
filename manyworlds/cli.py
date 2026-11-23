@@ -478,7 +478,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
     from . import notify
     from .brain import events, ideas, launches, portfolio, showrunner_loop
     from .brain import chief_of_staff
-    from .brain.agents import market_lead, talent_manager
+    from .brain.agents import market_lead, style_director, talent_manager
     from .deploy.providers import redact
 
     now = datetime.now(timezone.utc)
@@ -498,6 +498,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
         if pol.get("brain", "strategist", "enabled", default=False):
             portfolio.ensure_daily(conn, pol)      # the daily portfolio cycle (one strategist job a day)
         talent_manager.ensure_reviews(conn, pol, now=now)   # each creator's career review, on its stage's cadence
+        style_director.ensure(conn, pol, now=now)           # each creator's style and world, and the monthly season
         market_lead.ensure_reviews(conn, pol, now=now)      # each market that warrants a lead
         chief_of_staff.tick(conn, pol, now=now)             # predictions resolved, stalled requests and agents reported
         r = launches.advance(conn, pol)            # approved launches walk the creator lab's steps

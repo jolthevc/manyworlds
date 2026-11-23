@@ -45,8 +45,17 @@ video of this person's life.
 Rules:
 - The creator's appearance is fixed and added to every prompt separately: never describe their face, body,
   age or ethnicity, only what changes per scene (outfit, hair state, makeup, skin state).
-- Recurring sets and outfits are named (`set.set_id`, `wardrobe.outfit_id`, short snake_case) and reused with
-  the same name and description; reuse the known sets and outfits you are given when a scene is in one.
+- When the brief gives her style: only her anchor sets are recurring rooms (`set.set_id` = that id, reused
+  whenever a scene is in one: where she talks, gets ready, records). Every other place is a one-off: leave
+  `set_id` empty and make it specific and varied (cafes, streets, friends' places, trips; she has a life beyond
+  her flat). Outfits don't recur: leave `wardrobe.outfit_id` empty and dress her from her capsule and wardrobe
+  style, different from her recent outfits; her signature items do recur. Without a style, recurring sets and
+  outfits are named (`set.set_id`, `wardrobe.outfit_id`, short snake_case) and reused with the same name.
+- `shot_type` names a shot from her shot vocabulary when the shot is one: most of an aspirational feed is her
+  world (her back on a street at sunset, a ringed hand on a glass, a table from above, a window, her shoes), not
+  her face to camera. Frame and light such a shot as the vocabulary says; when its face is not "yes", direct no
+  face, gaze or expression. Follow the brief's carousel rules (variety, one imperfect frame, the dump order).
+  Empty for a plain shot of her.
 - A new named set's `set.set_dressing` is its canonical look, kept for every later post: the fixed layout,
   materials, colours, furniture and fixed props, and its light sources (windows, lamps), written as an empty
   room: objects and surfaces only. A new named outfit's `wardrobe.outfit` is its canonical description:
@@ -198,6 +207,50 @@ def _known(conn, policy, creator_id, n: int) -> dict:
     return out
 
 
+def _style_view(conn, policy, creator_id) -> dict:
+    from ..creator import profile as profile_mod
+    from .agents import style_director
+    cur = profile_mod.current(conn, creator_id)
+    return style_director.planning_view(policy, cur[1] if cur else None)
+
+
+def recent_outfits(conn, creator_id, n: int) -> list[str]:
+    """What she wore in her recent directed posts, newest first (the director dresses her differently)."""
+    rows = conn.execute(
+        "SELECT body->'shots' AS shots FROM posts WHERE creator_id = %s AND status <> 'dropped' "
+        "AND jsonb_typeof(body->'shots') = 'array' ORDER BY created_at DESC LIMIT %s", (creator_id, n)).fetchall()
+    seen: list[str] = []
+    for r in rows:
+        for s in r["shots"] or []:
+            o = ((s or {}).get("wardrobe") or {}).get("outfit") if isinstance(s, dict) else ""
+            if o and o not in seen:
+                seen.append(o)
+    return seen[:n]
+
+
+def styled(policy, shots: list[dict], look: dict, prof_style: dict) -> list[dict]:
+    """Code's part of an aesthetic shot: its subject from the shot vocabulary, her grade's prompt words (the night
+    grade for night and flash shots), and, for a creator with a style, no recurring outfits and no recurring set
+    that isn't one of her anchor sets (manyworlds.creator.sets registers only what is left)."""
+    from . import aesthetics
+    anchors = set((look or {}).get("anchor_sets") or {})
+    day, night = prof_style.get("grade") or "", prof_style.get("night_grade") or prof_style.get("grade") or ""
+    for s in shots:
+        s["subject"] = aesthetics.subject_of(policy, s.get("shot_type") or "") if s.get("shot_type") else ""
+        if s.get("shot_type") and not aesthetics.shot(policy, s["shot_type"]):
+            s["shot_type"] = ""   # not in the vocabulary: a plain shot
+        tod = str((s.get("set") or {}).get("time_of_day") or "").lower()
+        late = any(w in tod for w in ("night", "late evening", "midnight")) or s.get("shot_type") == "flash_night"
+        s["grade"] = aesthetics.grade_words(policy, night if late else day) if prof_style else ""
+        if look:
+            if (s.get("wardrobe") or {}).get("outfit_id"):
+                s["wardrobe"]["outfit_id"] = ""
+            sid = (s.get("set") or {}).get("set_id") or ""
+            if sid and sid not in anchors:
+                s["set"]["set_id"] = ""
+    return shots
+
+
 def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], move_name: str,
             move: dict | None) -> str:
     cfg = _cfg(policy)
@@ -215,11 +268,18 @@ def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], m
     usable, missing = catalogue(policy)
     names = _names(policy)
     refs = names.pop("motion_references")
+    look = _style_view(conn, policy, creator_id)
+    styled = ""
+    if look:
+        styled = (f"Her style, world and this month (keep the style, vary outfits and places): {json.dumps(look, default=str)}\n"
+                  f"Her recent outfits (dress her differently): {json.dumps(recent_outfits(conn, creator_id, int(cfg.get('recent_posts', 20))))}\n")
+    known = ({"sets": look.get("anchor_sets") or {}} if look else
+             _known(conn, policy, creator_id, int(cfg.get('recent_posts', 20))))
     return (f"The creator (appearance for reference only): {json.dumps(creator, default=str)}\n"
             f"How this kind of creator communicates (from their archetype): {json.dumps(communication(policy, bible))}\n"
             f"What is known about their life: {json.dumps(facts)}\n"
-            f"Known sets and outfits (reuse the names): "
-            f"{json.dumps(_known(conn, policy, creator_id, int(cfg.get('recent_posts', 20))))}\n\n"
+            + styled
+            + f"Known sets{'' if look else ' and outfits'} (reuse the names): {json.dumps(known, default=str)}\n\n"
             f"What the studio can render now (compose every shot from these): {json.dumps(usable)}\n"
             f"Not available now (never use): {json.dumps(missing)}\n"
             f"Allowed camera moves: {json.dumps(list(cfg.get('camera_moves') or []))}\n"
@@ -287,6 +347,12 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None,
         for line in (s.get("performance") or {}).get("lines") or []:
             if not line.get("pause_after_s"):
                 line["pause_after_s"] = None   # 0 from the strict schema means "the default pause"
+    look = _style_view(conn, policy, creator_id)
+    if look:
+        from ..creator import profile as profile_mod
+        shots = styled(policy, shots, look, (profile_mod.current(conn, creator_id)[1] or {}).get("style") or {})
+    else:
+        shots = styled(policy, shots, {}, {})
     shots = [ShotSheet.model_validate(s).model_dump(mode="json") for s in shots]
     usable_refs = motion_references(policy)
     for s in shots:

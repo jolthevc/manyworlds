@@ -1776,6 +1776,11 @@ def _finish_failed(conn, policy: Policy, post: dict, body: dict, error: Exceptio
     return True
 
 
+def _slide_formats(policy: Policy) -> list[str]:
+    cfg = policy.get("slides", default={}) or {}
+    return list(cfg.get("formats") or []) if cfg.get("enabled") else []
+
+
 def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> str:
     body = dict(post["body"])
     results = []
@@ -1786,6 +1791,16 @@ def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> s
     states, chosen, video = {state for state, _ in results}, [r for _, r in results], None
     if states == {"chosen"}:
         body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in chosen]
+        if body.get("slides") and post["format"] in _slide_formats(policy):
+            # Text slides in her carousel brand (manyworlds.slides), drawn here on the CPU around her photos.
+            try:
+                from . import slides as slides_mod, storage
+                made = slides_mod.render_post(conn, policy, store or storage.from_url(), post, body, chosen)
+                body["photos"] = body["images"]
+                body["images"] = [{"asset_id": str(a["id"]), "uri": a["uri"]} for a in made]
+                chosen = made
+            except Exception as e:  # noqa: BLE001 - her photos still make a carousel without the text slides
+                body["slides_error"] = f"{type(e).__name__}: {str(e)[:300]}"
         if post["format"] in FOLLOW_UPS:   # the edit or clip, once every photo is chosen
             if post["format"] == "talking_video" and "talk_segments" not in body:
                 hybrid = bool(_hybrid_cfg(policy).get("enabled")) and len(chosen) >= 2

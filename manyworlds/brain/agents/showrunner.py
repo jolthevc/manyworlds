@@ -15,13 +15,15 @@ import json
 from datetime import date, datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
 from .. import archetypes, events, evidence, experiments, exploration, memory, planner, proposals
 from ..agent import AgentContext, commission, record_decision, register
-from . import analyst, talent_manager
+from . import analyst, style_director, talent_manager
 
 SYSTEM = planner.SYSTEM + """
 
@@ -30,6 +32,14 @@ outfits, food, places, small opinions, the occasional trend or arc, and Stories 
 moments. Not every post needs a hook or a purpose; a lovely ordinary moment is a good post. Keep the
 creator's life coherent with what is known about them, and learn from how recent ideas scored and
 from any findings, without turning the feed into a formula.""" + planner.DIRECTION
+
+
+class Slide(BaseModel):
+    template: Literal["cover", "list_item", "step", "quote", "comparison", "recap", "cta"]
+    heading: str = Field(description="the slide's headline: 8 words or fewer on a cover")
+    text: str = Field(default="", description="one or two short lines; a comparison's two sides split by '|'")
+    items: list[str] = Field(default_factory=list, description="a recap's points, or a comparison's two labels")
+    photo: int = Field(default=-1, description="the index of the scene whose photo this slide shows, or -1")
 
 
 class PlannedIdea(planner.PlannedPost):
@@ -43,6 +53,8 @@ class PlannedIdea(planner.PlannedPost):
     flavor: str = Field(default="", description="the name of a flavor from the library, or empty (most posts)")
     move: str = Field(default="", description="the name of a move from the library, or empty (most posts)")
     experiment: str = Field(default="", description="the slot id when this idea fills an experiment slot, else empty")
+    slides: list[Slide] = Field(default_factory=list, description="a carousel's text slides in her brand (capability "
+                                                                  "edits.text_slides), in order; empty for most posts")
 
 
 class IdeaBatch(BaseModel):
@@ -122,6 +134,13 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     plays = archetypes.playbooks(policy, prof or c["bible"])
     play_text = (f"Her archetype playbooks (how this kind of creator wins: mix, series patterns, hooks, edit grammar, "
                  f"pitfalls; a guide, not a template): {json.dumps(plays)}\n" if plays else "")
+    look = style_director.planning_view(policy, prof, today=start)
+    hemisphere = ((prof or {}).get("world") or {}).get("hemisphere") or "north"
+    season = _season(start, hemisphere)
+    style_text = (f"Her style director's look (keep her style, palette, grade and signature items; vary outfits from her "
+                  f"capsule, places and shot types; plan photo dumps and carousels in the dump order and by the rules; "
+                  f"most frames show her world, not her face to camera, roughly as her face share says): "
+                  f"{json.dumps(look, default=str)}\n" if look else "")
     brief = talent_manager.latest_brief(conn, creator_id)
     brief_text = (f"Her talent manager's brief for these batches (follow it: it sets the focus, the series to run and "
                   f"what to stop): {json.dumps(brief['output'], default=str)}\n" if brief else "")
@@ -158,11 +177,12 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"or captions):\n{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}\n"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
-        f"{niche_text}{play_text}{brief_text}"
+        f"{niche_text}{play_text}{brief_text}{style_text}"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
         f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
-        f"Days: {day_names} (weekly rituals happen on their weekday). "
+        f"Days: {day_names} (weekly rituals happen on their weekday; it is {season} where she lives: the light, "
+        f"weather, food and things to do follow the season). "
         f"Plan about {counts['total']} posts and Stories over {days} days (day 0 to {days - 1}): "
         f"{counts['per_platform']} per platform; about {counts['videos']} videos "
         f"({planner._video_formats(policy)}), each in one of the creator's video series. "
@@ -173,7 +193,8 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
         f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
-        f"The creator's face is visible in most images, wearing their signature item.")
+        + ("Mix her face with her world: covers and talking show her face; details, places, food, her back and her "
+           "hands carry the rest." if look else "The creator's face is visible in most images, wearing their signature item."))
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,
             "analysis_decision_id": str(last["id"]) if last else None,
             "talent_brief_id": str(brief["id"]) if brief else None,
@@ -181,6 +202,16 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
             "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings, "flavors": flavors,
             "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore}
     return prompt, meta
+
+
+def _season(day: date, hemisphere: str) -> str:
+    """The season on a day ("late autumn"), by meteorological seasons, flipped for the southern hemisphere."""
+    names = ["winter", "winter", "spring", "spring", "spring", "summer", "summer", "summer", "autumn", "autumn",
+             "autumn", "winter"]
+    starts = {"winter": 11, "spring": 2, "summer": 5, "autumn": 8}
+    m = (day.month - 1) if hemisphere != "south" else (day.month + 5) % 12
+    part = ("early", "mid", "late")[(m - starts[names[m]]) % 12]
+    return f"{part} {names[m]}"
 
 
 class Showrunner:
