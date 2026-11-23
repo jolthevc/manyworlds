@@ -12,11 +12,18 @@ spoken ... nice fonts and styles ... everything must be nicely done, look profes
   a preposition, keep within the style's words, characters and lines, and never leave one word on its own unless
   it is a whole utterance by itself ("Okay." between pauses).
 * Layout keeps text out of Reels/TikTok UI: the top and bottom bands and the right-side buttons (policy
-  `burned_captions.safe_zone`), centred, in the lower third by default or upper-middle when the face is low
-  (`placement_for`). A line too wide for the safe width is scaled down, never let out.
+  `burned_captions.safe_zone`), centred. The band follows the shot (`placement_for_shot`: close-ups in the lower
+  band under the chin, wide and full-body shots mid-lower) and moves off the face when a face box is known
+  (`placement_for`: the first band in `face_safe_order` that clears it). A line too wide for the safe width is
+  scaled down, never let out.
 * Styles (`burned_captions.styles`) are presets: font, size (share of frame height), colours, outline, soft
   shadow, rounded box, letter and line spacing, case (incl. small caps), per-phrase / word-highlight (karaoke) /
-  word-reveal modes, fade and pop. A creator's default is just a style name.
+  word-reveal modes, fade and pop. Which style a video gets (`caption_style_for`): the shot's `edit.caption_style`,
+  then the format's (`style_by_format`; `none` = no spoken captions, labels only), then the creator's, in the
+  order `style_precedence` gives.
+* Characters the style's font cannot draw (emoji: libass draws no colour emoji, and no bundled font has them) are
+  dropped (`missing_glyphs: strip`), so nothing burns in as an empty box or a fallback system font.
+* Labels, the hook, timestamps and question bubbles are `manyworlds.overlays`; they ride in the same ASS script.
 * Emphasis: *words in asterisks* in the script, or a list of words, take the style's accent colour.
 * Rendering: an ASS script for libass (ffmpeg's `ass` filter, fonts from manyworlds/fonts via `fontsdir`). Where
   an ffmpeg has no libass, the same layout is drawn with Pillow into transparent PNGs and overlaid
@@ -45,8 +52,11 @@ _WORDLIKE = re.compile(r"\w")
 
 # Fallbacks for a policy without the block's numbers; the shipped values live in policy/default.yaml.
 _DEFAULT_SAFE = {"top": 0.14, "bottom": 0.25, "left": 0.12, "right": 0.12}
-_DEFAULT_PLACEMENTS = {"lower": {"anchor": "bottom", "y": 0.74}, "upper": {"anchor": "top", "y": 0.24},
-                       "center": {"anchor": "middle", "y": 0.5}}
+_DEFAULT_PLACEMENTS = {"lower": {"anchor": "bottom", "y": 0.74}, "mid_lower": {"anchor": "middle", "y": 0.62},
+                       "upper": {"anchor": "top", "y": 0.24}, "center": {"anchor": "middle", "y": 0.5}}
+# Emoji and pictographs, for when a font's character map can't be read (missing_glyphs: strip).
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿⌀-⏿︎️‍⃣"
+                    "\U000E0020-\U000E007F]")
 _DEFAULT_COSTS = {"after_clause": 1.0, "before_starter": 2.0, "mid_phrase": 5.0, "after_sticky": 12.0,
                   "internal_sentence": 6.0, "size": 0.6, "over_duration_per_s": 8.0, "orphan": 100.0,
                   "line_balance": 0.15, "line_break_factor": 0.5, "two_lines": 1.0, "single_word_line": 2.0}
@@ -86,6 +96,64 @@ def resolve_style(policy, name: str | None = None) -> tuple[str, dict]:
     default = cfg.get("default_style")
     chosen = name if name in table else default if default in table else next(iter(table))
     return chosen, _merge(cfg.get("style_defaults") or {}, table[chosen])
+
+
+_NO_CAPTIONS = "none"
+
+
+def _style_named(text: str | None, table: dict, none_words: Iterable[str]) -> str | None:
+    """A style name read from a free-text field ('karaoke', 'bold pop, big', 'labels only'): an exact name, else the
+    first style named as a word in it, else `none` for a phrase in `none_words`, else None (not a style)."""
+    norm = re.sub(r"[^a-z0-9]+", "_", str(text or "").lower()).strip("_")
+    if not norm:
+        return None
+    if norm in table:
+        return norm
+    padded = f"_{norm}_"
+    for name in table:
+        if f"_{name.lower()}_" in padded:
+            return name
+    spaced = norm.replace("_", " ")
+    if norm == _NO_CAPTIONS or any(str(w).lower() in spaced for w in none_words):
+        return _NO_CAPTIONS
+    return None
+
+
+def caption_style_for(policy, *, creator: str | None = None, fmt: str | Sequence[str] | None = None,
+                      shot: dict | None = None) -> str | None:
+    """The caption style of a video, or None when it gets no spoken captions (an outfit check: labels only).
+    Sources, in `burned_captions.style_precedence` (shipped: shot, format, creator):
+      shot     the shot sheet's `edit.caption_style` (a style name, or free text naming one; 'none' = no captions)
+      format   `burned_captions.style_by_format` for `fmt` (a format, or several keys such as [template, format],
+               the first listed wins)
+      creator  the creator's profile dial `caption_style`
+    Free text that names no style falls through to the next source; nothing at all gets `default_style`."""
+    cfg = _cfg(policy)
+    table = cfg.get("styles") or {}
+    none_words = cfg.get("no_caption_words") or []
+    by_format = cfg.get("style_by_format") or {}
+    keys = [fmt] if isinstance(fmt, str) else list(fmt or [])
+    sources = {
+        "shot": lambda: _style_named(((shot or {}).get("edit") or {}).get("caption_style"), table, none_words),
+        "format": lambda: next((_style_named(by_format[k], table, none_words) for k in keys if k in by_format), None),
+        "creator": lambda: _style_named(creator, table, none_words),
+    }
+    for source in cfg.get("style_precedence") or ["shot", "format", "creator"]:
+        found = sources[source]() if source in sources else None
+        if found:
+            return None if found == _NO_CAPTIONS else found
+    return resolve_style(policy, None)[0] if table else None
+
+
+def word_timestamps_for(policy, fmt: str | None) -> bool:
+    """Whether captions of this format are timed from the voice line's transcribed word timestamps:
+    `burned_captions.word_timestamps` true (every format; a list there is read as formats too), else `fmt` in
+    `word_timestamps_formats`."""
+    cfg = _cfg(policy)
+    on = cfg.get("word_timestamps", False)
+    if isinstance(on, (list, tuple, set)):
+        return fmt in on
+    return bool(on) or fmt in (cfg.get("word_timestamps_formats") or [])
 
 
 def fonts_dir(policy=None) -> Path | None:
@@ -192,6 +260,16 @@ def estimate_timings(lines: Sequence[dict], *, emphasis: Iterable[str] | None = 
             t = e + p * unit
         floor = b
     return out
+
+
+def block_timings(text: str, start_s: float, end_s: float, *, emphasis: Iterable[str] | None = None,
+                  offset: float = 0.0, policy=None) -> list[Word]:
+    """Word timings for one block of text spoken across a whole span with nothing finer known (a Kokoro talk
+    clip's own audio: the script over the spoken seconds). Not shared evenly: each word gets its share by
+    syllables and letters, and sentence and clause ends leave room (the same weights as `estimate_timings`), so
+    "I went to the supermarket." gives "supermarket." most of its sentence and chunks can break at the pauses."""
+    return estimate_timings([{"text": text, "start_s": start_s, "end_s": end_s}], emphasis=emphasis, offset=offset,
+                            policy=policy)
 
 
 def word_timings(words: Sequence[dict], *, script: str | None = None, emphasis: Iterable[str] | None = None,
@@ -434,6 +512,71 @@ def font_metrics(path: str) -> FontMetrics:
     return FontMetrics(upem, asc, -desc, wa or asc, wd or -desc, ch, xh)
 
 
+def _cmap_format4(data: bytes, sub: int) -> set[int]:
+    seg2 = struct.unpack_from(">H", data, sub + 6)[0]
+    ends, starts, deltas, ro_pos = sub + 14, sub + 16 + seg2, sub + 16 + 2 * seg2, sub + 16 + 3 * seg2
+    out: set[int] = set()
+    for i in range(seg2 // 2):
+        end, start = struct.unpack_from(">H", data, ends + 2 * i)[0], struct.unpack_from(">H", data, starts + 2 * i)[0]
+        delta = struct.unpack_from(">h", data, deltas + 2 * i)[0]
+        ro = struct.unpack_from(">H", data, ro_pos + 2 * i)[0]
+        for c in range(start, end + 1):
+            if c == 0xFFFF:
+                continue
+            if ro == 0:
+                glyph = (c + delta) & 0xFFFF
+            else:
+                glyph = struct.unpack_from(">H", data, ro_pos + 2 * i + ro + 2 * (c - start))[0]
+                glyph = (glyph + delta) & 0xFFFF if glyph else 0
+            if glyph:
+                out.add(c)
+    return out
+
+
+def _cmap_format12(data: bytes, sub: int) -> set[int]:
+    out: set[int] = set()
+    for g in range(struct.unpack_from(">I", data, sub + 12)[0]):
+        start, end, _ = struct.unpack_from(">III", data, sub + 16 + 12 * g)
+        out.update(range(start, end + 1))
+    return out
+
+
+@lru_cache(maxsize=None)
+def font_chars(path: str) -> frozenset[int] | None:
+    """The code points a TTF maps to a glyph (its Unicode cmap: format 12 preferred, else 4), or None when the
+    file can't be read that way (the caller then strips emoji by pattern)."""
+    try:
+        data = Path(path).read_bytes()
+        tables = {}
+        for i in range(struct.unpack_from(">H", data, 4)[0]):
+            tag, _, off, _ = struct.unpack_from(">4sIII", data, 12 + 16 * i)
+            tables[tag] = off
+        base = tables[b"cmap"]
+        subs = {}
+        for i in range(struct.unpack_from(">H", data, base + 2)[0]):
+            pid, eid, off = struct.unpack_from(">HHI", data, base + 4 + 8 * i)
+            fmt = struct.unpack_from(">H", data, base + off)[0]
+            if (pid == 3 and eid in (1, 10)) or pid == 0:
+                subs.setdefault(fmt, base + off)
+        chars = (_cmap_format12(data, subs[12]) if 12 in subs else _cmap_format4(data, subs[4]) if 4 in subs
+                 else None)
+    except (OSError, KeyError, struct.error):
+        return None
+    return frozenset(chars) if chars and ord("a") in chars else None   # a map without 'a' is a misread
+
+
+def drawable(text: str, font_path: str | None, mode: str = "strip") -> str:
+    """`text` without the characters its font cannot draw (mode `strip`; `keep` leaves it alone). Emoji are the
+    usual case: libass draws no colour emoji and falls back to whatever font the machine has. Spaces are kept and
+    runs of them collapsed; without a readable character map, emoji are stripped by pattern."""
+    if mode != "strip" or not text:
+        return text
+    chars = font_chars(font_path) if font_path else None
+    kept = (_EMOJI.sub("", text) if chars is None
+            else "".join(c for c in text if c.isspace() or ord(c) in chars))
+    return re.sub(r"\s+", " ", kept).strip() if kept != text else text
+
+
 @lru_cache(maxsize=128)
 def _pil_font(path: str | None, size: int):
     try:
@@ -571,22 +714,60 @@ def layout(plan: CaptionPlan) -> list[ChunkLayout]:
     return out
 
 
-def placement_for(face_box: Sequence[float] | None, policy=None) -> str:
-    """'upper' when the face (x0, y0, x1, y1 as shares of the frame) reaches into the lower caption band and
-    clears the upper one; else the default placement. The bands are `face_band` tall under / over the
-    placements' anchors."""
-    cfg = _cfg(policy)
-    default = cfg.get("default_placement", "lower")
+def band_of(place: dict, band: float) -> tuple[float, float]:
+    """(top, bottom) as shares of the frame height that a text block `band` tall takes at a placement: under a
+    top anchor, over a bottom anchor, around a middle one."""
+    y = float(place.get("y", 0.74))
+    anchor = place.get("anchor", "bottom")
+    return (y, y + band) if anchor == "top" else (y - band / 2, y + band / 2) if anchor == "middle" else (y - band, y)
+
+
+def covers_face(top: float, bottom: float, face_box: Sequence[float] | None, margin: float = 0.0) -> bool:
+    """Whether a band (shares of the frame height) overlaps the face box (x0, y0, x1, y1 shares), `margin` around."""
     if not face_box:
-        return default
-    places = cfg.get("placements") or _DEFAULT_PLACEMENTS
-    band = float(cfg.get("face_band", 0.14))
-    lo = float((places.get("lower") or {}).get("y", 0.74))
-    up = float((places.get("upper") or {}).get("y", 0.24))
+        return False
     _, fy0, _, fy1 = (float(v) for v in face_box)
-    hits_lower = fy1 > lo - band and fy0 < lo
-    hits_upper = fy1 > up and fy0 < up + band
-    return "upper" if hits_lower and not hits_upper and "upper" in places else default
+    return bottom > fy0 - margin and top < fy1 + margin
+
+
+def face_box_union(boxes: Iterable[Sequence[float] | None]) -> tuple[float, float, float, float] | None:
+    """One box around the faces found in a video's keyframes (finishing.mediapipe_face's `box` per frame), so the
+    captions stay clear of the face wherever it moves; None when no frame had a face."""
+    found = [tuple(float(v) for v in b) for b in boxes if b]
+    if not found:
+        return None
+    return (min(b[0] for b in found), min(b[1] for b in found), max(b[2] for b in found), max(b[3] for b in found))
+
+
+def placement_for(face_box: Sequence[float] | None, policy=None, *, preferred: str | None = None,
+                  band: float | None = None) -> str:
+    """The caption band that does not cover the face: `preferred` (the shot's, else `default_placement`) when it
+    clears the face box (x0, y0, x1, y1 as shares of the frame, `face_margin` around), else the first placement in
+    `face_safe_order` that does; when none does (a face filling the frame), the preferred one. A text block is
+    taken as `face_band` tall (two lines of the largest style) unless `band` says."""
+    cfg = _cfg(policy)
+    places = cfg.get("placements") or _DEFAULT_PLACEMENTS
+    default = cfg.get("default_placement", "lower")
+    first = preferred if preferred in places else default
+    if not face_box:
+        return first
+    band = float(band if band is not None else cfg.get("face_band", 0.12))
+    margin = float(cfg.get("face_margin", 0.0))
+    for name in [first] + [p for p in cfg.get("face_safe_order") or list(places) if p != first]:
+        if name in places and not covers_face(*band_of(places[name], band), face_box, margin):
+            return name
+    return first
+
+
+def placement_for_shot(policy, shot: dict | None, face_box: Sequence[float] | None = None) -> str:
+    """Where a video's captions go: the first entry of `placement_by_shot_size` whose words appear in the shot's
+    shot size (close-ups in the lower band under the chin, wide and full-body shots mid-lower), else
+    `default_placement`; then moved off the face when a face box is known (`placement_for`)."""
+    cfg = _cfg(policy)
+    size = str(((shot or {}).get("framing") or {}).get("shot_size") or "").lower()
+    preferred = next((str(place) for words, place in (cfg.get("placement_by_shot_size") or {}).items()
+                      if str(words).lower() in size), None)
+    return placement_for(face_box, policy, preferred=preferred)
 
 
 def make_plan(words: Sequence[Word], policy=None, *, width: int, height: int, style: str | None = None,
@@ -597,8 +778,24 @@ def make_plan(words: Sequence[Word], policy=None, *, width: int, height: int, st
     places = cfg.get("placements") or _DEFAULT_PLACEMENTS
     default = cfg.get("default_placement", "lower")
     place = placement if placement in places else default if default in places else next(iter(places))
+    fonts = Path(fonts) if fonts is not None else fonts_dir(policy)
+    words = _drawable_words(words, fonts / st["file"] if fonts is not None and st.get("file") else None,
+                            str(cfg.get("missing_glyphs", "strip")))
     return CaptionPlan(tuple(chunk_words(words, policy=policy, style=st)), name, st, int(width), int(height),
-                       place, cfg, Path(fonts) if fonts is not None else fonts_dir(policy))
+                       place, cfg, fonts)
+
+
+def _drawable_words(words: Sequence[Word], font: Path | None, mode: str) -> list[Word]:
+    """The words with what the font can't draw taken out; a word left with nothing to read is dropped."""
+    path = str(font) if font is not None and font.exists() else None
+    out = []
+    for w in words:
+        text = drawable(w.text, path, mode)
+        if text == w.text:
+            out.append(w)
+        elif _WORDLIKE.search(text):
+            out.append(_replace(w, text=text))
+    return out
 
 
 def plan_from_lines(lines: Sequence[dict], policy=None, *, width: int, height: int, script: str | None = None,
@@ -731,24 +928,35 @@ def _line_body(line: LineBox, active: int | None, style: dict, st: _Setup, base:
     return "".join(parts)
 
 
-def to_ass(plan: CaptionPlan) -> str:
-    """The plan as an ASS script at the video's own resolution (PlayRes = width x height, so every number is a
-    pixel). One Style line; per chunk one Dialogue per line (per line and word for karaoke / reveal), each placed
-    with \\an2\\pos at its line's bottom; rounded boxes are drawings on layer 0 under the text on layer 1."""
-    s, st = plan.style, _setup(plan.style, plan.height, plan.fonts_dir)
-    name = re.sub(r"[^A-Za-z0-9_-]", "_", plan.style_name) or "captions"
-    outline, shadow, box = s.get("outline") or {}, s.get("shadow") or {}, s.get("box") or {}
+def ass_name(name: str, fallback: str = "captions") -> str:
+    """A style name as ASS allows it (no commas or spaces)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name) or fallback
+
+
+def style_line(name: str, s: dict, st: _Setup) -> str:
+    """One [V4+ Styles] line: font, size, colours, bold / italic, spacing, outline and shadow of style `s`."""
+    outline, shadow = s.get("outline") or {}, s.get("shadow") or {}
     outline_px = st.outline
     if st.soften > 0 and outline_px <= 0:
         outline_px = 1.0      # libass blurs the border; without one it would blur the letters (border kept invisible)
     outline_colour = _style_colour(outline.get("color", "#000000"),
                                    outline.get("opacity", 1.0) if st.outline > 0 else 0.0)
-    head = [
+    return (f"Style: {name},{s.get('font', 'Poppins')},{_n(st.ass_size)},{_style_colour(s['color'])},"
+            f"{_style_colour(s['color'])},{outline_colour},"
+            f"{_style_colour(shadow.get('color', '#000000'), shadow.get('opacity', 0.0))},"
+            f"{-1 if s.get('bold') else 0},{-1 if s.get('italic') else 0},0,0,100,100,{_n(st.spacing)},0,1,"
+            f"{_n(outline_px)},{_n(st.shadow)},2,0,0,0,1")
+
+
+def script_head(width: int, height: int, comment: str, styles_: Sequence[str]) -> list[str]:
+    """The [Script Info] and [V4+ Styles] sections and the [Events] header, at the video's own resolution
+    (PlayRes = width x height, so every number in the events is a pixel)."""
+    return [
         "[Script Info]",
-        f"; manyworlds captions, style {plan.style_name}",
+        f"; {comment}",
         "ScriptType: v4.00+",
-        f"PlayResX: {plan.width}",
-        f"PlayResY: {plan.height}",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
         "WrapStyle: 2",
         "ScaledBorderAndShadow: yes",
         "Kerning: yes",
@@ -757,15 +965,33 @@ def to_ass(plan: CaptionPlan) -> str:
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
         "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
         "MarginR, MarginV, Encoding",
-        f"Style: {name},{s.get('font', 'Poppins')},{_n(st.ass_size)},{_style_colour(s['color'])},"
-        f"{_style_colour(s['color'])},{outline_colour},"
-        f"{_style_colour(shadow.get('color', '#000000'), shadow.get('opacity', 0.0))},"
-        f"{-1 if s.get('bold') else 0},{-1 if s.get('italic') else 0},0,0,100,100,{_n(st.spacing)},0,1,"
-        f"{_n(outline_px)},{_n(st.shadow)},2,0,0,0,1",
+        *styles_,
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+
+
+def caption_style_line(plan: CaptionPlan) -> str:
+    return style_line(ass_name(plan.style_name), plan.style, _setup(plan.style, plan.height, plan.fonts_dir))
+
+
+def to_ass(plan: CaptionPlan) -> str:
+    """The plan as an ASS script at the video's own resolution. One Style line; per chunk one Dialogue per line
+    (per line and word for karaoke / reveal), each placed with \\an2\\pos at its line's bottom; rounded boxes are
+    drawings on layer 0 under the text on layer 1. `overlays.make_script` adds labels to the same script."""
+    head = script_head(plan.width, plan.height, f"manyworlds captions, style {plan.style_name}",
+                       [caption_style_line(plan)])
+    events = caption_events(plan)
+    events.sort(key=lambda e: (e[0], e[1]))
+    return "\n".join(head + [e[2] for e in events]) + "\n"
+
+
+def caption_events(plan: CaptionPlan) -> list[tuple[int, int, str]]:
+    """The plan's Dialogue lines as (start in centiseconds, layer, line), unsorted."""
+    s, st = plan.style, _setup(plan.style, plan.height, plan.fonts_dir)
+    name = ass_name(plan.style_name)
+    box = s.get("box") or {}
     mode = s.get("mode", "phrase")
     fade_in, fade_out = int(s.get("fade_in_ms", 0)), int(s.get("fade_out_ms", 0))
     events: list[tuple[int, int, str]] = []
@@ -798,8 +1024,7 @@ def to_ass(plan: CaptionPlan) -> str:
                 tags += pop or (f"\\fscx{_n(base)}\\fscy{_n(base)}" if cl.scale < 1.0 else "")
                 text = "{" + tags + "}" + _line_body(line, k, s, st, base)
                 events.append((a, 1, f"Dialogue: 1,{_cs_time(a)},{_cs_time(b)},{name},,0,0,0,,{text}"))
-    events.sort(key=lambda e: (e[0], e[1]))
-    return "\n".join(head + [e[2] for e in events]) + "\n"
+    return events
 
 
 def write_ass(plan: CaptionPlan, path: Path) -> Path:
@@ -883,32 +1108,53 @@ def _draw_state(plan: CaptionPlan, cl: ChunkLayout, active: int | None, st: _Set
     return img
 
 
-def render_overlays(plan: CaptionPlan, workdir: Path) -> Path:
-    """The plan drawn with Pillow: one transparent PNG per chunk rendering (and a blank one for the gaps), and an
-    ffconcat listing that shows each for its time. For an ffmpeg without libass (media.burn_captions overlays it);
-    the layout, fonts, colours, box, outline and shadow match the ASS; fades and pops are not drawn."""
+def render_overlays(plan: CaptionPlan | None, workdir: Path, *, extra: Sequence[tuple[float, float, Any]] = (),
+                    size: tuple[int, int] | None = None) -> Path:
+    """The plan (and `extra` layers: (start, end, draw) with draw() -> a full-frame RGBA image, the on-screen
+    labels of manyworlds.overlays) drawn with Pillow: one transparent PNG per stretch of time in which the same
+    layers show (and a blank one for the gaps), and an ffconcat listing that shows each for its time. For an
+    ffmpeg without libass (media.burn_captions overlays it); the layout, fonts, colours, box, outline and shadow
+    match the ASS; fades and pops are not drawn. `size` is the frame when there is no plan."""
     from PIL import Image
 
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    st = _setup(plan.style, plan.height, plan.fonts_dir)
+    width, height = (plan.width, plan.height) if plan is not None else size or (0, 0)
     blank = workdir / "blank.png"
-    Image.new("RGBA", (plan.width, plan.height), (0, 0, 0, 0)).save(blank)
+    Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(blank)
+    layers: list[tuple[float, float, Any]] = []
+    if plan is not None:
+        st = _setup(plan.style, plan.height, plan.fonts_dir)
+        mode = plan.style.get("mode", "phrase")
+        t = 0.0
+        for cl in layout(plan):
+            for a, b, k in _states(cl.chunk, mode):
+                a = max(a, t)
+                if b - a >= 0.01:
+                    layers.append((a, b, lambda cl=cl, k=k: _draw_state(plan, cl, k, st)))
+                    t = b
+    layers += [(float(a), float(b), draw) for a, b, draw in extra if float(b) - float(a) >= 0.01]
+    points = sorted({0.0} | {x for a, b, _ in layers for x in (a, b)})
     entries: list[tuple[str, float]] = []
-    t, n = 0.0, 0
-    mode = plan.style.get("mode", "phrase")
-    for cl in layout(plan):
-        for a, b, k in _states(cl.chunk, mode):
-            a = max(a, t)
-            if b - a < 0.01:
-                continue
-            if a - t >= 0.01:
-                entries.append((blank.name, a - t))
-            png = workdir / f"cap_{n:05d}.png"
-            n += 1
-            _draw_state(plan, cl, k, st).save(png)
-            entries.append((png.name, b - a))
-            t = b
+    made: dict[tuple[int, ...], str] = {}
+    for t0, t1 in zip(points, points[1:]):
+        if t1 - t0 < 1e-3:
+            continue
+        active = tuple(i for i, (a, b, _) in enumerate(layers) if a <= t0 + 1e-6 and b >= t1 - 1e-6)
+        if not active:
+            name = blank.name
+        elif active in made:
+            name = made[active]
+        else:
+            img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            for i in active:
+                img.alpha_composite(layers[i][2]())
+            name = made[active] = f"cap_{len(made):05d}.png"
+            img.save(workdir / name)
+        if entries and entries[-1][0] == name:
+            entries[-1] = (name, entries[-1][1] + (t1 - t0))
+        else:
+            entries.append((name, t1 - t0))
     entries.append((blank.name, 0.1))
     text = ["ffconcat version 1.0"]
     for f, d in entries:

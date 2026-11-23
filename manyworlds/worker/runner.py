@@ -372,6 +372,21 @@ class Worker:
         )
 
 
+def kinds_from_env(policy: Policy, env=None) -> list[str]:
+    """The kinds this worker serves: MW_WORKER_KINDS (the autoscaler sets it on every machine, a merged family's
+    machine included: every kind of every member family), else every kind of the families in MW_WORKER_FAMILIES
+    (comma-separated, read from this image's policy), so one machine can serve several families without a rebuild."""
+    env = os.environ if env is None else env
+    kinds = [k.strip() for k in (env.get("MW_WORKER_KINDS") or "").split(",") if k.strip()]
+    if kinds:
+        return kinds
+    families = {f.strip() for f in (env.get("MW_WORKER_FAMILIES") or "").split(",") if f.strip()}
+    kinds = [k for k in (policy.get("job_kinds", default={}) or {}) if policy.family(k) in families]
+    if not kinds:
+        raise SystemExit("no kinds to serve: set MW_WORKER_KINDS or MW_WORKER_FAMILIES (or pass --kinds)")
+    return kinds
+
+
 def handlers_for(kinds: list[str]) -> dict[str, Handler]:
     """Import only the handlers this container needs (GPU libraries are heavy)."""
     found: dict[str, Handler] = {}

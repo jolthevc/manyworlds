@@ -47,6 +47,32 @@ def test_the_start_photo_is_cover_cropped_to_the_talking_shot(tmp_path):
     assert Image.open(dest).size == (480, 832)
 
 
+def test_a_photo_already_at_the_frames_aspect_is_scaled_whole_not_cropped(tmp_path):
+    # the policy's 9:16 scene photo (generation.image_by_format.video) into the hd720 talk frame: same aspect
+    assert talk_comfy.fit_box(864, 1536, 720, 1280, 0.01) is None
+    # into Wan's 480x832 bucket (2.6% off 9:16): beyond a 1% stretch, so cover-scaled; only ~2.5% of the height goes
+    assert talk_comfy.fit_box(864, 1536, 480, 832, 0.01) == (480, 854)
+    assert talk_comfy.fit_box(864, 1536, 480, 832, 0.03) is None      # within a looser tolerance: scaled whole
+    assert talk_comfy.fit_box(896, 1152, 480, 832, 0.01) == (648, 832)  # a 4:5 photo loses ~26% of its width
+    src, dest = tmp_path / "s.png", tmp_path / "d.png"
+    im = Image.new("RGB", (864, 1536), (200, 100, 50))
+    for y in range(1536):                                               # a red edge column on the far left
+        for x in range(8):
+            im.putpixel((x, y), (255, 0, 0))
+    im.save(src)
+    talk_comfy._prepare_image(src, dest, 720, 1280, stretch_tolerance=0.01)
+    out = Image.open(dest).convert("RGB")
+    assert out.size == (720, 1280) and out.getpixel((1, 640))[0] > 200 and out.getpixel((1, 640))[1] < 60
+
+
+def test_the_handlers_take_the_fit_tolerance_from_policy(raw_policy):
+    assert raw_policy.get("generation", "talk", "fit_stretch_tolerance") > 0
+    assert raw_policy.get("generation", "comfy_video", "fit_stretch_tolerance") > 0
+    photo = raw_policy.get("generation", "image_by_format", "talking_video")
+    assert photo == raw_policy.get("generation", "image_by_format", "video")
+    assert photo["width"] * 16 == photo["height"] * 9 and photo["width"] % 16 == photo["height"] % 16 == 0
+
+
 def test_model_folders_point_at_the_weights_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(comfy, "COMFY_DIR", tmp_path)
     cfg = comfy.write_model_paths(tmp_path / "cache").read_text()
@@ -389,3 +415,31 @@ def test_the_motion_clip_is_resampled_to_the_talk_frame_rate(tmp_path):
     out = talk_comfy.at_fps(src, tmp_path / "m25.mp4", comfy.TALK_FPS)
     frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
     assert abs(frames - 2 * comfy.TALK_FPS) <= 1 and abs(seconds - 2.0) < 0.1      # same length, 25 fps
+
+
+def test_walk_and_talk_interpolates_the_motion_clip_instead_of_repeating_frames(tmp_path, raw_policy, monkeypatch):
+    import subprocess
+
+    import imageio_ffmpeg
+
+    from manyworlds import media
+    src = tmp_path / "m16.mp4"
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x288:rate=16:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
+    interp = raw_policy.get("generation", "talk", "motion_interpolate")
+    assert interp["enabled"] and interp["method"] == "minterpolate"
+    seen = []
+    real_run = subprocess.run
+
+    def spy(cmd, *a, **k):
+        seen.append(cmd)
+        return real_run(cmd, *a, **k)
+    monkeypatch.setattr(subprocess, "run", spy)
+    out = talk_comfy.at_fps(src, tmp_path / "m25.mp4", comfy.TALK_FPS, interpolate=interp)
+    vf = next(c[c.index("-vf") + 1] for c in seen if "-vf" in c)
+    assert vf.startswith(f"minterpolate=fps={comfy.TALK_FPS}:mi_mode=mci")
+    frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
+    assert abs(frames - 2 * comfy.TALK_FPS) <= 1 and abs(seconds - 2.0) < 0.1
+    seen.clear()
+    talk_comfy.at_fps(src, tmp_path / "dup.mp4", comfy.TALK_FPS, interpolate={**interp, "enabled": False})
+    assert next(c[c.index("-vf") + 1] for c in seen if "-vf" in c) == f"fps={comfy.TALK_FPS}"   # switched off

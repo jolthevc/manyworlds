@@ -14,7 +14,12 @@ here, trimmed to the voice line and muxed with it.
 Walk-and-talk: with `video_uri` (a silent motion clip of the take, made by a comfy.wan_i2v job first; see
 manyworlds.production) the clip is resampled to 25 fps and lip-synced by InfiniteTalk video-to-video
 (comfy.graph_v2v; params.start_step is how much of the clip is redrawn, params.clip_vision adds CLIP vision embeds).
-InfiniteTalk only.
+InfiniteTalk only. The resample interpolates new frames (params.motion_interpolate, media.fps_filter: minterpolate)
+instead of repeating Wan's 16 fps frames, which judder at 25.
+
+Framing: the approved photo is fitted to the clip's frame (fit_box): a photo already at the frame's aspect, within
+params.fit_stretch_tolerance, is scaled to it whole; any other is cover-cropped, losing only the aspect difference
+(a 9:16 photo into 480x832, Wan's 480p bucket, loses 2.5% of its height; a 4:5 one lost 26% of its width).
 """
 
 from __future__ import annotations
@@ -41,12 +46,26 @@ def _models_dir() -> Path:
     return Path(os.environ.get("MW_MODEL_DIR", "/models/mw")) / "comfy"
 
 
-def _prepare_image(src: Path, dest: Path, w: int, h: int) -> None:
-    """Cover-crop the approved photo to the clip's frame, centred (a 4:5 photo into a 9:16 talking shot)."""
+def fit_box(src_w: int, src_h: int, w: int, h: int, stretch_tolerance: float = 0.0) -> tuple[int, int] | None:
+    """How a src_w x src_h photo reaches a w x h frame: None = scaled straight to it (its aspect is within
+    `stretch_tolerance` of the frame's, so nothing is cut and the stretch is invisible), else the size it is scaled
+    to so it covers the frame, before the centre crop."""
+    if abs((src_w / src_h) / (w / h) - 1) <= float(stretch_tolerance or 0):
+        return None
+    scale = max(w / src_w, h / src_h)
+    return max(w, math.ceil(round(src_w * scale, 6))), max(h, math.ceil(round(src_h * scale, 6)))
+
+
+def _prepare_image(src: Path, dest: Path, w: int, h: int, *, stretch_tolerance: float = 0.0) -> None:
+    """The approved photo at the clip's frame (fit_box): scaled whole when its aspect already matches, else
+    cover-scaled and centre-cropped (only the aspect difference is lost)."""
     from PIL import Image
     im = Image.open(src).convert("RGB")
-    scale = max(w / im.width, h / im.height)
-    im = im.resize((math.ceil(im.width * scale), math.ceil(im.height * scale)), Image.LANCZOS)
+    box = fit_box(im.width, im.height, w, h, stretch_tolerance)
+    if box is None:
+        im.resize((w, h), Image.LANCZOS).save(dest)
+        return
+    im = im.resize(box, Image.LANCZOS)
     left, top = (im.width - w) // 2, (im.height - h) // 2
     im.crop((left, top, left + w, top + h)).save(dest)
 
@@ -83,13 +102,19 @@ def join_windows(clips: list[Path], audio: Path, seconds: float, dest: Path) -> 
     return dest
 
 
-def at_fps(src: Path, dest: Path, fps: int, timeout: float = 600) -> Path:
+def at_fps(src: Path, dest: Path, fps: int, timeout: float = 600, *, interpolate: dict | None = None) -> Path:
     """The motion clip at the talk's frame rate, silent: Wan 2.2 makes 16 fps, InfiniteTalk reads every frame as one
-    of 25 per second (its audio embeds), so without this she would move about 1.5x too fast."""
+    of 25 per second (its audio embeds), so without this she would move about 1.5x too fast. With `interpolate`
+    (params.motion_interpolate, enabled) the new frames are motion-interpolated (media.fps_filter); without it, or
+    switched off, frames are repeated."""
     import subprocess
 
-    from ...media import ffmpeg
-    cmd = [ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), "-vf", f"fps={int(fps)}", "-an", "-c:v", "libx264",
+    from ...media import ffmpeg, fps_filter, probe
+    step = f"fps={int(fps)}"
+    if interpolate and interpolate.get("enabled"):
+        info = probe(src, timeout=timeout)
+        step = fps_filter(info.get("fps"), int(fps), interpolate, seconds=info.get("seconds")) or step
+    cmd = [ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), "-vf", step, "-an", "-c:v", "libx264",
            "-pix_fmt", "yuv420p", "-crf", "16", str(dest)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
@@ -152,10 +177,12 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     image_name, audio_name = f"mw_{tag}.png", f"mw_{tag}{audio.suffix or '.wav'}"
     video_name = f"mw_{tag}_motion.mp4"
     if video_uri:   # the clip's first frame starts the talk; the photo isn't used
-        at_fps(ctx.fetch(video_uri, "motion.mp4"), inp / video_name, comfy.TALK_FPS)
+        at_fps(ctx.fetch(video_uri, "motion.mp4"), inp / video_name, comfy.TALK_FPS,
+               interpolate=params.get("motion_interpolate"))
     else:
         start = ctx.fetch(payload["image_uri"], "start_frame.png")
-        _prepare_image(start, inp / image_name, int(params["width"]), int(params["height"]))
+        _prepare_image(start, inp / image_name, int(params["width"]), int(params["height"]),
+                       stretch_tolerance=float(params.get("fit_stretch_tolerance") or 0))
     shutil.copy(audio, inp / audio_name)
 
     prompt = payload.get("prompt") or "a person talks to the camera"

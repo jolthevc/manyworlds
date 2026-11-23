@@ -5,7 +5,13 @@ field falls back to the creator's or the format's default, and a post without sh
 (creator.lab builds those itself). The compiler writes sections in a fixed order, so models stay swappable:
 
     camera/lens -> subject (the full appearance) -> wardrobe and look -> action/blocking -> set and lighting
-    -> style -> sound cues (talk only) -> negatives
+    -> style -> sound cues (only for targets in `direction.sound_targets`) -> positive stand-ins
+
+Negatives never go in the positive prompt: a negation in a prompt with no negative channel ("no mirrors") tends to
+summon the thing. `compile_prompts` returns {prompt, negative}: a target whose model has a negative input
+(`direction.negatives.channel`: the Wan graphs' negative text encode) gets them there, after the target's base list;
+one without (Z-Image Turbo at guidance 0) gets only the positive stand-ins of `direction.positive_instead_of`
+("unbranded clothes" for "logos"), and negatives without a stand-in are dropped. `compile_prompt` is the prompt alone.
 
 In video with the creator in shot (talk, and i2v unless the shot is a cutaway), the action also gets natural eye
 behaviour (blinks, glances tied to the beats whose eyeline leaves the lens) and an idle/micro-expression line from
@@ -13,7 +19,7 @@ her energy or body language, both worded in policy `direction.eyes` and `directi
 
 Each target has a token budget (policy `direction.prompt_budget`, counted by `estimate_tokens`): the text encoders
 read 512 tokens and drop the rest, so a longer prompt is trimmed lowest priority first (`_fit`) while camera, action
-and negatives stay whole. A prompt within its budget is never touched.
+and the positive stand-ins stay whole. A prompt within its budget is never touched.
 
 Words, defaults and the allowed camera moves come from policy `direction`. Text never goes on a generated
 surface: `edit.on_screen_text` is an overlay added in post and never reaches an image or video prompt.
@@ -266,7 +272,6 @@ _EYELINE = {"lens": "looking into the lens", "off": "looking off-camera", "prop"
             "screen": "looking at a screen"}
 _DEVICE = {"propped": "phone propped up", "held": "phone held by someone else",
            "selfie": "selfie, phone at arm's length"}
-_HANDHELD = {"none": "steady, no camera shake", "light": "lightly handheld", "held": "handheld"}
 _MIC = {"phone": "phone microphone", "lav": "clip-on microphone", "room": "distant room sound"}
 
 
@@ -361,7 +366,7 @@ CHARS_PER_TOKEN = 3.6
 
 # Trimming a directed prompt over its budget (policy direction.prompt_budget), in this order, stopping as soon as
 # it fits: shorten long free text to its first clause, then (video only) the short appearance, then drop optional
-# fields, then cut the lowest-priority section that is left at a word boundary. Camera, action and negatives are
+# fields, then cut the lowest-priority section that is left at a word boundary. Camera, action and the stand-ins are
 # never trimmed. These are the compiler's priorities, not tunables: they follow what each field is for.
 _SHORTEN = (("set", "set_dressing"), ("set", "props"), ("wardrobe", "outfit"))
 _DROP = (("set", "background_action"), ("set", "practical_lights"), ("wardrobe", "accessories"),
@@ -414,18 +419,19 @@ def _set(s: ShotSheet, video: bool, scene: str) -> str:
     return set_
 
 
-def _render(head: str, sections: dict[str, str], negatives: str) -> str:
+def _render(head: str, sections: dict[str, str], tail: str) -> str:
     parts = [_sentence(_LABELS[k], v) for k, v in sections.items()]
-    return head + " ".join(x for x in [*parts, negatives] if x)
+    return head + " ".join(x for x in [*parts, tail] if x)
 
 
-def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, negatives: str, budget: int, video: bool,
+def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, tail: str, budget: int, video: bool,
          scene: str, short_subject: str, policy: Any) -> str:
-    """Trim a directed prompt into `budget` estimated tokens (see _SHORTEN, _DROP, _TRUNCATE). Camera, action and
-    negatives are kept whole; if they alone are over budget, the prompt is returned with everything else cut."""
-    fits = lambda: estimate_tokens(_render(head, sections, negatives)) <= budget  # noqa: E731
+    """Trim a directed prompt into `budget` estimated tokens (see _SHORTEN, _DROP, _TRUNCATE). Camera, action and the
+    tail (the positive stand-ins) are kept whole; if they alone are over budget, the prompt is returned with
+    everything else cut."""
+    fits = lambda: estimate_tokens(_render(head, sections, tail)) <= budget  # noqa: E731
     if fits():
-        return _render(head, sections, negatives)
+        return _render(head, sections, tail)
     t = s.model_copy(deep=True)
 
     def refresh():
@@ -437,16 +443,16 @@ def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, negatives: str, b
         setattr(spec, field, _first_clause(getattr(spec, field), words))
         refresh()
         if fits():
-            return _render(head, sections, negatives)
+            return _render(head, sections, tail)
     if video and short_subject:                                       # (2) the start photo carries identity
         sections["subject"] = short_subject
         if fits():
-            return _render(head, sections, negatives)
+            return _render(head, sections, tail)
     for part, field in _DROP:                                         # (3) optional detail
         setattr(getattr(t, part), field, "")
         refresh()
         if fits():
-            return _render(head, sections, negatives)
+            return _render(head, sections, tail)
     for key in _TRUNCATE:                                             # (4) cut at a word boundary, lowest first
         kept = sections.get(key, "").split()
         while kept and not fits():
@@ -456,20 +462,96 @@ def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, negatives: str, b
             sections[key] = " ".join(kept).rstrip(",;:.")
         if fits():
             break
-    return _render(head, {k: v for k, v in sections.items() if v}, negatives)
+    return _render(head, {k: v for k, v in sections.items() if v}, tail)
 
 
-def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target, policy: Any, *,
-                   trigger: str | None = None, scene: str = "", motion: str = "") -> str:
-    """The prompt for one shot on one target model (photo, image-to-video, or lip-synced talk).
+def _shake(s: ShotSheet, policy: Any) -> str:
+    """How the phone moves in a video (policy `direction.realism.shake`): the shot's `framing.handheld`, else what
+    its `framing.device` implies (`realism.device_shake`: a propped phone is locked off, a selfie sways a little).
+    A gimbal-smooth "phone" is one of the strongest AI tells, so a held phone always says it is held."""
+    realism = _policy(policy, "direction", "realism", default={}) or {}
+    level = s.framing.handheld or (realism.get("device_shake") or {}).get(s.framing.device or "", "") or ""
+    return (realism.get("shake") or {}).get(level, "") or ""
+
+
+def _style(s: ShotSheet, target: Target, policy: Any) -> str:
+    """The target's phone-native realism words (`direction.realism.<target>`), the light fallback when the shot
+    says nothing about its light (`realism.light_fallback`: motivated light, never unmotivated studio light), then
+    the target's style words."""
+    realism = _policy(policy, "direction", "realism", default={}) or {}
+    style_words = _policy(policy, "direction", "style", default={}) or {}
+    st = s.set
+    unlit = not any(x.strip() for x in (st.light_direction, st.light_quality, st.color_temp, st.practical_lights))
+    return _join([realism.get(target, "") or "", (realism.get("light_fallback", "") or "") if unlit else "",
+                  style_words.get(target, "") or ""])
+
+
+def _mentions(text: str, words) -> bool:
+    """Whether any of `words` starts a word in the text ('mirror' matches 'mirrors' and 'mirrored')."""
+    low = text.lower()
+    return any(re.search(rf"\b{re.escape(str(w).lower())}", low) for w in (words or []) if str(w).strip())
+
+
+def negative_items(shot: "ShotSheet | dict | None", target: Target, policy: Any, *, positive: str = "") -> list[str]:
+    """What the shot must not show, for one target (policy `direction.negatives`): `always`, then `solo` when nobody
+    is asked for in the background, then `by_target.<target>`, each once. An item yields to the shot itself: one
+    whose `unless_mentioned` words appear in the positive prompt (a mirror shot asks for the mirror) is left out."""
+    s = _coerce(shot)
+    neg = _policy(policy, "direction", "negatives", default={}) or {}
+    items = list(neg.get("always") or [])
+    if s.set.background_people <= 0:
+        items += list(neg.get("solo") or [])
+    items += list((neg.get("by_target") or {}).get(target) or [])
+    unless = neg.get("unless_mentioned") or {}
+    out, seen = [], set()
+    for item in (str(x).strip() for x in items):
+        if not item or item.lower() in seen or (positive and _mentions(positive, unless.get(item))):
+            continue
+        seen.add(item.lower())
+        out.append(item)
+    return out
+
+
+def has_negative_channel(target: Target, policy: Any) -> bool:
+    """Whether the target's model reads a negative prompt (policy `direction.negatives.channel`): the Wan graphs do
+    (i2v, talk: a negative text encode); Z-Image Turbo at guidance 0 does not (photo)."""
+    return bool((_policy(policy, "direction", "negatives", "channel", default={}) or {}).get(target))
+
+
+def _negative_text(items: list[str], target: Target, policy: Any) -> str:
+    """The negative prompt for a target with a channel: its `negatives.base` (Wan's standard list, minus what fights
+    the phone-native look), then the shot's items."""
+    base = (_policy(policy, "direction", "negatives", "base", default={}) or {}).get(target, "") or ""
+    return _join([base, *items])
+
+
+def _stand_ins(items: list[str], policy: Any) -> str:
+    """For a target without a negative channel: the positive phrasing of each item (`direction.positive_instead_of`),
+    once each, as one sentence; an item without one is dropped (a negation would summon it)."""
+    instead = _policy(policy, "direction", "positive_instead_of", default={}) or {}
+    phrases: list[str] = []
+    for item in items:
+        phrase = str(instead.get(item) or "").strip()
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    return _capitalised(_join(phrases))
+
+
+def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target, policy: Any, *,
+                    trigger: str | None = None, scene: str = "", motion: str = "") -> dict[str, str]:
+    """{prompt, negative} for one shot on one target model (photo, image-to-video, or lip-synced talk).
 
     `scene` and `motion` are the post's plain-text scene and movement, used only where the shot leaves the
     set or the blocking empty; `trigger` is the creator's LoRA trigger word (photos).
 
+    The prompt never carries a negation. `negative` is for the job payload's `negative_prompt` (the Wan graphs'
+    negative text encode); it is "" for a target without a negative channel, whose prompt gets the positive
+    stand-ins instead (see the module docstring).
+
     A prompt over the target's policy `direction.prompt_budget` (estimated tokens, `estimate_tokens`) is trimmed
     (`_fit`): the text encoders read 512 tokens (Wan's umt5-xxl; Z-Image's Qwen3 at diffusers' default
-    max_sequence_length) and silently drop the rest, which is where the set, style and negatives are. A prompt
-    within budget is exactly as compiled."""
+    max_sequence_length) and silently drop the rest, which is where the set and style are. A prompt within budget
+    is exactly as compiled."""
     from .creator.lab import appearance_prompt, short_appearance
 
     s = _coerce(shot)
@@ -480,7 +562,7 @@ def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target,
     lens = f"{f.lens_mm:g} mm lens" if f.lens_mm else ""
     move = camera_move(s, policy).replace("_", " ") if video else ""
     camera = _join([medium, f.shot_size, f.angle, lens, f"{f.headroom} headroom" if f.headroom.strip() else "",
-                    _DEVICE.get(f.device or "", ""), _HANDHELD.get(f.handheld or "", "") if video else "",
+                    _DEVICE.get(f.device or "", ""), _shake(s, policy) if video else "",
                     f"camera {move}" if move else ""])
 
     wardrobe = _wardrobe(s)
@@ -500,34 +582,36 @@ def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target,
     action = _join([_join([beats, perf]), _eyes(s, target, policy), _idle(s, target, policy)], "; ")
 
     set_ = _set(s, video, scene)
+    style = _style(s, target, policy)
 
-    realism = _policy(policy, "direction", "realism", default={}) or {}
-    style_words = _policy(policy, "direction", "style", default={}) or {}
-    style = _join([realism.get("photo", "") if target == "photo" else "",
-                   realism.get("video", "") if video and f.handheld in ("light", "held") else "",
-                   style_words.get(target, "")])
-
+    # Sound is for the mix (the shot sheet keeps it): the video models cannot render it, so by default no target's
+    # prompt budget is spent on it (policy direction.sound_targets).
     sound = ""
-    if target == "talk":
+    if target in (_policy(policy, "direction", "sound_targets", default=[]) or []):
         snd = s.sound
         sound = _join([_MIC.get(snd.mic or "", ""), f"room tone {snd.room_tone}" if snd.room_tone.strip() else "",
                        *snd.effects, f"music {snd.music}" if snd.music.strip() else ""])
 
-    neg = _policy(policy, "direction", "negatives", default={}) or {}
-    negatives = list(neg.get("always", []))
-    if s.set.background_people <= 0:
-        negatives += list(neg.get("solo", []))
-
     head = f"{trigger}, " if trigger else ""
     sections = {"camera": camera, "subject": appearance_prompt(bible), "wardrobe": wardrobe, "action": action,
                 "set": set_, "style": style, "sound": sound}
+    items = negative_items(s, target, policy, positive=_render(head, sections, ""))
+    channel = has_negative_channel(target, policy)
+    tail = "" if channel else _stand_ins(items, policy)
+    negative = _negative_text(items, target, policy) if channel else ""
     budget = (_policy(policy, "direction", "prompt_budget", default={}) or {}).get(target)
     if not budget:
-        return _render(head, sections, _negatives(negatives))
-    return _fit(s, sections, head=head, negatives=_negatives(negatives), budget=int(budget), video=video,
-                scene=scene, short_subject=short_appearance(bible) if video else "", policy=policy)
+        return {"prompt": _render(head, sections, tail), "negative": negative}
+    prompt = _fit(s, sections, head=head, tail=tail, budget=int(budget), video=video, scene=scene,
+                  short_subject=short_appearance(bible) if video else "", policy=policy)
+    return {"prompt": prompt, "negative": negative}
 
 
-def _negatives(items: list[str]) -> str:
-    text = _join(items)
+def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target, policy: Any, *,
+                   trigger: str | None = None, scene: str = "", motion: str = "") -> str:
+    """The positive prompt alone (compile_prompts' `prompt`), for callers with no negative channel to fill."""
+    return compile_prompts(shot, bible, target, policy, trigger=trigger, scene=scene, motion=motion)["prompt"]
+
+
+def _capitalised(text: str) -> str:
     return f"{text[0].upper()}{text[1:]}." if text else ""

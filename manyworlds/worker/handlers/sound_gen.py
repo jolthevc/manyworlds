@@ -23,7 +23,11 @@
                downloaded automatically on first run" for the Gradio app).
 
 Neither model is in a worker image yet, and neither kind is in policy `job_kinds`, so nothing can claim these jobs.
-Payload: prompt (sfx) or caption (music), seconds, seed, n. Outputs are 48 kHz-or-native WAV files ("audio").
+Payload: prompt (sfx) or caption (music), seconds, seed, n; for music also `format` (a silent format: its caption
+then defaults to `sound.music.bed_captions`), `formats` and `tag`. Outputs are 48 kHz-or-native WAV files ("audio");
+each music output's meta carries its `library_entry` (manyworlds.sound catalogue schema, licence own-generated), so a
+bed that passes a listen joins `sound.library.entries` with its provenance. Room tone needs no generator: it is
+synthesised by ffmpeg on the control plane (manyworlds.sound.room_tone).
 """
 
 from __future__ import annotations
@@ -149,20 +153,42 @@ def _ace_engine(c: dict) -> Callable[..., list[Path]]:
     return generate
 
 
+def bed_caption(payload: dict, c: dict) -> str:
+    """The payload's caption, else the policy's quiet-bed caption for its format (`sound.music.bed_captions`)."""
+    caption = (payload.get("caption") or payload.get("prompt") or "").strip()
+    if not caption and payload.get("format"):
+        caption = str((c.get("bed_captions") or {}).get(str(payload["format"])) or "").strip()
+    return caption
+
+
+def library_entry(c: dict, *, caption: str, seed: int, formats: list[str], tag: str | None = None) -> dict:
+    """The catalogue entry (manyworlds.sound library schema) a generated bed carries: our own generated output
+    (`sound.music.library_licence`), its source the model, code ref and seed, so it can be traced and regenerated.
+    The uri is filled in by whoever stores the output."""
+    return {"tag": (tag or caption)[:80], "kind": "music", "formats": list(formats),
+            "licence": str(c.get("library_licence") or "own-generated"),
+            "source": f"ACE-Step 1.5 ({c.get('repo')}@{c.get('code_ref')}) seed {seed}: {caption}",
+            "credit": ""}
+
+
 def music(payload: dict, ctx: JobContext, *, policy: Policy | None = None,
           engine: Callable[..., list[Path]] | None = None) -> HandlerResult:
     c = _gate(_policy(policy), "music")
-    caption = (payload.get("caption") or payload.get("prompt") or "").strip()
+    caption = bed_caption(payload, c)
     if not caption:
-        raise NonRetryable("payload has no caption")
+        raise NonRetryable("payload has no caption (and no format with a sound.music.bed_captions entry)")
     seconds = _seconds(payload, c)
     n = max(1, min(int(payload.get("n", 1)), int(c.get("max_batch", 2))))
     seed = int(payload.get("seed", 0)) % 2147483647
+    formats = [str(f) for f in (payload.get("formats") or ([payload["format"]] if payload.get("format") else []))]
     paths = (engine or _ace_engine(c))(caption, seconds, [seed + i for i in range(n)], Path(ctx.workdir))
     if not paths:
         raise RuntimeError("ACE-Step returned no audio")
     outs = [OutputFile(Path(p), "audio", {"seconds": seconds, "index": i, "licence": c.get("licence_name"),
-                                          "sound": "music"}) for i, p in enumerate(paths)]
+                                          "sound": "music",
+                                          "library_entry": library_entry(c, caption=caption, seed=seed + i,
+                                                                         formats=formats, tag=payload.get("tag"))})
+            for i, p in enumerate(paths)]
     recipe = {"model": c.get("repo"), "config_path": c.get("config_path"), "code_ref": c.get("code_ref"),
               "caption": caption, "seconds": seconds, "seed": seed, "licence": c.get("licence_name")}
     return HandlerResult(outs, recipe=recipe, meta={"output_seconds": seconds * len(outs)})

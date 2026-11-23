@@ -3,11 +3,14 @@ directed prompts come in a fixed order, and whatever the model writes into a sho
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from manyworlds import direction
 from manyworlds.creator import lab
 from manyworlds.direction import Beat, FramingSpec, Line, PerformanceSpec, SetSpec, ShotSheet, SoundSpec, WardrobeSpec
+from manyworlds.worker import comfy
 
 BIBLE = {"appearance": {"apparent_age": 29, "gender_presentation": "woman", "ethnicity_and_skin": "olive skin",
                         "face": "oval face", "eyes": "brown eyes", "hair": "black bob with a clip",
@@ -97,32 +100,42 @@ def test_talk_prompt_orders_camera_subject_action_set(policy):
                      sound=SoundSpec(mic="phone", room_tone="fridge hum", effects=["kettle click"]))
     p = lab.talk_prompt(BIBLE, "in her kitchen", shot=shot, policy=policy)
     assert p == direction.compile_prompt(shot, BIBLE, "talk", policy, scene="in her kitchen")
-    order = [p.index(x) for x in ("Camera:", "Subject:", "Action:", "Set:", "Style:", "Sound:", "No text")]
+    order = [p.index(x) for x in ("Camera:", "Subject:", "Action:", "Set:", "Style:")]
     assert order == sorted(order)
     assert LOOK in p and "camera push in" in p and "phone propped up" in p
     assert "at 0 s: leans on the counter, looking into the lens; then at 4 s: glances at the kettle" in p
-    assert "slight handheld micro-jitter" in p                     # handheld shot: the video realism cue
-    assert "phone microphone" in p and "kettle click" in p
+    assert policy.get("direction", "realism", "shake", "light") in p      # handheld shot: the phone's own shake
+    assert policy.get("direction", "realism", "talk") in p
+    # sound is for the mix: the video model cannot render it, so no prompt budget is spent on it
+    assert "Sound:" not in p and "phone microphone" not in p and "kettle click" not in p and "fridge" not in p
     assert "in her kitchen" not in p                               # the shot names its own location
-    # sound cues belong to talking clips only
     assert "Sound:" not in direction.compile_prompt(shot, BIBLE, "i2v", policy)
+    # a target listed in direction.sound_targets still gets it
+    loud = {"direction": {**policy.get("direction"), "sound_targets": ["talk"]}}
+    q = direction.compile_prompt(shot, BIBLE, "talk", loud)
+    assert q.index("Style:") < q.index("Sound:") and "phone microphone" in q and "kettle click" in q
 
 
-def test_photo_prompt_has_realism_and_negatives(policy):
+def test_photo_prompt_has_realism_and_positive_stand_ins(policy):
     shot = bus_stop(camera_move="push_in", handheld="held", lens_mm=26)
     p = lab.photo_prompt(BIBLE, "at a bus stop", trigger="mw_x", shot=shot, policy=policy)
     assert p.startswith("mw_x, Camera: candid smartphone photo")
     assert policy.get("direction", "realism", "photo") in p
     assert "visible pores" in p
     assert "26 mm lens" in p and LOOK in p and "wearing yellow raincoat" in p
-    assert "no text, no logos, no mirrors behind the subject, no extra people." in p.lower()
     assert "push in" not in p and "handheld" not in p              # a photo has no camera move or shake
     assert "checks the timetable" in p and "waves at the bus" not in p   # only the first beat
-    # people asked for in the background lift the solo negative
+    # Z-Image at guidance 0 has no negative channel: no negation at all, the stand-ins instead
+    assert "no " not in p.lower() and "logos" not in p.lower()
+    instead = policy.get("direction", "positive_instead_of")
+    assert p.endswith(f"{instead['logos'][0].upper()}{instead['logos'][1:]}, {instead['extra people']}, "
+                      f"{instead['waxy skin']}, {instead['studio lighting']}.")
+    assert direction.compile_prompts(shot, BIBLE, "photo", policy)["negative"] == ""
+    # people asked for in the background lift the solo item
     crowd = bus_stop()
     crowd.set.background_people = 2
     q = direction.compile_prompt(crowd, BIBLE, "photo", policy)
-    assert "2 people in the background" in q and "no extra people" not in q.lower()
+    assert "2 people in the background" in q and instead["extra people"] not in q
 
 
 def test_a_shot_needs_the_policy():
@@ -315,21 +328,26 @@ def test_the_fixture_is_over_budget_untrimmed(policy):
         assert direction.estimate_tokens(full) > policy.get("direction", "prompt_budget", target), target
 
 
-def test_every_target_fits_its_budget_and_keeps_camera_action_and_negatives(policy):
+def test_every_target_fits_its_budget_and_keeps_camera_action_and_stand_ins(policy):
     budget = policy.get("direction", "prompt_budget")
+    instead = policy.get("direction", "positive_instead_of")
     for target in BUDGETED:
-        p = direction.compile_prompt(long_kitchen(), LONG_BIBLE, target, policy, trigger=_trigger(target))
+        out = direction.compile_prompts(long_kitchen(), LONG_BIBLE, target, policy, trigger=_trigger(target))
+        p = out["prompt"]
         full = direction.compile_prompt(long_kitchen(), LONG_BIBLE, target, unbudgeted(policy),
                                         trigger=_trigger(target))
         assert direction.estimate_tokens(p) <= budget[target], target
         camera = full[:full.index(" Subject:")]
         action = full[full.index("Action:"):full.index(" Set:")]
-        negatives = full[full.index("No text"):]
-        assert negatives == "No text, no logos, no mirrors behind the subject, no extra people."
-        assert p.startswith(camera) and action in p and p.endswith(negatives), target
+        assert p.startswith(camera) and action in p, target
+        if target == "photo":                                      # no negative channel: the stand-ins, kept whole
+            tail = full[full.index(f"{instead['logos'][0].upper()}{instead['logos'][1:]}"):]
+            assert p.endswith(tail) and out["negative"] == ""
+        else:                                                      # the negative channel, outside the budget
+            assert instead["logos"] not in p and "logos" in out["negative"]
         # what is left keeps the fixed order, and every cut is clean
-        labels = [x for x in ("Camera:", "Subject:", "Wardrobe and look:", "Action:", "Set:", "Style:", "Sound:",
-                              "No text") if x in p]
+        labels = [x for x in ("Camera:", "Subject:", "Wardrobe and look:", "Action:", "Set:", "Style:", "Sound:")
+                  if x in p]
         assert [p.index(x) for x in labels] == sorted(p.index(x) for x in labels)
         assert "Subject:" in p and "  " not in p and ".." not in p and ", ." not in p
         # long free text was cut to its first clause first
@@ -379,3 +397,88 @@ def test_first_clause():
     assert direction._first_clause(many, 7) == "item number 0, item number 1"                 # whole items
     assert direction._first_clause("one two three four five six", 4) == "one two three four"  # one long item
     assert direction._first_clause("", 20) == ""
+
+
+# --- Phone-native prompts (2026-11-23): negatives out of the positive prompt ---
+
+NEGATION = re.compile(r"\b(no|not|never|without)\b", re.IGNORECASE)
+
+
+def test_no_directed_prompt_carries_a_negation(policy):
+    for shot in (bus_stop(handheld="light"), kitchen_talk(energy="low"), ShotSheet(),
+                 bus_stop(device="propped")):
+        for target in BUDGETED:
+            p = direction.compile_prompt(shot, LONG_BIBLE, target, policy, trigger=_trigger(target))
+            assert not NEGATION.search(p), (target, NEGATION.search(p).group(0), p)
+
+
+def test_video_negatives_go_to_the_negative_channel_after_the_base(policy):
+    neg = policy.get("direction", "negatives")
+    for target in ("i2v", "talk"):
+        out = direction.compile_prompts(kitchen_talk(), BIBLE, target, policy)
+        assert out["negative"].startswith(neg["base"][target]), target
+        for item in (*neg["always"], *neg["solo"], *neg["by_target"][target]):
+            assert item in out["negative"], (target, item)
+            assert not re.search(rf"\b{re.escape(item)}\b", out["prompt"]), (target, item)
+        assert out["prompt"] == direction.compile_prompt(kitchen_talk(), BIBLE, target, policy)
+        assert direction.has_negative_channel(target, policy)
+    assert not direction.has_negative_channel("photo", policy)
+    # the shipped base leaves out Wan's "bright tones, overexposed": they fight the phone-native look
+    assert "overexposed" not in neg["base"]["i2v"] and "overexposed" in comfy.NEGATIVE
+
+
+def test_a_negative_yields_to_what_the_shot_asks_for(policy):
+    mirror = ShotSheet(set=SetSpec(location="her bedroom, in front of the full-length mirror"),
+                       framing=FramingSpec(device="selfie"))
+    neg = direction.compile_prompts(mirror, BIBLE, "talk", policy)["negative"]
+    assert "mirror reflections" not in neg and "logos" in neg and "extra people" in neg
+    crowd = kitchen_talk()
+    crowd.set.background_people = 3
+    assert "extra people" not in direction.compile_prompts(crowd, BIBLE, "i2v", policy)["negative"]
+    # each item once, and an item named in no list never appears
+    items = direction.negative_items(kitchen_talk(), "talk", policy)
+    assert len(items) == len({i.lower() for i in items}) and "gimbal-smooth camera" not in items
+
+
+def test_without_a_stand_in_a_negative_is_dropped_for_the_photo(policy):
+    bare = {"direction": {**policy.get("direction"), "positive_instead_of": {}}}
+    p = direction.compile_prompt(kitchen_talk(), BIBLE, "photo", bare)
+    assert p[p.rindex("Style:"):] == f"Style: {direction._style(kitchen_talk(), 'photo', bare)}."   # nothing after it
+    assert "logos" not in p and "mirror" not in p
+    assert direction.compile_prompts(kitchen_talk(), BIBLE, "photo", bare)["negative"] == ""
+
+
+def test_the_phones_shake_follows_handheld_then_device(policy):
+    shake = policy.get("direction", "realism", "shake")
+    clip = lambda **f: direction.compile_prompt(ShotSheet(framing=FramingSpec(**f)), BIBLE, "i2v", policy)  # noqa: E731
+    assert shake["none"] in clip(device="propped")                 # locked off: no gimbal glide
+    assert shake["light"] in clip(device="selfie")
+    assert shake["held"] in clip(device="held")
+    assert shake["light"] in clip(device="propped", handheld="light")   # the shot's own handheld wins
+    assert not any(v in clip() for v in shake.values())             # nothing said, nothing added
+    assert not any(v in direction.compile_prompt(ShotSheet(framing=FramingSpec(handheld="held")), BIBLE, "photo",
+                                                 policy) for v in shake.values())
+
+
+def test_realism_is_per_target_and_light_is_motivated(policy):
+    realism = policy.get("direction", "realism")
+    for target in BUDGETED:
+        p = direction.compile_prompt(ShotSheet(), BIBLE, target, policy)
+        assert realism[target] in p and realism["light_fallback"] in p, target
+        assert "cinematic" not in p.lower() and "studio" not in p.lower()
+    lit = ShotSheet(set=SetSpec(light_direction="the window on her left"))
+    assert realism["light_fallback"] not in direction.compile_prompt(lit, BIBLE, "photo", policy)
+
+
+def test_lab_prompts_give_the_payloads_prompt_and_negative(policy):
+    undirected = lab.prompts("i2v", BIBLE, "at a bus stop", motion="she waves")
+    assert undirected == {"prompt": lab.clip_prompt(BIBLE, "at a bus stop", "she waves"), "negative": ""}
+    assert lab.prompts("talk", BIBLE, "at a bus stop")["prompt"] == lab.talk_prompt(BIBLE, "at a bus stop")
+    assert lab.prompts("photo", BIBLE, "x", trigger="mw_x")["prompt"] == lab.photo_prompt(BIBLE, "x", trigger="mw_x")
+    shot = kitchen_talk()
+    assert lab.prompts("talk", BIBLE, "in her kitchen", shot=shot, policy=policy) == direction.compile_prompts(
+        shot, BIBLE, "talk", policy, scene="in her kitchen")
+    with pytest.raises(ValueError):
+        lab.prompts("dance", BIBLE, "x")
+    with pytest.raises(ValueError):
+        lab.prompts("talk", BIBLE, "x", shot=shot)                  # a shot needs the policy

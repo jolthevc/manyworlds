@@ -66,21 +66,57 @@ def test_the_hook_text_is_burned_in_last_so_it_gets_no_grain(policy, tmp_path):
 
 def test_a_smaller_video_is_upscaled_to_the_output_size_first(policy):
     size = policy.get("finishing", "output")
-    assert (size["width"], size["height"]) == (720, 1280) and size["flags"] == "lanczos"
-    # 480x832 (cut-joined talk segments): covers 720x1280 keeping its aspect, then the centre is cropped
-    assert finishing.scale_filter(480, 832, policy) == "scale=740:1280:flags=lanczos,crop=720:1280"
-    assert finishing.scale_filter(360, 640, policy) == "scale=720:1280:flags=lanczos"          # same aspect: no crop
-    assert finishing.scale_filter(704, 1280, policy) == "scale=720:1310:flags=lanczos,crop=720:1280"
-    assert finishing.scale_filter(720, 1280, policy) is None                                   # already that size
-    assert finishing.scale_filter(1080, 1920, policy) is None                                  # never scaled down
+    assert (size["width"], size["height"]) == (1080, 1920) and size["flags"] == "lanczos"    # native 9:16 delivery
+    # 480x832 (talk and story clips): covers 1080x1920 keeping its aspect, then the centre is cropped
+    assert finishing.scale_filter(480, 832, policy) == "scale=1108:1920:flags=lanczos,crop=1080:1920"
+    assert finishing.scale_filter(720, 1280, policy) == "scale=1080:1920:flags=lanczos"        # same aspect: no crop
+    assert finishing.scale_filter(704, 1280, policy) == "scale=1080:1964:flags=lanczos,crop=1080:1920"
+    assert finishing.scale_filter(1080, 1920, policy) is None                                  # already that size
+    assert finishing.scale_filter(1440, 2560, policy) is None                                  # never scaled down
     assert finishing.scale_filter(None, None, policy) is None
-    assert finishing.finished_size(480, 832, policy) == (720, 1280)
+    assert finishing.finished_size(480, 832, policy) == (1080, 1920)
     assert finishing.finished_size(1080, 1920, policy) == (1080, 1920)
     vf = finishing.filters("warm_night", policy=policy, size=(480, 832))
-    assert vf.startswith("scale=740:1280:flags=lanczos,crop=720:1280,eq=")                   # before the grade
+    assert vf.startswith("scale=1108:1920:flags=lanczos,crop=1080:1920,eq=")                 # before the grade
     assert finishing.filters("neutral", policy=policy, size=(1080, 1920)) == finishing.filters("neutral", policy=policy)
     off = _with(policy, output=None)
     assert finishing.scale_filter(480, 832, off) is None and finishing.finished_size(480, 832, off) == (480, 832)
+    lanczos_hq = _with(policy, output={**size, "flags": "lanczos+accurate_rnd"})                # the chain is policy
+    assert finishing.scale_filter(720, 1280, lanczos_hq) == "scale=1080:1920:flags=lanczos+accurate_rnd"
+
+
+MCI = "minterpolate=fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:scd=fdiff:scd_threshold=10"
+
+
+def test_published_video_has_one_frame_rate_reached_by_motion_interpolation(policy):
+    assert finishing.target_fps(policy) == 30
+    # story clips (16 fps) and talk (25) are interpolated first, at their own small size, then upscaled and graded
+    parts = finishing.filters("neutral", policy=policy, size=(480, 832), fps=16.0, seconds=5).split(",")
+    assert parts[0] == MCI.split(",")[0] and parts[1].startswith("scale=1108:1920")
+    assert finishing.filters("neutral", policy=policy, fps=25.0, seconds=8).startswith(MCI + ",eq=")
+    # already 30 (narrated edits, hybrid joins): nothing to do; faster or unknown: plain fps= (frames dropped)
+    assert finishing.filters("neutral", policy=policy, fps=30.0) == finishing.filters("neutral", policy=policy)
+    assert finishing.filters("neutral", policy=policy, fps=60.0).startswith("fps=30,")
+    assert finishing.filters("neutral", policy=policy, fps=0.0).startswith("fps=30,")
+    # a very short clip blends (too few frames for motion estimation); the method and the switch are policy
+    assert finishing.rate_filter(16, policy, seconds=0.5) == "framerate=fps=30"
+    interp = policy.get("finishing", "interpolate")
+    assert finishing.rate_filter(16, _with(policy, interpolate={**interp, "method": "blend"})) == "framerate=fps=30"
+    assert finishing.rate_filter(16, _with(policy, interpolate={**interp, "enabled": False})) == "fps=30"
+    assert finishing.rate_filter(16, _with(policy, fps=None)) is None                         # keep the native rate
+    try:
+        finishing.rate_filter(16, _with(policy, interpolate={**interp, "method": "dain"}))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown interpolation method must be refused")
+
+
+def test_the_ai_upscaler_hook_is_off_until_benchmarked(policy):
+    assert finishing.upscaler(policy) is None
+    on = _with(policy, upscaler={"enabled": True, "kind": "upscale.seedvr2", "model": "x", "scale": 2})
+    assert finishing.upscaler(on)["kind"] == "upscale.seedvr2"
+    assert finishing.upscaler(_with(policy, upscaler={"enabled": True, "kind": None})) is None
 
 
 def test_filter_paths_escape_a_drive_colon_and_refuse_quotes():

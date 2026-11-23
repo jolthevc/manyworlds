@@ -115,15 +115,29 @@ def test_delivery_is_not_in_transcript_check(fake, ctx, tmp_path):
     assert [line["wer"] for line in lines] == [0.0, 0.0]
     assert [line["delivery"] for line in lines] == ["whispering, amused", "sighs"]
     assert wer("(whispering, amused) I knew it.", "I knew it") == 0.4   # what checking the raw text would score
-    # a delivery is followed on the reference clip alone (VoxCPM README: controllable cloning)
+
+
+def test_every_line_is_cloned_with_the_reference_and_its_transcript(fake, ctx, tmp_path):
+    """Voice consistency (2026-11-23): a line with a delivery used to be cloned from the clip alone, so its timbre
+    drifted from the lines without one. Now every line gets the clip and its transcript; the delivery stays the
+    instruction in the text."""
+    _speak(ctx, tmp_path, [{"text": "Hi.", "delivery": "dry"}, {"text": "Bye."}])
+    for call in fake.calls:
+        assert call["prompt_text"] == "Okay so this happened."
+        assert call["prompt_wav_path"] == call["reference_wav_path"]
+        assert call["prompt_wav_path"].endswith("reference.wav")
+    assert [c["text"] for c in fake.calls] == ["(dry)Hi.", "Bye."]
+
+
+def test_controllable_cloning_is_still_available(fake, ctx, tmp_path):
+    res = _speak(ctx, tmp_path, [{"text": "Hi.", "delivery": "dry"}, {"text": "Bye."}],
+                 params={"clone": "controllable"})
     assert "prompt_text" not in fake.calls[0] and fake.calls[0]["reference_wav_path"].endswith("reference.wav")
-
-
-def test_without_a_delivery_the_clone_gets_its_transcript_too(fake, ctx, tmp_path):
-    _speak(ctx, tmp_path, [{"text": "Hi."}])
-    call = fake.calls[0]
-    assert call["text"] == "Hi." and call["prompt_text"] == "Okay so this happened."
-    assert call["prompt_wav_path"] == call["reference_wav_path"]
+    assert fake.calls[1]["prompt_text"] == "Okay so this happened."     # without a delivery: the transcript too
+    assert res.recipe["clone"] == "controllable"
+    with pytest.raises(NonRetryable):
+        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}],
+                            "params": {"clone": "sometimes"}})
 
 
 def test_the_take_closest_to_the_line_is_kept(fake, ctx, tmp_path):
@@ -360,3 +374,39 @@ def test_fade_ramps_both_edges_without_changing_length():
     assert len(x) == 1000 and x[0] == 0.0 and x[-1] == 0.0
     assert np.all(np.diff(x[:10]) > 0) and np.all(np.diff(x[-10:]) < 0) and np.all(x[10:-10] == 1.0)
     assert len(tts.fade(np.ones(5, dtype=np.float32), sr, 50)) == 5     # a fade never overlaps itself
+
+
+# --- whole line vs clauses (2026-11-23): whole lines by default, both on request for the comparison --------------
+WHOLE = {**{k: v for k, v in NATURAL.items() if k != "split_clauses"}, "synthesis": "whole_line"}
+
+
+def test_whole_line_synthesis_speaks_each_line_in_one_piece(fake, ctx, tmp_path):
+    res = _speak(ctx, tmp_path, [{"text": "Okay, so I went. And then it rained."}, {"text": "Fine."}], params=WHOLE)
+    assert [c["text"] for c in fake.calls] == ["Okay, so I went. And then it rained.", "Fine."]
+    assert res.outputs[0].meta["synthesis"] == "whole_line" and len(res.outputs) == 1
+    # the older key still works when the new one is absent; the new one wins
+    assert tts.synthesis({"split_clauses": True}) == "clauses" and tts.synthesis({}) == "whole_line"
+    assert tts.synthesis({"synthesis": "clauses", "split_clauses": False}) == "clauses"
+    with pytest.raises(NonRetryable):
+        tts.speech_config({"synthesis": "words"})
+
+
+def test_compare_makes_both_syntheses_from_the_same_seeds(fake, ctx, tmp_path):
+    res = _speak(ctx, tmp_path, [{"text": "Okay, so I went."}], params=WHOLE, compare=True)
+    main, alt = res.outputs
+    assert (main.meta["synthesis"], alt.meta["synthesis"]) == ("whole_line", "clauses")
+    assert main.path.name == "speech.wav" and alt.path.name == "speech_clauses.wav"   # production reads the first
+    assert alt.meta["compare_of"] == 0 and alt.meta["failed_lines"] == []
+    assert [(c["output"], c["synthesis"]) for c in main.meta["compare"]] == [(0, "whole_line"), (1, "clauses")]
+    assert [c["text"] for c in fake.calls] == ["Okay, so I went.", "Okay,", "so I went."]
+    assert fake.calls[0]["seed"] == fake.calls[1]["seed"] == 7
+    assert res.recipe["compare"] is True
+    assert res.meta["output_seconds"] == pytest.approx(main.meta["seconds"] + alt.meta["seconds"], abs=0.01)
+    with pytest.raises(NonRetryable):
+        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}], "compare": "yes"})
+
+
+def test_a_garbled_comparison_never_fails_the_job(fake, ctx, tmp_path):
+    fake.transcripts = ["Okay so I went", "nothing", "alike"]
+    res = _speak(ctx, tmp_path, [{"text": "Okay, so I went."}], params={**WHOLE, "line_max_wer": 0.25}, compare=True)
+    assert res.outputs[0].meta["lines"][0]["wer"] == 0.0 and res.outputs[1].meta["failed_lines"] == [0]

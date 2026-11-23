@@ -15,7 +15,7 @@ def _print(obj) -> None:
     print(json.dumps(obj, indent=2, default=str))
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mw")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("migrate", help="apply schema migrations and register the policy")
@@ -136,7 +136,35 @@ def main(argv: list[str] | None = None) -> int:
     blearn = bsub.add_parser("learning", help="what the Brain learned for a creator and how its plans used it")
     blearn.add_argument("creator")
 
-    args = p.parse_args(argv)
+    te = sub.add_parser("test", help="owner-approved tests: the breadth test (policy/test_overlay.yaml)")
+    tsub = te.add_subparsers(dest="test_cmd", required=True)
+    tb = tsub.add_parser("breadth", help="make a breadth plan's items (resumes the same run); --dry-run creates nothing")
+    tb.add_argument("--plan", default="default", help="breadth.plans.<name> in the test overlay")
+    tb.add_argument("--items", help="comma-separated item ids (default: every item)")
+    tb.add_argument("--dry-run", action="store_true", help="print what it would make and an estimate; create nothing")
+    tb.add_argument("--run", help="the run id to use or resume (default: derived from the plan and items)")
+    tb.add_argument("--creator", help="creator handle (default: the plan's)")
+    tb.add_argument("--hours", type=float, help="deadline from the run's first post (default breadth.deadline_hours)")
+    tb.add_argument("--once", action="store_true", help="one pass, then exit (run again to continue)")
+    tr2 = tsub.add_parser("breadth-report", help="a breadth run: per item and capability, gates, lip sync, WER, file, $")
+    tr2.add_argument("run")
+    tr2.add_argument("--no-probe", action="store_true", help="skip downloading the final videos to read fps and size")
+
+    vo = sub.add_parser("voice", help="a creator's designed voice: design candidates, list them to listen, pick one")
+    vsub = vo.add_subparsers(dest="voice_cmd", required=True)
+    vd = vsub.add_parser("design", help="queue voice candidates from the bible (a test batch: runs while paused)")
+    vd.add_argument("creator")
+    vd.add_argument("--pools", help="comma-separated GPU pools to pin the job to, e.g. runpod_secure_l40s_vol")
+    vc = vsub.add_parser("candidates", help="the latest design job's candidates: scores and links to listen")
+    vc.add_argument("creator")
+    vp = vsub.add_parser("pick", help="choose the voice from the latest finished design (automatic, or --candidate N)")
+    vp.add_argument("creator")
+    vp.add_argument("--candidate", type=int, help="this candidate index instead of the automatic choice")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     pol = policy_mod.load()
 
@@ -147,7 +175,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "worker":
         from .worker import runner
-        kinds = [k.strip() for k in (args.kinds or os.environ["MW_WORKER_KINDS"]).split(",") if k.strip()]
+        kinds = ([k.strip() for k in args.kinds.split(",") if k.strip()] if args.kinds
+                 else runner.kinds_from_env(pol))
         worker = runner.start(kinds, pool=args.pool or os.environ.get("MW_POOL", "local"), policy=pol,
                               store=storage.from_url())
         n = worker.run(max_jobs=args.max_jobs, idle_exit_seconds=args.idle_exit)
@@ -235,8 +264,85 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WORKER_DATABASE_URL={credentials.rotate_login(conn, os.environ['DATABASE_URL'])}")
     elif args.cmd == "brain":
         return _brain_ops(args, conn, pol)
+    elif args.cmd == "test":
+        return _test(args, conn, pol)
+    elif args.cmd == "voice":
+        return _voice(args, conn, pol)
     elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce", "trends"):
         return _brain(args, conn, pol)
+    return 0
+
+
+def _test(args, conn, pol) -> int:
+    """`mw test breadth` / `mw test breadth-report` (manyworlds.breadth)."""
+    from . import breadth
+    store = None if getattr(args, "dry_run", False) else storage.from_url()
+    if args.test_cmd == "breadth-report":
+        _print(breadth.report(conn, pol, args.run, store=store, probe=not args.no_probe))
+        return 0
+    llm = None
+    tpol = breadth.test_policy(pol)
+    if not args.dry_run and breadth._cfg(tpol).get("review_in_driver", True):
+        from .llm import Claude
+        llm = Claude(conn, tpol)
+    try:
+        out = breadth.run(conn, pol, args.plan, items=[i.strip() for i in args.items.split(",") if i.strip()]
+                          if args.items else None, run=args.run, creator=args.creator, store=store, llm=llm,
+                          dry_run=args.dry_run, once=args.once, hours=args.hours)
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
+    _print({**out, **({"llm_usd": llm.spent} if llm is not None else {})})
+    return 0
+
+
+def voice_candidates(conn, pol, creator_id, store=None) -> dict:
+    """The latest voice design job of a creator and its candidates (creator.voice_lab.candidates: WER, pitch variance,
+    distance from the nearest other creator's voice, whether each qualifies for the automatic pick, best first), which
+    one is the current voice, and a presigned link to listen to each."""
+    from .creator import voice_lab
+    job = conn.execute("SELECT id, status, batch FROM jobs WHERE creator_id = %s AND kind = %s "
+                       "ORDER BY created_at DESC LIMIT 1", (creator_id, voice_lab._kind(pol, "design"))).fetchone()
+    if not job:
+        return {"job": None, "candidates": [], "note": "no design job yet: mw voice design <creator>"}
+    current = (conn.execute("SELECT anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()["anchors"]
+               or {}).get("voice") or {}
+    out = [{**c, "current": current.get("ref_uri") == c["uri"],
+            "url": store.public_url(c["uri"]) if store is not None else c["uri"]}
+           for c in voice_lab.candidates(conn, pol, job["id"])]
+    return {"job": str(job["id"]), "status": job["status"], "batch": job["batch"], "candidates": out,
+            **({} if job["status"] == "done" else {"note": f"the design job is {job['status']}: candidates once done"})}
+
+
+def _voice(args, conn, pol) -> int:
+    """`mw voice design|candidates|pick <creator>` (manyworlds.creator.voice_lab)."""
+    from .creator import voice_lab
+    cid = _creator_id(conn, args.creator)
+    if args.voice_cmd == "design":
+        handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
+        # a test batch, so it runs while operations are paused; urgent, so no machine waits to batch it
+        batch = f"test-voice-{handle}"
+        pools = [p.strip() for p in args.pools.split(",") if p.strip()] if args.pools else None
+        try:
+            job = voice_lab.design(conn, pol, cid, batch=batch, pools=pools)
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        prio = int(pol.get("autoscale", "batch", "urgent_priority", default=1))
+        conn.execute("UPDATE jobs SET priority = greatest(priority, %s) WHERE id = %s AND status = 'queued'",
+                     (prio, job))
+        row = conn.execute("SELECT status, batch, pools FROM jobs WHERE id = %s", (job,)).fetchone()
+        _print({"job": str(job), **row, "next": f"mw voice candidates {handle}, then mw voice pick {handle}"})
+        return 0
+    if args.voice_cmd == "candidates":
+        _print(voice_candidates(conn, pol, cid, storage.from_url()))
+        return 0
+    job = conn.execute("SELECT id FROM jobs WHERE creator_id = %s AND kind = %s AND status = 'done' "
+                       "ORDER BY created_at DESC LIMIT 1", (cid, voice_lab._kind(pol, "design"))).fetchone()
+    if not job:
+        raise SystemExit("no finished voice design job: mw voice design <creator>, then wait for it")
+    try:   # --candidate: the owner's choice after listening (never one too close to another creator's voice)
+        _print(voice_lab.pick(conn, pol, cid, job["id"], candidate=args.candidate))
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
     return 0
 
 

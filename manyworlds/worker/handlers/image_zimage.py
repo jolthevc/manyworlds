@@ -2,7 +2,8 @@
 
 Runs on RTX 4090/5090 workers. The pipeline loads once per process; the LoRA is swapped
 only when the creator changes, which is why the scheduler batches jobs by creator.
-Payload: prompt, n, width, height, seed, lora_uri, lora_scale, params{steps, guidance}.
+Payload: prompt, n, width, height, seed, lora_uri, lora_scale, negative_prompt (used only with guidance on),
+params{steps, guidance}.
 
 Not yet verified on a GPU: run `mw bench` on day 1 and check speed and identity.
 The 4-bit Nunchaku variant is a follow-up once the BF16 baseline is measured.
@@ -79,6 +80,16 @@ def _set_lora(pipe, ctx: JobContext, lora_uri: str | None, scale: float) -> None
         _state["lora_uri"] = lora_uri
 
 
+def negative_kwargs(payload: dict, guidance: float) -> dict:
+    """The negative prompt, only where the pipeline reads one: with guidance on (Z-Image Turbo ships at guidance 0,
+    where there is no negative branch and a negative prompt does nothing). A directed photo carries none at all
+    (manyworlds.direction: photo has no negative channel, so its negatives are phrased positively in the prompt)."""
+    negative = payload.get("negative_prompt")
+    if guidance > 0 and isinstance(negative, str) and negative.strip():
+        return {"negative_prompt": negative.strip()}
+    return {}
+
+
 def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     import torch
 
@@ -90,6 +101,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     width, height = int(payload.get("width", 896)), int(payload.get("height", 1152))
     steps = int(params.get("steps", 9))
     guidance = float(params.get("guidance", 0.0))
+    negative = negative_kwargs(payload, guidance)
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else random.randrange(1 << 31)
 
@@ -102,7 +114,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         t0 = time.monotonic()
         def render():
             return pipe(prompt=prompt, height=height, width=width, num_inference_steps=steps,
-                        guidance_scale=guidance, generator=torch.Generator("cuda").manual_seed(seed + i)).images[0]
+                        guidance_scale=guidance, generator=torch.Generator("cuda").manual_seed(seed + i),
+                        **negative).images[0]
         try:
             img = render()
         except torch.cuda.OutOfMemoryError:
@@ -117,6 +130,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         outs.append(OutputFile(path, "image", {"width": width, "height": height, "seed": seed + i}))
     recipe = {"model": MODEL_ID, "prompt": prompt, "seed": seed, "steps": steps, "guidance": guidance,
               "width": width, "height": height, "lora_uri": payload.get("lora_uri"),
+              "negative_prompt": negative.get("negative_prompt"),
               "lora_scale": payload.get("lora_scale", 1.0)}
     return HandlerResult(outs, recipe=recipe, meta={
         "images": len(outs), "sec_per_image": timings, "cpu_offload": _state["offload"],

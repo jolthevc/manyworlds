@@ -2,21 +2,26 @@
 image (docker/worker-talkcomfy.Dockerfile). Owner 2026-11-22: every creator speaks in a voice of their own.
 
 One model designs a voice from a description, clones it, and follows a delivery instruction on the clone (VoxCPM
-README, 2.0.3): a description or delivery goes in parentheses at the start of `text`; cloning takes
-`prompt_wav_path` + `prompt_text` (+ `reference_wav_path`); a delivery on a cloned voice takes `reference_wav_path`
-alone. 2.0.3's `generate()` has no `seed` argument (the README on main shows one), so takes are seeded through torch.
+README, 2.0.3): a description or delivery goes in parentheses at the start of `text`; ultimate cloning takes
+`prompt_wav_path` + `prompt_text` (+ `reference_wav_path`). Every line is cloned that way, the delivery staying the
+instruction (params.clone `ultimate`, policy voice.clone): lines with a delivery used to get the reference clip
+alone (controllable cloning, still available as `controllable`) and their timbre drifted from the lines without.
+2.0.3's `generate()` has no `seed` argument (the README on main shows one), so takes are seeded through torch.
 Output varies run to run, so every line is generated `takes` times and the take whose transcript is closest to the
 line wins. Voices are judged automatically, never by ear (owner 2026-11-21).
 
 voice.design payload {description, text, n, seed, params}: n candidate clips of `text` in the described voice, each
 with its word error rate, a speaker embedding and its pitch variance (creator/voice_lab.pick chooses one).
-voice.speak payload {ref_uri, ref_text, lines: [{text, delivery, pause_after_s}], takes, seed, params}: one 48 kHz
-wav of the lines in the cloned voice, plus each line's and each clause's timing.
-params {model, cfg_value, inference_timesteps, optimize, asr_model, language, embedding, pitch_hz, pause_s} and the
-natural-speech keys (`speech_config`; policy voice, plan 2026-11-22-video-quality-autonomous item 7).
+voice.speak payload {ref_uri, ref_text, lines: [{text, delivery, pause_after_s}], takes, seed, params, compare}: one
+48 kHz wav of the lines in the cloned voice, plus each line's and each clause's timing; with `compare`, the other
+synthesis (whole line / clauses) as a second wav for the breadth test's comparison.
+params {model, cfg_value, inference_timesteps, optimize, asr_model, language, embedding, pitch_hz, pause_s, clone,
+synthesis} and the natural-speech keys (`speech_config`; policy voice, plan 2026-11-22-video-quality-autonomous
+item 7).
 
-Natural speech: the model's own pauses are not relied on. With `split_clauses`, each line is spoken clause by clause
-(voices.segments) in the line's delivery; each clause's takes are scored against the clause's words and the best
+Natural speech: the model's own pauses are not relied on. With synthesis `clauses`, each line is spoken clause by
+clause (voices.segments) in the line's delivery; with `whole_line` (the default: one intonation across the
+sentence), each line is one piece. Each piece's takes are scored against its words and the best
 kept (a clause whose every take is worse than max_wer x clause_retry_wer_factor gets one more round of seeds); each
 take is trimmed of its own leading and trailing silence and faded at its edges, then joined with silences of our
 choosing: a clause gap or a sentence gap drawn from its policy range with a seeded RNG (reproducible, not
@@ -25,7 +30,7 @@ fails the job (retried with new seeds). Experimental, off: a quiet synthetic bre
 a rare filler ("um") before a clause, recorded in meta.fillers so captions leave it out.
 Output meta: lines [{index, start_s, end_s, text, delivery, clauses, wer, transcript}], clauses [{index, line, text
 (scripted words, no filler), start_s, end_s, kind, filler, breath_before, take, seed, retried, wer, transcript}],
-fillers [{clause, line, word}], seconds, sample_rate, wer.
+fillers [{clause, line, word}], seconds, sample_rate, wer, synthesis (and compare, compare_of, failed_lines).
 
 Transcripts: the speech gate's model (policy review.video.intelligibility.model, Whisper large-v3) run here on the
 GPU, scored with the gate's own `speech.wer`. The hosted transcription API is not used from a rented machine: its key
@@ -221,8 +226,12 @@ def validate_speak(payload: dict) -> dict:
         out.append({"text": words, "delivery": (delivery or "").strip() or inline,
                     "pause_after_s": None if pause is None else float(pause)})
     takes = _positive_int(payload.get("takes", 1), "takes")
+    compare = payload.get("compare", False)
+    if not isinstance(compare, bool):
+        raise NonRetryable(f"compare must be true or false, got {compare!r}")
+    clone_mode(params)                      # a bad mode fails now, not after the first take
     return {"ref_uri": ref_uri, "ref_text": voices.strip_delivery(ref_text), "lines": out, "takes": takes,
-            "seed": _seed(payload), "params": params, "speech": speech_config(params)}
+            "seed": _seed(payload), "params": params, "speech": speech_config(params), "compare": compare}
 
 
 # --- natural speech (plan 2026-11-22-video-quality-autonomous item 7; policy voice) ------------------------------
@@ -248,13 +257,28 @@ def _span(value, name: str, fallback: float) -> tuple[float, float]:
     return (lo, hi)
 
 
+SYNTHESIS = ("whole_line", "clauses")
+
+
+def synthesis(params: dict) -> str:
+    """How a line is generated (params.synthesis, policy voice.synthesis): `whole_line`, one generation per line
+    (the model's own intonation across the sentence), or `clauses`, one per clause joined with our gaps. A payload
+    from before the key keeps what its `split_clauses` said."""
+    value = params.get("synthesis")
+    if value is None:
+        return "clauses" if params.get("split_clauses") else "whole_line"
+    if value not in SYNTHESIS:
+        raise NonRetryable(f"synthesis must be one of {list(SYNTHESIS)}, got {value!r}")
+    return str(value)
+
+
 def speech_config(params: dict) -> dict:
     """How lines become natural speech, from the worker params (creator/voice_lab.worker_params, policy `voice`).
     Every part is off when its key is absent, so a payload from before natural speech is spoken as it was: whole
     lines, joined with `pause_s`, untrimmed."""
     pause = _number(params.get("pause_s", 0.0), "pause_s", lo=0)
     cfg: dict[str, Any] = {
-        "split": bool(params.get("split_clauses", False)),
+        "split": synthesis(params) == "clauses",
         "min_words": _positive_int(params.get("clause_min_words", 1), "clause_min_words"),
         "clause_gap": _span(params.get("clause_gap_s"), "clause_gap_s", pause),
         "sentence_gap": _span(params.get("sentence_gap_s"), "sentence_gap_s", pause),
@@ -420,10 +444,26 @@ def assemble(pieces: list, gaps_s: list[float], sr: int, *, breaths: list | None
     return (np.concatenate(out) if out else np.zeros(0, dtype=np.float32)), spans
 
 
-def clone_args(ref: Path, ref_text: str, delivery: str) -> dict:
-    """How to clone (VoxCPM README): with a delivery instruction, the reference clip alone, so the instruction is
-    followed; without one, the clip and its transcript as well, for the closest likeness."""
-    if delivery:
+CLONE_MODES = ("ultimate", "controllable")
+
+
+def clone_mode(params: dict) -> str:
+    """How lines are cloned (params.clone, policy voice.clone): `ultimate` (the default) always gives the model the
+    reference clip and its transcript, so every line continues from the same voice; `controllable` gives a line
+    with a delivery the clip alone, as before 2026-11-23 (the instruction is followed more freely, but the timbre
+    drifted between lines with and without one)."""
+    mode = str(params.get("clone") or "ultimate")
+    if mode not in CLONE_MODES:
+        raise NonRetryable(f"clone must be one of {list(CLONE_MODES)}, got {mode!r}")
+    return mode
+
+
+def clone_args(ref: Path, ref_text: str, delivery: str, mode: str = "ultimate") -> dict:
+    """The cloning arguments (VoxCPM README). Ultimate cloning: `prompt_wav_path` + `prompt_text` (the reference and
+    exactly what it says) plus `reference_wav_path`, on every line, the delivery staying the instruction in the
+    text's leading parenthetical (voices.with_instruction). Controllable cloning (mode `controllable`): a line with
+    a delivery gets the reference clip alone."""
+    if mode == "controllable" and delivery:
         return {"reference_wav_path": str(ref)}
     return {"prompt_wav_path": str(ref), "prompt_text": ref_text, "reference_wav_path": str(ref)}
 
@@ -452,19 +492,19 @@ def design(payload: dict, ctx: JobContext) -> HandlerResult:
     return HandlerResult(outputs, recipe=recipe, meta={"output_seconds": round(total, 2)})
 
 
-def speak(payload: dict, ctx: JobContext) -> HandlerResult:
+def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int, *, strict: bool) -> dict:
+    """Every line spoken as `cfg` says (whole lines or clauses), the best take of each piece kept, joined with the
+    planned gaps: {audio, units, lines (timings), clauses, fillers, wer, failed}. `strict`: a line over the
+    line ceiling fails the job (retryable); otherwise (the comparison variant) it is recorded in `failed`."""
     import numpy as np
 
-    p = validate_speak(payload)
-    params, cfg, takes = p["params"], p["speech"], p["takes"]
-    tts, asr = _tts(params), _asr(params)
-    sr = int(tts.sample_rate)
-    ref = ctx.fetch(p["ref_uri"], "reference.wav")
+    params, takes = p["params"], p["takes"]
+    mode = clone_mode(params)
     units = plan(p["lines"], cfg, p["seed"])
 
     def take(unit: dict, k: int, seed: int):
         wav = tts.generate(seed=seed, text=voices.with_instruction(unit["delivery"], unit["spoken"]),
-                           **clone_args(ref, p["ref_text"], unit["delivery"]), **_generation(params))
+                           **clone_args(ref, p["ref_text"], unit["delivery"], mode), **_generation(params))
         heard = asr(wav, sr)
         # against the words asked for only: a delivery is never spoken, so it is never in `spoken`
         return (wer(unit["spoken"], heard), k, seed, np.asarray(wav, dtype=np.float32).reshape(-1), heard)
@@ -472,7 +512,6 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
     # Seeds: a whole line spoken as one piece keeps the seeds it had before clauses (seed + line * takes + k);
     # retries of a clause use the block after them; a job's later attempt (after the line ceiling failed it) moves
     # past both, so it does not regenerate the same takes.
-    attempt = max(1, int(getattr(ctx.job, "attempts", 1) or 1))
     base = p["seed"] + (attempt - 1) * 2 * len(units) * takes
     chosen = []
     for ui, unit in enumerate(units):
@@ -506,7 +545,7 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
                              "transcript": c["heard"][:500]})
         if unit["filler"]:
             fillers.append({"clause": ui, "line": unit["line"], "word": unit["filler"]})
-    timings = []
+    timings, failed = [], []
     for li, line in enumerate(p["lines"]):
         mine = [ui for ui, u in enumerate(units) if u["line"] == li]
         asked = " ".join(units[ui]["spoken"] for ui in mine)
@@ -515,19 +554,53 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
                         "end_s": clauses_meta[mine[-1]]["end_s"], "text": line["text"], "delivery": line["delivery"],
                         "clauses": mine, "wer": wer(asked, heard), "transcript": heard[:500]})
         if cfg["line_max_wer"] is not None and timings[-1]["wer"] > cfg["line_max_wer"]:
-            # retryable: the next attempt draws new seeds (see `base`)
-            raise RuntimeError(f"line {li} came out with WER {timings[-1]['wer']} > {cfg['line_max_wer']} "
-                               f"after per-clause selection: {line['text'][:80]!r} heard as {heard[:80]!r}")
-    path = write_wav(Path(ctx.workdir) / "speech.wav", audio, sr)
-    seconds = round(len(audio) / sr, 2)
+            if strict:   # retryable: the next attempt draws new seeds (see `base`)
+                raise RuntimeError(f"line {li} came out with WER {timings[-1]['wer']} > {cfg['line_max_wer']} "
+                                   f"after per-clause selection: {line['text'][:80]!r} heard as {heard[:80]!r}")
+            failed.append(li)
     asked = " ".join(u["spoken"] for u in units)
-    return HandlerResult([OutputFile(path, "audio", {
-        "seconds": seconds, "sample_rate": sr, "lines": timings, "clauses": clauses_meta, "fillers": fillers,
-        "wer": wer(asked, " ".join(c["heard"] for c in chosen))})],
+    return {"audio": audio, "units": units, "lines": timings, "clauses": clauses_meta, "fillers": fillers,
+            "wer": wer(asked, " ".join(c["heard"] for c in chosen)), "failed": failed}
+
+
+def _audio_meta(v: dict, sr: int, variant: str) -> dict:
+    return {"seconds": round(len(v["audio"]) / sr, 2), "sample_rate": sr, "synthesis": variant, "lines": v["lines"],
+            "clauses": v["clauses"], "fillers": v["fillers"], "wer": v["wer"]}
+
+
+def speak(payload: dict, ctx: JobContext) -> HandlerResult:
+    """The lines in the cloned voice. With payload `compare: true` (the breadth test's whole-line vs clause
+    comparison, policy voice.synthesis) the other synthesis is made too, from the same seeds, as a second audio
+    output (meta.compare_of = 0); the first output is always the one production uses (assets are read in order),
+    and its meta.compare summarises both. The comparison variant never fails the job: a line over the ceiling there
+    is listed in its meta.failed_lines."""
+    p = validate_speak(payload)
+    params, cfg, takes = p["params"], p["speech"], p["takes"]
+    tts, asr = _tts(params), _asr(params)
+    sr = int(tts.sample_rate)
+    ref = ctx.fetch(p["ref_uri"], "reference.wav")
+    attempt = max(1, int(getattr(ctx.job, "attempts", 1) or 1))
+    variant = "clauses" if cfg["split"] else "whole_line"
+    main = _voice_lines(p, cfg, tts, asr, ref, sr, attempt, strict=True)
+    work = Path(ctx.workdir)
+    meta = _audio_meta(main, sr, variant)
+    outputs = [OutputFile(write_wav(work / "speech.wav", main["audio"], sr), "audio", meta)]
+    if p["compare"]:
+        other = "whole_line" if cfg["split"] else "clauses"
+        alt = _voice_lines(p, {**cfg, "split": not cfg["split"]}, tts, asr, ref, sr, attempt, strict=False)
+        alt_meta = {**_audio_meta(alt, sr, other), "compare_of": 0, "failed_lines": alt["failed"]}
+        outputs.append(OutputFile(write_wav(work / f"speech_{other}.wav", alt["audio"], sr), "audio", alt_meta))
+        meta["compare"] = [{k: m[k] for k in ("synthesis", "seconds", "wer")} | {"output": i}
+                           for i, m in enumerate((meta, alt_meta))]
+    return HandlerResult(outputs,
         recipe={"model": params.get("model", DEFAULT_MODEL), "engine": "voxcpm", "ref_uri": p["ref_uri"],
-                "lines": p["lines"], "takes": takes, "seed": p["seed"], "params": params,
-                "plan": [{k: u[k] for k in ("line", "spoken", "delivery", "gap_after_s", "breath")} for u in units]},
-        meta={"output_seconds": seconds})
+                "lines": p["lines"], "takes": takes, "seed": p["seed"], "params": params, "synthesis": variant,
+                "clone": clone_mode(params), "compare": p["compare"],
+                "plan": [{k: u[k] for k in ("line", "spoken", "delivery", "gap_after_s", "breath")}
+                         for u in main["units"]]},
+        meta={"output_seconds": round(sum(o.meta["seconds"] for o in outputs), 2)})
+
+
 
 
 HANDLERS = {"voice.design": design, "voice.speak": speak}

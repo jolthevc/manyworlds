@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from manyworlds import voices
@@ -127,10 +128,56 @@ def test_the_speak_payload_carries_natural_speech_as_policy_sets_it(policy):
 
     voice = {"ref_uri": "s3://b/v.wav", "ref_text": "Hi."}
     params = voice_lab.speak_payload(policy, voice, [{"text": "Hi."}])["params"]
-    for key in ("split_clauses", "clause_gap_s", "sentence_gap_s", "trim", "fade_ms", "line_max_wer", "breaths",
+    for key in ("synthesis", "clone", "clause_gap_s", "sentence_gap_s", "trim", "fade_ms", "line_max_wer", "breaths",
                 "disfluency"):
         assert params[key] == policy.get("voice", key)
     cfg = tts_voxcpm.speech_config(params)
-    assert cfg["split"] is True and cfg["clause_gap"][1] < cfg["sentence_gap"][0]   # clause pauses shorter
+    assert cfg["clause_gap"][1] < cfg["sentence_gap"][0]                            # clause pauses shorter
     assert cfg["breaths"] is None and cfg["disfluency"] is None
     assert cfg["max_wer"] == policy.get("voice", "max_wer") and cfg["retry_factor"] >= 1
+    # whole lines until the comparison (breadth test), and every line cloned with the reference's transcript
+    assert policy.get("voice", "synthesis") == "whole_line" and cfg["split"] is False
+    assert tts_voxcpm.clone_mode(params) == "ultimate"
+
+
+def test_a_comparison_is_asked_for_only_by_the_breadth_test(policy):
+    voice = {"ref_uri": "s3://b/v.wav", "ref_text": "Hi."}
+    assert "compare" not in voice_lab.speak_payload(policy, voice, [{"text": "Hi."}])
+    assert voice_lab.speak_payload(policy, voice, [{"text": "Hi."}], compare=True)["compare"] is True
+
+
+def test_candidates_list_every_candidate_with_its_scores_best_first(conn, policy):
+    creator(conn, {"voice": {"engine": "voxcpm", "ref_uri": "s3://b/o.wav", "ref_text": "x", "embedding": OTHER}})
+    cid = creator(conn)
+    job = finished_design(conn, cid, [{"wer": 0.3, "embedding": FAR, "pitch_var": 5.0, "seconds": 14.0},
+                                      {"wer": 0.0, "embedding": OTHER, "pitch_var": 9.0},
+                                      {"wer": 0.05, "embedding": FAR, "pitch_var": 3.0},
+                                      {"wer": 0.0, "embedding": FAR, "pitch_var": 1.0}])
+    listed = voice_lab.candidates(conn, policy, job)
+    assert [c["index"] for c in listed] == [3, 2, 1, 0]                   # qualifying by WER first, then the rest
+    assert [c["qualifies"] for c in listed] == [True, True, False, False]
+    first = listed[0]
+    assert first["uri"] == "s3://b/voice/03.wav" and first["wer"] == 0.0 and first["distance"] == 1.0
+    assert listed[2]["distance"] == 0.0                                    # sounds like the other creator
+    assert set(first) == {"index", "uri", "wer", "distance", "pitch_var", "seconds", "transcript", "qualifies"}
+    assert voice_lab.candidates(conn, policy, finished_design(conn, cid, [], status="running")) == []
+
+
+def test_the_owner_can_pick_a_candidate_by_index_but_never_one_like_another_creator(conn, policy):
+    creator(conn, {"voice": {"engine": "voxcpm", "ref_uri": "s3://b/o.wav", "ref_text": "x", "embedding": OTHER}})
+    cid = creator(conn)
+    job = finished_design(conn, cid, [{"wer": 0.3, "embedding": FAR, "pitch_var": 5.0},
+                                      {"wer": 0.0, "embedding": OTHER, "pitch_var": 9.0},
+                                      {"wer": 0.0, "embedding": FAR, "pitch_var": 1.0}])
+    out = voice_lab.pick(conn, policy, cid, job, candidate=0)            # over max_wer, but the owner heard it
+    assert out["picked"]["index"] == 0 and out["override"] is True
+    assert anchors(conn, cid)["voice"]["ref_uri"] == "s3://b/voice/00.wav"
+    too_close = voice_lab.pick(conn, policy, cid, job, candidate=1)
+    assert too_close["picked"] is None and "min_distance" in too_close["reason"]
+    assert anchors(conn, cid)["voice"]["ref_uri"] == "s3://b/voice/00.wav"   # unchanged
+    with pytest.raises(ValueError):
+        voice_lab.pick(conn, policy, cid, job, candidate=9)
+    rows = conn.execute("SELECT step, output FROM decisions WHERE job_id = %s", (job,)).fetchall()
+    assert [r["step"] for r in rows] == ["voice_pick:candidate:0"] and rows[0]["output"]["override"] is True
+    # the automatic pick is still its own decision
+    assert voice_lab.pick(conn, policy, cid, job)["picked"]["index"] == 2

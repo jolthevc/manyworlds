@@ -6,7 +6,8 @@ gate. Self-hosted FastWan (5B, DMD) rendered in ~1 minute but passed 0 of 10 cli
 community's proven 14B graph, at hourly GPU prices instead of a hosted API's per-clip price.
 
 Payload: image_uri, prompt, keyframes, seed; params{width, height, frames, fps, steps, high_steps, shift,
-high_lora_strength, low_lora_strength, high_cfg, swap_below_gb, blocks_to_swap, timeout_s}.
+high_lora_strength, low_lora_strength, high_cfg, swap_below_gb, blocks_to_swap, timeout_s, fit_stretch_tolerance}
+(a photo at the frame's aspect is scaled whole, not cropped: talk_comfy.fit_box).
 """
 
 from __future__ import annotations
@@ -48,7 +49,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     inp = comfy.COMFY_DIR / "input"
     inp.mkdir(parents=True, exist_ok=True)
     image_name = f"mw_{ctx.job.id}.png"
-    _prepare_image(start, inp / image_name, int(params["width"]), int(params["height"]))
+    _prepare_image(start, inp / image_name, int(params["width"]), int(params["height"]),
+                   stretch_tolerance=float(params.get("fit_stretch_tolerance") or 0))   # a 9:16 photo is not cropped
     g = comfy.graph_i2v(image=image_name, prompt=payload["prompt"], seed=seed, params=params,
                         blocks_to_swap=_blocks_to_swap(params))
     t0 = time.monotonic()

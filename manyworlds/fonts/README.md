@@ -16,6 +16,15 @@ family's licence text sits next to it.
 | `Anton-Regular.ttf` | `Anton` | Anton (Vernon Adams) | OFL 1.1, `Anton-OFL.txt` |
 | `DMSerifDisplay-Regular.ttf` | `DM Serif Display` | DM Serif Display (Colophon, Google) | OFL 1.1, `DMSerifDisplay-OFL.txt` |
 | `DMSerifDisplay-Italic.ttf` | `DM Serif Display` + italic | DM Serif Display | OFL 1.1, `DMSerifDisplay-OFL.txt` |
+| `TikTokSans-SemiBold.ttf` | `TikTok Sans SemiBold` | TikTok Sans (Grilli Type, Contrast Foundry, Type Network for TikTok) | OFL 1.1, `TikTokSans-OFL.txt` |
+| `TikTokSans-Bold.ttf` | `TikTok Sans` + bold | TikTok Sans | OFL 1.1, `TikTokSans-OFL.txt` |
+
+TikTok Sans (on-screen labels, `manyworlds/overlays.py`, and the `tiktok` caption style) is published in google/fonts
+only as a variable font (`ofl/tiktoksans/TikTokSans[opsz,slnt,wdth,wght].ttf`), which libass would draw at its
+default instance. The two files here are Google Fonts' own static instances of it (weights 600 and 700, served by
+fonts.gstatic.com for the css2 API, downloaded 2026-11-23); the licence is google/fonts' `ofl/tiktoksans/OFL.txt`
+(no Reserved Font Name). No bundled font has emoji glyphs: on-screen text drops characters its font cannot draw
+(policy `missing_glyphs: strip`).
 
 The ASS name must match the font's family name (name ID 1) or full name (ID 4); a style also names its file
 (`file`), which is used to size text exactly and by the fallback renderer when an ffmpeg has no libass.

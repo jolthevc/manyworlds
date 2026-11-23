@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from .. import queue
-from ..direction import ShotSheet, compile_prompt
+from ..direction import ShotSheet, compile_prompt, compile_prompts
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
 from ..storage import ObjectStore
@@ -132,6 +132,26 @@ def talk_prompt(bible: dict, scene: str, *,
         return compile_prompt(shot, bible, "talk", _need_policy(policy), scene=scene)
     return (f"Smartphone video of a {appearance_prompt(bible)}. Scene: {scene}. "
             "Talking to the camera naturally, with small head movements and expressions; steady face, realistic.")
+
+
+_TARGETS = ("photo", "i2v", "talk")
+
+
+def prompts(target: str, bible: dict, scene: str, *, motion: str = "", trigger: str | None = None,
+            shot: ShotSheet | dict | None = None, policy: Policy | None = None) -> dict:
+    """{prompt, negative} for a job payload (`prompt`, `negative_prompt`). With a shot sheet the direction compiler
+    writes both (manyworlds.direction.compile_prompts: negatives only where the target's model has a negative
+    channel, never in the prompt); without one the prompt is exactly photo_prompt / clip_prompt / talk_prompt's and
+    the negative is "", which leaves the worker's own default (worker/comfy.py NEGATIVE for the Wan graphs)."""
+    if target not in _TARGETS:
+        raise ValueError(f"unknown target {target!r}; known: {list(_TARGETS)}")
+    if shot is not None:
+        return compile_prompts(shot, bible, target, _need_policy(policy), trigger=trigger, scene=scene, motion=motion)
+    if target == "photo":
+        return {"prompt": photo_prompt(bible, scene, trigger=trigger), "negative": ""}
+    if target == "i2v":
+        return {"prompt": clip_prompt(bible, scene, motion), "negative": ""}
+    return {"prompt": talk_prompt(bible, scene), "negative": ""}
 
 
 def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> CreatorBible:

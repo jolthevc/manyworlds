@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from manyworlds import captions as cap
+from manyworlds import policy as policy_mod
 
 SCRIPT = ("So I finally tried the viral pasta everyone keeps posting about. Honestly, it was fine, but the sauce was "
           "way too sweet for me. I went back to the bodega on Fifth and bought the good parmesan, and that fixed "
@@ -125,7 +126,7 @@ def test_a_word_alone_between_pauses_may_stand_alone(raw_policy):
 # --- layout ---------------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("size", [(1080, 1920), (720, 1280)])
-@pytest.mark.parametrize("placement", ["lower", "upper", "center"])
+@pytest.mark.parametrize("placement", ["lower", "mid_lower", "upper", "center"])
 def test_layout_stays_inside_the_safe_zone(raw_policy, size, placement):
     w, h = size
     x0, y0, x1, y1 = cap.safe_area(w, h, raw_policy)
@@ -144,6 +145,8 @@ def test_layout_stays_inside_the_safe_zone(raw_policy, size, placement):
                 assert bottom > 0.62 * h                              # lower third, above the bottom UI
             elif placement == "upper":
                 assert top < 0.4 * h
+            elif placement == "mid_lower":
+                assert top < 0.62 * h < bottom                        # over the body, under the face
             else:
                 assert top < 0.5 * h < bottom
 
@@ -170,6 +173,83 @@ def test_placement_for_a_low_face(raw_policy):
     assert cap.placement_for(None, raw_policy) == "lower"
     assert cap.placement_for((0.3, 0.2, 0.7, 0.5), raw_policy) == "lower"   # face high: captions below it
     assert cap.placement_for((0.3, 0.5, 0.7, 0.85), raw_policy) == "upper"  # face low: captions above it
+
+
+def test_face_safe_band_choice(raw_policy):
+    assert cap.placement_for((0.3, 0.3, 0.7, 0.58), raw_policy, preferred="mid_lower") == "lower"   # under the chin
+    assert cap.placement_for((0.3, 0.45, 0.7, 0.7), raw_policy, preferred="mid_lower") == "upper"
+    assert cap.placement_for((0.0, 0.0, 1.0, 1.0), raw_policy, preferred="mid_lower") == "mid_lower"  # none clears
+    assert cap.placement_for(None, raw_policy, preferred="mid_lower") == "mid_lower"
+    assert cap.placement_for(None, raw_policy, preferred="nope") == raw_policy.get("burned_captions",
+                                                                                   "default_placement")
+    assert cap.covers_face(0.6, 0.7, (0.3, 0.2, 0.7, 0.59), 0.02) and not cap.covers_face(0.6, 0.7, (0.3, 0.2, 0.7, 0.5))
+    assert cap.face_box_union([None, (0.3, 0.2, 0.6, 0.5), (0.35, 0.25, 0.7, 0.55)]) == (0.3, 0.2, 0.7, 0.55)
+    assert cap.face_box_union([None]) is None
+
+
+def test_placement_follows_the_shot_size_then_the_face(raw_policy):
+    def shot(size):
+        return {"framing": {"shot_size": size}}
+    assert cap.placement_for_shot(raw_policy, shot("close-up")) == "lower"
+    assert cap.placement_for_shot(raw_policy, shot("medium close-up")) == "lower"
+    assert cap.placement_for_shot(raw_policy, shot("Full body")) == "mid_lower"
+    assert cap.placement_for_shot(raw_policy, shot("wide")) == "mid_lower"
+    assert cap.placement_for_shot(raw_policy, None) == "lower"
+    # Full body, but she sits: the face is mid-frame, so the captions go above it.
+    assert cap.placement_for_shot(raw_policy, shot("full body"), (0.4, 0.5, 0.6, 0.62)) == "upper"
+
+
+def test_caption_style_resolution_order(raw_policy):
+    def shot(text):
+        return {"edit": {"caption_style": text}}
+    f = cap.caption_style_for
+    assert f(raw_policy, creator="editorial", fmt="talking_video", shot=shot("karaoke")) == "karaoke"   # shot first
+    assert f(raw_policy, creator="editorial", fmt="talking_video", shot=shot("bold pop, big and loud")) == "bold_pop"
+    # Free text naming no style falls through: to the format's, then the creator's, then the default.
+    assert f(raw_policy, creator="editorial", fmt="storytime", shot=shot("small lowercase, bottom third")) == "bold_pop"
+    assert f(raw_policy, creator="editorial", fmt="talking_video") == "editorial"
+    assert f(raw_policy, fmt="talking_video") == raw_policy.get("burned_captions", "default_style")
+    # Outfit formats carry labels, not captions; a shot can still ask for them.
+    assert f(raw_policy, creator="karaoke", fmt="outfit_check") is None
+    assert f(raw_policy, fmt="outfit_check", shot=shot("minimal")) == "minimal"
+    assert f(raw_policy, fmt="talking_video", shot=shot("no captions, labels only")) is None
+    assert f(raw_policy, fmt=["ootd", "talking_video"]) is None                       # the first key listed wins
+    creator_first = policy_mod.from_dict({**raw_policy.body, "burned_captions": {
+        **raw_policy.body["burned_captions"], "style_precedence": ["creator", "shot", "format"]}})
+    assert f(creator_first, creator="minimal", fmt="storytime", shot=shot("karaoke")) == "minimal"
+
+
+def test_word_timestamps_per_format(raw_policy):
+    assert cap.word_timestamps_for(raw_policy, "talking_video")
+    assert not cap.word_timestamps_for(raw_policy, "narrated_edit")
+
+    def bc(**kw):
+        return policy_mod.from_dict({**raw_policy.body, "burned_captions": {**raw_policy.body["burned_captions"], **kw}})
+    assert cap.word_timestamps_for(bc(word_timestamps=True), "narrated_edit")
+    assert not cap.word_timestamps_for(bc(word_timestamps_formats=[]), "talking_video")
+    assert cap.word_timestamps_for(bc(word_timestamps=["narrated_edit"]), "narrated_edit")
+
+
+def test_block_timings_share_a_block_by_syllables_with_room_at_pauses(raw_policy):
+    words = cap.block_timings("I went to the supermarket. Then home.", 0.0, 3.0, policy=raw_policy)
+    assert [w.text for w in words] == ["I", "went", "to", "the", "supermarket.", "Then", "home."]
+    assert words[0].start == 0.0 and words[-1].end == 3.0
+    span = {w.text: w.end - w.start for w in words}
+    assert span["supermarket."] > 3 * span["to"]                              # not shared evenly
+    assert words[5].start - words[4].end > 0.1                                 # the full stop leaves room
+    _check_monotonic(words)
+
+
+def test_emoji_and_undrawable_characters_are_dropped(raw_policy):
+    poppins = str(cap.fonts_dir(raw_policy) / "Poppins-Bold.ttf")
+    assert cap.drawable("so good 🔥🔥", poppins) == "so good"
+    assert cap.drawable("Tight on baggy ✅", poppins) == "Tight on baggy"
+    assert cap.drawable("so good 🔥", poppins, "keep") == "so good 🔥"
+    assert cap.drawable("so good 🔥", None) == "so good"                       # no character map: by pattern
+    assert cap.drawable("plain words, fine.", poppins) == "plain words, fine."
+    words = cap.estimate_timings([{"text": "this is so good 🔥 honestly", "start_s": 0, "end_s": 2}], policy=raw_policy)
+    plan = cap.make_plan(words, raw_policy, width=1080, height=1920, style="clean")
+    assert [w.text for c in plan.chunks for w in c.words] == ["this", "is", "so", "good", "honestly"]
 
 
 # --- styles and ASS -------------------------------------------------------------------------------------------
@@ -209,6 +289,8 @@ def test_every_style_font_is_bundled_with_its_licence(raw_policy):
         assert "Open Font License" in (fonts / f"{family}-OFL.txt").read_text(encoding="utf-8")
         m = cap.font_metrics(str(ttf))
         assert m.upem > 0 and m.win_ascent > 0 and 0 < m.x_height < m.cap_height < m.upem
+        chars = cap.font_chars(str(ttf))                                    # its character map reads
+        assert chars and all(ord(c) in chars for c in "AZaz09.,'?!") and 0x1F525 not in chars
 
 
 def test_ass_time_format():

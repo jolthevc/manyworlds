@@ -314,7 +314,19 @@ review:
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
-  image_by_format: {story: {width: 720, height: 1280}}   # 9:16 Stories; other formats use image (4:5)
+  # Scene photos per format, merged over `image` (4:5 for photos and carousels). Every video format and Stories get a
+  # native 9:16 photo: a 4:5 photo cover-cropped into a 9:16 clip lost ~26% of its width and the framing with it.
+  # 864x1536 is exactly 9:16, both sides multiples of 16 (Z-Image's VAE factor x patch size; the pipeline refuses
+  # others), ~1.33 MP: Z-Image Turbo's 1280 resolution class (896x1152 is ~1.03 MP), so ~30% more GPU time per
+  # image, and enough pixels for a 1080x1920 narrated edit. `video` is the rule for any video format
+  # (planner.video_formats, and new ones); the named formats repeat it (a YAML alias) until production falls back
+  # to `video` by itself.
+  image_by_format:
+    video: &video_scene_photo {width: 864, height: 1536}
+    story: *video_scene_photo
+    talking_video: *video_scene_photo
+    story_clip: *video_scene_photo
+    narrated_edit: *video_scene_photo
   video: {width: 704, height: 1280, frames: 121, steps: 30, guidance: 5.0, fps: 24}   # TI2V-5B 720p, 5 s; measured 2026-11-14
   # Settings to benchmark against `video` (mw bench video.wan_i2v --profile NAME). fast: FastWan2.2-TI2V-5B
   # (FastVideo, Apache-2.0), the same model DMD-distilled to 3 steps with no guidance: one pass per step instead of
@@ -325,12 +337,22 @@ generation:
     fast: {model: FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers, steps: 3, guidance: 1.0, dmd_timesteps: [1000, 757, 522]}
   # Lip-sync (talk.infinitetalk) on ComfyUI + WanVideoWrapper (worker image mw-worker-talkcomfy, worker/comfy.py):
   # fp8-scaled InfiniteTalk with the 4-step lightx2v LoRA and SageAttention, at Kijai's example settings (6 steps,
-  # cfg 1, shift 11, dpm++_sde, 81-frame windows, 9 motion frames). 480x832 is 9:16 at 480p; the approved photo is
-  # cover-cropped to it. Cards under swap_below_gb swap blocks_to_swap transformer blocks to the CPU. The research
+  # cfg 1, shift 11, dpm++_sde, 81-frame windows, 9 motion frames). 480x832 is Wan's 480p vertical bucket (2.6% narrower
+  # than 9:16); the approved photo is fitted to it (talk_comfy.fit_box): scaled whole when within fit_stretch_tolerance
+  # of its aspect, else cover-cropped, so a 9:16 scene photo loses 2.5% of its height (480x848 would lose nothing:
+  # benchmark it before leaving the trained bucket). Cards under swap_below_gb swap blocks_to_swap transformer blocks to
+  # the CPU. The research
   # script's settings (InfiniteTalk's own repo, image mw-worker-talk) are kept below as talk_profiles.script.
   talk:
     width: 480
     height: 832
+    fit_stretch_tolerance: 0.01   # a photo within 1% of the frame's aspect is scaled, not cropped (invisible stretch)
+    # Walk-and-talk: the 16 fps motion clip reaches InfiniteTalk's 25 fps by motion interpolation on the worker
+    # (talk_comfy.at_fps, media.fps_filter; same options as finishing.interpolate) instead of repeated frames, which
+    # judder. V2V redraws about half of each frame afterwards, which smooths interpolation seams. enabled false =
+    # repeat frames. Unproven on a GPU run: check the first walk-and-talk takes.
+    motion_interpolate: {enabled: true, method: minterpolate, mi_mode: mci, mc_mode: aobmc, me_mode: bidir, vsbmc: 1,
+                         scd: fdiff, scd_threshold: 10, blend_below_seconds: 1.0}
     # 10 steps since 2026-11-22 (3-clip benchmarks on the L40S, lip-sync gate at corr 0.3): 6 steps 1 of 3 accepted,
     # 8 steps 1 of 3 (two clips lost lip sync, corr 0.07 and 0.28), 10 steps 2 of 3 (corr 0.62-0.69; the reject scored
     # realism and motion 4), ~50 s of GPU per output second, ~$0.08 a clip. Small samples: re-measure on 8-10 clips.
@@ -397,9 +419,11 @@ generation:
     hd720: {width: 720, height: 1280, steps: 10}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
-  # 16 fps (5 s), 9:16 at 480p. Cards under swap_below_gb swap blocks_to_swap blocks to the CPU.
+  # 16 fps (5 s), 9:16 at 480p (the photo fitted as for talk, fit_stretch_tolerance). Cards under swap_below_gb swap
+  # blocks_to_swap blocks to the CPU. The finish stage interpolates 16 fps to finishing.fps.
   comfy_video: {width: 480, height: 832, frames: 81, fps: 16, steps: 6, high_steps: 3, shift: 8.0, high_cfg: 2.0,
-                high_lora_strength: 3.0, low_lora_strength: 1.0, swap_below_gb: 40, blocks_to_swap: 20, timeout_s: 1800}
+                high_lora_strength: 3.0, low_lora_strength: 1.0, swap_below_gb: 40, blocks_to_swap: 20, timeout_s: 1800,
+                fit_stretch_tolerance: 0.01}
   # Story clips on a hosted API (production.video_kind: hosted.video): Wan 2.7 i2v on Together, $0.10 per 5 s clip
   # (catalog 2026-11-21; the job records the host's own cost). Same approved photo as first frame, 9:16 720P.
   hosted_video: {host: together, model: Wan-AI/wan2.7-i2v, seconds: 5, resolution: 720P, ratio: "9:16",
@@ -418,8 +442,10 @@ generation:
   # segment_by: scene = a post with shot sheets (body.shots) is cut only at scene changes: one take per shot that
   # speaks, on camera unless the shot is a cutaway (narrated over that shot's photo); seconds = always the length-based
   # split above. Posts without shots always use the length-based split.
+  # output: every segment is brought to the delivery size and rate (finishing.output, finishing.fps) before the join,
+  # the slower lip-synced ones by motion interpolation (finishing.interpolate), so the finish stage scales nothing.
   talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4, segment_by: scene,
-                output: {width: 720, height: 1280, fps: 30, lufs: -14}}
+                output: {width: 1080, height: 1920, fps: 30, lufs: -14}}
   # Walk-and-talk (plan 2026-11-22-video-quality-autonomous item 1; production, worker/comfy.py graph_v2v): a talking
   # take whose shot moves is made in two stages. First a silent motion clip from the take's photo (the story-clip
   # path, prompt compiled from the shot for i2v, as long as the take's voice line up to max_motion_seconds), then
@@ -484,16 +510,24 @@ voice:
   pitch_hz: [65, 500]
   kinds: {design: voice.design, speak: voice.speak}
   # Natural speech (plan 2026-11-22-video-quality-autonomous item 7; research 2026-11-22-video-quality-wave2-3 §6).
-  # The model's own pauses are not relied on: each line is spoken clause by clause (commas, semicolons, colons,
-  # dashes, ellipses, sentence ends; never inside numbers or after abbreviations; a clause under clause_min_words
-  # joins its neighbour) and joined with our silences, each drawn from its range with the job's seeded RNG
+  # synthesis: whole_line (one generation per line: the model's own intonation across the sentence) or clauses
+  # (each line spoken clause by clause: commas, semicolons, colons, dashes, ellipses, sentence ends; never inside
+  # numbers or after abbreviations; a clause under clause_min_words joins its neighbour). whole_line until the two
+  # are compared by ear and by WER in the breadth test (voice.speak payload `compare: true` makes both; clauses
+  # resets intonation at every comma). Either way pieces are joined with our silences, each drawn from its range
+  # with the job's seeded RNG
   # (spontaneous English: clause pauses mostly under 0.5 s, sentence pauses mostly over). A line's explicit
   # pause_after_s replaces the gap after it; pause_s above is only the fallback for payloads without these keys.
   # Each take is trimmed of its own silence (frames more than threshold_db below its loudest, keeping pad_ms) and
   # faded over fade_ms at both edges (no clicks), so the gaps are exactly what we chose. Takes are scored per
   # clause; a clause whose every take is above max_wer x clause_retry_wer_factor gets one more round of seeds; a
   # line still above line_max_wer after assembly fails the job (retried with new seeds).
-  split_clauses: true
+  synthesis: whole_line
+  # clone: ultimate (every line cloned from the reference clip AND its transcript, the delivery as the instruction:
+  # one timbre across lines) or controllable (a line with a delivery from the clip alone: the timbre drifted). The
+  # VoxCPM README shows the delivery parenthetical with controllable cloning; with ultimate cloning it is unmeasured:
+  # listen to a few directed lines in the breadth test.
+  clone: ultimate
   clause_min_words: 2
   clause_gap_s: [0.18, 0.30]
   sentence_gap_s: [0.45, 0.70]
@@ -612,7 +646,11 @@ creators:
 # The master switch (owner 2026-11-21): nothing runs on its own until the owner says so (manyworlds.operations).
 # paused: no planning, production, publishing or launches; the Brain worker runs only test jobs; GPU machines
 # start only for batches with these prefixes. Safety enforcement always runs. Only the owner sets `live`.
-operations: {mode: paused, test_batch_prefixes: [bench-, test-]}
+# test_overlay: the breadth test's settings (policy/test_overlay.yaml, `mw test breadth`), deep-merged over this policy
+# for work in batches starting with `batches` only: the driver's own posts, and the autoscaler's choice of machine for
+# them (autoscale.merge_families there). Production never reads it.
+operations: {mode: paused, test_batch_prefixes: [bench-, test-],
+             test_overlay: {path: policy/test_overlay.yaml, batches: [test-breadth-]}}
 
 # What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).
 # required: no machine starts without the scoped credential; shared: fall back to the control plane's own.
@@ -835,12 +873,30 @@ burned_captions:
   enabled: true
   formats: [talking_video, narrated_edit]
   default_style: clean
+  # Which style a video gets (captions.caption_style_for), first found in this order: the shot sheet's
+  # edit.caption_style (a style name or free text naming one), the format's entry below, the creator's dial.
+  style_precedence: [shot, format, creator]
+  # Format (or shot-sheet template) -> style; `none` = no spoken captions, on-screen labels only. Top clips: word
+  # captions belong to talking and storytime videos; outfit, posing and aesthetic videos carry a label, not karaoke
+  # (docs/research/2026-11-23-readiness-and-craft.md). Talking formats (talking_video, narrated_edit, grwm,
+  # mirror_talk, walk_and_talk) are left out on purpose: they take the creator's style, else default_style (clean).
+  style_by_format: {storytime: bold_pop, day_in_life: minimal, outfit_check: none, fit_check: none, ootd: none,
+                    posing_ideas: none, silent_aesthetic: none, dance: none}
+  no_caption_words: ["no captions", "labels only", "no subtitles", "text only"]   # free text meaning `none`
   # Time captions from the voice line's transcript (review.video.intelligibility's hosted Whisper, verbose_json word
   # timestamps; paid once per voice line and cached on its asset as meta.words) instead of estimating them from
-  # the line's spans. Off until compared with estimates on real takes; any failure falls back to estimates.
+  # the line's spans. `word_timestamps: true` turns it on for every format; word_timestamps_formats for those listed
+  # (captions.word_timestamps_for(policy, format)): on for talking videos (2026-11-23 build: estimated timings
+  # drift on real takes, and the words are cached per voice line). Any failure falls back to estimates.
   word_timestamps: false
+  word_timestamps_formats: [talking_video]
+  # Characters the style's font cannot draw (emoji: libass draws no colour emoji, no bundled font has any) are
+  # dropped (strip) rather than burned in as empty boxes or a fallback system font; keep = leave them.
+  missing_glyphs: strip
   default_placement: lower
-  placement_by_shot_size: {close: lower, wide: lower, full: lower}
+  # Shot size words -> placement, first match wins ('medium close-up' matches close): close-ups put captions in the
+  # lower band under the chin; wide and full-body shots in the middle-lower area, over the body, not the face.
+  placement_by_shot_size: {close: lower, medium: lower, full: mid_lower, wide: mid_lower}
   # Shares of the frame kept clear of platform UI: top bar, bottom account/caption/audio rows, right-side
   # buttons; left matches right so centred text clears the buttons.
   safe_zone: {top: 0.14, bottom: 0.25, left: 0.12, right: 0.12}
@@ -848,9 +904,14 @@ burned_captions:
   # the bottom safe zone; upper = upper-middle, for shots where the face is low (placement_for).
   placements:
     lower: {anchor: bottom, y: 0.74}
+    mid_lower: {anchor: middle, y: 0.62}
     upper: {anchor: top, y: 0.24}
     center: {anchor: middle, y: 0.5}
-  face_band: 0.14              # a face reaching this far above `lower`'s y moves captions up
+  # Face-safe placement (captions.placement_for, with a face box from the keyframes): the shot's placement unless
+  # a caption block there would cover the face, else the first in face_safe_order that clears it.
+  face_band: 0.12              # a caption block's height as a share of the frame (two lines of the largest style)
+  face_margin: 0.02            # kept clear around the face box
+  face_safe_order: [lower, mid_lower, upper, center]
   chunking:
     max_words: 6               # a style may lower it
     target_words: 4
@@ -990,21 +1051,179 @@ burned_captions:
       mode: reveal
       fade_in_ms: 80
       fade_out_ms: 80
+    # TikTok-native: TikTok Sans SemiBold, white, soft shadow, no visible outline; phrase at a time.
+    tiktok:
+      font: TikTok Sans SemiBold
+      file: TikTokSans-SemiBold.ttf
+      bold: false
+      size: 0.034
+      max_chars_per_line: 22
+      shadow: {depth: 0.03, opacity: 0.4}
+      soften: 0.06
+      fade_in_ms: 70
+      fade_out_ms: 70
+
+# On-screen text that is not the spoken words (manyworlds.overlays, 2026-11-23 build): labels, the hook, day-in-life
+# timestamps, GRWM question bubbles. Top clips put one short label in the upper third or centre, TikTok-native (white
+# sans with a soft shadow, or black on a white rounded box); word captions are for talking and storytime only
+# (docs/research/2026-11-23-readiness-and-craft.md). A shot sheet's edit.on_screen_text items are
+# {kind, text, start_s, end_s, style, position} (+ number, time); a missing style or position takes the kind's.
+# Burned in the same ASS script and pass as the captions (overlays.make_script). Sizes as in burned_captions.
+on_screen_text:
+  enabled: true
+  # Kept clear of platform UI at 1080x1920: top bar ~250 px, bottom account/caption rows ~320 px, the right-side
+  # button rail ~130 px; left is narrower so numbered labels can sit left (centred text centres on the frame).
+  safe_zone: {top: 0.13, bottom: 0.17, left: 0.08, right: 0.12}
+  missing_glyphs: strip        # as burned_captions.missing_glyphs: emoji have no glyph in any bundled font
+  default_duration_s: 3.0      # an item with no end and no known video length
+  face_margin: 0.02            # kept clear around a face box (share of the frame)
+  wrap: {orphan_cost: 50}      # a lone last word costs this many characters of imbalance
+  default_style: tiktok_plain
+  # anchor: which edge of the drawn block (box and tail included) sits at y (share of the frame height);
+  # align: center on the frame, or left at the safe zone's edge.
+  positions:
+    top_bubble: {anchor: top, y: 0.14, align: center}
+    upper_third: {anchor: middle, y: 0.3, align: center}
+    upper_left: {anchor: middle, y: 0.27, align: left}
+    centre: {anchor: middle, y: 0.5, align: center}
+    lower: {anchor: bottom, y: 0.72, align: center}
+  position_aliases: {center: centre, middle: centre, top: top_bubble, upper: upper_third, upper_third_left: upper_left,
+                     bottom: lower, lower_third: lower}
+  # Tried in order when an item would cover the face or another item showing at the same time.
+  alternatives:
+    top_bubble: [upper_third, centre]
+    upper_third: [top_bubble, centre, lower]
+    upper_left: [top_bubble, upper_third]
+    centre: [upper_third, lower]
+    lower: [centre, upper_third]
+  kinds:
+    label: {style: tiktok_plain, position: upper_third, numbered_style: numbered}
+    hook: {style: hook, position: upper_third, start_s: 0.0, duration_s: 1.5, max_duration_s: 2.0}
+    timestamp: {style: serif_small, position: upper_left, caption_scale: 0.8}   # "7:30 AM" over a smaller caption
+    question: {style: question_bubble, position: top_bubble}
+  style_defaults:
+    font: TikTok Sans SemiBold
+    file: TikTokSans-SemiBold.ttf
+    bold: false
+    italic: false
+    size: 0.03                 # em / frame height (58 px at 1920)
+    case: none
+    letter_spacing: 0.0
+    line_spacing: 1.2
+    max_chars_per_line: 24
+    max_lines: 3
+    color: "#FFFFFF"
+    outline: {width: 0.0, color: "#000000", opacity: 1.0}
+    shadow: {depth: 0.0, color: "#000000", opacity: 0.0}
+    soften: 0.0
+    # mode: line (a box per line, TikTok's classic label) | block (one box round all lines; tail = speech bubble)
+    box: {enabled: false, mode: line, color: "#FFFFFF", opacity: 1.0, pad_x: 0.35, pad_y: 0.3, height: 1.32,
+          radius: 0.28, tail: {enabled: false, width: 0.55, height: 0.4, x: 0.12}}
+    fade_in_ms: 120
+    fade_out_ms: 120
+    pop: {from: 1.0, peak: 1.0, ms: 0}
+  styles:
+    # TikTok's plain text: white sans, soft shadow, no hard outline.
+    tiktok_plain:
+      shadow: {depth: 0.035, opacity: 0.45}
+      soften: 0.08
+    # TikTok's classic label: black text on a white rounded box per line, boxes touching.
+    tiktok_box:
+      color: "#000000"
+      line_spacing: 1.32
+      max_chars_per_line: 22
+      box: {enabled: true}
+    # Day-in-life timestamps: small serif, soft shadow.
+    serif_small:
+      font: DM Serif Display
+      file: DMSerifDisplay-Regular.ttf
+      size: 0.028
+      shadow: {depth: 0.03, opacity: 0.45}
+      soften: 0.08
+    # Numbered looks and tips ("1.", "2. tight on baggy"): bolder, a touch bigger.
+    numbered:
+      font: TikTok Sans
+      file: TikTokSans-Bold.ttf
+      bold: true
+      size: 0.036
+      max_chars_per_line: 20
+      shadow: {depth: 0.035, opacity: 0.5}
+      soften: 0.08
+    # The hook: big, first second or two, settles in.
+    hook:
+      font: TikTok Sans
+      file: TikTokSans-Bold.ttf
+      bold: true
+      size: 0.044
+      max_chars_per_line: 18
+      line_spacing: 1.12
+      outline: {width: 0.03, opacity: 0.3}
+      shadow: {depth: 0.04, opacity: 0.5}
+      soften: 0.06
+      pop: {from: 0.9, peak: 1.03, ms: 160}
+      fade_in_ms: 60
+      fade_out_ms: 150
+    # A question as if replying to a comment: black on one white bubble with a tail (no user named, ever).
+    question_bubble:
+      color: "#111111"
+      size: 0.027
+      max_chars_per_line: 26
+      box: {enabled: true, mode: block, pad_x: 0.6, pad_y: 0.45, radius: 0.45, tail: {enabled: true}}
 
 # Direction (manyworlds.direction, owner 2026-11-22): the words the shot-sheet compiler adds to every directed
 # prompt. Moves not in camera_moves are dropped; the planner offers only moves whose readiness is offered.
-# `realism.video` is added only when the shot is handheld; `negatives.solo` only when nobody is in the background.
+# Phone-native realism (2026-11-23, docs/research/2026-11-23-readiness-and-craft.md): the top clips are bright, flat,
+# ordinary rooms lit by a window or lamp, real skin, no cinematic grade. The AI tells are waxy skin, unmotivated
+# studio light, a dead stare, a gimbal-smooth "phone" and a glossy ad look. Words are short: they share the budgets.
 direction:
   realism:
-    photo: "visible pores, fine skin texture, natural imperfections, phone camera HDR, slight grain"
-    video: "slight handheld micro-jitter"
+    photo: "ordinary phone camera photo, natural auto exposure, bright and slightly flat, visible pores and fine skin texture, a few flyaway hairs, small everyday imperfections"
+    i2v: "real phone footage, natural auto exposure, ordinary room, real skin texture"
+    talk: "real phone footage, natural auto exposure, real skin texture, natural eyeline"
+    # added when the shot says nothing about its light (motivated light, never studio light)
+    light_fallback: "natural available light from a real source in the scene"
+    # video only: how the phone moves, by framing.handheld; with none set, by framing.device (device_shake)
+    shake:
+      none: "locked-off phone resting still on a surface"
+      light: "handheld phone, slight natural micro-shake"
+      held: "handheld phone, natural hand shake and small reframes"
+    device_shake: {propped: none, held: held, selfie: light}
   style:
     photo: "realistic"
     i2v: "small natural movements, steady face, realistic"
     talk: "small natural head movements and expressions, steady face, realistic"
+  # The video models cannot render sound: the shot sheet's sound stays for the mix, and only these targets spend
+  # prompt budget on it (none).
+  sound_targets: []
+  # Negatives never go in the positive prompt (a negation where there is no negative channel tends to summon the
+  # thing). channel: whether the target's model reads a negative prompt (Wan i2v and InfiniteTalk/LongCat graphs:
+  # a negative text encode, job payload `negative_prompt`; Z-Image Turbo at guidance 0: none). base: the start of
+  # the negative for a target with a channel: Wan's standard list (worker/comfy.py NEGATIVE) without "bright tones,
+  # overexposed", which fight the bright, slightly overexposed phone look. Items: `always`, `solo` (only when nobody
+  # is asked for in the background), `by_target`; an item is left out when its `unless_mentioned` words appear in the
+  # shot's own prompt (a mirror shot asks for the mirror).
   negatives:
-    always: ["no text", "no logos", "no mirrors behind the subject"]
-    solo: ["no extra people"]
+    channel: {photo: false, i2v: true, talk: true}
+    base:
+      i2v: "static, blurred details, subtitles, style, works, paintings, images, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, walking backwards"
+      talk: "static, blurred details, subtitles, style, works, paintings, images, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, walking backwards"
+    always: [text, logos, watermark, mirror reflections]
+    solo: [extra people]
+    by_target:
+      photo: [waxy skin, airbrushed skin, studio lighting]
+      i2v: [waxy plastic skin, airbrushed face, studio lighting, cinematic color grade, gimbal-smooth camera, glossy advert look]
+      talk: [waxy plastic skin, airbrushed face, studio lighting, cinematic color grade, dead stare, frozen eyes, glossy advert look]
+    unless_mentioned:
+      mirror reflections: [mirror, reflection]
+      extra people: [crowd, friend, people, person]
+  # For a target without a negative channel: the positive phrasing that stands in for a negative (Z-Image photos).
+  # An item without one is dropped. Mirrors and text have none on purpose: "a plain wall behind the person" on every photo
+  # would flatten the ordinary rooms the research asks for, and any wording of "text" asks for text.
+  positive_instead_of:
+    logos: "unbranded clothes and objects"
+    extra people: "the only person in the frame"
+    waxy skin: "real skin with pores and fine lines"
+    studio lighting: "lit only by real sources in the scene, a window, a lamp or daylight"
   camera_moves: [static, handheld, push_in, pull_out, pan_left, pan_right, tilt_up, tilt_down, follow, orbit_slow]
   offer_readiness: [ready, partial]
   # Natural eyes (plan 2026-11-22 wave 2): added to the action of talk prompts, and of i2v prompts unless the shot is
@@ -1036,7 +1255,8 @@ direction:
   # diffusers' max_sequence_length 512) read 512 tokens and silently drop the rest; these leave headroom for the
   # estimate's error. Over budget, the compiler shortens set_dressing, props and outfit to their first clause
   # (clause_words at most), then uses the short appearance for video, then drops optional detail, then cuts the
-  # lowest-priority section; camera, action and negatives are kept. Undirected prompts are not budgeted.
+  # lowest-priority section; camera, action and the positive stand-ins are kept
+  # (a negative prompt is outside the budget). Undirected prompts are not budgeted.
   prompt_budget: {photo: 400, i2v: 300, talk: 300}
   prompt_trim:
     clause_words: 20
@@ -1117,10 +1337,32 @@ finishing:
   enabled: true
   formats: [talking_video, narrated_edit, story_clip]
   max_failures: 3
-  default_look: neutral
+  # Top clips look like plain phone footage: bright, flat, slightly overexposed, no cinematic grade, no vignette
+  # (docs/research/2026-11-23-readiness-and-craft.md). So the default is phone_native; the phone_* looks are what a
+  # phone's own processing does in that light. In a look, `grain` and `sharpen` are that look's strengths (phones
+  # denoise and sharpen a little); finishing.filters applies them only once it reads per-look strengths, until then
+  # the global `grain` / `sharpen` blocks below apply.
+  default_look: phone_native
   look_by_creator: {}          # handle -> look
   look_by_set: {}              # shot set.set_id -> look (wins over the creator's)
   looks:
+    # Phone HDR: a slight exposure lift (brightness, gamma), gentle contrast, lifted shadows and protected highlights
+    # (the curve), neutral white balance (no balance), mild saturation, no vignette.
+    phone_native: {contrast: 0.98, brightness: 0.02, gamma: 1.04, saturation: 1.03,
+                   curves: {master: "0/0.03 0.25/0.29 0.5/0.54 0.75/0.78 0.92/0.9 1/0.97"}, grain: 0, sharpen: 0.25}
+    # Low warm sun: warmer mids and highlights, a touch more colour, shadows still lifted.
+    phone_golden_hour: {contrast: 1.0, brightness: 0.02, gamma: 1.03, saturation: 1.05,
+                        balance: {rm: 0.03, rh: 0.04, bm: -0.02, bh: -0.04},
+                        curves: {master: "0/0.03 0.25/0.28 0.5/0.53 0.75/0.78 1/0.97"}, grain: 0, sharpen: 0.25}
+    # Indoors at night under warm practicals: warm cast, lifted shadows the phone pulls up (with its noise), a bit
+    # less saturation, softer sharpening.
+    phone_night_indoor: {contrast: 0.97, brightness: 0.01, gamma: 1.06, saturation: 0.97,
+                         balance: {rs: 0.02, rm: 0.04, bm: -0.03, bh: -0.02},
+                         curves: {master: "0/0.04 0.25/0.29 0.5/0.53 0.75/0.77 1/0.96"}, grain: 5, sharpen: 0.15}
+    # Flat grey daylight: low contrast, slightly cool, the phone's colour boost, a lifted exposure.
+    phone_overcast: {contrast: 0.96, brightness: 0.03, gamma: 1.03, saturation: 1.04, balance: {bm: 0.01, bh: 0.01},
+                     curves: {master: "0/0.03 0.25/0.29 0.5/0.54 0.75/0.79 1/0.98"}, grain: 0, sharpen: 0.25}
+    # Older gentle looks, kept for look_by_set / look_by_creator; not defaults.
     neutral: {contrast: 1.02, saturation: 1.0}
     daylight: {contrast: 1.03, brightness: 0.01, saturation: 1.03, balance: {bh: -0.02, rh: 0.01},
                curves: {master: "0/0 0.25/0.24 0.75/0.77 1/1"}}
@@ -1129,27 +1371,131 @@ finishing:
                  curves: {master: "0/0.02 0.25/0.23 0.75/0.76 1/0.98"}}
   limits: {contrast: [0.9, 1.12], brightness: [-0.05, 0.05], saturation: [0.85, 1.08], gamma: [0.9, 1.1],
            balance: 0.08}
-  grain: {enabled: true, strength: 4, max_strength: 10}   # ffmpeg noise, temporal + uniform
+  # Phones denoise: grain stays very light (it was 4). A look's own `grain` wins once finishing reads it.
+  grain: {enabled: true, strength: 2, max_strength: 10}   # ffmpeg noise, temporal + uniform
+  # Phone processing sharpens mildly; globally off until finishing applies each look's `sharpen` (an upscaled
+  # 480p source sharpened globally would show halos: measure on the breadth test before switching on here).
   sharpen: {enabled: false, amount: 0.3, size: 5}         # luma unsharp mask; size odd, 3-23
-  vignette: {enabled: false, angle: 0.35}                 # radians (PI/9 is subtle)
+  vignette: {enabled: false, angle: 0.35}                 # radians (PI/9 is subtle); phones add none: keep off
   # The hook text over the first seconds: an ASS file from the captions module in its named style.
   hook: {style: hook, seconds: 1.5, max_seconds: 2.0}
   loudness: {lufs: -14, true_peak: -1.0, lra: 11, two_pass: true, sample_rate: 48000}
   encode: {preset: veryfast, crf: 18, audio_bitrate: 160k, timeout_seconds: 900}
-  # Delivery size: a smaller video (480x832 talk segments, 704x1280 clips) is upscaled (lanczos) until it covers it,
-  # keeping its aspect, then centre-cropped, in the finish pass before the grade (so captions burn at this size).
-  # Never scaled down.
-  output: {width: 720, height: 1280, flags: lanczos}
+  # Delivery size: 1080x1920, the platforms' native 9:16 (Reels, TikTok and Shorts all play it full screen; a 720p
+  # upload is upscaled by the app and looks soft next to phone footage). A smaller video (480x832 talk and story clips,
+  # 704x1280 TI2V clips) is upscaled until it covers it, keeping its aspect, then centre-cropped, in the finish pass
+  # before the grade (so captions burn at this size). Never scaled down. flags: the scale chain (any ffmpeg swscale
+  # flags; lanczos is the sharpest plain resampler, "lanczos+accurate_rnd+full_chroma_int" a slower, cleaner variant).
+  # A 1080p libx264 encode at `encode.preset` veryfast takes ~1-2x real time on the control plane's shared CPU.
+  output: {width: 1080, height: 1920, flags: lanczos}
+  # Optional AI upscale on a GPU worker before the finish pass (production would queue `kind` for the post's video;
+  # nothing queues it yet). OFF: needs a GPU benchmark of time and cost per output second and a gate comparison with
+  # lanczos on the same clips. Candidates (licences as published in their repos; re-check at adoption):
+  # Real-ESRGAN (xinntao/Real-ESRGAN, BSD-3-Clause; frame by frame, fast, can flicker on faces) and SeedVR2
+  # (ByteDance-Seed/SeedVR, Apache-2.0; temporally consistent video restoration, heavy: 3B/7B on a 48 GB card).
+  upscaler: {enabled: false, kind: null, model: null, scale: 2}
+  # One frame rate for all published video: 30 fps, what phones record and the platforms show (25 is a PAL broadcast
+  # rate no phone feed uses; 60 would double interpolated frames for nothing). Story clips (Wan 2.2) render at 16,
+  # talk (InfiniteTalk) at 25, narrated edits at 30.
+  fps: 30
+  # How a slower video reaches `fps` (manyworlds.media.fps_filter): minterpolate = motion-compensated new frames
+  # (mi_mode mci, overlapped-block compensation aobmc, bidirectional search, variable-size blocks), with scene-change
+  # detection (scd fdiff over scd_threshold) so a hard cut is never morphed; it runs at the source size, before the
+  # upscale (a few minutes of CPU for a 60 s 480p talk at most). blend = ffmpeg framerate (cross-blended frames), used
+  # instead for clips under blend_below_seconds (too few frames for motion estimation); duplicate = repeat frames
+  # (the old behaviour). enabled false = repeat frames. Faster sources just drop frames. Interpolated mouths and
+  # hands can warp on fast motion: check on the breadth test (method: blend is the fallback, softer but never warps).
+  interpolate: {enabled: true, method: minterpolate, mi_mode: mci, mc_mode: aobmc, me_mode: bidir, vsbmc: 1,
+                scd: fdiff, scd_threshold: 10, blend_below_seconds: 1.0}
+  # Transitions between joined segments (manyworlds.media.concat(transitions=...), one per join; a shot sheet's
+  # edit.transition once production passes it). cut is the default and needs nothing here. Each other kind lasts
+  # `frames` frames at the output rate, clamped to frames_range, and never more than half of either side.
+  # match: a cut that first trims each side to the given times (out_at, in_at: the motion peak), snapped to the
+  #   nearest frame, so a movement carries across the cut.
+  # whip: a fast slide (xfade per direction) with a horizontal (left/right) or vertical (up/down) box blur of
+  #   blur_px pixels over both sides of the overlap: a whip pan.
+  # blur: both sides blur (gaussian sigma) through a dissolve.
+  # flash: a short dip through white (xfade fadewhite).
+  transitions:
+    frames_range: [4, 8]
+    whip: {frames: 6, direction: left, blur_px: 48,
+           xfade: {left: slideleft, right: slideright, up: slideup, down: slidedown}}
+    blur: {frames: 8, sigma: 14, xfade: fade}
+    flash: {frames: 4, xfade: fadewhite}
   # Cover frame: the sharpest keyframe with the face, eyes open, mouth closed (face-mesh ratios: lid gap over eye
   # width, inner-lip gap over mouth width). Without MediaPipe here it is the sharpest keyframe.
   cover: {mediapipe: true, analysis_width: 512, eyes_open_min: 0.18, mouth_closed_max: 0.08}
 
 # Sound design (manyworlds.sound, plan 2026-11-22 wave 3 item 9; research 2026-11-22-video-quality-wave2-3.md s.2):
 # the shot sheet's `sound` (mic, room tone, effects, music) mixed under the voice in one ffmpeg pass before the finish
-# stage (which sets loudness; the mix does not). OFF: nothing calls it yet. Every sound must carry a licence.
+# stage (which sets loudness; the mix does not). Every sound file must carry a licence.
+# ON for the parts that need no GPU (2026-11-23, docs/research/2026-11-23-readiness-and-craft.md: silent clips and a
+# studio-dry voice are the biggest tell after resolution): procedural room tone (`room_tone`, made by ffmpeg, so no
+# licence question) and the voice polish chain (`voice_polish`). The generators (`sfx`, `music`) stay off.
 sound:
-  enabled: false
+  enabled: true
   sample_rate: 48000
+  # Procedural room tone: band-limited ffmpeg noise (anoisesrc), an optional hum (sine), a slow seeded swell
+  # (tremolo), per post deterministic (seed from the post). The preset comes from the shot sheet's sound.room_tone
+  # text by keyword (first rule in order that matches), else the set's words (set_id, location, weather, dressing),
+  # else `default`. A library file for the cue, when one resolves, wins. Levels are first guesses: a bed should sit
+  # ~30-40 dB under the voice; measure on the breadth test. Cafe murmur, crowds and voices are NOT procedural
+  # (noise can't fake speech): those need a library file.
+  room_tone:
+    procedural: true
+    amplitude: 1.0             # anoisesrc peak before the band filters and the preset's gain
+    default: room_quiet
+    gain_db_limits: [-60, -30]   # no preset (or jitter) can push a bed louder than this
+    modulation: {rate_hz: [0.1, 0.35], depth: [0.05, 0.18], gain_jitter_db: 1.5}   # seeded per post
+    duck: {enabled: true, threshold: 0.05, ratio: 2, attack_ms: 80, release_ms: 450, makeup: 1}   # gentle: rooms don't duck much
+    presets:
+      room_quiet: {colour: pink, highpass: 60, lowpass: 2500, gain_db: -44}
+      bedroom: {colour: brown, highpass: 40, lowpass: 1200, gain_db: -46}
+      kitchen: {colour: pink, highpass: 50, lowpass: 2200, gain_db: -42, hum: {hz: 100, gain_db: -14},
+                bands: [{f: 200, q: 1.2, gain_db: 2}]}   # fridge compressor hum (50 Hz mains x2)
+      living_room: {colour: pink, highpass: 50, lowpass: 3000, gain_db: -44}
+      bathroom: {colour: pink, highpass: 120, lowpass: 5000, gain_db: -44, bands: [{f: 900, q: 1.5, gain_db: 3}]}
+      street_window: {colour: brown, highpass: 40, lowpass: 900, gain_db: -38, bands: [{f: 120, q: 0.8, gain_db: 3}]}
+      outdoors: {colour: pink, highpass: 80, lowpass: 6000, gain_db: -40}
+      rain_glass: {colour: white, highpass: 900, lowpass: 7000, gain_db: -40, bands: [{f: 3000, q: 0.7, gain_db: 2}]}
+      car_interior: {colour: brown, highpass: 30, lowpass: 600, gain_db: -36}
+    keywords:
+      - {preset: rain_glass, words: [rain, raining, drizzle, downpour, storm, rain on glass, wet window]}
+      - {preset: car_interior, words: [car, driving, passenger seat, parked car]}
+      - {preset: street_window, words: [street, traffic, city, cars, road, bus, outside window, open window]}
+      - {preset: kitchen, words: [kitchen, fridge, hum, kettle, appliance]}
+      - {preset: bathroom, words: [bathroom, sink, shower]}
+      - {preset: bedroom, words: [bedroom, bed, duvet, quiet night, late night]}
+      - {preset: living_room, words: [living room, sofa, couch, lounge, flat]}
+      - {preset: outdoors, words: [park, garden, beach, outdoors, outside, walk, balcony, rooftop]}
+  # Voice polish: so TTS sounds recorded in the room, not studio-dry. Each element has its own off-switch. Runs
+  # after the mic EQ on every spoken video. ffmpeg deesser options are 0-1 (intensity, max reduction, frequency).
+  # The room is a short aecho (no impulse response needed) sized to the set by keyword; an impulse response, when
+  # one resolves, replaces it. A size `none` adds no room (outdoors).
+  voice_polish:
+    enabled: true
+    highpass: {enabled: true, hz: 80}
+    deess: {enabled: true, intensity: 0.35, max_reduction: 0.5, frequency: 0.5}
+    compress: {enabled: true, threshold: 0.125, ratio: 2.5, attack_ms: 15, release_ms: 200, makeup: 1.5}
+    room:
+      enabled: true
+      default: small
+      sizes:
+        small: {in_gain: 1.0, out_gain: 0.95, delays_ms: [7, 13, 19], decays: [0.14, 0.09, 0.05]}    # kitchen, bedroom
+        medium: {in_gain: 1.0, out_gain: 0.95, delays_ms: [12, 23, 37], decays: [0.15, 0.1, 0.06]}   # living room, cafe
+        large: {in_gain: 1.0, out_gain: 0.95, delays_ms: [21, 43, 67], decays: [0.16, 0.11, 0.07]}   # hall, gym, shop
+      by_set:
+        - {size: none, words: [park, garden, beach, outdoors, outside, street, walk, rooftop, balcony]}
+        - {size: large, words: [hall, gym, church, shop, store, warehouse, station]}
+        - {size: medium, words: [living room, lounge, cafe, restaurant, bar, classroom]}
+        - {size: small, words: [kitchen, bedroom, bathroom, car, hallway, flat]}
+    limits: {highpass_hz: [40, 150], ratio: [1, 4], delay_ms: [1, 80], decay: [0, 0.3]}
+  # Silent formats (no voice of their own) never ship silent: room tone at minimum; with `music: true`, a quiet bed
+  # from the library (an entry with kind: music and the format in its `formats`), picked per post. The shipped
+  # library has none, so room tone carries them.
+  silent_beds:
+    formats: [story_clip, story, outfit_check, silent_aesthetic]
+    music: true
   mix:
     room_tone_gain_db: -30     # a low bed under everything
     effect_gain_db: -12        # default per effect (a call can give its own)
@@ -1168,8 +1514,10 @@ sound:
   # Room character: key (a set_id or a mic) -> {path, licence, source, credit}. None shipped. OpenAIR IRs are licensed
   # per file (mostly CC-BY-4.0): check and credit each one.
   impulse_responses: {}
-  # The catalogue: {tag, uri, licence, source, credit}. An entry without a licence or source, or with a licence not
-  # listed here, is refused. Freesound's API is non-commercial only: never use it; a human may hand-pick CC0 files.
+  # The catalogue: {tag, uri, licence, source, credit, kind, formats}. kind: room_tone | music | effect (optional);
+  # formats: for a music bed, the silent formats it suits (silent_beds). For our own CC0 recordings or generated
+  # beds (ACE-Step outputs carry their entry: licence own-generated). An entry without a licence or source, or with
+  # a licence not listed here, is refused. Freesound's API is non-commercial only: never use it; a human may hand-pick CC0 files.
   # Pixabay audio is hand-picked only (its API covers images and video); its music can draw Content ID claims.
   library:
     allowed_licences: [CC0-1.0, CC-BY-4.0, Pixabay-Content-License, own-recording, own-generated]
@@ -1194,9 +1542,17 @@ sound:
     max_batch: 4
   # Music beds: ACE-Step 1.5 (kind sound.music), MIT; card: "You can strictly use the generated music for commercial
   # purposes" (HF ACE-Step/acestep-v15-base, read 2026-11-22). Instrumental only. Not in job_kinds or any image.
+  # OFF until benchmarked: measure seconds of GPU per minute of bed, and listen (no vocals, no hard drops), first.
+  # Each output carries its catalogue entry (licence `library_licence`, kind music, the payload's formats), so an
+  # accepted bed goes straight into `library.entries`. `bed_captions`: what a quiet bed for a silent format asks for.
   music:
     enabled: false
     licence_name: MIT
+    library_licence: own-generated
+    bed_captions:
+      story_clip: "quiet lo-fi instrumental bed, soft felt piano and warm pads, slow, no drums, no vocals, no drops"
+      outfit_check: "light minimal instrumental, soft plucked guitar and gentle beat, mellow, no vocals"
+      silent_aesthetic: "ambient instrumental bed, soft synth pads and distant piano, calm, no vocals, no drums"
     repo: ACE-Step/Ace-Step1.5
     code_ref: ca1e85fe9430179831e6bc6be790c332190a3866   # ace-step/ACE-Step-1.5, docs/en/INFERENCE.md read 2026-11-22
     config_path: acestep-v15-turbo

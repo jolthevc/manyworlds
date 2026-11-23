@@ -1,0 +1,361 @@
+# The breadth test's policy (2026-11-23, docs/research/2026-11-23-readiness-and-craft.md): deep-merged over
+# policy/default.yaml (manyworlds.policy.with_overlay: dicts key by key, lists replaced) for the breadth test's own
+# posts only. `mw test breadth` applies it to everything it does; the autoscaler reads it only for work in batches
+# named by operations.test_overlay.batches (test-breadth-*), to choose the machine. Production never reads it.
+
+production:
+  # Every post format the director composes with (others extend this list as they add formats). The test only.
+  formats: [photo, carousel, story, story_clip, narrated_edit, talking_video]
+  # A failed video is shown as failed, not shipped quietly as a photo: the test must see every failure.
+  reroute_failed_video: {}
+
+review:
+  # The direction gate is report-only for the test: scores are recorded, nothing is rejected on them (min 6 is not
+  # calibrated yet, and InfiniteTalk can't hit timed beats, so directed talk clips would be dropped wholesale).
+  direction: {min_score: 0, enforce: false}
+
+generation:
+  talk:
+    max_take_seconds: 30   # the 720p profile times out past ~25 s at ~50 s of GPU per second of video (3000 s limit)
+
+autonomy:
+  publish: paused          # the kill switch: nothing the test makes is published
+
+autoscale:
+  # One machine for the test where possible: walk-and-talk crosses voice, comfy and talk, all on the
+  # mw-worker-talkcomfy image, so one machine serves them all (and dance) and the post pays one cold boot, not three
+  # (manyworlds.deploy.autoscale merge_groups; the image tag is the newest of the members'). Unproven on a real
+  # machine: the first run shows whether one worker holding several models in turn fits a 48 GB L40S.
+  merge_families:
+    talkcomfy: {families: [voice, comfy, talk, dance]}
+
+# The breadth driver (manyworlds.breadth, `mw test breadth`).
+breadth:
+  batch_prefix: test-breadth-      # must start with an operations.test_batch_prefixes entry (paused machines take it)
+  require_paused: true             # refuse while operations are live (the producer would advance these posts too)
+  deadline_hours: 12               # from the run's first post; then queued jobs are cancelled and the run stops
+  cancel_on_deadline: true
+  loop_seconds: 60                 # how often the driver advances its posts
+  review_in_driver: true           # the driver reviews its batches under this overlay (direction report-only)
+  report_url_seconds: 86400        # presigned links in the report last a day
+  # Where each worker family's jobs run (pinned; a plan's `pools` replaces this). The L40S with the weights volume
+  # first (talk, comfy, voice and dance weights are cached there), the same card without it as the fallback. Image
+  # work (mw-worker-image) is not pinned: it goes to its cheapest pool.
+  pools_by_family:
+    talk: [runpod_secure_l40s_vol, runpod_secure_l40s]
+    comfy: [runpod_secure_l40s_vol, runpod_secure_l40s]
+    voice: [runpod_secure_l40s_vol, runpod_secure_l40s]
+    dance: [runpod_secure_l40s_vol, runpod_secure_l40s]
+    edit: [runpod_secure_l40s_vol, runpod_secure_l40s]
+  # Dry-run estimates (labelled as policy, not measured). Where finished attempts exist, their median is used.
+  estimate:
+    # talk renders scale with the take: ~50 s of GPU per output second (ComfyUI InfiniteTalk, 10 steps, 2026-11-22)
+    seconds_per_output_second: {talk.infinitetalk: 50}
+    boot_seconds: {default: 600, talkcomfy: 900}   # boot + image pull + model load per machine (talk weights first)
+    review_usd_per_output: 0.01    # screen + confirm calls per reviewed output, roughly
+  # What each capability needs before an item exercising it can run: policy switches that must be on (`requires`,
+  # dotted paths) and job kinds that must exist (`kinds`). An item whose capability is missing here, or not wired, is
+  # skipped with the reason. Point a capability at its real switch once another part of the build ships it.
+  capabilities:
+    photo: {}
+    carousel: {}
+    story: {}
+    story_clip: {}
+    posing: {}
+    prop_interaction: {}
+    makeup_interaction: {}
+    outfit_change: {}
+    scene_change: {}
+    long_take: {}
+    camera_propped: {}
+    camera_selfie: {}
+    camera_mirror: {}
+    camera_pov: {}
+    talking: {kinds: [talk.infinitetalk]}
+    kokoro_voice: {}
+    designed_voice: {kinds: [voice.speak]}
+    voiceover_broll: {kinds: [image.narrated]}
+    cutaway_broll: {requires: [generation.talk_hybrid.enabled], kinds: [image.narrated]}
+    walking: {requires: [generation.talk_motion.enabled], kinds: [comfy.wan_i2v]}
+    camera_follow: {requires: [generation.talk_motion.enabled]}
+    camera_push_in: {requires: [generation.talk_motion.enabled]}
+    longcat: {requires: [generation.talk_profiles.longcat]}
+    hd720: {requires: [generation.talk_profiles.hd720]}
+    dancing: {requires: [dance.enabled], kinds: [comfy.wan_animate2]}
+    reference_conditioning: {kinds: [image.qwen_edit]}
+    captions: {requires: [burned_captions.enabled]}
+    caption_styles: {requires: [burned_captions.styles]}
+    hooks: {requires: [finishing.hook]}
+    # On-screen labels and timestamps (on_screen_text), transitions on motion in the joiner (finishing.transitions),
+    # room tone (sound.room_tone) and generated music beds (sound.music, off until its licence is accepted).
+    labels: {requires: [on_screen_text.enabled]}
+    timestamps: {requires: [on_screen_text.enabled]}
+    cut_on_motion: {requires: [finishing.transitions]}
+    room_tone: {requires: [sound.enabled, sound.room_tone]}
+    music: {requires: [sound.enabled, sound.music.enabled]}
+  plans:
+    # One item per capability and feature (the audit's 18, organised by what they exercise), with existing post
+    # formats and handwritten shot sheets. Options: talk_profile (generation.talk_profiles, merged into the talk
+    # jobs), voice_engine (kokoro | voxcpm: skipped unless the creator speaks with it). Bench extra: @anchor is the
+    # creator's first reference image.
+    default:
+      creator: maren.afterhours
+      items:
+        - id: photo_propped_pose
+          exercises: [photo, posing, camera_propped]
+          format: photo
+          caption: "late shift energy"
+          body:
+            scenes: ["standing in her small hallway in the evening, full body, one hand on her hip, the other in her jacket pocket"]
+            shots:
+              - set: {location: "her narrow apartment hallway", time_of_day: "evening", light_direction: "ceiling light and a lamp on her right", light_quality: "soft", color_temp: "warm"}
+                framing: {shot_size: "full body", angle: "eye level", lens_mm: 26, device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "stands with one hand on her hip, weight on one leg", eyeline: lens}]
+        - id: carousel_outfits_mirror
+          exercises: [carousel, outfit_change, posing, camera_mirror]
+          format: carousel
+          caption: "three looks for one night out"
+          body:
+            scenes:
+              - "mirror photo in her bedroom wearing a black slip dress, phone held at chest height"
+              - "the same mirror wearing wide jeans and a cropped white tee, one hand in her hair"
+              - "the same mirror in a long camel coat over a grey knit, looking down at her shoes"
+            shots:
+              - set: {location: "her bedroom, full-length mirror by the window", set_id: "bedroom_mirror", time_of_day: "evening", light_quality: "soft", color_temp: "warm lamp"}
+                wardrobe: {outfit: "black satin slip dress, thin straps"}
+                framing: {shot_size: "full body", device: selfie}
+                blocking: [{at_s: 0, action: "holds the phone at chest height, small smile", eyeline: screen}]
+              - set: {location: "her bedroom, full-length mirror by the window", set_id: "bedroom_mirror", time_of_day: "evening"}
+                wardrobe: {outfit: "wide light-blue jeans, cropped white t-shirt"}
+                framing: {shot_size: "full body", device: selfie}
+                blocking: [{at_s: 0, action: "one hand in her hair, hip pushed out", eyeline: screen}]
+              - set: {location: "her bedroom, full-length mirror by the window", set_id: "bedroom_mirror", time_of_day: "evening"}
+                wardrobe: {outfit: "long camel coat over a grey knit jumper, black trousers"}
+                framing: {shot_size: "full body", device: selfie}
+                blocking: [{at_s: 0, action: "looks down at her shoes, coat open", eyeline: off}]
+        - id: story_selfie
+          exercises: [story, camera_selfie]
+          format: story
+          caption: ""
+          body:
+            scenes: ["selfie on a night bus, city lights blurred in the window behind her, tired half smile"]
+            shots:
+              - set: {location: "the upper deck of a night bus", time_of_day: "late night", light_quality: "mixed", color_temp: "cool window, warm interior"}
+                framing: {shot_size: "close-up", device: selfie, lens_mm: 24, handheld: light}
+                blocking: [{at_s: 0, action: "rests her head on the window, half smile", eyeline: lens}]
+        - id: story_clip_prop
+          exercises: [story_clip, prop_interaction]
+          format: story_clip
+          caption: "the only good part of a closing shift"
+          body:
+            scenes: ["at her kitchen counter late at night, pouring tea from a kettle into a big mug"]
+            script: "she pours the tea slowly, then wraps both hands around the mug and smiles at the camera"
+            shots:
+              - set: {location: "her small galley kitchen", time_of_day: "late night", light_direction: "under-cabinet light", light_quality: "soft", color_temp: "warm", props: "a plain white kettle and a big mug"}
+                framing: {shot_size: "medium shot", device: propped, camera_move: static}
+                blocking:
+                  - {at_s: 0, action: "pours tea from the kettle into the mug", eyeline: prop, hands: "one on the kettle handle, one steadying the mug"}
+                  - {at_s: 3, action: "wraps both hands around the mug and looks up", eyeline: lens}
+        - id: narrated_pov_broll
+          exercises: [voiceover_broll, camera_pov]
+          format: narrated_edit
+          caption: "what a night off actually looks like"
+          body:
+            scenes:
+              - "first-person view of her hands unlocking her apartment door at night, keys in hand"
+              - "first-person view of a bowl of noodles on the sofa, a show paused on the laptop"
+              - "first-person view of her window with the city lights outside, a mug on the sill"
+            script: "Night off. Doors locked, phone on silent. Noodles, one episode, and I'm asleep before it ends. Honestly perfect."
+            shots:
+              - {cutaway: true, framing: {angle: "first-person POV", device: held}, blocking: [{at_s: 0, action: "her hands turn the key in the lock", eyeline: prop}]}
+              - {cutaway: true, framing: {angle: "first-person POV", device: held}, blocking: [{at_s: 0, action: "her hand lifts noodles with chopsticks", eyeline: prop}]}
+              - {cutaway: true, framing: {angle: "first-person POV", device: held}, blocking: [{at_s: 0, action: "her hand sets a mug on the window sill", eyeline: prop}]}
+        - id: narrated_timestamps
+          exercises: [voiceover_broll, camera_pov, timestamps, labels]
+          format: narrated_edit
+          caption: "a closing shift in four times"
+          body:
+            scenes:
+              - "first-person view of a bar counter being wiped down, chairs up on the tables"
+              - "first-person view of an empty street at night under orange street lights"
+              - "first-person view of her front door opening onto a dark hallway"
+            script: "Eleven forty, last table's gone. Twelve fifteen, the walk home. Twelve forty, finally. This is the whole glamorous life."
+            on_screen_text: "11:40 PM close | 12:15 AM walk home | 12:40 AM home"
+            shots:
+              - {cutaway: true, framing: {angle: "first-person POV", device: held}, edit: {on_screen_text: "11:40 PM close"}}
+              - {cutaway: true, framing: {angle: "first-person POV", device: held}, edit: {on_screen_text: "12:15 AM walk home"}}
+              - {cutaway: true, framing: {angle: "first-person POV", device: held}, edit: {on_screen_text: "12:40 AM home"}}
+        - id: talk_kokoro
+          exercises: [talking, kokoro_voice, captions]
+          format: talking_video
+          caption: "unpopular opinion"
+          options: {voice_engine: kokoro}
+          body:
+            scenes: ["sitting on her sofa in the evening, lamp light, talking to her propped phone"]
+            script: "Okay, unpopular opinion. Going out on a Tuesday is better than any Saturday. Nobody's there, and the bartender actually talks to you."
+        - id: talk_designed_voice
+          exercises: [talking, designed_voice, captions]
+          format: talking_video
+          caption: "the tuesday rule"
+          options: {voice_engine: voxcpm}
+          body:
+            scenes: ["sitting on her sofa in the evening, lamp light, talking to her propped phone"]
+            script: "Okay, unpopular opinion. Going out on a Tuesday is better than any Saturday. Nobody's there, and the bartender actually talks to you."
+        - id: talk_one_shot_30s
+          exercises: [talking, long_take, camera_propped, makeup_interaction]
+          format: talking_video
+          caption: "five minute face for a twelve hour shift"
+          body:
+            scenes: ["at her bathroom mirror putting on mascara, talking to her propped phone, bright bathroom light"]
+            shots:
+              - set: {location: "her small white bathroom", time_of_day: "early evening", light_direction: "overhead and the mirror light", light_quality: "bright, flat", props: "a mascara wand"}
+                framing: {shot_size: "medium close-up", device: propped, camera_move: static, lens_mm: 26}
+                blocking:
+                  - {at_s: 0, action: "holds up the mascara and starts talking", eyeline: lens}
+                  - {at_s: 8, action: "leans toward the mirror and puts on mascara", eyeline: off, hands: "mascara wand near her lashes"}
+                  - {at_s: 20, action: "turns back to the phone and shrugs", eyeline: lens}
+                performance:
+                  energy: medium
+                  lines:
+                    - {text: "So this is the whole routine for a twelve hour shift, and it takes five minutes, I promise.", delivery: "casual, a bit fast"}
+                    - {text: "Mascara first, because if I only get one thing done it's this. Two coats, that's it, no curler, I don't have the patience at six pm.", delivery: "matter of fact"}
+                    - {text: "Then a bit of tint on the cheeks and I'm out the door. Is it perfect? No. Does anyone at the bar care? Also no.", delivery: "dry, amused"}
+        - id: talk_two_shots_scene_change
+          exercises: [talking, scene_change]
+          format: talking_video
+          caption: "before and after a shift"
+          body:
+            scenes:
+              - "in her kitchen before work, early evening light, talking to her propped phone"
+              - "back home on her sofa late at night, lamp light, hair down, talking to the same phone"
+            shots:
+              - set: {location: "her small galley kitchen", time_of_day: "early evening", light_direction: "window on her left"}
+                framing: {shot_size: "medium shot", device: propped, camera_move: static}
+                performance: {energy: high, lines: [{text: "Six pm, coffee number two, I'm ready for anything tonight.", delivery: "upbeat"}]}
+              - set: {location: "her living room sofa", time_of_day: "late night", practical_lights: "a single warm lamp"}
+                framing: {shot_size: "medium shot", device: propped, camera_move: static}
+                look: {hair_style: "down and a bit messy"}
+                performance: {energy: low, lines: [{text: "Two am. I take it back. I was not ready for anything.", delivery: "flat, tired, then a small laugh"}]}
+        - id: talk_hybrid_cutaway
+          exercises: [talking, cutaway_broll]
+          format: talking_video
+          caption: "the perfect late night snack"
+          body:
+            scenes:
+              - "in her kitchen at night, talking to her propped phone"
+              - "close-up of her hands drizzling honey on thick buttered toast on a plate"
+              - "in her kitchen at night, taking a bite of toast and laughing"
+            shots:
+              - framing: {shot_size: "medium shot", device: propped}
+                performance: {lines: [{text: "The best food after a late shift is not pizza. It's toast.", delivery: "confident"}]}
+              - cutaway: true
+                framing: {shot_size: "close-up", device: held}
+                performance: {lines: [{text: "Thick bread, too much butter, honey on top.", delivery: "slow, savouring"}]}
+              - framing: {shot_size: "medium shot", device: propped}
+                blocking: [{at_s: 0, action: "takes a bite and laughs", eyeline: lens}]
+                performance: {lines: [{text: "Fight me.", delivery: "playful"}]}
+        - id: walk_and_talk
+          exercises: [talking, walking, camera_follow]
+          format: talking_video
+          caption: "walk home thoughts"
+          body:
+            scenes: ["walking along a quiet street at night under street lights, talking to the phone she holds out in front of her"]
+            shots:
+              - set: {location: "a quiet residential street", time_of_day: "night", light_quality: "orange street lights", weather: "dry, cold"}
+                framing: {shot_size: "medium shot", device: selfie, camera_move: follow, handheld: held}
+                blocking: [{at_s: 0, action: "walks toward the camera, talking", eyeline: lens}]
+                performance: {lines: [{text: "Walking home and thinking, why does every shift feel shorter on the walk back?", delivery: "musing, a little out of breath"}]}
+        - id: talk_push_in
+          exercises: [talking, camera_push_in]
+          format: talking_video
+          caption: "one thing nobody tells you"
+          body:
+            scenes: ["sitting at her kitchen table at night, leaning in to tell the camera a secret"]
+            shots:
+              - framing: {shot_size: "medium close-up", device: propped, camera_move: push_in}
+                blocking: [{at_s: 0, action: "leans in toward the camera", eyeline: lens}]
+                performance: {lines: [{text: "One thing nobody tells you about bar work. The regulars become your family.", delivery: "quiet, sincere"}]}
+        - id: talk_longcat
+          exercises: [talking, longcat]
+          format: talking_video
+          caption: "longcat check"
+          options: {talk_profile: longcat}
+          body:
+            scenes: ["sitting on her sofa in the evening, lamp light, talking to her propped phone"]
+            script: "Quick one. If a bartender remembers your order, tip them double. That's the rule."
+        - id: talk_hd720
+          exercises: [talking, hd720]
+          format: talking_video
+          caption: "close up"
+          options: {talk_profile: hd720}
+          body:
+            scenes: ["close-up of her face on the sofa in warm lamp light, talking softly to her propped phone"]
+            shots:
+              - framing: {shot_size: "close-up", device: propped, camera_move: static}
+                performance: {lines: [{text: "I'm saying this quietly because my neighbours are asleep. Best night of the week.", delivery: "whispered, smiling"}]}
+        - id: talk_caption_styles
+          exercises: [talking, captions, caption_styles, hooks]
+          format: talking_video
+          caption: "rate my closing playlist"
+          body:
+            scenes: ["standing behind an empty bar at closing, talking to her propped phone"]
+            shots:
+              - framing: {shot_size: "medium shot", device: propped}
+                edit: {hook: "rate my closing playlist", caption_style: "tiktok_box", on_screen_text: "rate my closing playlist"}
+                performance: {lines: [{text: "Closing playlist, rate it. Slow songs only, lights up, everybody out.", delivery: "bright, teasing"}]}
+        - id: outfits_cut_on_motion
+          exercises: [outfit_change, cut_on_motion, posing, camera_propped]
+          format: talking_video
+          caption: "three looks, one spin each"
+          body:
+            scenes:
+              - "full body in her bedroom in a black slip dress, phone propped on the dresser"
+              - "full body in the same bedroom in wide jeans and a white tee"
+              - "full body in the same bedroom in a camel coat"
+            shots:
+              - set: {location: "her bedroom", set_id: "bedroom_mirror"}
+                wardrobe: {outfit: "black satin slip dress"}
+                framing: {shot_size: "full body", device: propped}
+                blocking: [{at_s: 0, action: "spins once and poses", eyeline: lens}]
+                performance: {lines: [{text: "Look one.", delivery: "bright"}]}
+              - set: {location: "her bedroom", set_id: "bedroom_mirror"}
+                wardrobe: {outfit: "wide light-blue jeans, white t-shirt"}
+                framing: {shot_size: "full body", device: propped}
+                edit: {transition_in: "cut on the spin"}
+                blocking: [{at_s: 0, action: "spins once and poses", eyeline: lens}]
+                performance: {lines: [{text: "Look two.", delivery: "bright"}]}
+              - set: {location: "her bedroom", set_id: "bedroom_mirror"}
+                wardrobe: {outfit: "long camel coat"}
+                framing: {shot_size: "full body", device: propped}
+                edit: {transition_in: "cut on the spin"}
+                blocking: [{at_s: 0, action: "spins once and poses", eyeline: lens}]
+                performance: {lines: [{text: "And three. Which one?", delivery: "bright, asking"}]}
+        - id: story_clip_room_tone
+          exercises: [story_clip, room_tone]
+          format: story_clip
+          caption: "rain on the window"
+          body:
+            scenes: ["curled up by her window at night with a blanket, rain on the glass, a candle on the sill"]
+            script: "she pulls the blanket closer and watches the rain"
+            shots:
+              - set: {location: "her window seat", time_of_day: "night", weather: "rain", practical_lights: "a candle on the sill"}
+                framing: {shot_size: "medium shot", device: propped, camera_move: static}
+                sound: {mic: room, room_tone: "rain on the window, quiet flat", music: "soft lo-fi bed, low"}
+        - id: narrated_music_bed
+          exercises: [voiceover_broll, music]
+          format: narrated_edit
+          caption: "sunday reset"
+          body:
+            scenes: ["first-person view of her hands folding laundry on a bed in soft morning light"]
+            script: "Sunday reset. Laundry, clean sheets, nothing else."
+            shots:
+              - {cutaway: true, framing: {angle: "first-person POV", device: held}, sound: {music: "soft acoustic bed, low"}}
+        - id: dance_casual
+          exercises: [dancing]
+          bench: {kind: comfy.wan_animate2, jobs: 1, extra: {image_uri: "@anchor", reference: dance-casual}}
+        - id: dance_twirl
+          exercises: [dancing, posing]
+          bench: {kind: comfy.wan_animate2, jobs: 1, extra: {image_uri: "@anchor", reference: twirl-dress}}
+        - id: qwen_edit_bench
+          exercises: [reference_conditioning]
+          bench: {kind: image.qwen_edit, jobs: 2, extra: {images: ["@anchor"]}}

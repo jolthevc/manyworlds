@@ -58,13 +58,25 @@ def with_compile(g: dict, p: dict, loaders: list[str]) -> dict:
     return g
 
 
-def graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict, blocks_to_swap: int) -> dict:
+def negative_text(params: dict, negative: str | None = None) -> str:
+    """The negative prompt a graph encodes: the job's own (payload `negative_prompt`, compiled from the shot sheet by
+    manyworlds.direction.compile_prompts), else params.negative_prompt, else Wan's standard NEGATIVE. A blank one
+    counts as none, so an undirected job keeps the standard list."""
+    for text in (negative, params.get("negative_prompt")):
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return NEGATIVE
+
+
+def graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict, blocks_to_swap: int,
+          negative: str | None = None) -> dict:
     """The InfiniteTalk graph (see _talk_graph), with torch.compile when the params ask for it."""
     return with_compile(_talk_graph(image=image, audio=audio, prompt=prompt, frames=frames, seed=seed, params=params,
-                                    blocks_to_swap=blocks_to_swap), params, ["model"])
+                                    blocks_to_swap=blocks_to_swap, negative=negative), params, ["model"])
 
 
-def _talk_graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict, blocks_to_swap: int) -> dict:
+def _talk_graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict, blocks_to_swap: int,
+                negative: str | None = None) -> dict:
     """The InfiniteTalk graph in ComfyUI's API format. `image` and `audio` are file names in ComfyUI's input folder;
     `frames` is the clip length at 25 fps (the audio's)."""
     p = params
@@ -92,7 +104,7 @@ def _talk_graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, 
                               "audio_cfg_scale": float(p.get("audio_cfg", 1.0)), "multi_audio_type": "para"}},
         "text": {"class_type": "WanVideoTextEncodeCached",
                  "inputs": {"model_name": TEXT_ENCODER, "precision": "bf16", "positive_prompt": prompt,
-                            "negative_prompt": p.get("negative_prompt", NEGATIVE), "quantization": "disabled",
+                            "negative_prompt": negative_text(p, negative), "quantization": "disabled",
                             "use_disk_cache": False, "device": "gpu"}},
         "image": {"class_type": "LoadImage", "inputs": {"image": image}},
         "i2v": {"class_type": "WanVideoImageToVideoMultiTalk",
@@ -141,7 +153,7 @@ def v2v_start(params: dict) -> int:
 
 
 def graph_v2v(*, video: str, audio: str, prompt: str, frames: int, seed: int, params: dict,
-              blocks_to_swap: int) -> dict:
+              blocks_to_swap: int, negative: str | None = None) -> dict:
     """Lip sync onto an existing clip (`video`, a file name in ComfyUI's input folder, at TALK_FPS) in ComfyUI's API
     format. `frames` is the talk length at 25 fps (the audio's). params.start_step (of params.steps) is the denoise
     strength: how much of the clip is redrawn (lower redraws more; the example: 2 of 4). params.clip_vision adds the
@@ -149,7 +161,7 @@ def graph_v2v(*, video: str, audio: str, prompt: str, frames: int, seed: int, pa
     p = params
     start = v2v_start(p)
     g = _talk_graph(image="", audio=audio, prompt=prompt, frames=frames, seed=seed, params=params,
-                    blocks_to_swap=blocks_to_swap)
+                    blocks_to_swap=blocks_to_swap, negative=negative)
     del g["image"]
     w, h = int(p["width"]), int(p["height"])
     g.update({
@@ -426,13 +438,15 @@ I2V_WEIGHTS = {
 HIGH, LOW = (f for _, f in I2V_WEIGHTS["diffusion_models"])
 
 
-def graph_i2v(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swap: int) -> dict:
+def graph_i2v(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swap: int,
+              negative: str | None = None) -> dict:
     """A story clip from one approved photo, in ComfyUI's API format (torch.compile when the params ask)."""
-    return with_compile(_i2v_graph(image=image, prompt=prompt, seed=seed, params=params, blocks_to_swap=blocks_to_swap),
-                        params, ["high_model", "low_model"])
+    return with_compile(_i2v_graph(image=image, prompt=prompt, seed=seed, params=params, blocks_to_swap=blocks_to_swap,
+                                   negative=negative), params, ["high_model", "low_model"])
 
 
-def _i2v_graph(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swap: int) -> dict:
+def _i2v_graph(*, image: str, prompt: str, seed: int, params: dict, blocks_to_swap: int,
+               negative: str | None = None) -> dict:
     p = params
     steps, split = int(p.get("steps", 6)), int(p.get("high_steps", 3))
 
@@ -471,7 +485,7 @@ def _i2v_graph(*, image: str, prompt: str, seed: int, params: dict, blocks_to_sw
         "vae": {"class_type": "WanVideoVAELoader", "inputs": {"model_name": VAE, "precision": "bf16"}},
         "text": {"class_type": "WanVideoTextEncodeCached",
                  "inputs": {"model_name": TEXT_ENCODER, "precision": "bf16", "positive_prompt": prompt,
-                            "negative_prompt": p.get("negative_prompt", NEGATIVE), "quantization": "disabled",
+                            "negative_prompt": negative_text(p, negative), "quantization": "disabled",
                             "use_disk_cache": False, "device": "gpu"}},
         "image": {"class_type": "LoadImage", "inputs": {"image": image}},
         "i2v": {"class_type": "WanVideoImageToVideoEncode",
@@ -550,15 +564,16 @@ def longcat_windows(frames: int, window: int, overlap: int) -> int:
 
 
 def graph_longcat(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict,
-                  blocks_to_swap: int) -> dict:
+                  blocks_to_swap: int, negative: str | None = None) -> dict:
     """The LongCat-Video-Avatar graph in ComfyUI's API format (torch.compile when the params ask). `frames` is the
     clip length at the model's frame rate (LONGCAT_FPS); one SaveVideo per window, prefixed mw_longcat_wNN."""
     return with_compile(_longcat_graph(image=image, audio=audio, prompt=prompt, frames=frames, seed=seed,
-                                       params=params, blocks_to_swap=blocks_to_swap), params, ["model"])
+                                       params=params, blocks_to_swap=blocks_to_swap, negative=negative),
+                        params, ["model"])
 
 
 def _longcat_graph(*, image: str, audio: str, prompt: str, frames: int, seed: int, params: dict,
-                   blocks_to_swap: int) -> dict:
+                   blocks_to_swap: int, negative: str | None = None) -> dict:
     p, v = params, longcat_version(params)
     weights = LONGCAT_WEIGHTS[v]
     window, overlap = int(p.get("frame_window", 93)), int(p.get("overlap", 13))
@@ -583,7 +598,7 @@ def _longcat_graph(*, image: str, audio: str, prompt: str, frames: int, seed: in
                              "block_swap_args": ["swap", 0], "lora": ["lora", 0]}},
         "text": {"class_type": "WanVideoTextEncodeCached",
                  "inputs": {"model_name": TEXT_ENCODER, "precision": "bf16", "positive_prompt": prompt,
-                            "negative_prompt": p.get("negative_prompt", NEGATIVE), "quantization": "disabled",
+                            "negative_prompt": negative_text(p, negative), "quantization": "disabled",
                             "use_disk_cache": False, "device": "gpu"}},
         "image": {"class_type": "LoadImage", "inputs": {"image": image}},
         "ref": {"class_type": "WanVideoEncode",

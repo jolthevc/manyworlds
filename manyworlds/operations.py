@@ -7,6 +7,10 @@ policy `operations.mode`:
           the GitHub backstop) always runs.
   live    everything runs as designed (production, showrunner, strategist, launches within their own gates).
 Only the owner sets `live`.
+
+The breadth test (manyworlds.breadth, `mw test breadth`) runs while paused: its jobs are in `test-breadth-<run>`
+batches, which the `test-` prefix admits on the autoscaler and on workers (whose policy is baked into their image, so
+the prefix list must keep `test-`). produce_tick stays off; the driver is the only thing advancing those posts.
 """
 
 from __future__ import annotations

@@ -79,15 +79,84 @@ def _family(policy: Policy, kind: str) -> str:
 
 
 def _family_kinds(policy: Policy, family: str) -> list[str]:
+    group = merge_groups(policy).get(family)
+    if group:   # a merged machine serves every kind of its member families
+        return [k for k in policy.get("job_kinds", default={}) if _family(policy, k) in group["families"]]
     return [k for k in policy.get("job_kinds", default={}) if _family(policy, k) == family]
+
+
+# Merged families (autoscale.merge_families, 2026-11-23): families that run on the same worker image can share ONE
+# machine, so work that crosses them (walk-and-talk: voice, then comfy, then talk) pays one cold boot instead of three.
+# {name: [family, ...]} or {name: {families: [...], tag, disk_gb, ram_gb, max_hours, max_usd, max_attempt_minutes}}.
+# Absent (the shipped policy): every family has its own machines, as before. The breadth test's overlay sets it, and
+# the autoscaler reads the overlay only for work in the overlay's batches (policy.for_batches).
+
+def merge_groups(policy: Policy) -> dict[str, dict]:
+    out = {}
+    for name, cfg in (policy.get("autoscale", "merge_families", default={}) or {}).items():
+        cfg = {"families": list(cfg)} if isinstance(cfg, (list, tuple)) else dict(cfg or {})
+        if cfg.get("families"):
+            out[str(name)] = {**cfg, "families": [str(f) for f in cfg["families"]]}
+    return out
+
+
+def machine_family(policy: Policy, kind: str) -> str:
+    """The family of the machine that serves `kind`: its merge group when it is in one, else its own family."""
+    fam = _family(policy, kind)
+    return next((name for name, g in merge_groups(policy).items() if fam in g["families"]), fam)
+
+
+def _tag_order(tag: str) -> tuple:
+    import re
+    return tuple(int(n) for n in re.findall(r"\d+", str(tag)))
+
+
+def merged_image(policy: Policy, name: str) -> dict:
+    """The worker image of a merged machine: its members' image (they must share one), the newest member tag unless
+    the group names one, enough of every resource for any member, and every member's weights on its disk."""
+    group = merge_groups(policy)[name]
+    imgs = [policy.get("worker_images", f) for f in group["families"] if policy.get("worker_images", f)]
+    if not imgs or len({i["image"] for i in imgs}) != 1:
+        raise ProviderError(f"merged family {name!r}: its families must share one worker image")
+    downloads = [float(i.get("download_gb", 0)) for i in imgs]
+    disks = [int(i["disk_gb"]) for i in imgs]
+    env: dict = {}
+    for i in imgs:
+        env.update(i.get("env") or {})
+    cudas = [float(i["min_cuda"]) for i in imgs if i.get("min_cuda")]
+    return {"image": imgs[0]["image"],
+            "tag": str(group.get("tag") or max((str(i.get("tag", "latest")) for i in imgs), key=_tag_order)),
+            "cpu": int(group.get("cpu") or max(int(i["cpu"]) for i in imgs)),
+            "ram_gb": int(group.get("ram_gb") or max(int(i["ram_gb"]) for i in imgs)),
+            # each member downloads its own weights on first use: the largest disk plus the others' downloads
+            "disk_gb": int(group.get("disk_gb") or max(disks) + round(sum(downloads) - max(downloads))),
+            "download_gb": sum(downloads), "env": env, **({"min_cuda": max(cudas)} if cudas else {})}
+
+
+def _limit(policy: Policy, family: str, by_family_key: str, group_key: str, default_key: str, default: float) -> float:
+    """A per-family machine limit (gpu_runs.<by_family_key>); a merged family without its own entry takes the group's
+    `group_key`, else the largest of its members' limits."""
+    runs = policy.get("gpu_runs", default={}) or {}
+    by_family = runs.get(by_family_key) or {}
+    fallback = float(by_family.get("default", runs.get(default_key, default)))
+    if family in by_family:
+        return float(by_family[family])
+    group = merge_groups(policy).get(family)
+    if group:
+        if group.get(group_key) is not None:
+            return float(group[group_key])
+        return max(float(by_family.get(f, fallback)) for f in group["families"])
+    return fallback
 
 
 def waiting_work(conn, batches: list[str] | None = None) -> list[dict]:
     """Job kinds (and pinned pools) that have runnable jobs no worker holds; with `batches` (LIKE patterns),
-    only jobs in those batches (paused operations: tests and benchmarks only)."""
+    only jobs in those batches (paused operations: tests and benchmarks only). `batches` in each row: the batches
+    the work is in (the test overlay applies to some)."""
     return conn.execute(
         """
         SELECT kind, pools, count(*) AS n, min(created_at) AS oldest, max(priority) AS top_priority,
+               array_agg(DISTINCT coalesce(batch, '')) AS batches,
                bool_and(coalesce(batch, '') LIKE 'post-%%') AS production FROM jobs
         WHERE attempts < max_attempts
           AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
@@ -103,6 +172,12 @@ def _per_family(cfg: dict, key: str, family: str, default):
 
 def seconds_per_job(conn, policy: Policy, kind: str) -> float:
     """Typical wall time of one job of this kind, from recent finished attempts."""
+    return job_seconds(conn, policy, kind)[0]
+
+
+def job_seconds(conn, policy: Policy, kind: str) -> tuple[float, str]:
+    """(typical wall time of one job of this kind, where it came from): "measured" (median of finished attempts
+    within autoscale.scale.history_days) or "policy" (autoscale.scale.default_job_seconds)."""
     cfg = policy.get("autoscale", "scale", default={})
     row = conn.execute(
         """SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY a.gpu_seconds) AS s FROM attempts a
@@ -111,8 +186,8 @@ def seconds_per_job(conn, policy: Policy, kind: str) -> float:
              AND a.started_at > now() - make_interval(days => %s)""",
         (kind, int(cfg.get("history_days", 7)))).fetchone()
     if row and row["s"]:
-        return float(row["s"])
-    return float(_per_family(cfg, "default_job_seconds", _family(policy, kind), 300))
+        return float(row["s"]), "measured"
+    return float(_per_family(cfg, "default_job_seconds", _family(policy, kind), 300)), "policy"
 
 
 def batch_wait(conn, policy: Policy, family: str, work: list[dict], now: datetime) -> dict | None:
@@ -152,27 +227,29 @@ def machines_wanted(conn, policy: Policy, kind: str, waiting: int) -> int:
 
 
 def attempt_limit_minutes(policy: Policy, family: str) -> float:
-    """How long one job attempt may run on a machine of this family before the enforcers stop it."""
-    by_family = policy.get("gpu_runs", "max_attempt_minutes_by_family", default={}) or {}
-    return float(by_family.get(family, by_family.get("default", 20)))
+    """How long one job attempt may run on a machine of this family before the enforcers stop it (a merged family:
+    the longest of its members, unless it has its own)."""
+    return _limit(policy, family, "max_attempt_minutes_by_family", "max_attempt_minutes", "default_max_attempt_minutes", 20)
 
 
 def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, pool: str,
-               now: datetime) -> dict:
-    """Register then create one worker machine for `kind` in `pool`. Raises NoCapacity."""
+               now: datetime, *, family: str | None = None) -> dict:
+    """Register then create one worker machine for `kind` in `pool`. Raises NoCapacity. `family`: the machine's
+    family when it is not the kind's own (a merged family, autoscale.merge_families: one machine for all its members'
+    kinds, on their shared image)."""
     p = policy.pool(pool)
     provider = providers[p["provider"]]
-    family = _family(policy, kind)
-    img = policy.get("worker_images", family)
+    family = family or _family(policy, kind)
+    img = merged_image(policy, family) if family in merge_groups(policy) else policy.get("worker_images", family)
     if not img:
         raise ProviderError(f"no worker_images entry for family {family!r}")
     gpu_name = policy.get("gpu_names", p["gpu"], provider.name)
     if not gpu_name:
         raise NoCapacity(f"no {provider.name} name for {p['gpu']} in policy gpu_names")
     runs = policy.get("gpu_runs", default={})
-    hours = float(runs.get("max_hours_by_family", {}).get(family, runs.get("default_max_hours", 2)))
+    hours = _limit(policy, family, "max_hours_by_family", "max_hours", "default_max_hours", 2)
     hours = min(hours, float(runs.get("max_hours_limit", 12)))
-    max_usd = float(runs.get("max_usd_by_family", {}).get(family, runs.get("default_max_usd", 1.0)))
+    max_usd = _limit(policy, family, "max_usd_by_family", "max_usd", "default_max_usd", 1.0)
     name = f"mw-{family}-{p['gpu'].removeprefix('rtx')}-{provider.name}-{uuid.uuid4().hex[:4]}"
     kinds = _family_kinds(policy, family)
     try:
@@ -182,7 +259,9 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
     # Tunables workers read from the environment, per family then per pool (policy).
     env.update({k: str(v) for k, v in (img.get("env") or {}).items()})
     env.update({k: str(v) for k, v in (p.get("worker_env") or {}).items()})
-    env.update({"MW_WORKER_KINDS": ",".join(kinds), "MW_POOL": pool, "MW_GROUP": name,
+    members = merge_groups(policy).get(family, {}).get("families") or [family]
+    env.update({"MW_WORKER_KINDS": ",".join(kinds), "MW_WORKER_FAMILIES": ",".join(members),
+                "MW_POOL": pool, "MW_GROUP": name,
                 "MW_PROVIDER": provider.name,
                 # so a worker image built before this pool existed still knows its price and provider
                 "MW_POOL_INFO": json.dumps({k: v for k, v in p.items() if k != "worker_env"})})
@@ -257,7 +336,12 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         pools = list(w["pools"] or policy.get("job_kinds", kind, "pools", default=[]))
         if all(policy.get("gpu_pools", p, "provider") == "local" for p in pools):
             continue  # runs on the control host (e.g. reviews), not on rented GPUs
-        max_groups = int(_per_family(cfg, "max_groups_per_kind", _family(policy, kind), 1))
+        # The machine family: the kind's own, or a merge group (autoscale.merge_families) the work's batches use.
+        mpol = policy_mod.for_batches(policy, w.get("batches"))
+        merged = machine_family(mpol, kind)
+        merged = merged if merged in merge_groups(mpol) else None
+        mfam = merged or _family(policy, kind)
+        max_groups = int(_per_family(cfg, "max_groups_per_kind", mfam, 1))
         open_groups = conn.execute(
             "SELECT name, pool FROM gpu_groups WHERE stopped_at IS NULL AND %s = ANY(job_kinds)", (kind,)).fetchall()
         serving = [g for g in open_groups if g["pool"] in pools]
@@ -288,13 +372,13 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             actions.append({"action": "cooldown", "kind": kind, "after": recent["name"],
                             "reason": recent["stop_reason"]})
             continue
-        streak = no_output_streak(conn, policy, _family(policy, kind), now, pools)
+        streak = no_output_streak(conn, policy, mfam, now, pools)
         if streak:   # pinned benchmarks too: they are what ran the talk loop of 2026-11-20
             actions.append({"action": "not_launching", "reason": "no_output_streak", "kind": kind, **streak})
             continue
         # Pinned work (benchmarks) runs where it was pinned; everything else goes to the
         # pool with the lowest measured cost per accepted output, skipping paused pools.
-        order, scores = (pools, []) if pinned else scoring.launch_order(conn, policy, _family(policy, kind),
+        order, scores = (pools, []) if pinned else scoring.launch_order(conn, policy, mfam,
                                                                         pools, now)
         if not order:
             actions.append({"action": "no_pool", "kind": kind, "reason": "every pool is paused",
@@ -308,7 +392,8 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             if info["provider"] in unfunded:
                 continue
             try:
-                launched = launch_one(conn, policy, providers, kind, pool, now)
+                launched = (launch_one(conn, mpol, providers, kind, pool, now, family=merged) if merged
+                            else launch_one(conn, policy, providers, kind, pool, now))
                 if scores:
                     launched["scores"] = _brief(scores)
                 actions.append(launched)

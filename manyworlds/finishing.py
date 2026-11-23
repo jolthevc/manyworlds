@@ -1,8 +1,12 @@
 """Finishing: what a finished video gets on the control plane before it is published (no GPU).
 
-  scale      a video smaller than `finishing.output` (720x1280; cut-joined talk segments are 480x832) is upscaled
-             (lanczos) until it covers it, keeping its aspect, and centre-cropped, first in the chain, so the grade,
-             grain and burned-in captions all work at the delivery size; never scaled down
+  rate       the delivery frame rate (`finishing.fps`, 30): a slower video (Wan 2.2 clips at 16 fps, talk at 25) is
+             motion-interpolated (`finishing.interpolate`, media.fps_filter) at its own size, before the upscale
+             (cheaper); a faster one drops frames
+  scale      a video smaller than `finishing.output` (1080x1920; talk renders at 480x832) is upscaled
+             (`output.flags`, lanczos) until it covers it, keeping its aspect, and centre-cropped, so the grade,
+             grain and burned-in captions all work at the delivery size; never scaled down. An AI upscaler on a
+             GPU worker (`finishing.upscaler`, off) would run before this stage; then nothing is left to scale here
   grade      a gentle natural look per creator or set (policy `finishing.looks`: neutral, daylight, warm_night),
              built from ffmpeg eq, colorbalance and curves; every value is clamped to `finishing.limits`, so no
              look can oversaturate or crush the image
@@ -144,15 +148,43 @@ def finished_size(width: int, height: int, policy: Policy) -> tuple[int, int]:
     return out if out and scale_filter(width, height, policy) else (width, height)
 
 
+def target_fps(policy: Policy | None) -> float | None:
+    """The delivery frame rate (`finishing.fps`), or None when the video keeps its own."""
+    try:
+        v = float(cfg(policy).get("fps") or 0)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def rate_filter(fps: float | None, policy: Policy, *, seconds: float | None = None) -> str | None:
+    """The step to the delivery rate for a video at `fps` (0 = unknown: plain `fps=`), by `finishing.interpolate`
+    (media.fps_filter). None when no rate is set or the video is already at it."""
+    from .media import fps_filter
+    return fps_filter(fps, target_fps(policy), cfg(policy).get("interpolate"), seconds=seconds)
+
+
+def upscaler(policy: Policy | None) -> dict | None:
+    """The AI upscaler to run on a GPU worker before the finish stage (`finishing.upscaler`), or None when it is
+    off or names no job kind. Off: it needs a GPU benchmark (time and cost per output second, a gate pass rate
+    against lanczos) before production queues it; until then the finish pass's lanczos does the scaling."""
+    u = cfg(policy).get("upscaler") or {}
+    return dict(u) if u.get("enabled") and u.get("kind") else None
+
+
 def filters(look: str | dict | None, *, policy: Policy, grain: bool | float | None = None,
             sharpen: bool | float | None = None, vignette: bool | float | None = None,
-            hook_ass: Path | str | None = None, size: tuple[int, int] | None = None) -> str:
-    """The video filter chain: the upscale to `finishing.output` (when `size`, the input's frame size, is smaller),
-    grade, sharpen, vignette, grain, then the hook text (so text gets no grain), and yuv420p. `grain`, `sharpen`
-    and `vignette`: None = policy, False or 0 = off, True = on at the policy strength, a number = that strength."""
+            hook_ass: Path | str | None = None, size: tuple[int, int] | None = None,
+            fps: float | None = None, seconds: float | None = None) -> str:
+    """The video filter chain: the frame rate (when `fps`, the input's rate, is given: 0 = unknown), the upscale to
+    `finishing.output` (when `size`, the input's frame size, is smaller), grade, sharpen, vignette, grain, then the
+    hook text (so text gets no grain), and yuv420p. The rate comes first, so motion interpolation works on the
+    small source frames. `grain`, `sharpen` and `vignette`: None = policy, False or 0 = off, True = on at the
+    policy strength, a number = that strength."""
     c = cfg(policy)
+    rate = rate_filter(fps, policy, seconds=seconds) if fps is not None else None
     scale = scale_filter(*size, policy) if size else None
-    chain = ([scale] if scale else []) + grade(look, policy)
+    chain = ([rate] if rate else []) + ([scale] if scale else []) + grade(look, policy)
 
     def strength(arg, key: str, field: str) -> float:
         block = c.get(key) or {}
@@ -238,8 +270,9 @@ def measure(video: Path, policy: Policy, *, timeout: float = 600) -> dict | None
 
 def finish(video: Path, out: Path, *, look: str | dict | None, grain: bool | float | None = None,
            hook_ass: Path | str | None = None, policy: Policy, timeout: float | None = None) -> Path:
-    """The upscale to `finishing.output` (when smaller), grade, grain (and sharpen / vignette per policy), the hook
-    text, and loudness, into `out` (H.264 + AAC), in one ffmpeg pass (plus a loudness measurement)."""
+    """The delivery frame rate (`finishing.fps`, interpolated up when slower), the upscale to `finishing.output`
+    (when smaller), grade, grain (and sharpen / vignette per policy), the hook text, and loudness, into `out`
+    (H.264 + AAC), in one ffmpeg pass (plus a loudness measurement)."""
     from .media import ffmpeg, probe
     c = cfg(policy)
     enc = c.get("encode") or {}
@@ -247,7 +280,8 @@ def finish(video: Path, out: Path, *, look: str | dict | None, grain: bool | flo
     video, out = Path(video), Path(out)
     info = probe(video, timeout=timeout)
     size = (info["width"], info["height"]) if info["width"] and info["height"] else None
-    vf = filters(look, policy=policy, grain=grain, hook_ass=hook_ass, size=size)
+    vf = filters(look, policy=policy, grain=grain, hook_ass=hook_ass, size=size, fps=info.get("fps") or 0.0,
+                 seconds=info.get("seconds"))
     cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video), "-map", "0:v:0", "-vf", vf,
            "-c:v", "libx264", "-preset", str(enc.get("preset", "veryfast")), "-crf", str(enc.get("crf", 18)),
            "-pix_fmt", "yuv420p"]

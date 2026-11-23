@@ -207,6 +207,8 @@ def test_a_hybrid_talking_video_renders_only_its_on_camera_part_and_joins_with_c
         out.write_bytes(p.read_bytes())
         return out
     monkeypatch.setattr(media, "normalize", fake_normalize)
+    out_w = policy.get("generation", "talk_hybrid", "output", "width")   # the delivery width (finishing.output)
+    assert out_w == policy.get("finishing", "output", "width")
     policy = _talking(policy)
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
@@ -225,7 +227,7 @@ def test_a_hybrid_talking_video_renders_only_its_on_camera_part_and_joins_with_c
     talks = _segment_jobs(conn, pid)
     cuts = conn.execute("SELECT id, payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
     assert len(talks) == modes.count("talk") and len(cuts) == modes.count("narrated")
-    assert all(len(c["payload"]["images"]) == 2 and c["payload"]["width"] == 720 for c in cuts)   # the cutaway photos
+    assert all(len(c["payload"]["images"]) == 2 and c["payload"]["width"] == out_w for c in cuts)   # delivery size
     for j in talks:
         rendered(conn, store, tmp_path, j["id"])
     video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
@@ -234,7 +236,8 @@ def test_a_hybrid_talking_video_renders_only_its_on_camera_part_and_joins_with_c
         conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes) VALUES (%s, %s, 'video', %s, 'x', 1)",
                      (c["id"], cid, store.put_file(_tmp(tmp_path, c["id"]), f"cut/{c['id']}.mp4").uri))
     assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
-    assert len(joined[0]) == len(modes) and len(normalised) == len(modes) and normalised[0]["width"] == 720
+    assert len(joined[0]) == len(modes) and len(normalised) == len(modes) and normalised[0]["width"] == out_w
+    assert normalised[0]["fps"] == policy.get("finishing", "fps")      # one frame rate for the whole join
 
 
 def _tmp(tmp_path, name):
