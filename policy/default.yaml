@@ -82,7 +82,7 @@ gpu_pools:
   # exits once its queue has been empty for idle_exit_seconds. usd_per_hour is an ESTIMATE for performance-2x with 4 GB
   # (2026-11-23): the owner should confirm it on Fly's pricing page (fly.io/docs/about/pricing).
   fly_finisher:      {provider: fly,    gpu: none,    usd_per_hour: 0.09, interruptible: false, process_group: finisher,
-                      idle_exit_seconds: 120}
+                      idle_exit_seconds: 120, deploy_grace_seconds: 60}   # grace: see cli worker (fly deploy)
 
 # Job kinds and the pools allowed to run them. The autoscaler orders them by measured cost
 # per accepted output (autoscale.scoring); this order only breaks ties and decides which

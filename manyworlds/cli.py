@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 from . import bench, db, ledger, logs, policy as policy_mod, queue, storage, wakeup
 
@@ -224,7 +225,12 @@ def main(argv: list[str] | None = None) -> int:
             if not _open_run(group):
                 # Started by something other than the autoscaler (a deploy), or for a run already closed: a clean
                 # exit, so the machine stops and is not restarted (the enforcer stops it too).
-                print(f"no open run for this machine ({group or 'none'}): not working pool {pool}")
+                # Stay up a moment first: `fly deploy` counts a machine that exits at once as a failed start and
+                # stops the rollout of every other process group (2026-11-23). It stops and stays stopped after.
+                grace = float(info.get("deploy_grace_seconds") or 0)
+                print(f"no open run for this machine ({group or 'none'}): not working pool {pool}; "
+                      f"stopping in {grace:.0f} s")
+                time.sleep(grace)
                 return 0
             os.environ["MW_GROUP"] = group
             self_destroy = fly.stop_self
