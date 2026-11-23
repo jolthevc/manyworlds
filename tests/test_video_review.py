@@ -121,10 +121,10 @@ def test_an_intermediate_motion_clip_is_not_reviewed(conn, policy, store, tmp_pa
     assert video.pending_jobs(conn, policy) == [story]   # walk-and-talk's source clip: the take is judged instead
 
 
-def _story_post(conn, policy, store, tmp_path):
+def _story_post(conn, policy, store, tmp_path, scenes=("pouring tea by a rainy window",)):
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
-    planner_post = post(0, "story_clip", ["pouring tea by a rainy window"], script="steam rises from the cup",
+    planner_post = post(0, "story_clip", list(scenes), script="steam rises from the cup",
                         series="slow mornings")
     from manyworlds.brain import planner
     planner.plan_period(conn, policy, PlanStub([planner_post]), cid, start=START)
@@ -187,6 +187,29 @@ def test_a_story_clip_is_graded_with_no_captions_and_gets_a_cover_from_its_keyfr
     keys = [r["uri"] for r in conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'keyframe'",
                                            (job["id"],)).fetchall()]
     assert body["cover"]["uri"] in keys
+
+
+def test_a_clip_edit_makes_one_clip_per_scene_and_joins_them(conn, policy, store, tmp_path, monkeypatch):
+    from manyworlds import media
+    joined = []
+
+    def fake_concat(paths, out, **kw):
+        joined.append(len(paths))
+        out.write_bytes(b"joined")
+        return out
+    monkeypatch.setattr(media, "concat", fake_concat)
+    monkeypatch.setattr(media, "duration", lambda p, **k: 5.0)
+    pid = _story_post(conn, policy, store, tmp_path, scenes=("a fitting room mirror", "a street at golden hour"))
+    jobs = _clip_jobs(conn, pid)
+    body = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
+    assert len(jobs) == 2 and [j["payload"]["image_uri"] for j in jobs] == [i["uri"] for i in body["images"]]
+    assert len({j["payload"]["seed"] for j in jobs}) == 2
+    for j in jobs:
+        rendered(conn, store, tmp_path, j["id"])
+    video.run_pending(conn, policy, ClipStub(clip()), store, tmp_path)
+    assert production.advance(conn, policy, now=NOW, store=store)["ready"] == 1
+    row = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
+    assert joined == [2] and row["video"]["uri"].endswith(".mp4")
 
 
 def test_rejected_clips_get_new_seeds_then_the_post_is_dropped(conn, policy, store, tmp_path):

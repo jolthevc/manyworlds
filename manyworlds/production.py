@@ -44,6 +44,7 @@ format is added there.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -56,6 +57,8 @@ from . import queue
 from .creator.lab import photo_prompt, prompts
 from .review import repair
 from .policy import Policy
+
+log = logging.getLogger("manyworlds.production")
 
 
 def _cfg(policy: Policy) -> dict:
@@ -317,26 +320,29 @@ def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
                          post_id=post["id"], idempotency_key=f"post:{post['id']}:edit:{attempt}")
 
 
-def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int):
-    """A story clip from the post's approved first photo: the scene, moving as the planner wrote."""
+def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, index: int = 0):
+    """A story clip from one approved photo (scene `index`; a clip edit has one per scene): the scene, moving as
+    the planner wrote (the script's motion is the first clip's; later clips move as their shots say)."""
     bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["bible"]
-    vid, scene, motion = policy.get("generation", "video", default={}), body["scenes"][0], body.get("script", "")
-    shot = _shot(body, 0)   # a story clip is one shot, from scene 0's photo
+    vid, scene = policy.get("generation", "video", default={}), body["scenes"][index]
+    motion = body.get("script", "") if index == 0 else ""
+    shot = _shot(body, index)
+    image = chosen[index]
+    key = f"post:{post['id']}:clip:{attempt}" if index == 0 else f"post:{post['id']}:clip{index}:{attempt}"
     keyframes = int(policy.get("review", "video", "keyframes", default=4))
     reference = dance_reference(policy, shot)
     if reference:   # the shot's motion comes from a licensed reference clip (Wan-Animate-2), reviewed like any clip
-        payload = dance_payload(policy, bible, scene, shot, image_uri=chosen[0]["uri"], reference=reference,
-                                seed=_seed(post, 500, attempt))
+        payload = dance_payload(policy, bible, scene, shot, image_uri=image["uri"], reference=reference,
+                                seed=_seed(post, 500 + 50 * index, attempt))
         payload["scene"] = f"{scene} Movement: {motion}" if motion else scene
         _with_crops(payload, policy)
         return queue.enqueue(conn, _dance_kind(policy), payload, creator_id=post["creator_id"],
-                             batch=f"post-{post['id']}", post_id=post["id"],
-                             idempotency_key=f"post:{post['id']}:clip:{attempt}")
-    payload = {"image_uri": chosen[0]["uri"],
+                             batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=key)
+    payload = {"image_uri": image["uri"],
                "scene": f"{scene} Movement: {motion}" if motion else scene,   # the video judge scores against it
                "width": vid.get("width", 704), "height": vid.get("height", 1280), "frames": vid.get("frames", 121),
                "keyframes": keyframes,
-               "seed": _seed(post, 500, attempt),
+               "seed": _seed(post, 500 + 50 * index, attempt),
                "params": {"steps": vid.get("steps", 30), "guidance": vid.get("guidance", 5.0), "fps": vid.get("fps", 24)}}
     _with_prompts(payload, "i2v", bible, scene, motion=motion, shot=shot, policy=policy)
     _with_shot(payload, shot)
@@ -344,7 +350,64 @@ def _clip_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     kind = _story_clip_kind(conn, policy, post)
     _clip_params(policy, kind, payload)
     return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
-                         batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=f"post:{post['id']}:clip:{attempt}")
+                         batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=key)
+
+
+# Clip edits (generation.clip_edit): a silent story clip of several shots, one clip per scene photo, joined with
+# each shot's transition in. Outfit checks, recipe steps, a walk through a city: the faceless and visual shapes
+# that need no voice. Each clip is its own job, reviewed by the video gate and repaired on its own.
+def clip_edit(policy: Policy, post: dict, chosen: list[dict]) -> bool:
+    cfg = policy.get("generation", "clip_edit", default={}) or {}
+    return post["format"] == "story_clip" and bool(cfg.get("enabled")) and len(chosen) > 1
+
+
+def _advance_clip_edit(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], store=None):
+    cap = int(policy.get("generation", "clip_edit", "max_clips", default=4))
+    n = min(len(chosen), cap)
+    lists = body.setdefault("clip_edit_jobs", [[] for _ in range(n)])
+    repairs = int(policy.get("review", "video", "max_repairs_per_post", default=2))
+    failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
+    results = []
+    for i in range(n):
+        step = Step(lists[i], lambda j: _clip_state(conn, j),
+                    lambda attempt, i=i: _clip_job(conn, policy, post, body, chosen, attempt, index=i),
+                    (f"clip_repairs_{i}", repairs), (f"clip_failures_{i}", failures), "clip", f"clip {i}: ")
+        results.append(advance_step(body, step))
+    states = {s for s, _ in results}
+    if "dropped" in states:
+        return "dropped", None
+    if "waiting" in states:
+        return "waiting", None
+    return "chosen", join_clips(conn, policy, post, [v for _, v in results], store, body=body)
+
+
+def join_clips(conn, policy: Policy, post: dict, videos: list[dict], store=None, *, body: dict) -> dict:
+    """A clip edit's clips joined, each with its shot's transition in. Idempotent: a rerun reuses the asset."""
+    import tempfile
+    from pathlib import Path
+
+    from . import media, storage
+    from .direction import transition_kind
+    store = store or storage.from_url()
+    key = f"assets/{post['creator_id']}/post-{post['id']}/clips-joined.mp4"
+    existing = conn.execute("SELECT id, uri FROM assets WHERE uri = %s AND kind = 'video'", (store.uri_for(key),)).fetchone()
+    if existing:
+        return existing
+    texts = [str((((_shot(body, i) or {}).get("edit") or {}).get("transition_in")) or "").strip()
+             for i in range(1, len(videos))]
+    transitions = [transition_kind(t, policy) if t else "cut" for t in texts]
+    transitions = transitions if any(t != "cut" for t in transitions) else None
+    with tempfile.TemporaryDirectory(prefix="mw-clips-") as d:
+        paths = [store.get_file(v["uri"], Path(d) / f"clip_{i:02d}.mp4") for i, v in enumerate(videos)]
+        seconds = [media.duration(p) for p in paths]
+        out = media.concat(paths, Path(d) / "joined.mp4", transitions=transitions, policy=policy)
+        stored = store.put_file(out, key)
+    return conn.execute(
+        """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
+           VALUES (%s, 'video', %s, %s, %s, %s, %s) RETURNING id, uri""",
+        (post["creator_id"], stored.uri, stored.sha256, stored.bytes,
+         Jsonb({"segments": [str(v["id"]) for v in videos], "segment_seconds": seconds}),
+         Jsonb({"joined": [v["uri"] for v in videos], "transitions": transitions}))).fetchone()
 
 
 # Dance and motion transfer (policy `dance`; worker/handlers/dance_animate.py): a shot sheet's `motion_reference` names
@@ -1646,6 +1709,14 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
     with tempfile.TemporaryDirectory(prefix="mw-finish-") as tmp:
         d = Path(tmp)
         raw = store.get_file((source or video)["uri"], d / "raw.mp4")
+        trim_s = float(finishing.cfg(policy).get("trim_head_s", 0) or 0)
+        if trim_s > 0 and fmt not in SPOKEN:
+            # An image-to-video clip opens on its still start photo for a beat: the first frame must already move.
+            try:
+                raw = media.trim_start(raw, d / "trimmed.mp4",
+                                       frames=round(trim_s * float(media.probe(raw).get("fps") or 16)))
+            except Exception as e:  # noqa: BLE001 - an untrimmed clip beats no clip
+                log.warning("could not trim the opening of post %s: %s", post["id"], str(e)[:200])
         cues, used, mixed, passes = sound_plan(conn, policy, post, body, video), None, False, 0
         if cues:   # room tone, polish, effects, music under the voice (policy sound): its own pass, before the finish
             try:
@@ -1829,6 +1900,8 @@ def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> s
                         post = {**post, "body": body}
             if body.get("talk_segments"):   # a long script: one job per segment, then joined
                 state, video = _advance_long_talk(conn, policy, post, body, chosen, store)
+            elif clip_edit(policy, post, chosen) or body.get("clip_edit_jobs"):
+                state, video = _advance_clip_edit(conn, policy, post, body, chosen, store)
             else:
                 state, video = _advance_follow_up(conn, policy, post, body, chosen, store)
             target = (_cfg(policy).get("reroute_failed_video") or {}).get(post["format"])
