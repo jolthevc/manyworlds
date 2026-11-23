@@ -1,9 +1,48 @@
 # Overnight build report (2026-11-22 to 23)
 
-Nothing ran on a GPU. No paid service was added. Operations stayed paused, launches 0, publishing paused. Each change
-went to `main` with CI passing.
+Nothing ran on a GPU. No paid service was added. Operations stayed paused, launches 0, publishing paused.
 
-## What changed
+**A correction first.** For about six commits, I reported CI as passing when it wasn't. My CI-watching script exited
+"success" on failures. A syntax error in the showrunner prompt had broken test collection since the agency commit.
+- **Found:** when the docs commits came back red.
+- **Fixed:** the script now fails properly. The syntax error and the five-plus test failures it had hidden are fixed.
+- **Now:** every commit since is genuinely green, and the head of `main` passes.
+
+## Second half of the night: testing and the agency
+
+**Testing (no GPU):**
+- **Breadth test dry run** on Fly: 21 items, about $3.87 for first attempts.
+- **Talent manager, live** on a sandbox clone (`maren-sim`), Claude only, $0.53 for all the paid tests together:
+  - built a specific, strong dossier: series, hooks, what she never makes
+  - v2 wrote a calibrated conviction (0.4, range 0.2–0.6) with its case
+  - diagnosed the real risk as production yield ($22 spent, nothing shipped), not the concept
+- **Director, live:** it failed with "compiled grammar is too large". The reviewer had flagged this risk; it was
+  real, and every directed post would have silently gone undirected.
+  - I measured it on the API: any list nested inside a shot breaks the grammar, even a list of strings.
+  - The director is now two calls: the shots, then their edit (on-screen text, cuts, caption style, cover).
+  - Both calls verified live.
+
+**The agency** (design and my assessment: `docs/superpowers/plans/2026-11-23-agency.md`).
+My view: most of the fifteen functions should be code, not agents. Four judgement roles (CEO, market leads, talent
+managers, the creative team) sit on a bench of specialists. What was missing was connective tissue. Built:
+- **Requests between roles** (`mw brain requests`):
+  - typed: tier, budget, research, experiment, cohort, escalate
+  - one owner each, with rights and money checked in code
+  - a rejection comes back only with new evidence or after a cooldown
+  - research runs at once within an allowance
+  - anything over a role's rights goes to you
+- **Production tiers** (economy, standard, premium), set by the CEO and argued for by talent managers.
+- **Predictions ledger and scorecard** (`mw brain scorecard`): claims scored against real outcomes only. This is how we
+  will see whether the organisation's judgement improves.
+- **Talent manager v2:** conviction with its case, typed requests, predictions, a diagnose mode for drops, its market's
+  learnings, and what became of its requests. Reviews run on a cadence by stage.
+- **CEO:** decides every request addressed to it and sees market theses.
+- **Market lead:** activated per market (3 or more creators, or opened by the CEO). It writes the thesis, conviction and
+  learnings, and proposes cohorts.
+- **Chief of staff** (code): resolves predictions, expires undecided requests, reports failing agents, spend with no
+  decisions, and requests waiting on you.
+
+## First half of the night
 
 **1. Brain: the agency layer (the main piece).**
 - **Archetype library** (`policy/archetypes/archetypes-v1.yaml`). Nine playbooks: fashion and style, beauty/GRWM,
