@@ -84,10 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "WORKER_DATABASE_URL=... for piping into `fly secrets import` (never into a terminal)")
     wc.add_argument("--force", action="store_true", help="rotate even while GPU machines are up (they lose access)")
     lm = sub.add_parser("llm", help="LLM models: compare candidates with a role's model, choose the best per job")
-    lm.add_argument("action", choices=["shadow-report", "recommend", "judge"],
+    lm.add_argument("action", choices=["shadow-report", "recommend", "judge", "batches"],
                     help="shadow-report: the comparisons; recommend: which candidate qualifies (--propose files it as "
-                         "an approval); judge: score a generative role's answers blind (spends up to --usd)")
-    lm.add_argument("role", help="a role, or `all` for recommend")
+                         "an approval); judge: score a generative role's answers blind (spends up to --usd); "
+                         "batches: the brain's call journal and Message Batches (what batching saved)")
+    lm.add_argument("role", nargs="?", default="all", help="a role, or `all` for recommend")
     lm.add_argument("--propose", action="store_true")
     lm.add_argument("--usd", type=float, default=1.0, help="judge: most to spend")
     lm.add_argument("--days", type=float, default=30)
@@ -305,7 +306,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"reaped {queue.reap(conn)} jobs")
     elif args.cmd == "llm":
         from . import selection, shadow
-        if args.action == "shadow-report":
+        if args.action == "batches":
+            from . import llm_batch
+            _print(llm_batch.status(conn, pol))
+        elif args.action == "shadow-report":
             _print(shadow.report(conn, args.role, days=args.days, tolerance=args.tolerance))
         elif args.action == "judge":
             from .llm import LLM
@@ -473,8 +477,11 @@ def _brain_ops(args, conn, pol) -> int:
     if not args.loop:   # worker, one tick
         _print(runtime.tick(conn, pol, llm, worker_id=worker_id))
         return 0
-    runtime.serve(lambda: db.connect(), policy_mod.load, lambda c, p: Claude(c, p), worker_id=worker_id,
-                  on_output=_print)
+    def make_llm(c, p):
+        llm = Claude(c, p)
+        llm.batching = True   # the brain worker journals its jobs' calls and batches llm.batch.roles (llm_batch)
+        return llm
+    runtime.serve(lambda: db.connect(), policy_mod.load, make_llm, worker_id=worker_id, on_output=_print)
     return 0
 
 def _review(args, conn, pol, llm) -> int:

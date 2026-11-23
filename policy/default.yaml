@@ -1994,6 +1994,22 @@ llm:
     review:     {candidates: [nemotron-3.5-vl, qwen3.8-flash], share: 0.2}
     judge:      {candidates: [qwen4-max, qwen3.7-plus], share: 0.2}   # judging sends images: vision models only
   shadow_usd_per_day: 0.5
+  # Message Batches (manyworlds.llm_batch, 2026-11-23): on the brain worker, every call a brain job makes is journaled
+  # (a rerun replays it for nothing) and the roles below, on a Claude model, go through Anthropic's batch API at
+  # half price; the job steps aside until its answer lands (most within the hour). Only work nobody waits on by the
+  # second: never the director, review or comment replies (those run outside brain jobs anyway).
+  batch:
+    enabled: true
+    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead]
+    discount: 0.5              # the batch price as a share of the standard one (Anthropic pricing, checked 2026-11-23)
+    gather_seconds: 30         # wait this long for other jobs' calls so they share a batch
+    max_requests: 1000         # per batch (the API takes up to 100,000)
+    poll_seconds: 60           # how often an open batch is checked
+    requeue_seconds: 900       # a waiting job's fallback wake-up; the flusher wakes it as soon as its answer lands
+    max_wait_minutes: 120      # a batched call not answered by then is asked directly (the job won't wait all day)
+    near_match_min: 0.9        # a rerun's prompt that changed a little still matches its row (word overlap)
+    flush_lease_seconds: 300
+    keep_days: 14
   # A call to an open model that times out or drops is billed by the host but returns no usage: the ledger records
   # an estimate (prompt characters / chars_per_token in, output_tokens out) so it matches the host's bill.
   failed_call_estimate: {chars_per_token: 4, output_tokens: 3000, image_tokens: 1500}

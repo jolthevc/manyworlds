@@ -18,7 +18,7 @@ import psycopg
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from .. import logs, operations, queue
+from .. import llm_batch, logs, operations, queue
 from ..policy import Policy
 from ..worker.runner import NonRetryable
 from . import agent as agent_mod
@@ -81,12 +81,17 @@ def _run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: 
         budget.check(conn, effective, tag)
         ctx = agent_mod.AgentContext(conn=conn, policy=effective, llm=llm, job=job, now=now)
         with _heartbeat(conn, job.id, worker_id, lease_s), \
-                llm.tagged(tag, job.id, before_call=lambda: budget.check(conn, effective, tag)):
+                llm.tagged(tag, job.id, before_call=lambda: budget.check(conn, effective, tag), attempt=job.attempts):
             result = a.run(ctx)
         if not queue.complete(conn, job.id, worker_id, result or {}):
             log.warning("brain job %s was taken over before %s finished", job.id, name)
             return {"job": job.id, "agent": name, "status": "lost"}
         return {"job": job.id, "agent": name, "status": "done"}
+    except llm_batch.Deferred as d:
+        # A batched call (llm.batch.roles) is not answered yet: back to the queue, no attempt charged; the batch
+        # flusher wakes the job when its answer lands, and the rerun replays its finished calls from the journal.
+        queue.defer(conn, job.id, worker_id, seconds=float(llm_batch.cfg(policy).get("requeue_seconds", 900)))
+        return {"job": job.id, "agent": name, "status": "deferred", "waiting_on": d.row_id}
     except (agent_mod.UnknownAgent, NonRetryable) as e:
         msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
         queue.fail(conn, job.id, worker_id, msg, retryable=False)
@@ -114,6 +119,15 @@ def serve(connect, load_policy, make_llm, *, worker_id: str, loops: int | None =
         n += 1
         out: list = []
         try:
+            if getattr(llm, "batching", False):
+                try:   # send the jobs' batched calls, collect answers, wake their jobs (manyworlds.llm_batch)
+                    sent = llm_batch.flush(conn, pol, llm.client)
+                    if any(sent.values()) and on_output:
+                        on_output({"batches": sent})
+                except (psycopg.OperationalError, psycopg.InterfaceError):
+                    raise
+                except Exception:  # noqa: BLE001 - the batch API down must not stop the jobs that don't batch
+                    log.exception("batch flush failed")
             out = tick(conn, pol, llm, worker_id=worker_id)
             if out and on_output:
                 on_output(out)

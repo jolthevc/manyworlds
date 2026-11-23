@@ -11,6 +11,9 @@ stored in `llm_shadow` and compared by `manyworlds.shadow`. The candidate never 
 failures are only recorded, and its spend is capped per day (`llm.shadow_usd_per_day`).
 
 Every call, failed attempts included, is charged at the policy's per-token prices.
+
+Inside a brain job on the brain worker (`batching`), calls are journaled and the roles in `llm.batch.roles` go
+through the Message Batches API at half price (manyworlds.llm_batch).
 """
 
 from __future__ import annotations
@@ -31,7 +34,8 @@ from typing import Any, Callable, Protocol, TypeVar
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ValidationError
 
-from . import ledger
+from . import ledger, llm_batch
+from .llm_batch import Deferred  # noqa: F401 - re-exported: a batched call not answered yet
 from .policy import Policy
 
 T = TypeVar("T", bound=BaseModel)
@@ -211,6 +215,7 @@ class LLM:
         self.shadowing = True   # off while model selection judges shadow answers (no shadows of the judging)
         self._overrides: dict | None = None   # approved role switches, re-read every llm.override_cache_seconds
         self._overrides_at = 0.0
+        self.batching = False   # journal calls in brain jobs and batch llm.batch.roles (the brain worker sets it)
 
     @property
     def client(self):
@@ -272,11 +277,13 @@ class LLM:
         return self._record(model, usage.input_tokens, usage.output_tokens, cr, cw, usd, creator_id, agent)
 
     @contextlib.contextmanager
-    def tagged(self, agent: str, job_id, before_call=None):
+    def tagged(self, agent: str, job_id, before_call=None, attempt: int | None = None):
         """Charge every call inside the block to this agent and job (per-agent budgets, traces).
         `before_call` runs before each call, e.g. the Brain runtime's budget check, so an agent
-        that keeps calling is stopped mid-job, not only before it starts."""
-        before, self._tag = self._tag, {"agent": agent, "job_id": job_id, "before_call": before_call}
+        that keeps calling is stopped mid-job, not only before it starts. `attempt`: the job's attempt, which keys
+        its journaled calls (manyworlds.llm_batch); each block is one run of the job."""
+        before, self._tag = self._tag, {"agent": agent, "job_id": job_id, "before_call": before_call,
+                                        "attempt": attempt}
         try:
             yield
         finally:
@@ -288,6 +295,15 @@ class LLM:
         if self._tag.get("before_call"):
             self._tag["before_call"]()
         model, fallback = self.route(role)
+        if llm_batch.active(self):
+            return llm_batch.journaled(self, role, model, fallback, system=system, content=content, schema=schema,
+                                       effort=effort, creator_id=creator_id)
+        return self.answer(role, model, fallback, system=system, content=content, schema=schema, effort=effort,
+                           creator_id=creator_id)
+
+    def answer(self, role: str, model: str, fallback: str | None, *, system: str, content: Any, schema: type[T],
+               effort: str, creator_id) -> T:
+        """One call now: the role's model, its fallback if an open model fails, and the role's shadow test."""
         n0 = len(self.calls)
         try:
             out = self._call(model, system=system, content=content, schema=schema, effort=effort,
@@ -363,6 +379,22 @@ class LLM:
         if response.parsed_output is None:
             raise RuntimeError(f"{model} returned no parsable output (stop_reason={response.stop_reason})")
         return response.parsed_output
+
+    def batch_params(self, model: str, *, system, content, schema: type[T], effort: str) -> dict:
+        """A Claude call's Messages parameters for the Message Batches API: the same model, prompt (cached system
+        block included), effort and output schema as `_claude` sends (messages.parse's own schema transform), less
+        the server-side refusal fallback, which a batch request can't carry."""
+        if getattr(schema, "strict_required", False):
+            fmt = {"type": "json_schema", "schema": strict_json_schema(schema)}
+        else:
+            try:
+                from anthropic.lib._parse._transform import to_json_output_format
+                fmt = to_json_output_format(schema)
+            except ImportError:   # an SDK without the helper: the strict shape is accepted too
+                fmt = {"type": "json_schema", "schema": strict_json_schema(schema)}
+        return {"model": model, "max_tokens": int(self.policy.get("llm", "max_output_tokens", default=16000)),
+                "system": self._system(system), "messages": [{"role": "user", "content": content}],
+                "output_config": {"effort": effort, "format": fmt}}
 
     @staticmethod
     def _raise_if_refused(model: str, response) -> None:

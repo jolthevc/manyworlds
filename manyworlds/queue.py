@@ -154,6 +154,17 @@ def fail(conn, job_id, worker_id: str, error: str, *, retryable: bool = True,
     return row["status"] if row else None
 
 
+def defer(conn, job_id, worker_id: str, *, seconds: float) -> str | None:
+    """Give a job back to wait for something it asked for (a batched LLM answer, manyworlds.llm_batch): queued again
+    with no attempt charged, not before `seconds` from now unless woken earlier (run_after set to now)."""
+    row = conn.execute(
+        """UPDATE jobs SET status = 'queued', attempts = greatest(attempts - 1, 0), worker_id = NULL,
+                           lease_until = NULL, run_after = now() + make_interval(secs => %s), updated_at = now()
+           WHERE id = %s AND worker_id = %s AND status = 'running' RETURNING status""",
+        (float(seconds), job_id, worker_id)).fetchone()
+    return row["status"] if row else None
+
+
 def release(conn, job_id, worker_id: str, error: str, *, max_faults: int = 6,
             machine: str | None = None) -> str | None:
     """Give a job back without charging it an attempt: the *worker* failed (GPU out of
