@@ -7,9 +7,11 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 ## Layout
 
 - `manyworlds/queue.py` — Postgres job queue for interruptible GPUs (leases, heartbeats, reclaim, reaping)
-- `manyworlds/worker/` — generic worker loop + handlers per job kind (`image.zimage`, `image.narrated`, `image.voice`, `image.qwen_edit` (reference-conditioned scene photos; its own worker family `edit` on the image worker image, off), `video.wan_i2v`, `talk.infinitetalk` (lip-sync, own image; InfiniteTalk or LongCat-Video-Avatar by `params.model`; on the ComfyUI engine it also lip-syncs a motion clip, V2V), `voice.design`/`voice.speak`, `train.lora`, `fake.*`); a kind's worker family is its prefix unless `job_kinds.<kind>.family` says otherwise; `smoke.py` checks a built image before it is pushed
+- `manyworlds/worker/` — generic worker loop + handlers per job kind (`image.zimage`, `image.narrated`, `image.voice`, `image.qwen_edit` (reference-conditioned scene photos; its own worker family `edit` on the image worker image, off), `comfy.wan_i2v` (story and motion clips: ComfyUI, Wan 2.2 I2V A14B + lightx2v; `hosted.video` is the fallback; the diffusers `video.wan_i2v` path was retired 2026-11-22), `comfy.wan_animate2` (motion transfer: dance, poses), `talk.infinitetalk` (lip-sync, own image; InfiniteTalk or LongCat-Video-Avatar by `params.model`; on the ComfyUI engine it also lip-syncs a motion clip, V2V), `voice.design`/`voice.speak`, `train.lora`, `fake.*`); a kind's worker family is its prefix unless `job_kinds.<kind>.family` says otherwise; a code fault (TypeError, missing package...) fails a job at once, a machine fault releases it; a card below `job_kinds.<kind>.min_vram_gb` never serves the kind; a worker prefers the loaded model's kinds and frees the last engine when it switches family; `keyframes.py` is shared by every clip handler; `smoke.py` checks a built image before it is pushed
 - `manyworlds/brain/` — orchestration decisions (research plan, theses, choices, content plans); each one recorded in `decisions`
 - `manyworlds/brain/agent.py` — agent contract (`AgentContext`, `record_decision`, `commission`); agents in `brain/agents/` run as `brain.<name>` jobs via `brain/runtime.py` (`mw brain worker`)
+- `manyworlds/brain/archetypes.py` + `policy/archetypes/` — the archetype library (playbooks: audience promise, how they communicate, content mix, talk share, capabilities, series patterns, hooks, edit grammar, pitfalls); the director, showrunner and talent manager read it
+- `manyworlds/creator/dossier.py` + `brain/agents/talent_manager.py` — the agency layer: a talent manager per creator builds the dossier (archetypes, positioning, audience insight, story, content system; one checked call per section, kept apart from siblings) at launch, reviews the career weekly, writes the brief the showrunner plans from, edits the profile only within `brain.talent_manager.editable`, asks the owner for the rest, and reports to the strategist (the CEO) through the portfolio snapshot
 - `manyworlds/brain/director.py` — director step: turns scheduled posts' scenes into shot sheets (`body.shots`, strict schema)
 - `manyworlds/brain/evidence.py` — the only reader of findings and metrics; `real` mode never sees simulated data
 - `manyworlds/brain/overrides.py` — settings the Brain changes at runtime within `brain.authority`; beyond it → `approvals`
@@ -19,7 +21,7 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/direction.py` — shot sheet (set, wardrobe, framing, blocking, performance, sound, edit) + prompt compiler per model
 - `manyworlds/operations.py` — the master switch `operations.mode` (shipped `paused`: only test jobs and `bench-`/`test-` batches run)
 - `manyworlds/breadth.py` — the breadth test (`mw test breadth --plan default [--dry-run]`, `mw test breadth-report <run>`): handwritten posts organised by capability, run only for its own posts in `test-breadth-<run>` batches under `policy/test_overlay.yaml` (formats on, reroute off, direction gate report-only, one merged GPU machine); never publishes. Runs only with the owner's go
-- `manyworlds/review/` — review gates (test batches judged under the test overlay): `gates.py` (images; set plates have no identity gate), `video.py` (story and talking clips from keyframes; motion-transfer clips also get the `dance_identity` gate), `final.py` (the finished video: text over the face, seams, end sync, "real phone footage"; report-only until `review.final.enforce`), `detail.py` (finer checks: hands, teeth, b/p/m lip closure, background flicker, set/outfit consistency against references; report-only until enforced), `common.py` (shared stages and writes)
+- `manyworlds/review/` — review gates (test batches judged under the test overlay). After media exists only defects in it reject (face identity, realism, safety, audio, sync); scene fit and direction are scored, never rejecting; a cheap screen judges everything, Sonnet confirms only close calls. `gates.py` (images; set plates and POV/cutaway shots have no identity gate), `video.py` (story and talking clips from keyframes; motion-transfer clips also get the `dance_identity` gate), `final.py` (the finished video: text over the face, seams, end sync, "real phone footage"; report-only until `review.final.enforce`), `detail.py` (finer checks: hands, teeth, b/p/m lip closure, background flicker, set/outfit consistency against references; report-only until enforced), `common.py` (shared stages and writes)
 - `manyworlds/creator/lab.py` — creator bible, reference pack, anchors, LoRA, voice; `profile.py` versioned profiles and dials; `sets.py` set and wardrobe bibles (canonical text plus a reviewed plate per set or outfit, refreshed each producer tick; scenes carry them as references; reference-conditioned scenes via `image.qwen_edit` while `sets.reference_conditioning`, off)
 - `manyworlds/creator/voice_lab.py` + `worker/handlers/tts_voxcpm.py` — designed voices (VoxCPM2): candidates from the bible, picked automatically (WER, distance from other creators), lines spoken in the cloned voice with their delivery; `voices.engine` falls back to Kokoro; `mw voice design|candidates|pick <handle> [--candidate N]`
 - `manyworlds/research/` — Apify data source, signal aggregation
@@ -58,6 +60,9 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - **Nothing runs on its own until the owner says so.** `operations.mode` stays `paused` and `brain.strategist.launches_per_week` stays 0 unless the owner changes them; agents and benchmarks run only as tests.
 - **Tell the owner through `notify.owner_event`**, not ad-hoc inserts into `events`.
 - Brain/creator/judge roles use the models set in `policy.llm.roles`; change models there, not in code.
+- **No GPU test, benchmark or end-to-end run without the owner's yes for that run.** Build and test with stubs freely.
+- **Check the brief before the GPU; after it, only media defects kill.** Ideas, scripts and shot sheets are checked and fixed cheaply before any image or video is made (evaluator, director rules, `direction.feasibility`); once media exists, a post is dropped only for bad media, never for the idea or wording. Judging must cost far less than making.
+- **Capabilities, not formats.** The system is a toolbox (policy `capabilities`) the Brain composes per archetype; formats and recipes are examples, never templates.
 
 ## Run it
 
@@ -78,30 +83,22 @@ Commands: `mw migrate`, `mw discover`, `mw choose`, `mw launch-creator`, `mw anc
 Live services run on Fly only (`fly deploy --remote-only --ha=false`, or the deploy workflow); the autoscaler
 applies migrations at start. Never start a second autoscaler anywhere else.
 
-## Status (2026-11-21)
+## Status (2026-11-23)
 
-- Done: queue, workers, ledger, storage, policy, benchmark (day 1); research → theses → creator bible → reference pack → LoRA → voice (day 2); planner + production for photo, carousel, narrated edit and story clip (day 3); review gates for images and clips (day 4).
-- One creator live (Maren), sandbox until her Instagram account is connected (her ready posts wait for it). Publishing is autonomous with a kill switch (`autonomy.publish: paused`).
-- GPU: worker image v18 (Z-Image Turbo, Kokoro, Wan 2.2 TI2V-5B). RunPod 3090 is the working pool while Vast has no credit; a 720p 5 s clip takes ~14 min there.
-- Brain M1 (foundations) merged 2026-11-14: agent runtime, decisions, per-agent budgets, real/simulated wall, overrides + approvals. Plan: `docs/superpowers/plans/2026-11-14-brain-roadmap.md`. Known debt: `docs/tech-debt.md`.
-- Brain M2 (creative evaluation) merged 2026-11-14: rubrics in `policy/rubrics/`, evaluator agent, `mw brain calibrate`, `mw brain rubric-drift`.
-- Brain M3 (memory + showrunner) merged 2026-11-14: the producer asks the showrunner for batches (`brain.showrunner.enabled`); ideas are scored before they become posts; Stories (9:16).
-- Brain M5 (simulated closed loop) merged 2026-11-14: publisher interface + kill switch, scenario engine (`policy/scenarios/`), analyst (`brain/analysis.py` + agent), `mw brain simulate` / `mw brain learning`. Sandbox runs use their own budget and never touch real creators.
-- Lip-synced talking video (M10, moved up 2026-11-19) merged 2026-11-20: talk worker image (InfiniteTalk on Wan2.1-I2V-14B, ~94 GB of weights downloaded on the GPU machine), `talking_video` format, stagings and flavors libraries. `talking_video` is not in `production.formats` until the benchmark (`bench-talk.infinitetalk-bba634`) passes the video gate.
-- 2026-11-20 overnight: RunPod adapter on REST v2 (v1 retired 2026-11-15; a CUDA floor, secure-cloud pools); machines carry their attempt limit and pool info; Brain M6 merged (experiments sized by power, Thompson exploration, rubric validity); Brain M7 merged (targeted repair, video-to-photo reroute, feed QA); brain worker reconnects and refreshes its Claude client.
-- 2026-11-20 day: true machine cost (Vast bills bandwidth per GB; offers ranked by it, caps count it, itemised
-  charges reconciled hourly; `mw reconcile --days N`); Brain M8 merged (events, daily strategist, portfolio
-  numbers from real evidence, autonomous launches via `launches` + `brain.creator_lab`, launches wait for owner
-  approval while `brain.strategist.launch_requires_approval`); Brain M4 built (Instagram publisher with
-  `is_ai_generated` on every post, real metrics collector, `mw account connect <handle> --token-env NAME`),
-  idle until an account is connected. First strategist run proposed 2 launches (pending in `mw brain approvals`).
-- 2026-11-21: master switch (`operations.mode: paused`), launches off, both pending launches rejected by the owner.
-  Cloud-native: control plane on Fly (`manyworlds-mw`, iad), tests and image builds (Depot) in GitHub Actions; the
-  laptop runs nothing. Hardening: scoped worker database login, owner alerts (ntfy), open-weight LLM routing with
-  fallback and shadow tests, long talking videos in segments (cut or chain) joined by the producer.
-- 2026-11-21 evening: model review (`docs/research/2026-11-21-model-landscape.md`) and owner model decisions (roadmap);
-  open-weight candidates live on Together and shadow-tested per role (no role switches without evidence); a family whose
-  last 3 machines finished nothing stops renting (`autoscale.no_output_guard`); Salad 3090 out of the image pools.
-- Next: owner sets `NTFY_TOPIC`, `FLY_API_TOKEN` (GitHub), `WORKER_DATABASE_URL` (via `mw worker-credentials`), an
-  inference account for open models; benchmark talking video (8-step distill LoRA, >48 GB-RAM host) only on the
-  owner's go; connect Maren's account (M4 live); M9 portfolio allocation; Brain chat (needs the web layer).
+- Built and running on Fly (paused): research → theses → creator lab (bible, references, LoRA, voice, profile, dossier) →
+  showrunner ideas (scored) → director shot sheets → production (photo, carousel, Story, narrated edit, story clip,
+  lip-synced talking video incl. long takes in segments, walk-and-talk V2V, motion transfer) → review → finish
+  (1080x1920, 30 fps, phone-native looks, room tone, word captions, labels/hooks/timestamps) → publisher (Instagram,
+  idle until an account is connected). Brain M1-M8 merged; the agency layer (archetypes, dossier, talent manager)
+  merged 2026-11-23. Plans: `docs/superpowers/plans/2026-11-14-brain-roadmap.md`; debt: `docs/tech-debt.md`;
+  the latest build notes: `docs/research/2026-11-23-readiness-and-craft.md`, `docs/2026-11-23-overnight-report.md`.
+- One creator (Maren, sandbox). Workers: image v27 (Z-Image Turbo), talkcomfy v13 (ComfyUI: Wan 2.2 I2V A14B,
+  InfiniteTalk, LongCat, Wan-Animate-2; VoxCPM2 voices). Lip sync on ComfyUI is proven (13 clips, 3-7 min each on an
+  L40S with the weights volume); ComfyUI story clips have not finished a job on a GPU yet.
+- Measured waste (ledger to 2026-11-22): 24% of billed GPU time ran a job; 74% of real posts were dropped at image
+  review, mostly for brief mismatch, not bad media; judging cost more than the useful GPU work. Fixed in code
+  2026-11-23 (code faults, memory floors, model affinity, face-only identity, report-only direction, cheaper
+  confirms, prompt caching); unproven on a GPU.
+- Waiting on the owner: the breadth test (`mw test breadth --plan default`, ~$5-9, needs RunPod or Vast credit and
+  the owner's go); connecting an Instagram account; `NTFY_TOPIC`, `FLY_API_TOKEN` in GitHub; `MW_HASH_SALT` and a
+  bucket-scoped R2 token for workers (tech debt).

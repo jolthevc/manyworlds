@@ -1,10 +1,23 @@
-| `test_a_finding_becomes_an_experiment_whose_result_is_proven` is flaky: slot assignment seeds from the experiment's random UUID, and 10 posts per arm sometimes miss the planted effect (failed once on 2026-11-21 on a policy-only commit) | `tests/test_brain_learning_trace.py`, `manyworlds/brain/experiments.py` |
-| The evaluator's agreement check runs on Opus at ~$0.15 a call: 22 calls were 40% of evaluator spend (2026-11-21) | shadow `evaluator` candidates first; then move `evaluator_check` to a different-family model or lower `check_rate` | policy `llm.roles.evaluator_check`, `brain.evaluation.check_rate` |
-| The no-output guard counts a machine as failed when it tried work and finished none; a machine cut off by an interruptible host mid-first-job also counts | at worst it holds a family until the window passes or a new image tag ships, and tells the owner | `manyworlds/deploy/autoscale.py` |
 # Technical debt
 
 Known issues we chose not to fix yet, with when they must be fixed. "Before X" means the
 capability X does not go live until the item is closed. Updated 2026-11-14 (Brain M1 merge).
+
+## Noted 2026-11-23 (overnight build and the review of waves 1-2)
+
+| Item | Why it matters | Where |
+|---|---|---|
+| `test_a_finding_becomes_an_experiment_whose_result_is_proven` is flaky: slot assignment seeds from the experiment's random UUID, and 10 posts per arm sometimes miss the planted effect (failed once on 2026-11-21 on a policy-only commit) | `tests/test_brain_learning_trace.py`, `manyworlds/brain/experiments.py` |
+| The no-output guard counts a machine as failed when it tried work and finished none; a machine cut off by an interruptible host mid-first-job also counts | at worst it holds a family until the window passes or a new image tag ships, and tells the owner | `manyworlds/deploy/autoscale.py` |
+| The talent manager has never run against a real model | its dossier sections and weekly briefs are tested with stubs only; the first real onboarding should be read by the owner before any brief steers production | `brain/agents/talent_manager.py`, `creator/dossier.py` |
+| The director's strict schema grew (on-screen text items, motion references) after a 2026-11-22 "compiled grammar too large" 400 | if it fails again, every directed post silently falls back to undirected (a log line only); needs one paid director call in a test, and an owner alert on repeated fallbacks | `brain/director.py`, `direction.DirectedShots` |
+| Paid idle time is not yet filled with useful work (extra takes, best-of-N candidates) | a warm machine that drains its queue idles until the idle stop; filling it would turn already-paid minutes into quality | `worker/runner.py`, `deploy/autoscale.py` |
+| Memory floors (`job_kinds.<kind>.min_vram_gb`) are set only for Wan-Animate-2 | Z-Image's OOMs on 24 GB consumer cards may need a floor or a free-memory check; set others once measured | policy `job_kinds` |
+| A narrated edit's labels are timed as if photos split the video evenly | labels drift from their photo (narrated_edit is not in production.formats today) | `production.shot_spans` |
+| Other test batches can share the merged breadth machine, or start a second L40S for the same kinds | run the breadth test with no other test batches open | `deploy/autoscale.py` scale_up |
+| Set and outfit plates are made only by the producer tick, which is off while paused | breadth items that test set/outfit consistency run without plates | `creator/sets.py`, `breadth.py` |
+| If the test overlay file goes missing, the autoscaler falls back to separate machines silently | three cold L40S boots instead of one | `policy.for_batches` |
+| The video clear-pass and the image clear-pass still read identity on POV/cutaway clips | a faceless clip with a low identity score is confirmed (paid) rather than cleared | `review/video.py` clear_pass, `review/gates.py` |
 
 ## Before autonomous publishing (Brain M4)
 
