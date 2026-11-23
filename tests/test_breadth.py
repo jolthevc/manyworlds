@@ -192,8 +192,10 @@ def test_a_run_makes_only_its_own_posts_in_an_urgent_test_batch_and_resumes(conn
 
 
 def test_a_live_system_refuses_the_run(conn, policy, store):
+    live = dataclasses.replace(policy, body={**policy.body, "operations": {**policy.body["operations"], "mode": "live"}})
     with pytest.raises(SystemExit):
-        breadth.run(conn, policy, "default", items=["photo_propped_pose"], creator=_creator(conn), store=store)
+        breadth.run(conn, live, "default", items=["photo_propped_pose"], creator=_creator(conn), store=store,
+                    once=True, sleep=lambda s: None)
 
 
 def test_adopted_talk_jobs_get_the_item_profile_and_the_plan_pools(conn, policy):

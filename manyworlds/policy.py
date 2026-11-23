@@ -72,8 +72,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def deep_merge(base: Any, over: Any) -> Any:
-    """`over` merged into `base`: dicts key by key, everything else (lists included) replaced."""
-    if not isinstance(base, dict) or not isinstance(over, dict):
+    """`over` merged into `base`: dicts key by key, everything else (lists included) replaced. An empty dict in
+    `over` replaces (an overlay's `reroute_failed_video: {}` means "none", not "no change")."""
+    if not isinstance(base, dict) or not isinstance(over, dict) or not over:
         return over
     out = dict(base)
     for key, value in over.items():

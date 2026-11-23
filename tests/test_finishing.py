@@ -42,7 +42,7 @@ def test_no_look_can_oversaturate_or_push_balance_far(policy):
 
 
 def test_an_unknown_look_falls_back_to_the_default_and_a_flat_look_adds_nothing(policy):
-    assert finishing.filters("disco", policy=policy) == finishing.filters("neutral", policy=policy)
+    assert finishing.filters("disco", policy=policy) == finishing.filters(policy.get("finishing", "default_look"), policy=policy)
     assert finishing.filters({}, policy=policy, grain=False) == "format=yuv420p"
 
 

@@ -132,7 +132,7 @@ breadth:
               - set: {location: "her bedroom, full-length mirror by the window", set_id: "bedroom_mirror", time_of_day: "evening"}
                 wardrobe: {outfit: "long camel coat over a grey knit jumper, black trousers"}
                 framing: {shot_size: "full body", device: selfie}
-                blocking: [{at_s: 0, action: "looks down at her shoes, coat open", eyeline: off}]
+                blocking: [{at_s: 0, action: "looks down at her shoes, coat open", eyeline: "off"}]
         - id: story_selfie
           exercises: [story, camera_selfie]
           format: story
@@ -212,7 +212,7 @@ breadth:
                 framing: {shot_size: "medium close-up", device: propped, camera_move: static, lens_mm: 26}
                 blocking:
                   - {at_s: 0, action: "holds up the mascara and starts talking", eyeline: lens}
-                  - {at_s: 8, action: "leans toward the mirror and puts on mascara", eyeline: off, hands: "mascara wand near her lashes"}
+                  - {at_s: 8, action: "leans toward the mirror and puts on mascara", eyeline: "off", hands: "mascara wand near her lashes"}
                   - {at_s: 20, action: "turns back to the phone and shrugs", eyeline: lens}
                 performance:
                   energy: medium
