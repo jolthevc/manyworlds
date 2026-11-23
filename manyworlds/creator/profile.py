@@ -131,15 +131,31 @@ def current(conn, creator_id) -> tuple[int, dict] | None:
     return (row["version"], row["body"]) if row else None
 
 
+def style_wardrobe_text(style: dict) -> str:
+    """The style director's wardrobe rules (profile.style.wardrobe) as one line for the bible."""
+    w = (style or {}).get("wardrobe") or {}
+    parts = [f"{label}: {', '.join(str(x) for x in w.get(key) or [])}"
+             for key, label in (("silhouettes", "Silhouettes"), ("fabrics", "Fabrics"), ("colours", "Colours"),
+                                ("footwear", "Footwear"), ("never", "Never wears")) if w.get(key)]
+    return ". ".join(parts) + ("." if parts else "")
+
+
 def render_bible(profile: dict, base: dict | None = None) -> dict:
-    """The flat bible the image prompts, reviewer and planner read, from the current profile."""
+    """The flat bible the image prompts, reviewer and planner read, from the current profile.
+
+    One source of truth for the wardrobe: once the style director has written her style (profile.style), the wardrobe
+    line is its wardrobe rules, not the older look.wardrobe. The signature details stay the look's one wearable item:
+    they go into every photo prompt, and the style's signature items (a mug, a coat, tealights) would then appear in
+    every image whatever the scene (the Nov 2026 lesson); those are for planning (style_director.planning_view)."""
     b = copy.deepcopy(base or {})
     ident, look, persona = profile["identity"], profile["look"], profile["persona"]
+    style = profile.get("style") or {}
+    wardrobe = style_wardrobe_text(style) or look["wardrobe"]
     b["appearance"] = {**{k: ident.get(k) for k in IDENTITY_FIELDS}, "hair": look["hair"],
                        "signature_details": f"{look['signature_item']}; {look['accessories']}"}
     b.update(caption_voice=persona["caption_voice"], voice_notes=persona["speaking_voice"], never=persona["never"],
              personality=f"{persona['vibe']} {', '.join(persona['traits'])}. {persona['humour']}",
-             style_and_wardrobe=f"{look['wardrobe']} Makeup: {look['makeup']}")
+             style_and_wardrobe=f"{wardrobe} Makeup: {look['makeup']}")
     for k in ("display_name", "handle", "disclosure_line", "kokoro_voice", "home_and_places", "interests",
               "opinions_and_running_jokes", "one_line", "archetype", "niche", "archetypes"):
         if k in profile:

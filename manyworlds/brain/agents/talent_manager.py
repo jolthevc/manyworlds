@@ -140,15 +140,24 @@ def production_stats(conn, creator_id, days: int) -> dict:
             "usd_per_ready_post": round(float(spend) / ready, 2) if ready else None}
 
 
-def _recent(conn, creator_id, n: int) -> list[dict]:
+def _recent(conn, creator_id, n: int, policy=None) -> list[dict]:
+    """Recent posts, newest first, with idea scores and, once published and old enough, their outcome
+    (evidence.post_outcomes, in the creator's evidence mode: SIMULATED for a sandbox creator)."""
     rows = conn.execute(
-        """SELECT p.format, p.status, p.caption, p.body->>'series' series, p.body->>'pillar' pillar, e.scores
+        """SELECT p.id, p.format, p.status, p.caption, p.body->>'series' series, p.body->>'pillar' pillar, e.scores
            FROM posts p LEFT JOIN ideas i ON i.post_id = p.id
            LEFT JOIN LATERAL (SELECT scores FROM evaluations WHERE idea_id = i.id AND role = 'evaluator'
                               ORDER BY created_at DESC LIMIT 1) e ON true
            WHERE p.creator_id = %s AND p.status <> 'simulated'
            ORDER BY coalesce(p.scheduled_for, p.created_at) DESC LIMIT %s""", (creator_id, n)).fetchall()
-    return [{k: v for k, v in dict(r).items() if v} for r in rows]
+    outcomes = evidence.post_outcomes(conn, creator_id, n, evidence.mode_for(conn, creator_id), policy=policy)
+    out = []
+    for r in rows:
+        d = {k: v for k, v in dict(r).items() if v and k != "id"}
+        if str(r["id"]) in outcomes:
+            d["outcome"] = outcomes[str(r["id"])]
+        out.append(d)
+    return out
 
 
 def _requests_history(conn, creator_id, n: int = 10) -> list[dict]:
@@ -222,11 +231,16 @@ def _review_prompt(ctx: AgentContext, creator_id, prof: dict, mode: str, event: 
     label = "SIMULATED (sandbox test, not evidence of demand)" if ev_mode == "sandbox" else "real"
     tier = proposals.tier_of(conn, policy, creator_id)
     tiers = (policy.get("brain", "tiers", "levels", default={}) or {})
+    track = predictions.resolved_for(conn, creator_id, role=ROLE, n=int(cfg.get("resolved_predictions", 10)))
     parts = [
         f"Her profile and dossier:\n{json.dumps(who, default=str)}",
         f"Her archetypes' playbooks: {json.dumps(archetypes.playbooks(policy, prof), default=str)}",
-        f"Recent posts, newest first, with idea scores where scored:\n"
-        f"{json.dumps(_recent(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}",
+        f"Recent posts, newest first, with idea scores where scored and, once published and old enough, how they did "
+        f"(`outcome`, {label}):\n"
+        f"{json.dumps(_recent(conn, creator_id, int(cfg.get('recent_posts', 30)), policy), default=str)}",
+        f"Your past predictions about her that have been scored ({label}; held = it came true; Brier: lower is "
+        f"better, 0.25 is a coin flip at p = 0.5). Calibrate your new claims and your conviction on this record: "
+        f"{json.dumps(track, default=str) if track else 'none scored yet'}",
         f"What production made of her ideas in the last {int(cfg.get('stats_days', 14))} days (dropped posts cost "
         f"money and made nothing): {json.dumps(production_stats(conn, creator_id, int(cfg.get('stats_days', 14))))}",
         f"Findings about her audience ({label}): {json.dumps(findings) if findings else 'none yet'}",

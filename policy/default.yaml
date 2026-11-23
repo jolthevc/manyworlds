@@ -243,6 +243,12 @@ review:
     reference_images: 3        # creator reference photos shown with every review
     max_jobs_per_run: 50
     loop_seconds: 120          # how often the reviewer looks for new images
+    busy_loop_seconds: 15      # ...while a post is producing or the last run reviewed something
+    # A job whose review keeps raising (a corrupt file, a judge error on it) is given up after this many tries, at
+    # most one counted per spacing (so a judge outage uses up nothing): its images count as rejected (gate `review`,
+    # stage `error`) and production repairs the scene, instead of a screen being paid for it every loop.
+    max_review_errors: 3
+    review_error_spacing_seconds: 600
   # Story clips (manyworlds.review.video), judged from keyframes the video worker stores.
   # 2026-11-14 benchmarks: the 480p clip drifted to another face by 4 s (must fail identity); the
   # 720p clip held her face, hands steady (should pass).
@@ -262,6 +268,11 @@ review:
     reference_images: 3
     max_jobs_per_run: 10
     max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
+    # Clip job kinds the video gate judges: `x.*` is every kind with that prefix, anything else one kind exactly
+    # (`*.mirror` jobs and intermediate clips are never judged).
+    kinds: [video.*, talk.*, hosted.video, comfy.wan_i2v, comfy.wan_animate2]
+    max_review_errors: 3       # as review.image: a clip whose review keeps raising counts as rejected
+    review_error_spacing_seconds: 600
     # Talking clips: mouth openness vs voice loudness (worker/lipsync.py), recorded on every clip. Off until clips
     # judged by eye give the threshold (benchmark); then a clip below it is rejected before any paid review.
     # Enforced since 2026-11-22: 8-step clips passed the visual gate with lip-sync correlation 0.07 and 0.28 (the
@@ -315,7 +326,9 @@ review:
   final:
     enabled: true
     enforce: false
-    role: judge
+    # Sonnet (the confirm role) while report-only: up to max_frames frames per file on Opus cost more than the scores
+    # are worth before they gate anything. Back to `judge` when enforce turns on, if calibration shows Sonnet misses.
+    role: review_confirm
     effort: low
     keyframes: 6
     join_offset_seconds: 0.1
@@ -794,8 +807,11 @@ brain:
   # the dossier (manyworlds.creator.dossier) at launch; a weekly review (review_weekday, 0 = Monday) writes the brief
   # the showrunner plans from and changes the profile only under `editable` (path prefixes; identity, the never-list,
   # disclosure and handle never). max_overlap: positioning word overlap with a sibling above which it is rewritten.
+  # resolved_predictions: its own scored predictions about the creator, shown at each review. look.wardrobe stays
+  # editable, but once the style director has written her style, profile.render_bible renders the wardrobe and the
+  # signature details from the style instead (one source of truth for the look).
   talent_manager: {enabled: true, role: talent_manager, effort: medium, diagnose_effort: high, recent_posts: 30, stats_days: 14,
-                   max_overlap: 0.35,
+                   max_overlap: 0.35, resolved_predictions: 10,
                    # how often a creator's review comes round, by stage (days); events (a drop) come on top
                    review_days_by_stage: {default: 7, exploring: 7, iterating: 5, growing: 3, breaking_out: 2,
                                           established: 7, paused: 30},
@@ -1437,6 +1453,15 @@ direction:
   effort: medium
   memory_facts: 40             # creator memory facts shown to the director
   recent_posts: 20             # recent directed posts whose named sets and outfits are shown for reuse
+  # More context for the director (owner 2026-11-23: within reason, more rather than less): the idea's reasoning and
+  # attributes, its series' premise and hook, her persona, the dossier's planning view, the talent manager's focus
+  # and stop, her archetype's hooks, edit grammar and pitfalls, and the shot types of her recent posts (to vary them).
+  # Caps: recent_shot_type_posts directed posts read; list_items per list in the dossier and playbook views.
+  context: {recent_shot_type_posts: 12, list_items: 8}
+  # Posts the director failed on at scheduling (a transient error) are retried by ideas.redirect_undirected, run at
+  # the end of every ideas.schedule_ready: planned posts in direct_formats with no shots, at most max_attempts calls
+  # per post (body.direct_attempts), each retry at least retry_after_minutes after the last, max_per_sweep per tick.
+  redirect: {max_attempts: 3, retry_after_minutes: 30, max_per_sweep: 10}
   # A shot's free-text edit.transition_in -> the joiner's kind (direction.transition_kind; media.TRANSITIONS): a
   # kind's own name, else the first kind below one of whose words starts a word in the text; anything else is a cut
   # ("hard cut", "jump cut"). Order matters: "whip on the spin" is a whip, "cut on the spin" a match.
@@ -1544,6 +1569,8 @@ production:
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
   loop_seconds: 120
+  busy_loop_seconds: 15        # while a post is producing: light ticks (production only) this often
+  max_advance_errors: 5        # ticks in which advancing a post raised before it is dropped and the owner told
   max_job_failures_per_post: 6   # failed jobs (machines, downloads) per post; apart from review repairs
   max_ready_unpublished: 6       # no new batch while a creator has this many made-but-unpublished posts
   # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
@@ -1974,6 +2001,7 @@ queue:
   job_max_worker_faults: 6           # a job that faults this many machines fails (it's the cause)
   connect_timeout_seconds: 20        # a rented host that can't reach the database fails fast
   startup_connect_attempts: 3        # then the worker destroys its own machine (Vast/RunPod)
+  retry_backoff_seconds: 30          # a failed job waits attempts x this before it can be claimed again
 
 publishing:
   max_late_hours: 6            # a real post later than this is left ready, not sent in a burst with others

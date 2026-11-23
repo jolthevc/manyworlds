@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from pathlib import Path
 from typing import Callable
 
+from psycopg.types.json import Jsonb
+
 from ..storage import ObjectStore
+
+log = logging.getLogger("manyworlds.review")
 
 
 def policy_for(policy, batch: str | None):
@@ -93,8 +98,39 @@ def write_rows(conn, rows: list[tuple]) -> None:
             conn.execute("INSERT INTO reviews (asset_id, gate, passed, score, details) VALUES (%s, %s, %s, %s, %s)", row)
 
 
-def run_jobs(job_ids: list, review: Callable[[object, Path], list[dict]], workdir: Path, prefix: str = "") -> dict:
-    """Review each job in its own folder; one bad job never stops the others."""
+def give_up(conn, policy, job_id, error: Exception | str, *, asset_kind: str, section: str) -> bool:
+    """Count a review of this job that raised (jobs.review_errors). Once review.<section>.max_review_errors is used
+    up, every unreviewed `asset_kind` asset of the job gets one failing row (gate `review`, details.stage `error`,
+    details.error), so production sees the output rejected and repairs it with a new job, and the reviewer stops
+    paying a screen for it every loop. Repair diagnosis ignores rows with details.error. True when it gave up.
+    Errors count at most once per review.<section>.review_error_spacing_seconds, so a judge outage of a few
+    minutes (every review raising, loop after loop) uses up no job's tries."""
+    cfg = (policy.get("review", section, default={}) or {}) if policy is not None else {}
+    row = conn.execute(
+        """UPDATE jobs SET review_errors = review_errors + 1, review_error_at = now()
+           WHERE id = %s AND (review_error_at IS NULL OR review_error_at <= now() - make_interval(secs => %s))
+           RETURNING review_errors""",
+        (job_id, float(cfg.get("review_error_spacing_seconds", 600)))).fetchone()
+    if row is None:   # counted too recently (or no such job)
+        return False
+    if row["review_errors"] < int(cfg.get("max_review_errors", 3)):
+        return False
+    text = (f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error))[:300]
+    assets = conn.execute(
+        "SELECT a.id FROM assets a WHERE a.job_id = %s AND a.kind = %s "
+        "AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = a.id)", (job_id, asset_kind)).fetchall()
+    write_rows(conn, [(a["id"], "review", False, None,
+                       Jsonb({"stage": "error", "error": text, "review_errors": row["review_errors"]}))
+                      for a in assets])
+    log.warning("review of job %s failed %d times; its %d %s output(s) count as rejected: %s",
+                job_id, row["review_errors"], len(assets), asset_kind, text)
+    return True
+
+
+def run_jobs(job_ids: list, review: Callable[[object, Path], list[dict]], workdir: Path, prefix: str = "", *,
+             on_error: Callable[[object, Exception], bool] | None = None) -> dict:
+    """Review each job in its own folder; one bad job never stops the others. `on_error(job_id, error)` is told of
+    each job whose review raised (give_up); True means it was given up and its outputs count as rejected."""
     accepted = rejected = 0
     errors = []
     for job_id in job_ids:
@@ -105,5 +141,12 @@ def run_jobs(job_ids: list, review: Callable[[object, Path], list[dict]], workdi
                 accepted += r["accepted"]
                 rejected += not r["accepted"]
         except Exception as e:  # noqa: BLE001
-            errors.append({"job": str(job_id), "error": str(e)[:300]})
+            err = {"job": str(job_id), "error": str(e)[:300]}
+            if on_error is not None:
+                try:
+                    if on_error(job_id, e):
+                        err["gave_up"] = True
+                except Exception as e2:  # noqa: BLE001 - counting must not stop the other jobs' reviews
+                    log.warning("could not count the review error of job %s: %s", job_id, e2)
+            errors.append(err)
     return {"accepted": accepted, "rejected": rejected, "errors": errors, "jobs": len(job_ids)}

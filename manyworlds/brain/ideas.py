@@ -69,10 +69,47 @@ def direct_posts(conn, policy, llm, creator_id, posts) -> int:
         except Exception as e:  # noqa: BLE001 - an undirected post is made exactly as before
             log.warning("director failed for post %s (%s: %s); the post proceeds undirected", post_id,
                         type(e).__name__, str(e)[:300])
+            # Counted on the post, so redirect_undirected retries it a bounded number of times.
+            conn.execute(
+                "UPDATE posts SET body = body || jsonb_build_object("
+                "'direct_attempts', coalesce((body->>'direct_attempts')::int, 0) + 1, "
+                "'direct_failed_at', now(), 'direct_error', %s::text) WHERE id = %s AND status = 'planned'",
+                (f"{type(e).__name__}: {str(e)[:300]}", post_id))
             continue
         conn.execute("UPDATE posts SET body = body || %s, updated_at = now() WHERE id = %s AND status = 'planned'",
                      (Jsonb({"shots": shots}), post_id))
         directed += 1
+    return directed
+
+
+def redirect_undirected(conn, policy, llm) -> int:
+    """Direct again the scheduled posts the director failed on (a transient error, a timeout, a crash between
+    scheduling and directing): planned posts of showrunner ideas (body.idea_id) in `direction.direct_formats` with no
+    shots, fewer than `direction.redirect.max_attempts` failed calls (body.direct_attempts), and at least
+    `retry_after_minutes` since the last failure (or since the post was made). At most `max_per_sweep` posts per call;
+    sandbox test creators are never directed. Each retry goes through direct_posts, so a failure counts another
+    attempt and the post stays undirected, never dropped. Returns how many posts were directed."""
+    if llm is None or not policy.get("direction", "enabled", default=True):
+        return 0
+    formats = list(policy.get("direction", "direct_formats", default=[]) or [])
+    cfg = policy.get("direction", "redirect", default={}) or {}
+    max_attempts, per_sweep = int(cfg.get("max_attempts", 3)), int(cfg.get("max_per_sweep", 10))
+    if not formats or max_attempts <= 0 or per_sweep <= 0:
+        return 0
+    rows = conn.execute(
+        """SELECT p.id, p.creator_id, p.format, p.caption, p.body FROM posts p JOIN creators c ON c.id = p.creator_id
+           WHERE p.status = 'planned' AND p.format = ANY(%s) AND p.body ? 'idea_id'
+             AND (p.body->'shots' IS NULL OR p.body->'shots' = '[]'::jsonb)
+             AND coalesce((p.body->>'direct_attempts')::int, 0) < %s
+             AND coalesce((p.body->>'direct_failed_at')::timestamptz, p.created_at)
+                 < now() - make_interval(mins => %s)
+             AND c.anchors->'simulation'->>'scenario' IS NULL
+           ORDER BY p.scheduled_for NULLS LAST, p.created_at LIMIT %s""",
+        (formats, max_attempts, int(cfg.get("retry_after_minutes", 30)), per_sweep)).fetchall()
+    directed = 0
+    for r in rows:
+        directed += direct_posts(conn, policy, llm, r["creator_id"],
+                                 [(r["id"], r["format"], {**(r["body"] or {}), "caption": r["caption"]})])
     return directed
 
 
@@ -152,4 +189,10 @@ def schedule_ready(conn, policy, *, now, llm=None) -> dict:
                           Jsonb({"scheduled": len(ready), "dropped": len(rows) - len(ready)}), policy.version))
         out["directed"] += direct_posts(conn, policy, llm, b["creator_id"], created)
         out["batches"] += 1
+    # Posts the director failed on earlier get another try (bounded by direction.redirect).
+    try:
+        out["redirected"] = redirect_undirected(conn, policy, llm)
+    except Exception as e:  # noqa: BLE001 - the sweep must never undo or block scheduling
+        log.warning("redirect sweep failed (%s: %s)", type(e).__name__, str(e)[:300])
+        out["redirected"] = 0
     return out

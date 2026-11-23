@@ -12,7 +12,11 @@ archetype (bible archetype, niche, one-liner) with how that kind of creator comm
 (`direction.director.archetypes`: talk-led, label-led, voiceover-led), the recipes (`moves`) for the post's format it
 may draw on, the craft rules and the "reads as AI" tells (`direction.director.craft`, `.avoid`), lengths by intent,
 and the names it may use: caption styles, on-screen text kinds, styles and positions, transitions, room-tone words
-and the licensed motion references.
+and the licensed motion references. That static part (`static_brief`, policy and format only) leads the message as a
+block marked for the prompt cache; the creator's part follows (`creator_brief`): her persona, dossier planning view,
+archetype hooks, edit grammar and pitfalls, her talent manager's focus and stop, style, recent outfits and shot types,
+known sets, and the idea with its reasoning, attributes, series (premise, hook), pillar, tone and canon. The edit pass
+sends the same blocks plus the directed shots, so it reads the static part from the cache too.
 
 What comes back is checked before it is used: one shot per scene, a move's shot defaults (policy
 `moves.library.<move>.shot`) fill what the director left empty in the shot that performs the move, the shots'
@@ -26,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from typing import Any
 
 from .. import direction
@@ -51,11 +56,16 @@ Rules:
   her flat). Outfits don't recur: leave `wardrobe.outfit_id` empty and dress her from her capsule and wardrobe
   style, different from her recent outfits; her signature items do recur. Without a style, recurring sets and
   outfits are named (`set.set_id`, `wardrobe.outfit_id`, short snake_case) and reused with the same name.
-- `shot_type` names a shot from her shot vocabulary when the shot is one: most of an aspirational feed is her
-  world (her back on a street at sunset, a ringed hand on a glass, a table from above, a window, her shoes), not
-  her face to camera. Frame and light such a shot as the vocabulary says; when its face is not "yes", direct no
-  face, gaze or expression. Follow the brief's carousel rules (variety, one imperfect frame, the dump order).
-  Empty for a plain shot of her.
+- `shot_type`: when the brief gives her shot vocabulary (her style's `shot_types`), EVERY shot names one of
+  those types, never empty: a shot of her face uses the vocabulary's face type that fits (a portrait, a talking
+  anchor, a mirror shot, a candid). Most of an aspirational feed is her world (her back on a street at sunset, a
+  ringed hand on a glass, a table from above, a window, her shoes), not her face to camera. Frame and light each
+  shot as the vocabulary says; when its face is not "yes", direct no face, gaze or expression. Vary the types
+  against her recent posts' shot types in the brief. Follow the brief's carousel rules (variety, one imperfect
+  frame, the dump order). Only without a vocabulary is `shot_type` empty.
+- The idea's reasoning, series, pillar and tone say what the post is for; her persona, dossier and talent
+  manager's focus say who it is for. Direct every shot toward that: the hook, the performance and the on-screen
+  text in her voice, using her archetype's hooks and edit grammar and avoiding its pitfalls.
 - A new named set's `set.set_dressing` is its canonical look, kept for every later post: the fixed layout,
   materials, colours, furniture and fixed props, and its light sources (windows, lamps), written as an empty
   room: objects and surfaces only. A new named outfit's `wardrobe.outfit` is its canonical description:
@@ -251,35 +261,41 @@ def styled(policy, shots: list[dict], look: dict, prof_style: dict) -> list[dict
     return shots
 
 
-def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], move_name: str,
-            move: dict | None) -> str:
+def recent_shot_types(conn, creator_id, n: int) -> list[str]:
+    """The shot types of her recent directed posts, newest first, one entry per shot (repeats kept, so the director
+    sees which dominate and varies them)."""
+    rows = conn.execute(
+        "SELECT body->'shots' AS shots FROM posts WHERE creator_id = %s AND status <> 'dropped' "
+        "AND jsonb_typeof(body->'shots') = 'array' ORDER BY created_at DESC LIMIT %s", (creator_id, n)).fetchall()
+    seen: list[str] = []
+    for r in rows:
+        for s in r["shots"] or []:
+            t = (s or {}).get("shot_type") if isinstance(s, dict) else ""
+            if t:
+                seen.append(str(t))
+    return seen
+
+
+def _capped(value, n: int):
+    """Lists cut to `n` items, all the way down (policy direction.context.list_items): context, not a dump."""
+    if isinstance(value, list):
+        return [_capped(v, n) for v in value[:n]]
+    if isinstance(value, dict):
+        return {k: _capped(v, n) for k, v in value.items()}
+    return value
+
+
+def static_brief(policy, fmt: str) -> str:
+    """The part of the director's brief that depends only on the policy and the format (the capability catalogue, what
+    is unavailable, camera moves, the format's recipes, lengths, the names a shot may use, motion references, what the
+    format is). It leads the user message as its own block, marked for the prompt cache, so every post of a format
+    and both director calls (shots, then edit) read it from the cache after the first."""
     cfg = _cfg(policy)
-    row = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
-    bible = (row or {}).get("bible") or {}
-    creator = {k: bible[k] for k in ("display_name", "archetype", "niche", "one_line", "appearance", "voice_notes",
-                                     "style_and_wardrobe", "home_and_places") if bible.get(k)}
-    facts = [f"{m['kind']}: {m['text']}"
-             for m in memory.facts(conn, creator_id, limit=int(cfg.get("memory_facts", 40)))]
-    notes = policy.get("planner", "format_notes", default={}) or {}
-    idea = {"format": fmt, "format_note": notes.get(fmt, ""), "scenes": scenes,
-            **{k: body[k] for k in ("script", "on_screen_text", "caption", "staging", "flavor") if body.get(k)}}
-    if move:
-        idea["move"] = {"name": move_name, "note": move.get("note", ""), "shot": move.get("shot") or {}}
     usable, missing = catalogue(policy)
     names = _names(policy)
     refs = names.pop("motion_references")
-    look = _style_view(conn, policy, creator_id)
-    styled = ""
-    if look:
-        styled = (f"Her style, world and this month (keep the style, vary outfits and places): {json.dumps(look, default=str)}\n"
-                  f"Her recent outfits (dress her differently): {json.dumps(recent_outfits(conn, creator_id, int(cfg.get('recent_posts', 20))))}\n")
-    known = ({"sets": look.get("anchor_sets") or {}} if look else
-             _known(conn, policy, creator_id, int(cfg.get('recent_posts', 20))))
-    return (f"The creator (appearance for reference only): {json.dumps(creator, default=str)}\n"
-            f"How this kind of creator communicates (from their archetype): {json.dumps(communication(policy, bible))}\n"
-            f"What is known about their life: {json.dumps(facts)}\n"
-            + styled
-            + f"Known sets{'' if look else ' and outfits'} (reuse the names): {json.dumps(known, default=str)}\n\n"
+    notes = policy.get("planner", "format_notes", default={}) or {}
+    return (f"THE STUDIO'S BRIEF (the same for every {fmt} post)\n"
             f"What the studio can render now (compose every shot from these): {json.dumps(usable)}\n"
             f"Not available now (never use): {json.dumps(missing)}\n"
             f"Allowed camera moves: {json.dumps(list(cfg.get('camera_moves') or []))}\n"
@@ -289,8 +305,96 @@ def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], m
             f"Names you may use: {json.dumps(names)}\n"
             + (f"Motion references (motion_reference, only these ids): {json.dumps(refs)}\n" if refs else
                "Motion references: none now (leave motion_reference empty).\n")
-            + f"\nThe accepted idea: {json.dumps(idea, default=str)}\n\n"
+            + f"What a {fmt} is: {json.dumps(notes.get(fmt, ''))}\n")
+
+
+def _idea_extras(conn, body: dict) -> dict:
+    """The idea's reasoning and attributes: on the body when directing an idea, else on the idea a post came from
+    (body.idea_id; a post carries no reasoning)."""
+    out = {k: body[k] for k in ("reasoning", "attributes") if body.get(k)}
+    if len(out) < 2 and body.get("idea_id"):
+        try:
+            row = conn.execute("SELECT body->>'reasoning' AS reasoning, attributes FROM ideas WHERE id = %s::uuid",
+                               (str(body["idea_id"]),)).fetchone()
+        except Exception as e:  # noqa: BLE001 - context, not a condition for directing
+            log.warning("idea %s unreadable for the director (%s)", body.get("idea_id"), type(e).__name__)
+            row = None
+        for k in ("reasoning", "attributes"):
+            if row and row[k] and k not in out:
+                out[k] = row[k]
+    return out
+
+
+def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], move_name: str,
+                  move: dict | None) -> str:
+    """The part of the brief about this creator and this post: who she is (persona, dossier, archetype playbook), what
+    her talent manager wants now, her style and what she has worn and been shot as lately, and the idea in full
+    (why it was planned, its series, pillar, tone and canon)."""
+    from ..creator import dossier, profile as profile_mod
+    from . import archetypes
+    from .agents import talent_manager
+    cfg = _cfg(policy)
+    ctx_cfg = cfg.get("context") or {}
+    items = int(ctx_cfg.get("list_items", 8))
+    row = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    bible = (row or {}).get("bible") or {}
+    cur = profile_mod.current(conn, creator_id)
+    prof = cur[1] if cur else None
+    creator = {k: bible[k] for k in ("display_name", "archetype", "niche", "one_line", "appearance", "voice_notes",
+                                     "style_and_wardrobe", "home_and_places") if bible.get(k)}
+    persona = {k: bible[k] for k in ("personality", "interests", "caption_voice", "never",
+                                     "opinions_and_running_jokes") if bible.get(k)}
+    facts = [f"{m['kind']}: {m['text']}"
+             for m in memory.facts(conn, creator_id, limit=int(cfg.get("memory_facts", 40)))]
+    plays = [{"archetype": p.get("archetype"), **{k: p[k] for k in ("hooks", "edit_grammar", "pitfalls") if p.get(k)}}
+             for p in archetypes.playbooks(policy, prof or bible)]
+    dossier_view = dossier.planning_view(prof)
+    brief = talent_manager.latest_brief(conn, creator_id)
+    manager = {k: (brief["output"] or {}).get(k) for k in ("focus", "stop") if (brief["output"] or {}).get(k)} \
+        if brief else {}
+    idea = {"format": fmt, "scenes": scenes,
+            **{k: body[k] for k in ("script", "on_screen_text", "caption", "staging", "flavor", "pillar", "tone",
+                                    "canon", "series") if body.get(k)},
+            **_idea_extras(conn, body)}
+    if body.get("series"):
+        about = planner.series_catalogue(prof).get(body["series"])
+        if about:
+            idea["series_is"] = about
+    if move:
+        idea["move"] = {"name": move_name, "note": move.get("note", ""), "shot": move.get("shot") or {}}
+    look = _style_view(conn, policy, creator_id)
+    styled = ""
+    if look:
+        styled = (f"Her style, world and this month (keep the style, vary outfits and places): {json.dumps(look, default=str)}\n"
+                  f"Her recent outfits (dress her differently): {json.dumps(recent_outfits(conn, creator_id, int(cfg.get('recent_posts', 20))))}\n")
+    shot_types = Counter(recent_shot_types(conn, creator_id, int(ctx_cfg.get("recent_shot_type_posts", 12))))
+    known = ({"sets": look.get("anchor_sets") or {}} if look else
+             _known(conn, policy, creator_id, int(cfg.get('recent_posts', 20))))
+    return (f"The creator (appearance for reference only): {json.dumps(creator, default=str)}\n"
+            + (f"Her persona (how she thinks, talks and what she never does; direct performance, lines and on-screen "
+               f"text in it): {json.dumps(persona, default=str)}\n" if persona else "")
+            + f"How this kind of creator communicates (from their archetype): {json.dumps(communication(policy, bible))}\n"
+            + (f"Her archetype's craft (hooks that open, edit grammar, pitfalls to avoid): "
+               f"{json.dumps(_capped(plays, items), default=str)}\n" if plays else "")
+            + (f"Her dossier (positioning, audience, story, content system; the post serves these): "
+               f"{json.dumps(_capped(dossier_view, items), default=str)}\n" if dossier_view else "")
+            + (f"Her talent manager's current focus and what to stop: {json.dumps(_capped(manager, items), default=str)}\n"
+               if manager else "")
+            + f"What is known about their life: {json.dumps(facts)}\n"
+            + styled
+            + (f"Shot types in her recent posts, with how often (vary them: don't lean on the most used; reach for her "
+               f"other shot families): {json.dumps(dict(shot_types.most_common()))}\n" if shot_types else "")
+            + f"Known sets{'' if look else ' and outfits'} (reuse the names): {json.dumps(known, default=str)}\n\n"
+            f"The accepted idea (its reasoning says why it was planned; direct toward that): "
+            f"{json.dumps(idea, default=str)}\n\n"
             f"Write exactly {len(scenes)} shot sheet(s), one per scene, in order.")
+
+
+def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], move_name: str,
+            move: dict | None) -> list[dict]:
+    """The director's message: the static brief first, as a cached block, then this creator and this post."""
+    return [{"type": "text", "text": static_brief(policy, fmt), "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": creator_brief(conn, policy, body, creator_id, fmt, scenes, move_name, move)}]
 
 
 def _empty(value) -> bool:
@@ -387,7 +491,9 @@ EDIT_ASK = ("THE SHOTS ARE DIRECTED (below). Now write each shot's edit, one per
 def _edit(conn, policy, llm, content, shots: list[dict], creator_id, agent: str, cfg: dict) -> None:
     """The edit pass (DirectedEdits): a second, small call that sees the brief and the directed shots and fills each
     shot's `edit`. If it fails, the shots keep an empty edit (no text, cuts by default) rather than losing direction."""
-    view = [{k: s.get(k) for k in ("framing", "blocking", "performance", "cutaway", "motion_reference")} for s in shots]
+    view = [{"shot_type": s.get("shot_type") or "", "location": (s.get("set") or {}).get("location") or "",
+             **{k: s.get(k) for k in ("framing", "blocking", "performance", "sound", "cutaway", "motion_reference")}}
+            for s in shots]
     ask = list(content) if isinstance(content, list) else [{"type": "text", "text": str(content)}]
     ask = ask + [{"type": "text", "text": f"{EDIT_ASK}\n{json.dumps(view, default=str)}"}]
     try:

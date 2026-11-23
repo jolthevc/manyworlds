@@ -62,7 +62,8 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
           prefer: list[str] | None = None) -> Job | None:
     """Atomically take the next runnable job of the given kinds, or None. Jobs pinned to
     other pools are left for workers in those pools. `batches` (SQL LIKE patterns) limits it to those
-    batches: while operations are paused, only tests and benchmarks run (manyworlds.operations). Within a
+    batches: while operations are paused, only tests and benchmarks run (manyworlds.operations). A job retried with
+    a backoff (`fail(backoff_seconds=...)`) waits until its run_after. Within a
     priority, kinds in `prefer` (the model the worker has loaded) come first, so a machine serving several
     families runs one model's work back to back instead of reloading 16-30 GB at every switch."""
     row = conn.execute(
@@ -78,6 +79,7 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
               AND attempts < max_attempts
               AND (pools IS NULL OR %(pool)s::text = ANY(pools))
               AND (status = 'queued' OR (status = 'running' AND lease_until < now()))
+              AND (run_after IS NULL OR run_after <= now())
               AND NOT (id = ANY(%(exclude)s::uuid[]))
               AND (NOT %(only_test)s OR payload->>'test' = 'true')
               AND (%(batches)s::text[] IS NULL OR batch LIKE ANY(%(batches)s::text[]))
@@ -130,17 +132,24 @@ def complete(conn, job_id, worker_id: str, result: dict[str, Any]) -> bool:
     return row is not None
 
 
-def fail(conn, job_id, worker_id: str, error: str, *, retryable: bool = True) -> str | None:
-    """Record a failure. Retryable jobs with attempts left go back to the queue."""
+def fail(conn, job_id, worker_id: str, error: str, *, retryable: bool = True,
+         backoff_seconds: float = 0) -> str | None:
+    """Record a failure. Retryable jobs with attempts left go back to the queue; with `backoff_seconds`
+    (policy queue.retry_backoff_seconds) not before attempts x backoff_seconds from now, so a failure that
+    is about to clear (a download, a host blip) is not retried at once."""
     row = conn.execute(
         """
         UPDATE jobs SET status = CASE WHEN %(retry)s AND attempts < max_attempts
                                       THEN 'queued' ELSE 'failed' END,
+                        run_after = CASE WHEN %(retry)s AND attempts < max_attempts AND %(backoff)s > 0
+                                         THEN now() + make_interval(secs => attempts * %(backoff)s)
+                                         ELSE NULL END,
                         error = %(error)s, lease_until = NULL, updated_at = now()
         WHERE id = %(id)s AND worker_id = %(worker)s AND status = 'running'
         RETURNING status
         """,
-        {"retry": retryable, "error": error[:4000], "id": job_id, "worker": worker_id},
+        {"retry": retryable, "error": error[:4000], "id": job_id, "worker": worker_id,
+         "backoff": float(backoff_seconds)},
     ).fetchone()
     return row["status"] if row else None
 

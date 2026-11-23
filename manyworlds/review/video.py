@@ -375,8 +375,7 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
     limit = limit or int(policy.get("review", "video", "max_jobs_per_run", default=10))
     return [r["id"] for r in conn.execute(
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
-           WHERE j.status = 'done' AND (j.kind LIKE 'video.%%' OR j.kind LIKE 'talk.%%' OR j.kind = 'hosted.video'
-                                        OR j.kind = 'comfy.wan_i2v' OR j.kind = 'comfy.wan_animate2')
+           WHERE j.status = 'done' AND j.kind LIKE ANY(%(kinds)s::text[])
              AND j.kind NOT LIKE '%%.mirror'
              AND coalesce(j.payload->>'intermediate', '') <> 'true'
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0
@@ -384,10 +383,25 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
              AND EXISTS (SELECT 1 FROM assets k WHERE k.job_id = j.id AND k.kind = 'keyframe')
              AND EXISTS (SELECT 1 FROM assets a WHERE a.job_id = j.id AND a.kind = 'video'
                            AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = a.id))
-           ORDER BY j.updated_at LIMIT %(limit)s""", {"batch": batch, "limit": limit}).fetchall()]
+           ORDER BY j.updated_at LIMIT %(limit)s""",
+        {"batch": batch, "limit": limit, "kinds": reviewed_kind_patterns(policy)}).fetchall()]
+
+
+def _like_literal(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def reviewed_kind_patterns(policy: Policy) -> list[str]:
+    """The clip job kinds the video gate judges, as LIKE patterns: policy review.video.kinds, where an entry ending
+    in `.*` is a kind prefix (`talk.*`: every talk kind) and any other is one kind, matched exactly."""
+    kinds = policy.get("review", "video", "kinds", default=None) or [
+        "video.*", "talk.*", "hosted.video", "comfy.wan_i2v", "comfy.wan_animate2"]
+    return [_like_literal(k[:-1]) + "%" if k.endswith(".*") else _like_literal(k) for k in kinds]
 
 
 def run_pending(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, workdir: Path,
                 *, batch: str | None = None) -> dict:
     return common.run_jobs(pending_jobs(conn, policy, batch=batch),
-                           lambda job, d: review_job(conn, policy, llm, store, job, d), workdir, prefix="video-")
+                           lambda job, d: review_job(conn, policy, llm, store, job, d), workdir, prefix="video-",
+                           on_error=lambda job, e: common.give_up(conn, policy, job, e, asset_kind="video",
+                                                                  section="video"))

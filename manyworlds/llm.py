@@ -306,6 +306,9 @@ class LLM:
     def _call(self, model: str, *, system, content, schema: type[T], effort: str, creator_id,
               agent: str | None = None) -> T:
         if self.is_open(model):
+            # Effort is Claude's (output_config.effort). The OpenAI-compatible hosts in llm.hosts have no portable
+            # reasoning parameter we have verified, so an open model answers at its own default; said at debug level.
+            log.debug("effort %r not sent to open model %s (no verified reasoning parameter on its host)", effort, model)
             return self._open(model, system=system, content=content, schema=schema, creator_id=creator_id,
                               agent=agent)
         return self._claude(model, system=system, content=content, schema=schema, effort=effort,

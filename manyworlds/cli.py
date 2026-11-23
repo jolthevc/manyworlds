@@ -465,7 +465,10 @@ def _review(args, conn, pol, llm) -> int:
             result["images"].get("jobs", 0) >= int(pol.get("review", "image", "max_jobs_per_run", default=10)) or
             result["clips"].get("jobs", 0) >= int(pol.get("review", "video", "max_jobs_per_run", default=10)))
         if not full:
-            time.sleep(float(pol.get("review", "image", "loop_seconds", default=120)))
+            # While a post is producing, images and clips land at any moment: look again soon (busy_loop_seconds).
+            idle_s = float(pol.get("review", "image", "loop_seconds", default=120))
+            busy = not args.dry_run and (any(r.get("jobs") for r in result.values()) or work_in_flight(conn))
+            time.sleep(float(pol.get("review", "image", "busy_loop_seconds", default=idle_s)) if busy else idle_s)
         pol = policy_mod.load()
 
 
@@ -586,19 +589,47 @@ def _trends(args, conn, pol, llm) -> int:
         time.sleep(60 * float(pol.get("trends", "loop_minutes", default=30)))
         pol = policy_mod.load()
 
+
+def work_in_flight(conn) -> bool:
+    """Whether a post is being produced: the producer and reviewer loops then poll every
+    production.busy_loop_seconds / review.image.busy_loop_seconds instead of their idle interval."""
+    try:
+        return bool(conn.execute("SELECT 1 FROM posts WHERE status = 'producing' LIMIT 1").fetchone())
+    except Exception:  # noqa: BLE001 - a dead connection: the idle interval
+        return False
+
+
 def _produce(args, conn, pol, llm) -> int:
+    """The producer: a full tick (produce_tick) every production.loop_seconds; while a post is producing, light
+    ticks in between (production.advance only) every production.busy_loop_seconds, so a post moves on soon after
+    its jobs and reviews finish without polling the Brain, publishing and metrics more often."""
     import time
 
-    last = None
+    from . import operations, production
+
+    last, last_full = None, None
     while True:
-        result = produce_tick(conn, pol, llm)
+        idle_s = float(pol.get("production", "loop_seconds", default=120))
+        full = last_full is None or time.monotonic() - last_full >= idle_s
+        try:
+            if full:
+                last_full = time.monotonic()   # a failing full tick waits its interval too
+                result = produce_tick(conn, pol, llm)
+            else:
+                result = (production.advance(conn, pol, llm=llm) if operations.is_live(pol)
+                          else {"operations": "paused"})
+        except Exception as e:  # noqa: BLE001 - the loop keeps going; the error is printed
+            logging.getLogger("manyworlds.produce").exception("producer tick failed")
+            result = {"error": f"{type(e).__name__}: {e}"[:300]}
         paused = result == {"operations": "paused"}
-        if not args.loop or (paused and last != "paused") or (not paused and any(result.values())):
+        changed = any(v for k, v in result.items() if full or k != "producing")
+        if not args.loop or (paused and last != "paused") or (not paused and changed):
             _print(result)
         last = "paused" if paused else "live"
         if not args.loop:
             return 0
-        time.sleep(float(pol.get("production", "loop_seconds", default=120)))
+        busy = not paused and work_in_flight(conn)
+        time.sleep(float(pol.get("production", "busy_loop_seconds", default=idle_s)) if busy else idle_s)
         pol = policy_mod.load()
 
 

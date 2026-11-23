@@ -378,17 +378,24 @@ class Worker:
             # Charge wall time including upload: the rented GPU is billed while we wait.
             gpu_seconds = time.monotonic() - t0
             self._charge(job, attempt_id, gpu_seconds)
-            queue.complete(self.conn, job.id, self.worker_id,
-                           {"asset_ids": [str(a) for a in asset_ids], "gpu_seconds": round(gpu_seconds, 3),
-                            "pool": self.pool, **result.meta})
-            outcome = "done"
-            self.consecutive_faults = 0
+            if queue.complete(self.conn, job.id, self.worker_id,
+                              {"asset_ids": [str(a) for a in asset_ids], "gpu_seconds": round(gpu_seconds, 3),
+                               "pool": self.pool, **result.meta}):
+                outcome = "done"
+                self.consecutive_faults = 0
+            else:
+                # The lease went to another worker (or the job was reaped) while this one finished: the job is not
+                # ours to finish. The cost stays charged; the attempt is lost, not done.
+                outcome, error = "lost", "lease lost before completion; result not recorded"
+                log.warning("job %s: lease lost before completion; result discarded", job.id)
         except NonRetryable as e:
             error = f"{type(e).__name__}: {e}"
+            self._ensure_conn()   # the connection may have died with the job: charge and fail on a live one
             self._charge(job, attempt_id, time.monotonic() - t0)
             queue.fail(self.conn, job.id, self.worker_id, error, retryable=False)
         except Exception as e:  # noqa: BLE001 - any handler error is recorded and retried
             error = f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=5)}"
+            self._ensure_conn()   # the connection may have died with the job: charge and fail on a live one
             self._charge(job, attempt_id, time.monotonic() - t0)
             if is_code_fault(e) and not is_worker_fault(e):
                 log.error("code fault on job %s (fails the same on any machine): %s", job.id, e)
@@ -402,7 +409,8 @@ class Worker:
                               machine=self.group)
             else:
                 log.warning("job %s failed: %s", job.id, e)
-                queue.fail(self.conn, job.id, self.worker_id, error, retryable=True)
+                queue.fail(self.conn, job.id, self.worker_id, error, retryable=True,
+                           backoff_seconds=float(self.policy.get("queue", "retry_backoff_seconds", default=0)))
         finally:
             done.set()
             hb.join(timeout=5)

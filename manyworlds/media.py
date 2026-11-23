@@ -428,19 +428,22 @@ def frame_count(path: Path) -> int:
 
 def keyframes(video: Path, workdir: Path, n: int, *, timeout: float = 120) -> list[tuple[Path, int, int]]:
     """`n` frames spread over the clip, ending on its last (the video gate's keyframes), as JPEGs:
-    [(path, frame index, total frames)]. Plain ffmpeg, so it runs where there is no GPU stack (hosted video)."""
+    [(path, frame index, total frames)]. Plain ffmpeg, so it runs where there is no GPU stack (hosted video).
+    One decoding pass selects every keyframe (keyframe_0.jpg, keyframe_1.jpg, ... in frame order)."""
     from .worker.keyframes import keyframe_indices
     total = frame_count(video)
-    out = []
-    for i, idx in enumerate(keyframe_indices(total, n)):
-        p = Path(workdir) / f"keyframe_{i}.jpg"
-        r = subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-vf", rf"select=eq(n\,{idx})",
-                            "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "3", str(p)], capture_output=True, text=True,
-                           timeout=timeout)
-        if r.returncode != 0 or not p.exists():
-            raise RuntimeError(f"keyframe {idx} of {video.name}: {r.stderr[-300:]}")
-        out.append((p, idx, total))
-    return out
+    indices = keyframe_indices(total, n)
+    paths = [Path(workdir) / f"keyframe_{i}.jpg" for i in range(len(indices))]
+    for p in paths:   # a file left by an earlier run must not pass for one this run failed to write
+        p.unlink(missing_ok=True)
+    select = "select=" + "+".join(rf"eq(n\,{idx})" for idx in indices)
+    r = subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-vf", select, "-fps_mode", "passthrough",
+                        "-frames:v", str(len(indices)), "-q:v", "3", "-start_number", "0",
+                        str(Path(workdir) / "keyframe_%d.jpg")], capture_output=True, text=True, timeout=timeout)
+    missing = [idx for idx, p in zip(indices, paths) if not p.exists()]
+    if r.returncode != 0 or missing:
+        raise RuntimeError(f"keyframes {missing or indices} of {video.name}: {r.stderr[-300:]}")
+    return [(p, idx, total) for p, idx in zip(paths, indices)]
 
 
 def burn_captions(video: Path, ass: Path, out: Path, fontsdir: Path | None = None, *, overlay=None,

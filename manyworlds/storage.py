@@ -125,11 +125,16 @@ class S3Store(ObjectStore):
         self.client.delete_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))
 
     def exists(self, key: str) -> bool:
+        """False only when the store says the object is not there (404 / NoSuchKey). Any other error (no access, a
+        network blip, throttling) is raised: treating it as missing would redo expensive work (a model mirror, a
+        finished video) or hide a broken credential."""
         try:
             self.client.head_object(Bucket=self.bucket, Key=key)
             return True
-        except Exception:  # noqa: BLE001 - 404 or no access: treat as missing
-            return False
+        except Exception as e:  # noqa: BLE001 - botocore's ClientError, read without importing botocore
+            if _not_found(e):
+                return False
+            raise
 
     def size(self, key: str) -> int | None:
         try:
@@ -142,6 +147,17 @@ class S3Store(ObjectStore):
         parsed = urlparse(uri)
         return self.client.generate_presigned_url("get_object", ExpiresIn=int(seconds),
                                                   Params={"Bucket": parsed.netloc, "Key": parsed.path.lstrip("/")})
+
+
+NOT_FOUND_CODES = ("404", "NoSuchKey", "NotFound")
+
+
+def _not_found(error: Exception) -> bool:
+    """Whether an S3 client error means the object does not exist (a ClientError's response code or HTTP 404)."""
+    response = getattr(error, "response", None) or {}
+    code = str((response.get("Error") or {}).get("Code", ""))
+    status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return code in NOT_FOUND_CODES or status == 404
 
 
 def from_url(url: str | None = None) -> ObjectStore:

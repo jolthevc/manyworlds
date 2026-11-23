@@ -117,6 +117,22 @@ def resolve_due(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     return out
 
 
+def resolved_for(conn, creator_id, *, role: str | None = None, n: int = 10) -> list[dict]:
+    """A role's scored claims about one creator, newest first: what it said, how sure it was, what happened and its
+    Brier score, so the role sees its own track record. Only claims with an outcome (unmeasurable ones are closed
+    without one); a sandbox creator's claims are labelled SIMULATED."""
+    rows = conn.execute(
+        "SELECT claim, metric, comparator, threshold, probability, observed, outcome, brier, mode, created_at, "
+        "resolved_at FROM predictions WHERE creator_id = %s AND outcome IS NOT NULL AND (%s::text IS NULL OR role = %s) "
+        "ORDER BY resolved_at DESC LIMIT %s", (creator_id, role, role, int(n))).fetchall()
+    return [{"claim": r["claim"], "metric": r["metric"], "comparator": r["comparator"],
+             "threshold": float(r["threshold"]), "probability": float(r["probability"]),
+             "observed": round(float(r["observed"]), 3) if r["observed"] is not None else None,
+             "held": bool(r["outcome"]), "brier": float(r["brier"]) if r["brier"] is not None else None,
+             "made": r["created_at"].date().isoformat(), "resolved": r["resolved_at"].date().isoformat(),
+             **({"label": evidence.LABEL} if r["mode"] == "sandbox" else {})} for r in rows]
+
+
 def scorecard(conn, *, mode: str = "real", role: str | None = None) -> list[dict]:
     """Per role and month: how good the claims were. Lower Brier is better; 0.25 is a coin flip at p = 0.5."""
     rows = conn.execute(

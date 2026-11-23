@@ -208,6 +208,36 @@ def _clean(policy: Policy, p: PlannedPost, cfg: dict, platforms: list[str], days
     return validate(policy, p, platforms=platforms, days=days, prof=prof, hashtags_max=hashtags_max)
 
 
+def series_catalogue(prof: dict | None) -> dict:
+    """Every series the creator runs, by name: the profile's video series (content.video_series) and the dossier's
+    content system (content_system.series, manyworlds.creator.dossier), with what each is about. One list, so an
+    idea in a dossier series is never refused as "outside the creator's series". The profile's entry comes first
+    when a name is in both; the dossier adds its premise and hook where the profile has none."""
+    out: dict = {}
+    for s in ((prof or {}).get("content") or {}).get("video_series") or []:
+        if isinstance(s, dict) and s.get("name"):
+            out[s["name"]] = {k: s[k] for k in ("premise", "format", "what_it_says", "pillar") if s.get(k)}
+    for s in ((prof or {}).get("content_system") or {}).get("series") or []:
+        if isinstance(s, dict) and s.get("name"):
+            entry = out.setdefault(s["name"], {})
+            for k in ("premise", "hook", "archetype", "capabilities", "why_it_works"):
+                if s.get(k) and not entry.get(k):
+                    entry[k] = s[k]
+    return out
+
+
+def face_rule(prof: dict | None) -> str:
+    """How often her face shows: her style director's face share when she has a style (an aspirational feed is mostly
+    her world), else the old rule (face in most images, wearing the signature item)."""
+    share = ((prof or {}).get("style") or {}).get("face_share") or {}
+    if share:
+        pct = {k: round(float(share.get(k) or 0) * 100) for k in ("face", "partial", "none")}
+        return (f"Mix her face with her world, as her style's face share says: her face clearly in about {pct['face']}% "
+                f"of images, partly or turned away in about {pct['partial']}%, and no face (hands, details, places, "
+                f"food, her back) in about {pct['none']}%; her signature items recur naturally.")
+    return "The creator's face is visible in most images, wearing their signature item."
+
+
 def validate(policy: Policy, p, *, platforms: list[str], days: int, prof: dict | None,
              hashtags_max: dict) -> tuple:
     """Keep a planned post or idea only if production can make it and it reads like the creator:
@@ -223,7 +253,7 @@ def validate(policy: Policy, p, *, platforms: list[str], days: int, prof: dict |
         return None, f"{p.format} with {len(p.scenes)} images"
     p.scenes = p.scenes[:hi]
     if prof:
-        series = {s["name"] for s in prof["content"]["video_series"]}
+        series = set(series_catalogue(prof))
         if p.format in _video_formats(policy) and p.series not in series:
             return None, f"video outside the creator's series ({p.series!r})"
     issues = caption_issues(policy, f"{p.caption} {p.script} {p.on_screen_text}")
@@ -283,8 +313,7 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
         + (f"Tone mix across the period: {tone_counts}. " if tone_counts else "")
         + f"Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
-        f"Vary places, times of day, light and framing; the creator's face should be visible in most images, "
-        f"wearing their signature item.")
+        f"Vary places, times of day, light and framing. " + face_rule(prof))
     role = cfg.get("role", "brain")
     out = llm.structured(role, system=system_prompt(policy), content=prompt, schema=ContentPlan,
                          effort=cfg.get("effort", "medium"), creator_id=creator_id)

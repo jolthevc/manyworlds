@@ -62,15 +62,26 @@ class IdeaBatch(BaseModel):
     ideas: list[PlannedIdea]
 
 
-def _recent_with_scores(conn, creator_id, n: int) -> list[dict]:
+def _recent_with_scores(conn, creator_id, n: int, policy=None) -> list[dict]:
+    """Recent posts, newest first, with how their ideas scored and, once published and old enough, how they did
+    (evidence.post_outcomes: reach at the analysis target age, in the creator's evidence mode, labelled SIMULATED
+    for a sandbox creator)."""
     rows = conn.execute(
-        """SELECT p.format, p.caption, p.body->'scenes' AS scenes, p.body->>'canon' AS canon, e.scores
+        """SELECT p.id, p.format, p.caption, p.body->'scenes' AS scenes, p.body->>'canon' AS canon,
+                  p.body->>'series' AS series, e.scores
            FROM posts p LEFT JOIN ideas i ON i.post_id = p.id
            LEFT JOIN LATERAL (SELECT scores FROM evaluations WHERE idea_id = i.id AND role = 'evaluator'
                               ORDER BY created_at DESC LIMIT 1) e ON true
            WHERE p.creator_id = %s AND p.status <> 'dropped'
            ORDER BY coalesce(p.scheduled_for, p.created_at) DESC LIMIT %s""", (creator_id, n)).fetchall()
-    return [{k: v for k, v in dict(r).items() if v} for r in rows]
+    outcomes = evidence.post_outcomes(conn, creator_id, n, evidence.mode_for(conn, creator_id), policy=policy)
+    out = []
+    for r in rows:
+        d = {k: v for k, v in dict(r).items() if v and k != "id"}
+        if str(r["id"]) in outcomes:
+            d["outcome"] = outcomes[str(r["id"])]
+        out.append(d)
+    return out
 
 
 def stagings_for(policy, formats, section: str = "stagings") -> dict:
@@ -112,6 +123,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     who = {k: prof[k] for k in planner.ANALYSIS_FIELDS if k in prof} if prof else \
         {k: c["bible"].get(k) for k in planner.BIBLE_FIELDS if c["bible"].get(k)}
     mode = evidence.mode_for(conn, creator_id)
+    outcome_age_h = round(int(policy.get("brain", "analysis", "target_age_s", default=259200)) / 3600)
     findings = [{"finding": f["statement"], "grade": f["grade"], **({"label": f["label"]} if f["label"] else {})}
                 for f in evidence.findings(conn, mode=mode, creator_id=creator_id)]
     last = analyst.latest(conn, creator_id)
@@ -173,8 +185,11 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"The creator:\n{json.dumps(who, default=str)}\n"
         f"What we know about their life (keep it consistent):\n"
         f"{json.dumps(known)}\n"
-        f"Recent posts, newest first, with how their ideas scored (1-10) where scored (don't repeat scenes, jokes "
-        f"or captions):\n{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30))), default=str)}\n"
+        f"Recent posts, newest first, with how their ideas scored (1-10) where scored and, once published and "
+        f"old enough, how they did (`outcome`: reach at {outcome_age_h} h; {'SIMULATED, a sandbox test, not evidence of demand' if mode == 'sandbox' else 'real'}). "
+        f"Learn from what reached people, not only from the scores; don't repeat scenes, jokes or captions:\n"
+        f"{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30)), policy), default=str)}\n"
+        f"Her series (a video belongs to one of these, by name): {json.dumps(planner.series_catalogue(prof), default=str)}\n"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
         f"{niche_text}{play_text}{brief_text}{style_text}"
@@ -193,8 +208,8 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
         f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
-        + ("Mix her face with her world: covers and talking show her face; details, places, food, her back and her "
-           "hands carry the rest." if look else "The creator's face is visible in most images, wearing their signature item."))
+        + ("Covers and talking show her face; details, places, food, her back and her hands carry the rest. "
+           if look else "") + planner.face_rule(prof))
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,
             "analysis_decision_id": str(last["id"]) if last else None,
             "talent_brief_id": str(brief["id"]) if brief else None,
@@ -228,7 +243,8 @@ class Showrunner:
         creator_id, start = p["creator_id"], date.fromisoformat(p["start"])
         days = int(ctx.policy.get("brain", "showrunner", "days", default=3))
         prompt, meta = _prompt(ctx, creator_id, start, days)
-        out = ctx.llm.structured(ctx.policy.get("brain", "showrunner", "role", default="brain"),
+        role = ctx.policy.get("brain", "showrunner", "role", default="brain")
+        out = ctx.llm.structured(role,
                                  system=SYSTEM + planner.voice_rules(ctx.policy),
                                  content=prompt, schema=IdeaBatch,
                                  effort=ctx.policy.get("brain", "showrunner", "effort", default="medium"),
@@ -267,6 +283,8 @@ class Showrunner:
                         "staging": staging, "flavor": flavor}
                 if move:   # the director (manyworlds.brain.director) starts that scene from the move's shot
                     body["move"] = move
+                if q.slides:   # carousel text slides (manyworlds.slides), carried to the post (ideas._DIRECTED_FIELDS)
+                    body["slides"] = [s.model_dump(mode="json") for s in q.slides]
                 concept = " | ".join(q.scenes) + (f" | script: {q.script}" if q.script else "") + f" | caption: {q.caption}"
                 iid = ctx.conn.execute(
                     "INSERT INTO ideas (creator_id, batch, concept, format, body, attributes, status, experiment_id, arm) "
@@ -279,7 +297,7 @@ class Showrunner:
                 commission(ctx, "evaluator", {"idea_id": str(iid)}, reason="score before scheduling", key=f"eval:{iid}")
                 ids.append(str(iid))
             output = {"batch": batch, "ideas": len(ids), "idea_ids": ids, "dropped": dropped}
-            record_decision(ctx, "content_batch", step="plan", creator_id=creator_id, model=ctx.llm.model_for("brain"),
+            record_decision(ctx, "content_batch", step="plan", creator_id=creator_id, model=ctx.llm.model_for(role),
                             inputs={"start": str(start), "days": days, "profile_version": meta["profile_version"],
                                     "requested": meta["counts"], "analysis_decision_id": meta["analysis_decision_id"],
                                     "talent_brief_id": meta["talent_brief_id"],

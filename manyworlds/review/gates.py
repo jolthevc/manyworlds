@@ -245,4 +245,6 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
 def run_pending(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, workdir: Path,
                 *, batch: str | None = None) -> dict:
     return common.run_jobs(pending_jobs(conn, policy, batch=batch),
-                           lambda job, d: review_job(conn, policy, llm, store, job, d), workdir)
+                           lambda job, d: review_job(conn, policy, llm, store, job, d), workdir,
+                           on_error=lambda job, e: common.give_up(conn, policy, job, e, asset_kind="image",
+                                                                  section="image"))

@@ -33,6 +33,13 @@ class DirectorLLM(StubLLM):
         return schema.model_validate(self.answer)
 
 
+def text(content) -> str:
+    """A call's content as plain text: the director sends blocks (the cached static brief, then the creator's part)."""
+    if isinstance(content, str):
+        return content
+    return "\n".join(b.get("text", "") for b in content if isinstance(b, dict))
+
+
 CANAL = {"set": {"location": "the canal path at dusk", "set_id": "canal_path"},
          "wardrobe": {"outfit": "a long camel coat", "outfit_id": "camel_coat"}}
 
@@ -52,8 +59,8 @@ def test_direct_returns_shot_dicts_and_merges_the_moves_defaults(conn, policy):
     assert [b["action"] for b in shot["blocking"]] == [b["action"] for b in move["blocking"]]
     call = llm.calls[0]
     assert call["role"] == "director" and call["agent"] == "director"
-    assert "walk_to_camera" in str(call["content"]) and "orbit_slow" in str(call["content"])   # move and camera moves
-    assert "walking along the canal" in str(call["content"])
+    assert "walk_to_camera" in text(call["content"]) and "orbit_slow" in text(call["content"])   # move and camera moves
+    assert "walking along the canal" in text(call["content"])
     cost = conn.execute("SELECT count(*) n FROM cost_entries WHERE agent = 'director'").fetchone()["n"]
     assert cost == 2                                         # both calls (shots, then their edit) charged to it
 
@@ -181,7 +188,7 @@ def test_the_brief_is_the_capability_catalogue_and_the_archetype(conn, policy):
     cid = _fashion(conn)
     llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
     director.direct(conn, policy, llm, {"scenes": ["by the canal"], "script": ""}, cid, fmt="story_clip")
-    content, system = str(llm.calls[0]["content"]), llm.calls[0]["system"]
+    content, system = text(llm.calls[0]["content"]), llm.calls[0]["system"]
     assert "quiet-luxury fashion" in content and "outfits that cost less" in content          # the archetype
     fashion = archetypes.get(policy, "fashion_style")["communicates"]
     assert fashion in content                                                                  # how it communicates
@@ -217,7 +224,7 @@ def test_a_motion_reference_is_kept_only_when_listed_and_rendered(conn, policy):
     llm = DirectorLLM({"shots": [{**CANAL, "motion_reference": ref}]}, conn=conn)
     shots = director.direct(conn, _clips_only(policy), llm, {"scenes": ["a"]}, cid, fmt="photo")
     assert shots[0]["motion_reference"] == ""                     # dance off: cleared
-    assert ref in str(_content(conn, on, cid))
+    assert ref in text(_content(conn, on, cid))
 
 
 def _content(conn, policy, cid):
@@ -242,3 +249,101 @@ def test_direction_can_be_switched_off(conn, policy):
     llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
     assert ideas.schedule_ready(conn, off, now=datetime.now(timezone.utc), llm=llm)["directed"] == 0
     assert llm.calls == []
+
+
+# --- more context, the cached brief, retries (2026-11-23) ---------------------------------------------------------
+
+def _profiled(conn, policy):
+    """A creator with a profile, a dossier, a talent brief and directed posts behind her."""
+    from manyworlds.creator import profile
+    cid = creator(conn)
+    profile.save(conn, policy, cid, {
+        "identity": {"apparent_age": 27},
+        "look": {"hair": "bob", "wardrobe": "knits", "accessories": "watch", "makeup": "none",
+                 "signature_item": "glasses"},
+        "persona": {"traits": ["dry"], "vibe": "quiet", "ethos": "e", "humour": "deadpan about kettles",
+                    "caption_voice": "lowercase, one dry line", "speaking_voice": "low", "never": ["gym selfies"]},
+        "content": {"pillars": [{"name": "night rituals", "about": "a", "why_it_lasts": "b"}],
+                    "video_series": [{"name": "kettle ratings", "premise": "she rates kettles at 2am",
+                                      "format": "story_clip", "what_it_says": "w", "pillar": "night rituals"}]},
+        "archetypes": ["lifestyle_slow"],
+        "positioning": {"why_follow": "a calm night routine after late shifts"},
+        "content_system": {"series": [{"name": "2am tea", "premise": "the same ritual each night",
+                                       "hook": "a time stamp"}]},
+        "opinions_and_running_jokes": ["the kettle is always slow"], "dials": {}}, author="test", reason="seed")
+    conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output, policy_version) "
+                 "VALUES ('talent_brief', %s, '{}', %s, %s)",
+                 (cid, Jsonb({"focus": ["more steam close-ups"], "stop": ["talking heads in the hallway"]}),
+                  policy.version))
+    conn.execute("INSERT INTO posts (creator_id, format, status, body) VALUES (%s, 'carousel', 'planned', %s)",
+                 (cid, Jsonb({"scenes": ["a", "b"], "shots": [{"shot_type": "hand_coffee_table"},
+                                                              {"shot_type": "hand_coffee_table"}]})))
+    return cid
+
+
+def test_recent_shot_types_reads_the_directed_posts_newest_first(conn, policy):
+    cid = _profiled(conn, policy)
+    assert director.recent_shot_types(conn, cid, 5) == ["hand_coffee_table", "hand_coffee_table"]
+
+
+def test_the_director_sees_the_idea_her_persona_dossier_brief_playbook_and_recent_shots(conn, policy):
+    cid = _profiled(conn, policy)
+    iid = conn.execute("INSERT INTO ideas (creator_id, concept, format, body, attributes, status) "
+                       "VALUES (%s, 'x', 'story_clip', %s, %s, 'scheduled') RETURNING id",
+                       (cid, Jsonb({"reasoning": "her saves spike on steam shots"}),
+                        Jsonb({"mood": "sleepy"}))).fetchone()["id"]
+    body = {"scenes": ["steam off the kettle at 2am"], "script": "steam rises", "series": "kettle ratings",
+            "pillar": "night rituals", "tone": "dry", "canon": "her kettle is green", "idea_id": str(iid)}
+    answer = {"shots": [{**CANAL, "shot_type": "hand_coffee_table", "sound": {"room_tone": "fridge hum"}}]}
+    llm = DirectorLLM(answer, conn=conn)
+    director.direct(conn, policy, llm, body, cid, fmt="story_clip")
+    content = text(llm.calls[0]["content"])
+    assert "her saves spike on steam shots" in content and "sleepy" in content        # the idea's why
+    assert "she rates kettles at 2am" in content and "her kettle is green" in content  # its series and canon
+    assert "lowercase, one dry line" in content and "the kettle is always slow" in content   # her persona
+    assert "a calm night routine after late shifts" in content                         # dossier planning view
+    assert "the same ritual each night" in content
+    assert "more steam close-ups" in content and "talking heads in the hallway" in content   # talent brief
+    play = archetypes.get(policy, "lifestyle_slow")
+    assert play["edit_grammar"][0] in content and play["pitfalls"][0] in content      # her archetype's craft
+    assert '"hand_coffee_table": 2' in content                                         # recent shot types
+    edit = text(llm.calls[1]["content"])                                               # the edit pass sees the shots
+    assert "the canal path at dusk" in edit.split(director.EDIT_ASK)[1]
+    assert "hand_coffee_table" in edit.split(director.EDIT_ASK)[1] and "fridge hum" in edit.split(director.EDIT_ASK)[1]
+    assert "EVERY shot names one" in llm.calls[0]["system"]                            # never an empty shot type
+
+
+def test_the_static_brief_leads_as_a_cached_block_shared_by_both_calls(conn, policy):
+    cid = _profiled(conn, policy)
+    llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
+    director.direct(conn, policy, llm, {"scenes": ["by the canal"]}, cid, fmt="story_clip")
+    shots_call, edit_call = llm.calls[0]["content"], llm.calls[1]["content"]
+    static = shots_call[0]
+    assert static["cache_control"] == {"type": "ephemeral"}
+    assert static["text"] == director.static_brief(policy, "story_clip")
+    assert "What the studio can render now" in static["text"] and "Allowed camera moves" in static["text"]
+    assert "lowercase, one dry line" not in static["text"] and "by the canal" not in static["text"]   # nothing of hers
+    assert edit_call[0] == static and edit_call[1] == shots_call[1]                # the edit pass reuses the prefix
+
+
+def test_a_post_the_director_failed_on_is_directed_again_later_within_its_attempts(conn, policy):
+    cid = _real_creator(conn)
+    _ready_ideas(conn, cid, ("photo", {"scenes": ["walking along the canal at dusk"]}))
+    ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc),
+                         llm=DirectorLLM(error=RuntimeError("timed out"), conn=conn))
+    post = conn.execute("SELECT id, body FROM posts").fetchone()
+    assert post["body"]["direct_attempts"] == 1 and "shots" not in post["body"]
+    llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
+    assert ideas.redirect_undirected(conn, policy, llm) == 0 and llm.calls == []      # too soon after the failure
+    conn.execute("UPDATE posts SET body = body || %s WHERE id = %s",
+                 (Jsonb({"direct_failed_at": "2020-01-01T00:00:00+00:00"}), post["id"]))
+    assert ideas.redirect_undirected(conn, policy, llm) == 1
+    assert conn.execute("SELECT body FROM posts WHERE id = %s",
+                        (post["id"],)).fetchone()["body"]["shots"][0]["set"]["set_id"] == "canal_path"
+    # Out of attempts: never asked again.
+    spent = policy.get("direction", "redirect", "max_attempts")
+    conn.execute("INSERT INTO posts (creator_id, format, status, caption, body) VALUES (%s, 'photo', 'planned', 'c', %s)",
+                 (cid, Jsonb({"scenes": ["a bakery window"], "idea_id": str(post["body"]["idea_id"]),
+                              "direct_attempts": spent, "direct_failed_at": "2020-01-01T00:00:00+00:00"})))
+    llm = DirectorLLM({"shots": [CANAL]}, conn=conn)
+    assert ideas.redirect_undirected(conn, policy, llm) == 0 and llm.calls == []

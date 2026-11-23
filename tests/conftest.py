@@ -50,6 +50,9 @@ def policy(raw_policy):
         # the finish tests (test_production.py, test_talk_long.py, test_edit.py) turn it on
         "finishing": {**raw_policy.body["finishing"], "enabled": False},
         "burned_captions": {**raw_policy.body["burned_captions"], "enabled": False},
+        # retries are claimable at once: worker tests run a failing job's attempts back to back (test_queue.py
+        # covers the backoff itself)
+        "queue": {**raw_policy.body["queue"], "retry_backoff_seconds": 0},
         # the image confirm runs on every screen pass the old way (test_review.py tests clear passes and the
         # report-only direction gate itself); the direction gate rejects below 6, as it did when it was enforced
         "review": {**raw_policy.body["review"],

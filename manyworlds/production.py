@@ -1977,10 +1977,46 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
             "AND coalesce(p.scheduled_for, now()) <= %s AND p.format = ANY(%s) AND NOT p.body ? 'breadth_run' "
             "AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0 "
             "ORDER BY p.scheduled_for", (now + lead, list(_cfg(policy).get("formats", ["photo", "carousel"])))).fetchall():
-        start(conn, policy, post)
+        try:
+            start(conn, policy, post)
+        except Exception:  # noqa: BLE001 - a post that can't start stays planned; the others still start
+            log.exception("starting post %s failed", post["id"])
+            out["start_errors"] = out.get("start_errors", 0) + 1
+            continue
         out["started"] += 1
     # Breadth-test posts (manyworlds.breadth) are only ever advanced by their own driver, under the test overlay.
     for post in conn.execute("SELECT * FROM posts WHERE status = 'producing' AND NOT body ? 'breadth_run' "
                              "ORDER BY scheduled_for").fetchall():
-        out[advance_post(conn, policy, post, store, llm=llm)] += 1
+        try:
+            out[advance_post(conn, policy, post, store, llm=llm)] += 1
+        except Exception as e:  # noqa: BLE001 - one broken post must never stop the others
+            out["advance_errors"] = out.get("advance_errors", 0) + 1
+            if _advance_failed(conn, policy, post, e):
+                out["dropped"] += 1
     return out
+
+
+def _advance_failed(conn, policy: Policy, post: dict, error: Exception) -> bool:
+    """Count a tick in which advancing this post raised (body.advance_errors, the last one in body.advance_error).
+    Once production.max_advance_errors is used up the post is dropped with the error as its reason and the owner
+    hears of it; until then it is tried again next tick. True when it was dropped."""
+    from . import notify
+    err = f"{type(error).__name__}: {error}"[:500]
+    log.exception("advancing post %s failed", post["id"])
+    try:
+        n = int((post["body"] or {}).get("advance_errors", 0)) + 1
+        dropped = n >= int(_cfg(policy).get("max_advance_errors", 5))
+        patch = {"advance_errors": n, "advance_error": err}
+        if dropped:
+            patch["drop_reason"] = f"production failed {n} times: {err}"
+        drop = ", status = 'dropped', qa_status = 'failed'" if dropped else ""
+        row = conn.execute(f"UPDATE posts SET body = body || %s, updated_at = now(){drop} "
+                           "WHERE id = %s AND status = 'producing' RETURNING id", (Jsonb(patch), post["id"])).fetchone()
+        if dropped and row:
+            notify.owner_event(conn, "post_production_failed", subject={"post_id": str(post["id"])},
+                               payload={"format": post["format"], "error": err, "failures": n},
+                               creator_id=post["creator_id"], dedupe_key=f"post_production_failed:{post['id']}")
+        return bool(dropped and row)
+    except Exception:  # noqa: BLE001 - counting must not stop the other posts either (the database may be down)
+        log.exception("could not record the failure of post %s", post["id"])
+        return False

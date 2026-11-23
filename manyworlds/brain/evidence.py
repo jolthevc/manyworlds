@@ -67,6 +67,39 @@ def metrics(conn, post_id, *, mode: Mode) -> list[dict]:
     raise ValueError(f"unknown evidence mode {mode!r}")
 
 
+def post_outcomes(conn, creator_id, n: int, mode: Mode, *, policy=None) -> dict:
+    """How the creator's last `n` published posts did: {post_id (str): {"reach": ..., "age_h": ..., ...}}, read at
+    the analysis target age (policy brain.analysis.target_age_s; the first snapshot at or after it, as the analyst
+    and the predictions ledger read it: a young post's reach would read as failure). Posts not yet that old are
+    left out. `real` reads real publications and metric_snapshots only; `sandbox` reads the simulated ones, each
+    outcome labelled SIMULATED. The numbers are the snapshot's own (reach, plus saves, shares, likes, comments and
+    views where the platform gave them)."""
+    if mode not in ("real", "sandbox"):
+        raise ValueError(f"unknown evidence mode {mode!r}")
+    target = int((policy.get("brain", "analysis", "target_age_s", default=259200) if policy else 259200))
+    posts = conn.execute(
+        "SELECT DISTINCT ON (p.id) p.id, u.published_at FROM posts p JOIN publications u ON u.post_id = p.id "
+        "WHERE p.creator_id = %s AND u.simulated = %s ORDER BY p.id, u.published_at DESC",
+        (creator_id, mode == "sandbox")).fetchall()
+    posts = sorted(posts, key=lambda r: r["published_at"], reverse=True)[:int(n)]
+    keys = ("reach", "saves", "shares", "likes", "comments", "views")
+    out: dict = {}
+    for p in posts:
+        rows = [r for r in metrics(conn, p["id"], mode=mode) if (r.get("post_age_s") or 0) >= target]
+        if not rows:
+            continue
+        first = min(rows, key=lambda r: r.get("post_age_s") or 0)
+        m = first.get("metrics") or {}
+        o = {k: m[k] for k in keys if m.get(k) is not None}
+        if "reach" not in o:
+            continue
+        o["age_h"] = round(int(first.get("post_age_s") or 0) / 3600)
+        if mode == "sandbox":
+            o["label"] = LABEL
+        out[str(p["id"])] = o
+    return out
+
+
 def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: str, creator_id=None, cluster_id=None,
                    market_id=None, effect=None, interval: tuple | None = None, n: int | None = None,
                    sources=()) -> uuid.UUID:
