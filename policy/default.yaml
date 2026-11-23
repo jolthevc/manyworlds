@@ -132,29 +132,29 @@ worker_images:
   # HF_HUB_DISABLE_XET: plain HTTP for the one-time mirror download. A Vast worker stalled in the Xet
   # downloader (2026-11-14); the "process() takes no keyword arguments" failures were Brotli 1.1 (fixed in v8).
   # download_gb: what a machine downloads at boot (compressed image + model weights), priced per GB on Vast.
-  image: {image: mw-worker-image, tag: v27, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80, download_gb: 30,
+  image: {image: mw-worker-image, tag: v28, min_cuda: 12.8, cpu: 4, ram_gb: 24, disk_gb: 80, download_gb: 30,
           env: {MW_OFFLOAD_BELOW_GB: 26, HF_HUB_DISABLE_XET: 1}}   # 26 = always offload on 24 GB cards (SaladCloud/WSL)
   # edit: reference-conditioned scene photos (image.qwen_edit, job_kinds family edit) on the image worker image:
   # Qwen-Image-Edit-2511 bf16 (~41 GB transformer, ~17 GB text encoder) + Lightning LoRA, ~58 GB downloaded at the
   # first job. With cpu offload (below MW_EDIT_OFFLOAD_BELOW_GB free, an L40S) the whole model sits in RAM.
   # Needs the image with handlers/image_qwen_edit.py in it (after v25).
-  edit: {image: mw-worker-image, tag: v27, min_cuda: 12.8, cpu: 8, ram_gb: 96, disk_gb: 150, download_gb: 70,
+  edit: {image: mw-worker-image, tag: v28, min_cuda: 12.8, cpu: 8, ram_gb: 96, disk_gb: 150, download_gb: 70,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", MW_EDIT_OFFLOAD_BELOW_GB: 64}}
   # talk: ComfyUI + WanVideoWrapper (docker/worker-talkcomfy.Dockerfile): fp8-scaled Wan2.1-I2V-14B 480p + InfiniteTalk
   # adapter (~16 GB), UMT5 text encoder (~11 GB), VAE, lightx2v LoRA; weights cached on the pool's volume if it has one.
   # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
-  talk: {image: mw-worker-talkcomfy, tag: v13, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
+  talk: {image: mw-worker-talkcomfy, tag: v14, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
-  comfy: {image: mw-worker-talkcomfy, tag: v13, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  comfy: {image: mw-worker-talkcomfy, tag: v14, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # dance: Wan-Animate-2 (comfy.wan_animate2, off) on the ComfyUI image; needs the image with handlers/dance_animate.py
   # (talkcomfy v11 and later). int8 model (~18 GB), UMT5 fp8 (~7 GB), CLIP vision, VAE, distill LoRA.
-  dance: {image: mw-worker-talkcomfy, tag: v13, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  dance: {image: mw-worker-talkcomfy, tag: v14, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
   # voxcpm in it (v9 and later).
-  voice: {image: mw-worker-talkcomfy, tag: v13, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+  voice: {image: mw-worker-talkcomfy, tag: v14, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
