@@ -9,6 +9,7 @@ idempotent (same payload in, equivalent outputs out, nothing external half-writt
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import signal
@@ -24,7 +25,7 @@ from typing import Any, Callable, Protocol
 
 from psycopg.types.json import Jsonb
 
-from .. import db, ledger, operations, queue
+from .. import db, ledger, logs, operations, queue
 from ..policy import Policy
 from ..storage import ObjectStore
 
@@ -302,8 +303,9 @@ class Worker:
                 continue
             self._busy = True
             try:
-                self._switch_to(job.kind)
-                self._run_one(job)
+                with logs.context(job_id=job.id, kind=job.kind, creator_id=job.creator_id):
+                    self._switch_to(job.kind)
+                    self._run_one(job)
             finally:
                 self._busy = False
                 self._idle_since = time.monotonic()
@@ -365,6 +367,8 @@ class Worker:
         t0 = time.monotonic()
         outcome, error = "failed", None
         charges: list[dict] = []
+        log_ctx = contextlib.ExitStack()   # every line about this attempt carries its id (manyworlds.logs)
+        log_ctx.enter_context(logs.context(attempt_id=attempt_id))
         try:
             with tempfile.TemporaryDirectory(prefix="mw-") as tmp:
                 ctx = JobContext(job=job, workdir=Path(tmp), store=self.store, charges=charges)
@@ -423,6 +427,7 @@ class Worker:
                 "UPDATE attempts SET finished_at = now(), gpu_seconds = %s, outcome = %s, error = %s WHERE id = %s",
                 (round(time.monotonic() - t0, 3), outcome, error, attempt_id),
             )
+            log_ctx.close()
 
     def _store_outputs(self, job: queue.Job, result: HandlerResult) -> list:
         ids = []

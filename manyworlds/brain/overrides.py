@@ -24,6 +24,7 @@ import uuid
 
 from psycopg.types.json import Jsonb
 
+from .. import policy_schema
 from ..policy import Policy
 
 NEVER = ("limits.", "budget.master")
@@ -79,12 +80,26 @@ def _apply(conn, path: str, value, *, author: str, reason: str, decision_id=None
     return version
 
 
+def schema_problems(policy: Policy, path: str, value) -> list[str]:
+    """What setting `path` to `value` would break in a section the policy schema checks (manyworlds.policy_schema):
+    problems the policy had already are not counted. Empty for paths outside those sections."""
+    if not policy_schema.covers(path):
+        return []
+    body = copy.deepcopy(policy.body)
+    _set_path(body, path, value)
+    before = set(policy_schema.errors(policy.body))
+    return [p for p in policy_schema.errors(body) if p not in before]
+
+
 def propose(conn, policy: Policy, path: str, value, *, author: str, reason: str, decision_id=None) -> dict:
     observed = policy.get("brain", "authority", "observed_sections", default=[]) or []
     paths = policy.get("brain", "authority", "observed_paths", default=[]) or []
     if path.split(".")[0] not in observed and not any(_matches(p, path) for p in paths):
         return {"applied": False, "not_observed": True,
                 "reason": f"{path.split('.')[0]}.* is not read by any service through the effective policy yet"}
+    problems = schema_problems(policy, path, value)
+    if problems:   # a typo'd key or a wrong type in a schema-checked section is refused, never stored
+        return {"applied": False, "invalid": True, "reason": "; ".join(problems)}
     if within_authority(policy, path, value):
         return {"applied": True, "version": _apply(conn, path, value, author=author, reason=reason,
                                                    decision_id=decision_id)}

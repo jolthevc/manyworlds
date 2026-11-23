@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 
-from . import bench, db, ledger, policy as policy_mod, queue, storage
+from . import bench, db, ledger, logs, policy as policy_mod, queue, storage, wakeup
 
 
 def _print(obj) -> None:
@@ -175,8 +175,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    pol = policy_mod.load()
+    try:
+        pol = policy_mod.load()
+    except Exception:
+        logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+        raise
+    # JSON lines on Fly (policy logging.json or MW_LOG_JSON=1), plain text otherwise; a no-op when logging is
+    # already set up (tests).
+    role = "-".join(str(x) for x in (args.cmd, getattr(args, "brain_cmd", None)) if x)
+    logs.configure(logs.json_wanted(pol), role=role)
 
     if args.cmd == "serverless-worker":
         from .worker import serverless_entry
@@ -438,6 +445,8 @@ def _review(args, conn, pol, llm) -> int:
     from .review import video as video_review
 
     store = storage.from_url()
+    # Wakes when a job finishes (policy wakeups.reviewer) instead of only on its interval.
+    listener = wakeup.Listener.from_policy(pol, "reviewer") if args.loop and not args.dry_run else None
     while True:
         with tempfile.TemporaryDirectory() as tmp:
             if args.dry_run:
@@ -445,11 +454,13 @@ def _review(args, conn, pol, llm) -> int:
                 for job in gates.pending_jobs(conn, pol, batch=args.batch):
                     d = Path(tmp) / str(job)
                     d.mkdir()
-                    out += gates.review_job(conn, pol, llm, store, job, d, role=args.role, write=False)
+                    with logs.context(job_id=job):
+                        out += gates.review_job(conn, pol, llm, store, job, d, role=args.role, write=False)
                 for job in video_review.pending_jobs(conn, pol, batch=args.batch):
                     d = Path(tmp) / f"video-{job}"
                     d.mkdir()
-                    out += video_review.review_job(conn, pol, llm, store, job, d, write=False)
+                    with logs.context(job_id=job):
+                        out += video_review.review_job(conn, pol, llm, store, job, d, write=False)
                 _print({"reviews": out, "accepted": sum(r["accepted"] for r in out), "of": len(out),
                         "model": llm.model_for(args.role or pol.get("review", "image", "role")),
                         "llm_usd": llm.spent})
@@ -466,9 +477,11 @@ def _review(args, conn, pol, llm) -> int:
             result["clips"].get("jobs", 0) >= int(pol.get("review", "video", "max_jobs_per_run", default=10)))
         if not full:
             # While a post is producing, images and clips land at any moment: look again soon (busy_loop_seconds).
+            # A finished job (NOTIFY mw_jobs) ends the wait early either way.
             idle_s = float(pol.get("review", "image", "loop_seconds", default=120))
             busy = not args.dry_run and (any(r.get("jobs") for r in result.values()) or work_in_flight(conn))
-            time.sleep(float(pol.get("review", "image", "busy_loop_seconds", default=idle_s)) if busy else idle_s)
+            wakeup.wait(listener, float(pol.get("review", "image", "busy_loop_seconds", default=idle_s))
+                        if busy else idle_s, sleep=time.sleep)
         pol = policy_mod.load()
 
 
@@ -608,6 +621,8 @@ def _produce(args, conn, pol, llm) -> int:
     from . import operations, production
 
     last, last_full = None, None
+    # Wakes when a job finishes or reviews land (policy wakeups.producer); the sleep below stays the timeout.
+    listener = wakeup.Listener.from_policy(pol, "producer") if args.loop else None
     while True:
         idle_s = float(pol.get("production", "loop_seconds", default=120))
         full = last_full is None or time.monotonic() - last_full >= idle_s
@@ -629,7 +644,12 @@ def _produce(args, conn, pol, llm) -> int:
         if not args.loop:
             return 0
         busy = not paused and work_in_flight(conn)
-        time.sleep(float(pol.get("production", "busy_loop_seconds", default=idle_s)) if busy else idle_s)
+        timeout = float(pol.get("production", "busy_loop_seconds", default=idle_s)) if busy else idle_s
+        # A wakeup runs a light tick (production.advance) unless the full one is due. Paused, nothing listens: an
+        # unread LISTEN connection would hold back the server's notification queue (it reconnects on unpause).
+        if paused and listener is not None:
+            listener.close()
+        wakeup.wait(None if paused else listener, timeout, sleep=time.sleep)
         pol = policy_mod.load()
 
 

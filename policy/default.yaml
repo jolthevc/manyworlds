@@ -852,6 +852,8 @@ brain:
                    decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
+  # The analyst agent (brain/agents/analyst.py): reasoning effort of its notes call.
+  analyst: {effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
   # graded tentative only past a Bonferroni-corrected interval at family-wide alpha with min_n_tentative posts.
   analysis: {target_age_s: 259200, target_age_tolerance_s: 86400, min_n_any: 8, min_n_tentative: 20, min_group: 5, min_group_tentative: 10, bootstrap: 300, alpha: 0.1,
@@ -1571,6 +1573,9 @@ production:
   loop_seconds: 120
   busy_loop_seconds: 15        # while a post is producing: light ticks (production only) this often
   max_advance_errors: 5        # ticks in which advancing a post raised before it is dropped and the owner told
+  # One producer per post (production.locks): a post's start or advance holds a lease row this long at most; a post
+  # whose lease another producer holds is skipped that tick. Longer than the slowest advance (a finish with its review).
+  post_lease_seconds: 1800
   max_job_failures_per_post: 6   # failed jobs (machines, downloads) per post; apart from review repairs
   max_ready_unpublished: 6       # no new batch while a creator has this many made-but-unpublished posts
   # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
@@ -1994,8 +1999,24 @@ llm:
       showrunner: {mode: quality, min_calls: 10, min_judged: 8, items: ideas, rubric: idea, max_items: 6,
                    max_score_drop: 0.3}
 
+# Logs (manyworlds.logs): one JSON object a line (ts, level, logger, msg, role, process group, and the post/job/
+# attempt/creator/kind being worked on) when json is true or MW_LOG_JSON=1; plain text otherwise (MW_LOG_JSON=0 forces it).
+logging: {json: true}
+
+# Event-driven wakeups (manyworlds.wakeup, migration 033): a trigger on jobs NOTIFYs 'mw_jobs' (insert; status to
+# done/failed/dead) and one on reviews NOTIFYs 'mw_reviews'. The producer and reviewer wait for a matching one or
+# their usual sleep, whichever is first; a burst within debounce_seconds of the first is one tick. A listener that
+# can't connect falls back to plain sleep and tries again after reconnect_seconds.
+wakeups:
+  enabled: true
+  debounce_seconds: 2
+  reconnect_seconds: 60
+  refresh_seconds: 900   # renew the listening connection this often (a silently dropped one only times out)
+  producer: {jobs: [done, failed, dead], reviews: true}   # a post moves on when its jobs finish and are reviewed
+  reviewer: {jobs: [done], reviews: false}                # new outputs to review
+
 queue:
-  lease_seconds: 120           # a worker that stops heartbeating loses its job after this
+  lease_seconds: 120          # a worker that stops heartbeating loses its job after this
   max_attempts: 3              # per job, then it is marked dead and reported
   worker_max_consecutive_faults: 3   # GPU faults in a row before a worker exits for a restart
   job_max_worker_faults: 6           # a job that faults this many machines fails (it's the cause)

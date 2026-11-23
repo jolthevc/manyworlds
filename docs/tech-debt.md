@@ -8,7 +8,7 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 | Item | Why it matters | Where |
 |---|---|---|
 | Video finishing runs inside the producer loop on a shared-cpu-1x, 512 MB VM | several 1080x1920 x264 encodes per post block every other post and risk OOM; make `finish.video` a queue kind served by a CPU process group (performance-cpu-2x) | `production.finish_video`, `fly.toml` |
-| production.py is ~2,000 lines; its workflow state is ~37 untyped keys in posts.body | a renamed key silently restarts a step; concurrent writers can lose counters. Split into a production/ package, state in a pydantic `body.production`, lock the post row in advance_post | `production.py` |
+| ~~production.py is ~2,000 lines; its workflow state is ~37 untyped keys in posts.body~~ (split into the production/ package; every body key declared in production/state.py and checked by a test; a lease row per post in advance) | the keys still live flat in posts.body beside the brief (live rows); moving them into a typed `body.production` needs a data migration | `manyworlds/production/` |
 | Policy is never validated; ~650 in-code numeric fallbacks | a misspelt YAML key silently uses a code default; validate hot sections with pydantic (extra=forbid) in policy.load | `policy.py` |
 | No Message Batches API for off-critical-path LLM calls | brain agents, evaluator and shadow tests could run at ~half price | `llm.py` |
 | The image worker's Python deps are open ranges | a rebuild can pull a new diffusers and break Z-Image only on a rented GPU; pin with a constraints file like talkcomfy | `docker/worker.Dockerfile`, `pyproject.toml`, `setup-flyctl@master` |
@@ -71,7 +71,7 @@ ends the tick for the others.
 
 | Item | Why it matters | Where |
 |---|---|---|
-| A video rerouted to a photo keeps the caption and script written for the video | the caption may mention movement or speech the photo doesn't have; a caption rewrite (one cheap LLM call) would fix it | `manyworlds/production.py` reroute |
+| A video rerouted to a photo keeps the caption and script written for the video | the caption may mention movement or speech the photo doesn't have; a caption rewrite (one cheap LLM call) would fix it | `manyworlds/production/core.py` reroute |
 | Feed repetition is an exact match on free-text attributes ("cafe" vs "cozy cafe" don't match) | conservative: it misses some repeats, never blocks wrongly | `manyworlds/brain/feed_qa.py` |
 | With `review.image.min_scene: 0` the scene gate never fails, so the scene repair can't trigger | only matters if scene becomes a hard gate again | `manyworlds/review/repair.py` |
 | Flavors that need text on the image (tier list, recipe card, text-on-photo memes) aren't offered | needs a text-overlay step for photos (the narrated edit already burns captions into video) | policy `flavors` |
@@ -101,7 +101,7 @@ ends the tick for the others.
 | GPU machines still get the control plane's R2 keys (`security.worker_storage: shared`) | a hostile host could read or delete any object in the bucket; needs a bucket-scoped R2 token in `WORKER_AWS_*`, or presigned URLs per job | `manyworlds/deploy/credentials.py` |
 | The worker role can update any job and any attempt, not only its own | a hostile host could disrupt the queue (not read research, creators or the ledger); row-level security or a worker API on Fly would close it | migration 022 |
 | `MW_HASH_SALT` is unset, so author handles hash with the code's default salt | the salt is public in the repo, so hashes of known handles can be recomputed; rotating it makes old and new hashes incomparable, so do it with a one-off rehash | `manyworlds/research/apify.py` |
-| Long talking videos: each segment is voiced separately (Kokoro), so intonation resets at each cut, and the joined video isn't re-reviewed (each segment passed the gate) | small audible seams; `chain` mode can drift in identity over many segments (each segment is still judged against the references) | `manyworlds/production.py`, `talk_segments.py` |
+| Long talking videos: each segment is voiced separately (Kokoro), so intonation resets at each cut, and the joined video isn't re-reviewed (each segment passed the gate) | small audible seams; `chain` mode can drift in identity over many segments (each segment is still judged against the references) | `manyworlds/production/talk.py`, `talk_segments.py` |
 | Shadow tests sample with `random.random()` and compare fields mechanically | fine for a first read; scoring roles should also be checked against owner labels (M2 calibration) before switching | `manyworlds/llm.py`, `shadow.py` |
 | Alerts have one channel (ntfy) and the topic is the only secret | anyone with the topic reads alerts (ids and reasons only); add a second channel (email) if alerts become critical | `manyworlds/notify.py` |
 

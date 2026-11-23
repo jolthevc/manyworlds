@@ -15,6 +15,16 @@ def connect(url: str | None = None, timeout: float | None = None) -> psycopg.Con
     return psycopg.connect(url, autocommit=True, row_factory=dict_row, **extra)
 
 
+def direct_url(url: str | None = None) -> str:
+    """The database URL without a connection pooler, for LISTEN (manyworlds.wakeup): Neon's pooled endpoint
+    (`ep-...-pooler.<region>...`) runs PgBouncer in transaction mode, which never delivers notifications; the direct
+    endpoint is the same host without `-pooler`. Other URLs are returned as they are."""
+    url = url or os.environ["DATABASE_URL"]
+    creds, sep, rest = url.rpartition("@")
+    host, slash, tail = rest.partition("/")
+    return creds + sep + host.replace("-pooler.", ".", 1) + slash + tail
+
+
 def migrate(conn: psycopg.Connection) -> list[str]:
     """Apply any migration files not yet recorded. Returns the versions applied."""
     conn.execute(

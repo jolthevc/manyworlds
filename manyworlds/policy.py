@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,9 +52,44 @@ def from_dict(body: dict[str, Any]) -> Policy:
     return Policy(body=body, version=hashlib.sha256(canonical.encode()).hexdigest()[:16])
 
 
-def load(path: str | os.PathLike | None = None) -> Policy:
+def load(path: str | os.PathLike | None = None, *, strict: bool | None = None) -> Policy:
+    """The policy file at `path` (MW_POLICY, else policy/default.yaml), checked against the schema of its hot
+    sections (manyworlds.policy_schema): see `check` for what happens when it doesn't match."""
     path = Path(path or os.environ.get("MW_POLICY", "policy/default.yaml"))
-    return from_dict(yaml.safe_load(path.read_text(encoding="utf-8")))
+    policy = from_dict(yaml.safe_load(path.read_text(encoding="utf-8")))
+    check(policy, strict=strict, source=str(path))
+    return policy
+
+
+# Validation (2026-11-23). Policy.get falls back to code defaults, so a misspelt or missing key in a hot section would
+# silently run on the code's number; the schema catches it. strict (tests, CI: MW_POLICY_STRICT=1) raises. Otherwise
+# the problem is logged as an error once per policy version and the policy is used as it is: the services that load it
+# include the autoscaler and the GPU enforcer, which stop paid machines, and must never stop working over a typo that
+# CI (tests/test_policy_schema.py) already fails on.
+
+log = logging.getLogger("manyworlds.policy")
+_CHECKED: dict[str, list[str]] = {}
+
+
+def strict_default() -> bool:
+    return os.environ.get("MW_POLICY_STRICT", "").strip().lower() in ("1", "true", "yes")
+
+
+def check(policy: Policy, *, strict: bool | None = None, source: str = "policy") -> list[str]:
+    """The schema problems of `policy` (empty when it validates). strict (default: MW_POLICY_STRICT) raises
+    policy_schema.PolicyInvalid on any; otherwise each version's problems are logged once."""
+    from . import policy_schema
+    strict = strict_default() if strict is None else strict
+    problems = _CHECKED.get(policy.version)
+    if problems is None:
+        problems = _CHECKED[policy.version] = policy_schema.errors(policy.body)
+        if problems and not strict:
+            log.error("policy %s (%s) does not match its schema; running on it as it is:\n  %s",
+                      source, policy.version, "\n  ".join(problems))
+    if problems and strict:
+        raise policy_schema.PolicyInvalid(f"policy {source} ({policy.version}) does not match its schema "
+                                          "(manyworlds.policy_schema):\n  " + "\n  ".join(problems))
+    return problems
 
 
 def register(conn, policy: Policy) -> None:

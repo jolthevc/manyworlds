@@ -48,7 +48,7 @@ def test_one_broken_post_does_not_stop_the_others_and_is_dropped_after_the_limit
             raise KeyError("scene_jobs")
         return real(conn_, policy_, post, store, llm=llm)
 
-    monkeypatch.setattr(production, "advance_post", poisoned)
+    monkeypatch.setattr(production.core, "advance_post", poisoned)   # looked up where advance() runs
     out = production.advance(conn, policy, now=NOW)
     assert out["producing"] == 1 and out["advance_errors"] == 1          # the good post still moved
     row = conn.execute("SELECT status, body FROM posts WHERE id = %s", (bad,)).fetchone()
