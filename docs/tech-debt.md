@@ -3,6 +3,21 @@
 Known issues we chose not to fix yet, with when they must be fixed. "Before X" means the
 capability X does not go live until the item is closed. Updated 2026-11-14 (Brain M1 merge).
 
+## Noted 2026-11-24 (architecture review: deferred, larger items)
+
+| Item | Why it matters | Where |
+|---|---|---|
+| Video finishing runs inside the producer loop on a shared-cpu-1x, 512 MB VM | several 1080x1920 x264 encodes per post block every other post and risk OOM; make `finish.video` a queue kind served by a CPU process group (performance-cpu-2x) | `production.finish_video`, `fly.toml` |
+| production.py is ~2,000 lines; its workflow state is ~37 untyped keys in posts.body | a renamed key silently restarts a step; concurrent writers can lose counters. Split into a production/ package, state in a pydantic `body.production`, lock the post row in advance_post | `production.py` |
+| Policy is never validated; ~650 in-code numeric fallbacks | a misspelt YAML key silently uses a code default; validate hot sections with pydantic (extra=forbid) in policy.load | `policy.py` |
+| No Message Batches API for off-critical-path LLM calls | brain agents, evaluator and shadow tests could run at ~half price | `llm.py` |
+| The image worker's Python deps are open ranges | a rebuild can pull a new diffusers and break Z-Image only on a rented GPU; pin with a constraints file like talkcomfy | `docker/worker.Dockerfile`, `pyproject.toml`, `setup-flyctl@master` |
+| Stages wake by polling (15 s while busy now) | LISTEN/NOTIFY on job completion would cut turnaround and next-stage cold boots further | `cli.py` loops |
+| No critic-revise loop for ideas near the QA floor | the evaluator's why could rewrite a borderline idea for one small call instead of dropping it | showrunner, `evaluation.py` |
+| Logs are plain text with no post/job id | following one post across processes means grepping several Fly groups; a JSON formatter with ids is enough | `cli.py` |
+| The GPU backstop runs on GitHub Actions (free: the repo is public) | GitHub cron can be delayed or dropped; a Cloudflare Worker cron (same account as R2) plus a Healthchecks.io dead-man ping would be more independent | `.github/workflows/gpu-enforcer.yml` |
+| The RunPod key in GitHub secrets is expired (401 since 2026-11-23) | the backstop can't see RunPod machines; rotate it (owner) | GitHub secrets |
+
 ## Noted 2026-11-24 (the three-way review and the style layer)
 
 | Item | Why it matters | Where |
