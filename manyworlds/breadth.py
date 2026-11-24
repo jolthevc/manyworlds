@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 from psycopg.types.json import Jsonb
 
+from .creator import sets
 from . import operations, policy as policy_mod, queue
 from .policy import Policy
 
@@ -394,6 +395,49 @@ def adopt_jobs(conn, policy: Policy, plan: dict, run: str, batch: str) -> int:
     return len(rows)
 
 
+def plates_batch(batch: str) -> str:
+    """Where the run's creators' set and outfit plates are made: a test batch (paused machines take it), outside the
+    bench pattern {batch}-%."""
+    return f"{batch}.plates"
+
+
+def open_test_work(conn, policy: Policy, batch: str) -> dict:
+    """Open jobs of other test batches (operations.test_batch_prefixes): they could share this run's merged machine
+    or start a second one. {batch: open jobs}."""
+    prefixes = policy.get("operations", "test_batch_prefixes", default=["bench-", "test-"]) or []
+    rows = conn.execute(
+        "SELECT batch, count(*) AS n FROM jobs WHERE status IN ('queued', 'running') AND batch LIKE ANY(%s) "
+        "AND batch <> %s AND batch NOT LIKE %s AND batch <> %s GROUP BY batch ORDER BY batch",
+        ([f"{p}%" for p in prefixes], batch, f"{batch}-%", plates_batch(batch))).fetchall()
+    return {r["batch"]: r["n"] for r in rows}
+
+
+def adopt_plates(conn, policy: Policy, batch: str, creator_ids: list) -> int:
+    """Set and outfit plates are queued in post-sets-<creator> batches, which paused machines never take, and only
+    the (paused) producer tick picks them. Move the run's creators' queued plate jobs into the plates batch at the
+    run's priority, so items testing set/outfit consistency get their references."""
+    if not creator_ids:
+        return 0
+    return conn.execute(
+        "UPDATE jobs SET batch = %s, priority = greatest(priority, %s), updated_at = now() WHERE status = 'queued' "
+        "AND batch = ANY(%s)", (plates_batch(batch), urgent_priority(policy),
+                                [f"post-sets-{c}" for c in creator_ids])).rowcount
+
+
+def run_spend(conn, batch: str) -> float:
+    """What the run has cost so far: every ledger entry of its jobs except attributed GPU time, plus what the
+    machines that ran its jobs billed (idle and boot included)."""
+    pats = (batch, f"{batch}-%", plates_batch(batch))
+    jobs = conn.execute("SELECT coalesce(sum(c.usd), 0) AS u FROM cost_entries c JOIN jobs j ON j.id = c.job_id "
+                        "WHERE c.category <> 'gpu' AND (j.batch = %s OR j.batch LIKE %s OR j.batch = %s)",
+                        pats).fetchone()["u"]
+    machines = conn.execute(
+        "SELECT coalesce(sum(g.billed_usd + coalesce(g.est_extra_usd, 0)), 0) AS u FROM gpu_groups g WHERE g.name IN "
+        "(SELECT a.gpu_group FROM attempts a JOIN jobs j ON j.id = a.job_id "
+        " WHERE j.batch = %s OR j.batch LIKE %s OR j.batch = %s)", pats).fetchone()["u"]
+    return float(jobs) + float(machines)
+
+
 def _take_lease(conn, run: str, seconds: float) -> str | None:
     """One driver per run at a time (a lease row that lapses, so a crashed driver can be restarted)."""
     import uuid
@@ -453,8 +497,12 @@ def run(conn, policy: Policy, plan_name: str, *, items: list[str] | None = None,
     todo = [i for i in chosen if i.id not in skipped]
     head = {"run": rid, "batch": batch, "plan": plan_name, "priority": urgent_priority(pol),
             "pools": _pools_by_family(pol, plan), "skipped": skipped}
+    blockers = open_test_work(conn, pol, batch)
     if dry_run:
-        return {**head, **_dry_run(conn, pol, plan, rid, todo, creators)}
+        return {**head, **_dry_run(conn, pol, plan, rid, todo, creators), "blockers": blockers}
+    if blockers and cfg.get("refuse_beside_open_tests", True):
+        raise SystemExit(f"other test work is open and could share or start machines: {blockers}. "
+                         "Finish or cancel it first.")
     if operations.is_live(pol) and cfg.get("require_paused", True):
         raise SystemExit("operations are live: the producer would advance and publish these posts too. "
                          "The breadth test runs while operations.mode is paused.")
@@ -522,13 +570,28 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
                 log.exception("advancing %s failed", post["id"])
                 errors[post["body"].get("breadth_item", str(post["id"]))] = f"{type(e).__name__}: {e}"[:300]
         adopt_jobs(conn, pol, plan, rid, batch)
+        cids = sorted({str(c["id"]) for c in creators.values() if c})
+        adopt_plates(conn, pol, batch, cids)
         if llm is not None and cfg.get("review_in_driver", True):
             try:
-                _review(conn, pol, llm, store, [batch, *benches.values()])
+                _review(conn, pol, llm, store, [batch, plates_batch(batch), *benches.values()])
             except Exception as e:  # noqa: BLE001 - reviews are retried next loop
                 errors["review"] = f"{type(e).__name__}: {e}"[:300]
+        for cid in cids:   # choose reviewed plates (the paused producer tick would)
+            try:
+                sets.refresh(conn, pol, cid)
+            except Exception as e:  # noqa: BLE001
+                errors["plates"] = f"{type(e).__name__}: {e}"[:300]
         state = _state(conn, rid, list(benches.values()))
+        spent = run_spend(conn, batch)
+        log.info("breadth %s: posts %s, open bench jobs %s, spent $%.2f", rid, state["posts"],
+                 state["bench_open_jobs"], spent)
         if state["done"] or once:
+            break
+        cap = cfg.get("max_usd")
+        if cap is not None and spent >= float(cap):
+            state["spend_cap"] = {"spent_usd": round(spent, 2), "max_usd": float(cap)}
+            state["cancelled_jobs"] = cancel_queued(conn, batch)
             break
         if now() >= deadline:
             state["deadline_passed"] = True
@@ -537,7 +600,7 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
             break
         _renew_lease(conn, rid, holder, loop_s * 3)
         sleep(loop_s)
-    return {**state, "deadline": deadline.isoformat(), "errors": errors}
+    return {**state, "deadline": deadline.isoformat(), "spent_usd": round(run_spend(conn, batch), 2), "errors": errors}
 
 
 def _state(conn, rid: str, bench_batches: list[str]) -> dict:
@@ -553,10 +616,11 @@ def cancel_queued(conn, batch: str) -> int:
     get no further attempt (max_attempts = attempts), so a retry can never boot a machine after the driver left."""
     n = len(conn.execute(
         "UPDATE jobs SET status = 'failed', error = 'breadth test deadline passed', updated_at = now() "
-        "WHERE (status = 'queued' OR (status = 'running' AND lease_until < now())) AND (batch = %s OR batch LIKE %s) "
-        "RETURNING id", (batch, f"{batch}-%")).fetchall())
+        "WHERE (status = 'queued' OR (status = 'running' AND lease_until < now())) "
+        "AND (batch = %s OR batch LIKE %s OR batch = %s) RETURNING id",
+        (batch, f"{batch}-%", plates_batch(batch))).fetchall())
     conn.execute("UPDATE jobs SET max_attempts = attempts, updated_at = now() WHERE status = 'running' "
-                 "AND (batch = %s OR batch LIKE %s)", (batch, f"{batch}-%"))
+                 "AND (batch = %s OR batch LIKE %s OR batch = %s)", (batch, f"{batch}-%", plates_batch(batch)))
     return n
 
 
@@ -676,8 +740,9 @@ def report(conn, policy: Policy, run: str, *, store=None, probe: bool = True) ->
            WHERE g.name IN (SELECT a.gpu_group FROM attempts a JOIN jobs j ON j.id = a.job_id
                             WHERE j.batch = %s OR j.batch LIKE %s)
            ORDER BY g.started_at""", (batch, f"{batch}-%")).fetchall()
-    return {"run": run, "batch": batch, "items": items, "skipped": skipped,
+    return {"run": run, "batch": batch, "verdicts": verdicts(pol, items), "items": items, "skipped": skipped,
             "by_capability": by_capability(items, skipped), "machines": machines,
+            "spent_usd": round(run_spend(conn, batch), 2),
             "usd": {"jobs": round(sum(i["usd"] for i in items), 4),
                     "machines_billed": round(sum(float(m["billed_usd"] or 0) for m in machines), 4)}}
 
@@ -696,4 +761,35 @@ def by_capability(items: list[dict], skipped: dict) -> dict:
             c["items"].append(iid)
             c["statuses"]["skipped"] = c["statuses"].get("skipped", 0) + 1
             c.setdefault("skip_reasons", {})[iid] = s["reason"]
+    return dict(sorted(out.items()))
+
+
+def verdicts(policy: Policy, items: list[dict]) -> dict:
+    """Go / no-go per format: a format whose items reached ready at breadth.go.min_pass_share or better (with at least
+    min_items finished) is ready to switch on; one still producing is incomplete. Drop reasons and the cost per ready
+    item (its own job costs) say why and at what price. Bench items are judged one by one by status."""
+    go = _cfg(policy).get("go") or {}
+    share_min, n_min = float(go.get("min_pass_share", 0.6)), int(go.get("min_items", 1))
+    out: dict = {}
+    for i in items:
+        key = i.get("format") or f"bench:{i['id']}"
+        v = out.setdefault(key, {"items": 0, "ready": 0, "dropped": 0, "open": 0, "usd": 0.0, "drop_reasons": []})
+        v["items"] += 1
+        v["usd"] += float(i.get("usd") or 0)
+        st = i.get("status")
+        if st in ("ready", "done"):
+            v["ready"] += 1
+        elif st in ("dropped", "failed"):
+            v["dropped"] += 1
+            if i.get("drop_reason"):
+                v["drop_reasons"].append(f"{i['id']}: {i['drop_reason']}"[:200])
+        else:
+            v["open"] += 1
+    for v in out.values():
+        done = v["ready"] + v["dropped"]
+        v["pass_share"] = round(v["ready"] / done, 2) if done else None
+        v["usd_per_ready"] = round(v["usd"] / v["ready"], 3) if v["ready"] else None
+        v["usd"] = round(v["usd"], 3)
+        v["verdict"] = ("incomplete" if v["open"] else
+                        "go" if done >= n_min and (v["pass_share"] or 0) >= share_min else "no-go")
     return dict(sorted(out.items()))
