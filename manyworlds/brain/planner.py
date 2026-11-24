@@ -120,13 +120,14 @@ SPOKEN_FORMATS = ("talking_video", "narrated_edit")
 
 
 def spoken_issues(policy: Policy, script: str) -> list[str]:
-    """Why a script won't sound spoken (policy `captions.spoken`): a sentence longer than max_words_per_sentence
-    (written prose, not talk; it also leaves no gap to cut on). Empty if fine, or without a limit."""
-    limit = int((policy.get("captions", "spoken", default={}) or {}).get("max_words_per_sentence", 0) or 0)
+    """Why a script can't be said (policy `captions.spoken`): a sentence over drop_over_words is written prose, not
+    talk, and leaves no gap to cut on. The writers are asked for max_words_per_sentence (voice_rules); only the far
+    longer drop_over_words drops an idea. Empty if fine, or without a limit."""
+    limit = int((policy.get("captions", "spoken", default={}) or {}).get("drop_over_words", 0) or 0)
     if not limit or not (script or "").strip():
         return []
     longest = max((len(s.split()) for s in _SENTENCE.findall(script)), default=0)
-    return [f"a {longest}-word sentence (spoken lines stay under {limit})"] if longest > limit else []
+    return [f"a {longest}-word sentence (a spoken one stays under {limit})"] if longest > limit else []
 
 
 def voice_rules(policy: Policy) -> str:

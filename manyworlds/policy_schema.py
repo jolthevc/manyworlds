@@ -413,6 +413,26 @@ class TalkMotion(_Strict):
     v2v_repair: Free | None = None
 
 
+class PunchIn(_Strict):
+    every_s: list[Num]
+    scales: list[Num]
+    min_shot_s: Num
+    center: list[Num]
+
+
+class TalkGrammar(_Strict):
+    punch_in: PunchIn | None = None
+    lip_sync: str                      # on_camera | all (manyworlds.cuts.narrates)
+    narrated_angles: list[str] = []
+    director: list[str] = []
+
+
+class TalkEdit(_Strict):
+    default: str
+    by_archetype: dict[str, str]
+    grammars: dict[str, TalkGrammar]
+
+
 class Generation(_Strict):
     image: Free
     clip_edit: ClipEdit
@@ -425,6 +445,7 @@ class Generation(_Strict):
     talk_long: TalkLong
     talk_hybrid: TalkHybrid
     talk_motion: TalkMotion
+    talk_edit: TalkEdit
 
 
 # --- the policy ------------------------------------------------------------------------------------------------------

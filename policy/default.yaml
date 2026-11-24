@@ -1232,9 +1232,11 @@ captions:
     lesson: "lessons, reminders or morals"
     narrated_gratitude: "narrated gratitude"
   # Scripts written to be said (planner.voice_rules, planner.spoken_issues; owner 2026-11-24: the voice sounded read).
-  # A sentence over max_words_per_sentence drops the idea before any GPU (it is prose, and leaves no gap to cut on).
+  # Writers are asked for sentences under max_words_per_sentence; one over drop_over_words drops the idea before any
+  # GPU (it is prose, and leaves no gap to cut on).
   spoken:
     max_words_per_sentence: 22
+    drop_over_words: 40
     rules:
       - "Contractions always (I'm, it's, don't); short sentences and fragments; one idea per sentence."
       - "Start in the middle of the moment, never with a greeting, an intro or 'so today'."

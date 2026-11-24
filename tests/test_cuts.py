@@ -197,8 +197,10 @@ def test_the_grammar_reaches_the_directors_brief(policy):
 def test_spoken_rules_reach_the_writers_and_long_sentences_are_caught(policy):
     rules = planner.voice_rules(policy)
     assert "written to be said" in rules and "Contractions" in rules
-    limit = policy.get("captions", "spoken", "max_words_per_sentence")
+    assert f"No sentence over {policy.get('captions', 'spoken', 'max_words_per_sentence')} words" in rules
+    limit = policy.get("captions", "spoken", "drop_over_words")
     assert planner.spoken_issues(policy, "Two am. I take it back. I was not ready for anything.") == []
+    assert planner.spoken_issues(policy, " ".join(["word"] * limit) + ".") == []
     long = " ".join(["word"] * (limit + 1)) + "."
-    assert planner.spoken_issues(policy, long) == [f"a {limit + 1}-word sentence (spoken lines stay under {limit})"]
+    assert planner.spoken_issues(policy, long) == [f"a {limit + 1}-word sentence (a spoken one stays under {limit})"]
     assert planner.spoken_issues(policy, "") == []
