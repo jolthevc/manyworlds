@@ -118,13 +118,14 @@ def redirect_undirected(conn, policy, llm) -> int:
 def schedule_ready(conn, policy, *, now, llm=None) -> dict:
     """Turn showrunner batches into planned posts once every idea has a volume-evaluator evaluation.
     After `brain.showrunner.max_wait_hours` a batch is scheduled anyway and its unevaluated ideas are
-    dropped: no idea becomes a post without an evaluation. With an `llm`, each new post is then directed
+    dropped: no idea becomes a post without an evaluation. An idea just under a feed-QA score floor is rewritten once
+    (manyworlds.brain.revise) and the batch waits, within the same max_wait, for the rewrite's evaluation. With an `llm`, each new post is then directed
     (`direct_posts`), outside the scheduling transaction so a slow or failed call never holds or undoes it."""
     from datetime import date, timedelta
 
     from psycopg.types.json import Jsonb
 
-    from . import feed_qa, memory, planner
+    from . import feed_qa, memory, planner, revise
     max_wait = timedelta(hours=float(policy.get("brain", "showrunner", "max_wait_hours", default=6)))
     out = {"scheduled": 0, "dropped": 0, "batches": 0, "directed": 0}
     for b in conn.execute("SELECT batch, creator_id, min(created_at) AS oldest FROM ideas WHERE status = 'proposed' "
@@ -138,15 +139,39 @@ def schedule_ready(conn, policy, *, now, llm=None) -> dict:
                       EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'brain.evaluator' AND j.payload->>'idea_id' = i.id::text
                               AND j.status IN ('failed', 'dead'))
                       AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'brain.evaluator'
-                              AND j.payload->>'idea_id' = i.id::text AND j.status IN ('queued', 'running')) AS unevaluable
+                              AND j.payload->>'idea_id' = i.id::text AND j.status IN ('queued', 'running')) AS unevaluable,
+                      EXISTS (SELECT 1 FROM jobs j WHERE j.kind = %s AND j.payload->>'idea_id' = i.id::text
+                              AND j.status IN ('queued', 'running')) AS revising
                FROM ideas i WHERE i.batch = %s AND i.status = 'proposed' ORDER BY (i.body->>'day')::int, i.created_at""",
-            (b["batch"],)).fetchall()
-        # Wait for evaluations still possible; an idea whose evaluation failed for good is dropped now.
-        if not all(r["evaluated"] or r["unevaluable"] for r in rows) and now - b["oldest"] < max_wait:
+            (revise.KIND, b["batch"])).fetchall()
+        within_wait = now - b["oldest"] < max_wait
+        # Wait for evaluations still possible, and for rewrites still running (manyworlds.brain.revise); an idea whose
+        # evaluation failed for good is dropped now. A revision keeps its original's created_at, so the wait counts
+        # from when the batch was planned.
+        if (not all(r["evaluated"] or r["unevaluable"] for r in rows) or any(r["revising"] for r in rows)) \
+                and within_wait:
             continue
         start = date.fromisoformat(b["batch"].rsplit(":", 1)[1])
         # Feed QA (manyworlds.brain.feed_qa): repetition, originality and voice, against recent posts.
         ready, qa_dropped = feed_qa.screen(conn, policy, b["creator_id"], [r for r in rows if r["evaluated"]])
+        # An idea just under a score floor gets one rewrite instead of a drop (policy brain.revise); the batch waits
+        # for it. Past max_wait nothing new is asked for: the batch falls back to dropping, as before.
+        rewrites = revise.plan_for(conn, policy, b["batch"], qa_dropped) if within_wait else []
+        if rewrites:
+            with conn.transaction():
+                for r, dims, why in rewrites:
+                    revise.request(conn, policy, r, dims, batch=b["batch"], creator_id=b["creator_id"], why=why)
+            out["revising"] = out.get("revising", 0) + len(rewrites)
+            continue
+        # Rewrites still queued when the batch gives up waiting are no longer wanted (a running one finds the batch
+        # past its wait, or its idea dropped, and writes nothing).
+        stale = [str(r["id"]) for r in rows if r["revising"]]
+        if stale:
+            waiting = [j["id"] for j in conn.execute(
+                "SELECT id FROM jobs WHERE kind = %s AND status = 'queued' AND payload->>'idea_id' = ANY(%s)",
+                (revise.KIND, stale)).fetchall()]
+            out["cancelled"] = out.get("cancelled", 0) + len(
+                queue.cancel(conn, waiting, "batch scheduled after brain.showrunner.max_wait_hours"))
         version = conn.execute("SELECT profile_version FROM creators WHERE id = %s", (b["creator_id"],)).fetchone()
         with conn.transaction():
             for r in rows:
