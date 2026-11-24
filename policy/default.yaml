@@ -30,6 +30,9 @@ gpu_runs:
   # Vast/RunPod machines start and load models in ~4-5 min, so idling longer than that costs
   # more than starting a fresh one when work returns.
   idle_stop_minutes_by_provider: {vast: 5, runpod: 5, fly: 5}   # fly: the finisher starts in seconds
+  # Nothing producing, nothing planned within reach, no job queued anywhere: no real work can come, so an idle
+  # machine stops after this instead (production.pull_forward.demand).
+  idle_stop_minutes_no_demand: 2
   boot_grace_minutes: 45       # until its first job, a machine may take this long (image pull + model download)
   boot_grace_minutes_by_provider: {runpod: 20, vast: 30, fly: 5}   # working machines started within 8 / 21 min (2026-11-14); fly: the finisher boots in seconds
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
@@ -1584,6 +1587,12 @@ production:
   dance_kind: comfy.wan_animate2
   candidates_per_scene: 4
   lead_hours: 48               # start making a post this long before it is scheduled
+  # Paid GPU time goes to real posts or the machine stops (owner, 2026-11-23): when a warm image machine is about to
+  # run dry (<= low_water_jobs open scene jobs), start up to max_posts_per_tick planned posts due within
+  # horizon_hours early, if the machine has min_remaining_minutes left, has spent < max_spend_share of its cap and
+  # today is under budget_share of gpu_runs.daily_gpu_usd. Never alternates or extra takes. (production.pull_forward)
+  pull_forward: {enabled: true, horizon_hours: 120, low_water_jobs: 2, max_posts_per_tick: 2, min_remaining_minutes: 20,
+                 max_spend_share: 0.8, budget_share: 0.8}
   loop_seconds: 120
   busy_loop_seconds: 15        # while a post is producing: light ticks (production only) this often
   max_advance_errors: 5        # ticks in which advancing a post raised before it is dropped and the owner told

@@ -53,6 +53,7 @@ class GpuRuns(_Strict):
     max_hours_limit: Num
     idle_stop_minutes: Num
     idle_stop_minutes_by_provider: NumMap
+    idle_stop_minutes_no_demand: Num | None = None
     boot_grace_minutes: Num
     boot_grace_minutes_by_provider: NumMap
     stuck_minutes: Num
@@ -225,6 +226,16 @@ class RerouteCaption(_Strict):
     effort: Literal["low", "medium", "high"]
 
 
+class PullForward(_Strict):
+    enabled: bool
+    horizon_hours: Num
+    low_water_jobs: int
+    max_posts_per_tick: int
+    min_remaining_minutes: Num
+    max_spend_share: Num
+    budget_share: Num
+
+
 class Production(_Strict):
     image_kind: str
     formats: list[str]
@@ -241,6 +252,7 @@ class Production(_Strict):
     max_job_failures_per_post: int
     max_ready_unpublished: int
     reroute_failed_video: dict[str, str]
+    pull_forward: PullForward | None = None   # warm machine about to idle: start the next planned posts early
     reroute_caption: RerouteCaption | None = None   # the rerouted post's caption rewritten for a still (core)
     edit: Free
     finish_mode: Literal["queue", "inline"]   # where the finish renders (production.finish)

@@ -97,6 +97,17 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
             actions.append({"group": g["name"], "action": "marked gone", "billed_usd": round(g["billed_usd"], 4)})
 
     spent_today = billed_today(conn) if not dry_run else None
+    # No post producing and none due soon: nothing real can come, so an idle machine stops after the short
+    # no-demand allowance instead of its usual idle tail (production.pull_forward.demand). Unknown -> demand.
+    no_demand_min = cfg.get("idle_stop_minutes_no_demand")
+    if no_demand_min is not None:
+        try:
+            from ..production.pull_forward import demand
+            has_demand = demand(conn, policy, now=now)
+        except Exception:  # noqa: BLE001 - when in doubt, keep the usual idle allowance
+            has_demand = True
+    else:
+        has_demand = True
 
     for g in groups:
         if g["name"] not in live:
@@ -127,6 +138,8 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
         booting = (not started_work and
                    (now - g["started_at"]).total_seconds() <= boot_grace_minutes(policy, g["provider"]) * 60)
         idle_min = idle_stop_minutes(policy, g["provider"])
+        if not has_demand:
+            idle_min = min(idle_min, float(no_demand_min))
         reason = None
         if now >= g["deadline"]:
             reason = "deadline"

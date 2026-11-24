@@ -15,6 +15,7 @@ from .finish import _advance_finish, _advance_upscale, _finish_failed, finish_mo
 from .followups import FOLLOW_UPS, _advance_follow_up
 from .locks import post_lease
 from .motion import _advance_clip_edit, clip_edit
+from .pull_forward import pull_forward
 from .scenes import _scene_steps, start
 from .steps import advance_step
 from .takes import _directed, _hybrid_cfg, hybrid_modes, script_takes, shot_takes, talk_segments
@@ -222,6 +223,14 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
             out["start_errors"] = out.get("start_errors", 0) + 1
             continue
         out["started"] += 1
+    # A warm image machine about to run dry: start the next planned posts early on time already paid for.
+    try:
+        pf = pull_forward(conn, policy, now=now, start=start)
+    except Exception:  # noqa: BLE001 - pulling forward is an optimisation; production goes on without it
+        log.exception("pull forward failed")
+        pf = {"pulled": 0, "why": "error"}
+    if pf.get("pulled"):
+        out["pulled_forward"] = pf["pulled"]
     # Breadth-test posts (manyworlds.breadth) are only ever advanced by their own driver, under the test overlay.
     for post in conn.execute("SELECT * FROM posts WHERE status = 'producing' AND NOT body ? 'breadth_run' "
                              "ORDER BY scheduled_for").fetchall():
