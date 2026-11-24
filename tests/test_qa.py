@@ -74,7 +74,8 @@ def test_a_near_duplicate_caption_is_dropped(conn, policy):
 def test_an_idea_that_does_not_sound_like_them_is_dropped(conn, policy):
     cid = _creator(conn)
     floor = policy.get("brain", "qa", "min_scores")["naturalness"]
-    off = _idea(conn, cid, 0, scores={"naturalness": floor - 1, "personality": 7})
+    far = float(policy.get("brain", "revise", "margin")) + 1   # far under the floor: not worth a rewrite (brain.revise)
+    off = _idea(conn, cid, 0, scores={"naturalness": floor - far, "personality": 7})
     ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
     s = _status(conn, off)
     assert s["status"] == "dropped" and "naturalness" in s["why"]

@@ -11,7 +11,7 @@ capability X does not go live until the item is closed. Updated 2026-11-23 (the 
 | ~~The finisher can't be started yet~~ (app-scoped deploy token set as Fly secret FLY_API_TOKEN 2026-11-23; start, own-group read and the enforcer's stop checked live; finish_mode queue) | it has not finished a real video yet: the first video post is the check | `deploy/providers.FlyMachines` |
 | ~~No Message Batches API~~ (2026-11-23: brain jobs batch llm.batch.roles at half price, `llm_batch.py`) | not run against the real batch API yet; open-model hosts' own batch discounts unused; shadow calls still pay full price | `llm_batch.py` |
 | ~~The image worker's Python deps are open ranges~~ (pinned 2026-11-23 in docker/constraints-image.txt from the v27/v28 build logs; the next image build exercises it) | a rebuild can pull a new diffusers and break Z-Image only on a rented GPU; pin with a constraints file like talkcomfy | `docker/worker.Dockerfile`, `pyproject.toml` (setup-flyctl pinned to 1.6 by SHA 2026-11-23) |
-| No critic-revise loop for ideas near the QA floor | the evaluator's why could rewrite a borderline idea for one small call instead of dropping it | showrunner, `evaluation.py` |
+| ~~No critic-revise loop for ideas near the QA floor~~ (2026-11-23: brain/revise.py; only a score exactly one under a floor qualifies; a rare race can schedule a late revision alone) | the evaluator's why could rewrite a borderline idea for one small call instead of dropping it | showrunner, `evaluation.py` |
 | The GPU backstop runs on GitHub Actions (free: the repo is public) | GitHub cron can be delayed or dropped; a Cloudflare Worker cron (same account as R2) plus a Healthchecks.io dead-man ping would be more independent | `.github/workflows/gpu-enforcer.yml` |
 | The RunPod key in GitHub secrets is expired (401 since 2026-11-23) | the backstop can't see RunPod machines; rotate it (owner) | GitHub secrets |
 
@@ -24,7 +24,7 @@ capability X does not go live until the item is closed. Updated 2026-11-23 (the 
 | Anchor sets get their canonical description from the first shot that names them, not from the style director's room | the director is given the room, so they agree in practice | `creator/sets.py` |
 | Talking videos and narrated edits are still off in production.formats (breadth test only) | talk-led archetypes (storyteller, GRWM, educator) can't make their main content until they are switched on | policy `production.formats` |
 | The sound library is empty: beds and effects are synthesized noise | silent clips and edits have no music or Foley; seed licensed CC0 beds and effects | policy `sound.library` |
-| Comments never feed planning; series have no episode state | months-long continuity (callbacks, "part 2", what the audience asked) is missing | `publish/comments.py`, showrunner |
+| ~~Comments never feed planning; series have no episode state~~ (2026-11-23: brain/series.py episode state and comment themes; unproven against a real model; threads never expire) | months-long continuity (callbacks, "part 2", what the audience asked) is missing | `publish/comments.py`, showrunner |
 | Within-post consistency (the room and light drifting between shots) waits for reference conditioning | `sets.reference_conditioning` is off until `image.qwen_edit` is benchmarked | `creator/sets.py` |
 | ~~Research discovery runs only by hand (`mw discover`)~~ (a brain.scouts job every research.discover.every_days while operations are live) | the CEO launches only from theses someone made, or accepted cohorts | `brain/discover.py` |
 

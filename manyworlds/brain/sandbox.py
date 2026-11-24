@@ -73,7 +73,14 @@ def run_batches(conn, policy: Policy, llm, creator_id, *, batches: int, worker_i
         job = queue.enqueue(conn, "brain.analyst", {"creator_id": str(creator_id), "then_plan": str(start)},
                             creator_id=creator_id, idempotency_key=f"analyst:{creator_id}:{start}")   # same key as planning
         _drain(conn, policy, llm, creator_id, worker_id)
-        ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
+        # A near-floor idea is rewritten and re-evaluated before its batch is scheduled (manyworlds.brain.revise):
+        # run those jobs too, then schedule again (max_per_idea bounds the rounds).
+        for _ in range(int(policy.get("brain", "revise", "max_per_idea", default=1)) + 1):
+            if not ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc)).get("revising"):
+                break
+            _drain(conn, policy, llm, creator_id, worker_id)
+        else:
+            ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
         end = datetime.combine(start + timedelta(days=days), time(0), tzinfo=timezone.utc)
         published = scheduler.publish_due(conn, ff, now=end, creator_id=creator_id)
         analysis = conn.execute("SELECT id, output FROM decisions WHERE job_id = %s AND kind = 'analysis'",

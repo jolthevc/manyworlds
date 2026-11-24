@@ -131,6 +131,7 @@ job_kinds:
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
+  brain.idea_reviser: {pools: [local], outputs_per_job: 0}
   brain.analyst:   {pools: [local], outputs_per_job: 0}
   brain.creator_lab: {pools: [local], outputs_per_job: 0}
   brain.strategist: {pools: [local], outputs_per_job: 0}
@@ -759,7 +760,7 @@ brain:
   style_director: {enabled: true, role: style_director, effort: medium, season_days: 30, min_faceless_families: 4}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
                     creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0,
-                    comment_themes: 0.5}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    comment_themes: 0.5, idea_reviser: 0.5}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -781,6 +782,11 @@ brain:
   # Experiment ideas are exempt, so their arms stay comparable.
   qa: {window: 12, max_repeat: 2, repeat_attributes: [outfit, setting], similarity: 0.85, min_chars: 20,
        min_scores: {naturalness: 4}}   # min_chars: shorter texts (a word or two) may repeat
+  # Critic-revise (manyworlds.brain.revise, brain/agents/idea_reviser.py): an idea under a qa.min_scores floor by at
+  # most `margin` on every dimension it misses is rewritten once (role idea_revise, one call, the critic's reasons in
+  # hand) instead of dropped; the rewrite is evaluated like any idea and scheduled or dropped on its own score. At most
+  # max_per_idea revisions in an idea's line and max_per_batch per batch, within brain.showrunner.max_wait_hours.
+  revise: {enabled: true, margin: 1, max_per_idea: 1, max_per_batch: 2, role: idea_revise, effort: low}
   # Events (manyworlds.brain.events): detectors over durable state, each event raised once and routed; at most
   # max_per_type_per_creator_per_day per type and creator, and one routed job per creator and route per tick.
   events:
@@ -868,7 +874,8 @@ brain:
   # decision_agents: the agents that record a decision every run (brain/runtime); only they can spend "without output"
   # (the director, evaluator, reviewers and comment drafts spend without decisions by design).
   chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3,
-                   decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts]}
+                   decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts,
+                                     idea_reviser]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # Series continuity (manyworlds.brain.series): episodes enter at publication; the showrunner sees, per series (at
@@ -1982,6 +1989,9 @@ llm:
     # Comment themes (brain/agents/comment_themes.py): a few themes from a creator's recent comments, at most daily;
     # light summarising, so the cheapest model. Batched (llm.batch.roles): nobody waits on it.
     comment_themes: claude-haiku-5-5
+    # One call per idea that scored just under a feed-QA floor (brain/agents/idea_reviser.py): the showrunner's
+    # fallback writer, on Claude so it goes through Message Batches at half price; Haiku if it fails.
+    idea_revise: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
@@ -2039,7 +2049,7 @@ llm:
   # second: never the director, review or comment replies (those run outside brain jobs anyway).
   batch:
     enabled: true
-    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes]
+    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes, idea_revise]
     discount: 0.5              # the batch price as a share of the standard one (Anthropic pricing, checked 2026-11-23)
     gather_seconds: 30         # wait this long for other jobs' calls so they share a batch
     max_requests: 1000         # per batch (the API takes up to 100,000)
