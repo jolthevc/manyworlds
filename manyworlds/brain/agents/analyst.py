@@ -4,7 +4,8 @@ The numbers come from code (manyworlds.brain.analysis): normalised outcomes, eff
 dimensions, formats and attributes with corrected intervals, breakouts. The LLM sees only that
 table (never captions or raw posts it could pattern-match on) and writes hypotheses that cite the
 effects supporting them, plus guidance for the next batch that honours the uncertainty. With too
-little data there is no LLM call and no finding: the guidance is to keep exploring.
+little data there is no LLM call and no finding: the guidance is to keep exploring. Nor is there one until
+brain.analyst.min_new_outcomes more posts have outcomes than at its last call (_gate): the last guidance stands.
 
 Findings are recorded through manyworlds.brain.evidence (scope `creator`, with the posts and, for
 sandbox creators, the simulated source), replacing the creator's previous ones. They are written so
@@ -56,6 +57,34 @@ def _table(result: dict) -> list[dict]:
              "n": e["n"], "grade": e["grade"]} for e in result["effects"]]
 
 
+def _last_called(conn, creator_id, mode: str) -> dict | None:
+    """The creator's latest analysis in `mode` that asked the model (not insufficient, not gated): its output."""
+    row = conn.execute("SELECT output FROM decisions WHERE kind = 'analysis' AND creator_id = %s "
+                       "AND output->>'mode' = %s AND coalesce(output->>'insufficient', 'false') = 'false' "
+                       "AND NOT output ? 'gated' ORDER BY created_at DESC LIMIT 1", (creator_id, mode)).fetchone()
+    return row["output"] if row else None
+
+
+def _gate(ctx: AgentContext, creator_id, mode: str, n: int) -> dict | None:
+    """The model call (llm.roles.brain) only runs on enough new evidence: at least brain.analyst.min_new_outcomes
+    more posts with outcomes (real metrics for a real creator, simulated for a sandbox one) than its last analysis
+    that asked the model. Short of that, the gated analysis: the last one's hypotheses and guidance carry over, its
+    findings stay as they are, and no call is paid. None when the call should run. A talent manager's
+    research question is never gated (it is filed and rationed through brain.proposals)."""
+    need = int(ctx.policy.get("brain", "analyst", "min_new_outcomes", default=0))
+    last = _last_called(ctx.conn, creator_id, mode)
+    if not last or need <= 0:
+        return None
+    new = n - int(last.get("n") or 0)
+    if new >= need:
+        return None
+    why = (f"{new} new posts with outcomes since the last analysis ({need} needed): its guidance stands; no model "
+           f"call")
+    return {"mode": mode, "n": n, "insufficient": False, "gated": why, "effects": last.get("effects") or [],
+            "breakouts": last.get("breakouts") or [], "hypotheses": last.get("hypotheses") or [],
+            "guidance": last.get("guidance") or {}, "finding_ids": [], "rationale": why}
+
+
 def analyse(ctx: AgentContext, creator_id) -> dict:
     mode = evidence.mode_for(ctx.conn, creator_id)
     rows = analysis.normalise(analysis.dataset(ctx.conn, creator_id, mode=mode, policy=ctx.policy), ctx.policy)
@@ -73,6 +102,9 @@ def analyse(ctx: AgentContext, creator_id) -> dict:
                f"Effects (strongest first): {_table(result)[:40]}\n"
                f"Breakouts (reach far above baseline): {result['breakouts']}")
     question = str((ctx.job.payload or {}).get("question") or "").strip()
+    gated = None if question else _gate(ctx, creator_id, mode, result["n"])
+    if gated:
+        return gated
     if question:   # research a talent manager asked for (manyworlds.brain.proposals): answer it in the notes
         content += (f"\nA QUESTION FROM HER TALENT MANAGER (answer it in your notes from this data; say plainly what "
                     f"the data can't tell): {question}")
@@ -129,7 +161,7 @@ class Analyst:
             # Read experiment results that are due and open new experiments from the fresh findings.
             output["experiments"] = experiments.review(ctx.conn, ctx.policy, p["creator_id"])
             record_decision(ctx, "analysis", step="analyse", creator_id=p["creator_id"],
-                            model=None if output["insufficient"] else ctx.llm.model_for("brain"),
+                            model=None if output["insufficient"] or output.get("gated") else ctx.llm.model_for("brain"),
                             inputs={"mode": output["mode"], "n": output["n"]},
                             output={k: v for k, v in output.items() if k != "rationale"}, rationale=output["rationale"])
         if p.get("then_plan"):   # the next period is planned with this analysis in hand

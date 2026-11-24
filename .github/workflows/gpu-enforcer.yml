@@ -1,13 +1,16 @@
-# Cloud-side GPU backstop: stops machines on SaladCloud, Vast.ai and RunPod that are past
-# their deadline, over their spend cap, idle, over the day's GPU budget, or unregistered,
-# and meters billed time. It never starts anything (the autoscaler does that).
+# Cloud-side GPU backstop: stops machines on SaladCloud, Vast.ai, RunPod (volume pools included)
+# and the Fly finisher that are past their deadline, over their spend cap, idle, over the day's
+# GPU budget, or unregistered, cancels RunPod Serverless requests that run too long, and meters
+# billed time. It never starts anything (the autoscaler does that). tests/test_gpu_backstop.py
+# fails when a policy pool's provider has no adapter here or its credentials are not passed.
 #
 # GitHub's schedule alone proved unreliable (no scheduled run fired in its first hours),
 # so each run checks every few minutes for a while and then starts the next run itself.
 # The schedule is only there to restart the chain if it ever breaks.
 #
 # Repository secrets (Settings > Secrets and variables > Actions):
-#   DATABASE_URL, SALAD_API_KEY, SALAD_ORG, SALAD_PROJECT, VAST_API_KEY, RUNPOD_API_KEY
+#   DATABASE_URL, SALAD_API_KEY, SALAD_ORG, SALAD_PROJECT, VAST_API_KEY, RUNPOD_API_KEY,
+#   FLY_API_TOKEN (the app-scoped deploy token deploy.yml uses; FLY_APP_NAME is set below)
 # A provider whose key is missing is skipped.
 name: gpu-enforcer
 
@@ -42,6 +45,8 @@ jobs:
           SALAD_PROJECT: ${{ secrets.SALAD_PROJECT }}
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP_NAME: manyworlds-mw   # fly.toml app: the finisher is one of its machines
           MW_POLICY: policy/default.yaml
         run: |
           for i in $(seq 1 10); do

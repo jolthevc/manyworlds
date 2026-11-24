@@ -90,8 +90,8 @@ def test_production_routes_a_story_clip_when_routing_is_on(conn, raw_policy, mon
     from manyworlds import production
     called = {}
 
-    def fake_choose(conn_, policy_, output, *, key, now=None):
-        called.update(output=output, key=key)
+    def fake_choose(conn_, policy_, output, *, key, now=None, allowed=None):
+        called.update(output=output, key=key, allowed=allowed)
         return "hosted.video", {}
     monkeypatch.setattr(routing, "choose", fake_choose)
     cid = creator(conn)
@@ -102,5 +102,49 @@ def test_production_routes_a_story_clip_when_routing_is_on(conn, raw_policy, mon
     pol = dataclasses.replace(raw_policy, body={**raw_policy.body, "operations": {"mode": "live"}})
     job = production._clip_job(conn, pol, dict(post), {"scenes": ["a cafe"], "script": "steam rises"},
                                [{"uri": "s3://b/a.png"}], 0)
-    assert called == {"output": "story_clip", "key": str(post["id"])}
+    assert called == {"output": "story_clip", "key": str(post["id"]),
+                      "allowed": raw_policy.get("brain", "tiers", "levels", "economy", "production", "routes", "story_clip")}
     assert conn.execute("SELECT kind FROM jobs WHERE id = %s", (job,)).fetchone()["kind"] == "hosted.video"
+
+
+# --- production tiers (brain.tiers.levels.<tier>.production) drive routes and spend ---------------------------------
+
+def _tier(conn, cid, tier):
+    conn.execute("INSERT INTO creator_states (creator_id, tier) VALUES (%s, %s) "
+                 "ON CONFLICT (creator_id) DO UPDATE SET tier = EXCLUDED.tier", (cid, tier))
+
+
+def test_a_tier_limits_the_routes_an_output_may_take(conn, raw_policy):
+    cid = creator(conn)
+    _clips(conn, cid, "hosted.video", 6, usd=0.01, accepted=6)                        # hosted is the cheapest
+    _clips(conn, cid, "comfy.wan_i2v", 6, usd=0.50, accepted=6)
+    assert routing.choose(conn, raw_policy, "story_clip", key="post-1", now=NOW)[0] == "hosted.video"
+    assert routing.choose(conn, raw_policy, "story_clip", key="post-1", now=NOW,
+                          allowed=["comfy.wan_i2v"])[0] == "comfy.wan_i2v"
+    import pytest
+    with pytest.raises(KeyError):
+        routing.choose(conn, raw_policy, "story_clip", key="post-1", now=NOW, allowed=["video.nothing"])
+
+
+def test_the_creators_tier_sets_candidates_and_story_clip_routes(conn, raw_policy):
+    from manyworlds import production
+    from manyworlds.production import motion
+    levels = raw_policy.get("brain", "tiers", "levels")
+    cid = creator(conn)
+    # No tier set: brain.tiers.default (economy) applies.
+    assert raw_policy.get("brain", "tiers", "default") == "economy"
+    assert production.candidates_per_scene(conn, raw_policy, cid) == levels["economy"]["production"]["candidates_per_scene"]
+    _clips(conn, cid, "hosted.video", 6, usd=0.01, accepted=6)                        # hosted would win on cost
+    _clips(conn, cid, "comfy.wan_i2v", 6, usd=0.50, accepted=6)
+    post = {"id": "post-1", "creator_id": cid}
+    assert motion._story_clip_kind(conn, raw_policy, post) == "comfy.wan_i2v"          # economy: no hosted API
+    _tier(conn, cid, "premium")
+    assert production.candidates_per_scene(conn, raw_policy, cid) == levels["premium"]["production"]["candidates_per_scene"]
+    assert motion._story_clip_kind(conn, raw_policy, post) == "hosted.video"           # premium: every route
+    assert (levels["economy"]["production"]["candidates_per_scene"]
+            < levels["premium"]["production"]["candidates_per_scene"])
+    # A tier that names nothing for production: production's own settings.
+    bare = dataclasses.replace(raw_policy, body={**raw_policy.body, "brain": {
+        **raw_policy.body["brain"], "tiers": {"default": "economy", "levels": {"economy": {}}}}})
+    _tier(conn, cid, "economy")
+    assert production.candidates_per_scene(conn, bare, cid) == raw_policy.get("production", "candidates_per_scene")

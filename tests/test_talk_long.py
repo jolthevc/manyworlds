@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 
 import pytest
@@ -801,7 +802,7 @@ def test_word_timestamps_come_from_the_hosted_whisper_as_verbose_json(tmp_path, 
     assert speech.transcribe(wav, {}, post=lambda *a: {"text": "hi"}) == "hi"
 
 
-def test_captions_use_word_timestamps_once_and_fall_back_to_estimates(conn, policy):
+def test_captions_use_word_timestamps_once_and_fall_back_to_estimates(conn, policy, caplog):
     cid = creator(conn)
     voice = {"seconds": 3.0, "lines": [{"index": 0, "text": "Going in. Wish me luck.", "start_s": 0.0, "end_s": 3.0}],
              "fillers": [{"clause": 1, "line": 0, "word": "um"}]}
@@ -835,10 +836,31 @@ def test_captions_use_word_timestamps_once_and_fall_back_to_estimates(conn, poli
     # Off (another format, or the flag off), or a failed transcription: the estimates.
     estimated = production.caption_words(conn, policy, body, piece)
     assert estimated[0].start == pytest.approx(0.0)
-    assert production.caption_words(conn, policy, body, piece, fmt="narrated_edit")[0].start == pytest.approx(0.0)
+    assert production.caption_words(conn, policy, body, piece, fmt="story_clip")[0].start == pytest.approx(0.0)
     other = _piece(conn, cid, seconds=3.2, voice=voice)
 
     def broken(*a, **k):
         raise RuntimeError("host down")
-    words = production.caption_words(conn, on, body, other, store=_AudioStore(), transcriber=broken)
+    with caplog.at_level(logging.WARNING, logger="manyworlds.production"):
+        words = production.caption_words(conn, on, body, other, store=_AudioStore(), transcriber=broken)
     assert [w.text for w in words] == ["Going", "in.", "Wish", "me", "luck."] and words[0].start == pytest.approx(0.0)
+    assert any("estimated timings" in r.getMessage() and "host down" in r.getMessage() for r in caplog.records)
+
+
+def test_every_spoken_format_that_burns_captions_gets_word_timestamps(policy):
+    """The shipped policy: real word timestamps (hosted Whisper, no GPU) for every captioned format that speaks."""
+    from manyworlds import captions
+    burned = policy.get("burned_captions", "formats")
+    spoken = [f for f in burned if f in production.SPOKEN]
+    assert "narrated_edit" in spoken and "talking_video" in spoken
+    assert all(captions.word_timestamps_for(policy, f) for f in spoken)
+
+
+def test_a_spoken_piece_without_a_voice_line_logs_its_fallback(conn, policy, caplog):
+    cid = creator(conn)
+    piece = _piece(conn, cid, seconds=3.2)   # a take with no voice line (and no audio of its own) to transcribe
+    with caplog.at_level(logging.INFO, logger="manyworlds.production"):
+        words = production.caption_words(conn, _word_timed(policy), {"scenes": ["a"], "talk_script": "Going in."},
+                                          piece, store=_AudioStore(), transcriber=lambda *a, **k: [])
+    assert words and words[0].start == pytest.approx(0.0)
+    assert any("estimated timings" in r.getMessage() and "no voice line" in r.getMessage() for r in caplog.records)

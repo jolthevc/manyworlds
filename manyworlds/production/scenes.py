@@ -9,7 +9,7 @@ from .. import queue
 from ..creator.lab import photo_prompt
 from ..policy import Policy
 from ..review import repair
-from .common import FOLLOW_UP_FORMATS, _cfg, _seed, _set, _shot, _with_shot, piece_key
+from .common import FOLLOW_UP_FORMATS, _cfg, _seed, _set, _shot, _with_shot, candidates_per_scene, piece_key
 from .steps import DropPost, Step, _scene_state
 
 
@@ -60,7 +60,7 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
     payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=trigger,
                                       shot=shot, policy=policy),
                "scene": post["body"]["scenes"][scene_i],   # the reviewer scores the image against it
-               "n": int(cfg.get("candidates_per_scene", 4)),
+               "n": candidates_per_scene(conn, policy, post["creator_id"]),   # within her production tier
                "seed": _seed(post, scene_i * 1000, attempt),
                "width": img.get("width", 896), "height": img.get("height", 1152),
                "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}

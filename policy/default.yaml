@@ -978,6 +978,7 @@ brain:
     launches_per_week: 0               # owner 2026-11-21: no new creator launches for now (was 2)
     est_launch_usd: 3.0                # reference pack + voice + LoRA + Claude steps, roughly
     thesis_candidates: 8
+    max_predictions: 5                 # checkable claims recorded a run (role strategist, scored by mw brain scorecard)
     # Conviction: belief about weekly log growth of reach (real data only), prior N(prior_mean, prior_sd).
     conviction: {prior_mean: 0.0, prior_sd: 0.15, min_weeks: 3, voi_weight: 0.5, alternative_mean: 0.0, retire_margin: 0.02}
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
@@ -1017,14 +1018,20 @@ brain:
     strategist: {max_usd_per_request: 20, tier_changes_per_day: 5}
     head_of_music: {tier_change_per_week: 3}
     music_talent_manager: {tier_change_per_week: 1}
-  # Production tiers (creator_states.tier; the CEO sets them): what a creator's plan may use. usd_per_day is the
-  # planning estimate the finance check uses for a change.
+  # Production tiers (creator_states.tier, set by the CEO). usd_per_day is the planning estimate the finance check uses
+  # for a change. The showrunner plans within posts_per_day_max and
+  # video_share_max (proposals.tier_dials); production spends within `production` (production.common.tier_production):
+  # image candidates per scene (else production.candidates_per_scene) and the routes each output may take (a subset
+  # of production.routing.<output>.kinds, in its order; unlisted = all). Economy and standard keep the 4 candidates of before (cheap; judging is the cost); economy never pays a hosted video API.
   tiers:
     default: economy
     levels:
-      economy:  {posts_per_day_max: 2, video_share_max: 0.3, usd_per_day: 0.5}
-      standard: {posts_per_day_max: 3, video_share_max: 0.5, usd_per_day: 1.5}
-      premium:  {posts_per_day_max: 4, video_share_max: 0.7, usd_per_day: 4.0}
+      economy:  {posts_per_day_max: 2, video_share_max: 0.3, usd_per_day: 0.5,
+                 production: {candidates_per_scene: 4, routes: {story_clip: [comfy.wan_i2v]}}}
+      standard: {posts_per_day_max: 3, video_share_max: 0.5, usd_per_day: 1.5,
+                 production: {candidates_per_scene: 4}}
+      premium:  {posts_per_day_max: 4, video_share_max: 0.7, usd_per_day: 4.0,
+                 production: {candidates_per_scene: 6}}
   # The predictions ledger (manyworlds.brain.predictions): a claim with nothing published to measure closes unscored.
   predictions: {give_up_days: 14, min_horizon_days: 7, max_horizon_days: 180}
   # Market leads (brain/agents/market_lead.py): activated for a market with min_creators active portfolio creators, or
@@ -1048,8 +1055,10 @@ brain:
   # keeps max_themes themes; the showrunner sees the `shown` largest. No comments, no call.
   comment_themes: {enabled: true, role: comment_themes, effort: low, every_hours: 24, min_new: 3, window_days: 14,
                    max_comments: 80, comment_chars: 240, max_themes: 6, theme_chars: 200, shown: 6}
-  # The analyst agent (brain/agents/analyst.py): reasoning effort of its notes call.
-  analyst: {effort: medium}
+  # The analyst agent (brain/agents/analyst.py): reasoning effort of its notes call (llm.roles.brain, Opus), which runs
+  # only once min_new_outcomes more posts have outcomes (real metrics for a real creator) than at its last call;
+  # short of that its last guidance stands, free. A talent manager's research question is always answered.
+  analyst: {effort: medium, min_new_outcomes: 5}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
   # graded tentative only past a Bonferroni-corrected interval at family-wide alpha with min_n_tentative posts.
   analysis: {target_age_s: 259200, target_age_tolerance_s: 86400, min_n_any: 8, min_n_tentative: 20, min_group: 5, min_group_tentative: 10, bootstrap: 300, alpha: 0.1,
@@ -1284,10 +1293,12 @@ burned_captions:
   # Time captions from the voice line's transcript (review.video.intelligibility's hosted Whisper, verbose_json word
   # timestamps; paid once per voice line and cached on its asset as meta.words) instead of estimating them from
   # the line's spans. `word_timestamps: true` turns it on for every format; word_timestamps_formats for those listed
-  # (captions.word_timestamps_for(policy, format)): on for talking videos (2026-11-23 build: estimated timings
-  # drift on real takes, and the words are cached per voice line). Any failure falls back to estimates.
+  # (captions.word_timestamps_for(policy, format)): on for every spoken format that burns captions (talking videos
+  # since 2026-11-23: estimated timings drift on real takes; narrated edits since 2026-11-24; the words are cached per
+  # voice line). A narrated edit needs a designed voice line (payload.audio_uri) for them; without one it keeps the
+  # edit's own measured cues (docs/tech-debt.md). Any failure falls back to estimates and is logged.
   word_timestamps: false
-  word_timestamps_formats: [talking_video]
+  word_timestamps_formats: [talking_video, narrated_edit]
   # Characters the style's font cannot draw (emoji: libass draws no colour emoji, no bundled font has any) are
   # dropped (strip) rather than burned in as empty boxes or a fallback system font; keep = leave them.
   missing_glyphs: strip
@@ -1770,9 +1781,10 @@ sets:
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
-  # narrated_edit is out (owner 2026-11-19): anything with a voice is lip-synced talking video, which is not
-  # built yet (M10). The edit pipeline stays in code for the talking-video work.
-  formats: [photo, carousel, story_clip, story]   # formats production makes now; others wait in 'planned' until added
+  # The formats that passed the breadth test on GPUs (2026-11-24: photo, carousel, Story, narrated edit, story clip)
+  # are on. talking_video stays off until its drops are fixed (5/9, then 0/4 on the rerun). operations.mode (paused)
+  # and brain.strategist.launches_per_week (0) still decide whether anything runs.
+  formats: [photo, carousel, story, narrated_edit, story_clip]   # formats production makes now; others wait in 'planned'
   video_kind: comfy.wan_i2v       # used when routing has no entry for the output (owner 2026-11-22: ComfyUI first)
   # Which job kind makes each output (manyworlds.routing): the cheapest per accepted output over `days`, once it has
   # min_accepted; an `explore` share (by post) goes to the others. Before anything is measured, the order below.
@@ -1814,13 +1826,14 @@ production:
 # Finishing (manyworlds.finishing, 2026-11-22): grade, grain, hook text, loudness and the cover frame of a finished
 # video: production's finish stage (production.finish; on the finisher machine while production.finish_mode is queue)
 # runs it once per video post of the formats listed, with the burned-in captions in the same ffmpeg pass where ffmpeg has libass. A finish that fails
-# max_failures times ships the unfinished video and tells the owner.
+# max_failures times is held (never published) and the owner told; on_give_up: ship ships the unfinished video instead.
 # Looks are gentle and natural: every value is clamped to `limits`, so no look can oversaturate.
 finishing:
   enabled: true
   formats: [talking_video, narrated_edit, story_clip, music_video]
   trim_head_s: 0.4   # silent clips lose their still opening (an I2V clip starts frozen on its photo); spoken ones keep sync
   max_failures: 3
+  on_give_up: hold   # after max_failures: hold (fails closed: status held, owner told) or ship (the unfinished video)
   # Top clips look like plain phone footage: bright, flat, slightly overexposed, no cinematic grade, no vignette
   # (docs/research/2026-11-23-readiness-and-craft.md). So the default is phone_native; the phone_* looks are what a
   # phone's own processing does in that light. In a look, `grain` and `sharpen` are that look's strengths (phones

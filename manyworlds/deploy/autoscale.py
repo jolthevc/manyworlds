@@ -606,8 +606,12 @@ def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime 
         if not dry_run and presign.enabled(policy):   # before launching: a machine claims only jobs with links
             actions += refresh_links(conn, policy, store)
         if launch and not dry_run:
-            actions += scale_up(conn, policy, providers, now=now)
+            actions += scale_up(conn, policy, providers, now=now)   # settles serverless requests too
             actions += ensure_finisher(conn, policy, providers, now=now)
+        elif not dry_run:
+            from . import serverless
+            if serverless.pools(policy):   # the backstop (--no-launch) still cancels serverless requests run too long
+                actions += serverless.poll(conn, policy, now=now)
         if not dry_run:
             actions += maybe_reconcile(conn, policy, providers)
         return actions

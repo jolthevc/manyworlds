@@ -69,7 +69,8 @@ STATE: dict[str, str] = {
     "finish_repairs": "never incremented (a finish is not reviewed): the finish Step's repair counter",
     "finish_failures": "finish attempts that raised, or finish.video jobs that failed",
     "finish_error": "the latest finish error",
-    "finish_skipped": "the error after which the unfinished video shipped",
+    "finish_skipped": "the error after which the unfinished video shipped (finishing.on_give_up: ship)",
+    "finish_held": "the error after which the finish was given up and the post held (finishing.on_give_up: hold)",
     # the outcome
     "drop_reason": "why the post was dropped (or, before a reroute, why its video failed)",
     "rerouted_from": "the video format a rerouted post was planned as (it shipped as a photo)",

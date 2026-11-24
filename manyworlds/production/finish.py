@@ -38,8 +38,9 @@ FINISH_SECTIONS = ("finishing", "burned_captions", "on_screen_text", "sound")
 # manyworlds.finishing (look, grain, two-pass loudness) and manyworlds.captions (the spoken words, timed from the
 # voice lines). With libass in this ffmpeg the captions' ASS rides in finishing's own filter chain (after the grain,
 # so text gets none): one re-encode. Without it, finishing then the caption overlay: two. A rerun reuses
-# post-<id>/final.mp4. A finish that keeps failing (finishing.max_failures) ships the unfinished video and tells the
-# owner.
+# post-<id>/final.mp4. A finish that keeps failing (finishing.max_failures) is given up and the owner told: the post
+# is held (status held, body.finish_held; never ready, never published) unless finishing.on_give_up is `ship`, which
+# ships the unfinished video (body.finish_skipped).
 def _switched_on(policy: Policy, block: str, fmt: str) -> bool:
     cfg = policy.get(block, default={}) or {}
     formats = cfg.get("formats")
@@ -550,7 +551,8 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
 # they run as a finish.video job on the finisher (a Fly machine of this app that the autoscaler starts while finish
 # jobs wait: deploy/autoscale.ensure_finisher). The job is a Step: enqueued once per attempt with the plan as its
 # payload; done -> its result recorded here (record_finish); failed -> a new attempt, until finishing.max_failures
-# jobs have failed, when the unfinished video ships and the owner hears of it, as with the inline finish.
+# jobs have failed, when the finish is given up as with the inline finish (_give_up_finish: held, or shipped
+# unfinished under finishing.on_give_up: ship) and the owner hears of it.
 def _finish_job(conn, policy: Policy, post: dict, body: dict, video: dict, store, source: dict | None, attempt: int):
     plan = finish_plan(conn, policy, {**post, "body": body}, body, video, store, source=source)
     return queue.enqueue(conn, FINISH_KIND, plan, creator_id=post["creator_id"], batch=f"post-{post['id']}",
@@ -572,8 +574,9 @@ def _finish_state(conn, job_ids: list[str], body: dict) -> tuple[str, Any]:
 def _advance_finish(conn, policy: Policy, post: dict, body: dict, video: dict, store=None, *,
                     source: dict | None = None, llm=None) -> tuple[str, dict | None]:
     """('waiting', None) while the post's finish.video job runs; ('chosen', the finished video asset) once it is
-    recorded, or ('chosen', `video`) when nothing applies to its format, the job made nothing, or the finish was
-    given up (finishing.max_failures failed jobs: body.finish_skipped, and the owner is told)."""
+    recorded, or ('chosen', `video`) when nothing applies to its format or the job made nothing. After
+    finishing.max_failures failed jobs the finish is given up and the owner told: ('held', None) (body.finish_held),
+    or ('chosen', `video`) under finishing.on_give_up: ship (body.finish_skipped)."""
     from .. import storage
     fmt = post["format"]
     if body.get("finish_skipped") or not (finishes(policy, fmt) or captions_burned(policy, fmt)):
@@ -593,7 +596,8 @@ def _advance_finish(conn, policy: Policy, post: dict, body: dict, video: dict, s
     if state == "dropped":
         body.pop("drop_reason", None)
         body["finish_failures"] = int(body.get("finish_failures", 0)) + 1   # the job that failed last
-        _give_up_finish(conn, post, body, body.get("finish_error") or "the finish job failed")
+        if _give_up_finish(conn, policy, post, body, body.get("finish_error") or "the finish job failed") == "hold":
+            return "held", None
         return "chosen", video
     return "chosen", record_finish(conn, policy, {**post, "body": body}, body, video, made, store, llm=llm)
 
@@ -628,20 +632,32 @@ def _advance_upscale(conn, policy: Policy, post: dict, body: dict, video: dict) 
 
 
 def _finish_failed(conn, policy: Policy, post: dict, body: dict, error: Exception) -> bool:
-    """Count a failed finish. True once finishing.max_failures is used up: the post then ships its unfinished video
-    and the owner hears of it; until then it waits for the next tick."""
+    """Count a failed finish. True once finishing.max_failures is used up: the finish is then given up
+    (_give_up_finish: the post held, or shipped unfinished under finishing.on_give_up: ship) and the owner hears of
+    it; until then it waits for the next tick."""
     body["finish_failures"] = int(body.get("finish_failures", 0)) + 1
     body["finish_error"] = f"{type(error).__name__}: {error}"[:500]
     if body["finish_failures"] < int(policy.get("finishing", "max_failures", default=3)):
         return False
-    _give_up_finish(conn, post, body, body["finish_error"])
+    _give_up_finish(conn, policy, post, body, body["finish_error"])
     return True
 
 
-def _give_up_finish(conn, post: dict, body: dict, error: str) -> None:
-    """The finish is given up: the post ships its unfinished video (body.finish_skipped) and the owner is told."""
+def give_up_action(policy: Policy) -> str:
+    """What a finish given up does (finishing.on_give_up): `hold` (fails closed, the default) or `ship`."""
+    how = str(policy.get("finishing", "on_give_up", default="hold"))
+    return how if how in ("hold", "ship") else "hold"
+
+
+def _give_up_finish(conn, policy: Policy, post: dict, body: dict, error: str) -> str:
+    """The finish is given up and the owner told. Fails closed: the post is held (body.finish_held; the caller sets
+    status held, so it is never ready nor published) unless finishing.on_give_up is `ship`, when it ships its
+    unfinished video (body.finish_skipped). Returns the action taken."""
     from .. import notify
-    body["finish_skipped"] = error
+    how = give_up_action(policy)
+    body["finish_held" if how == "hold" else "finish_skipped"] = error
     notify.owner_event(conn, "finish_failed", subject={"post_id": str(post["id"])},
-                       payload={"format": post["format"], "error": error, "failures": body.get("finish_failures")},
+                       payload={"format": post["format"], "error": error, "failures": body.get("finish_failures"),
+                                "action": how},
                        creator_id=post["creator_id"], dedupe_key=f"finish_failed:{post['id']}")
+    return how

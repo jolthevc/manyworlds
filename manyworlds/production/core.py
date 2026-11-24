@@ -161,10 +161,13 @@ def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> s
                 final = done or video
             else:
                 final = finish_video(conn, policy, {**post, "body": body}, body, video, store, source=source, llm=llm)
-        except Exception as e:  # noqa: BLE001 - ffmpeg or storage: tried again next tick, then shipped unfinished
+        except Exception as e:  # noqa: BLE001 - ffmpeg or storage: tried again next tick, then given up
             if not _finish_failed(conn, policy, post, body, e):
                 _set(conn, post["id"], "producing", body)
                 return "producing"
+        if body.get("finish_held"):   # the finish was given up and fails closed: never ready, never published
+            _set(conn, post["id"], "held", body)
+            return "held"
         if str(final["id"]) != str(video["id"]):
             meta = final.get("meta") or {}
             body["video_raw"] = {"asset_id": str(video["id"]), "uri": video["uri"]}
@@ -191,7 +194,7 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
     # Jobs that used their last attempt and lost the lease are dead, so their scene gets repaired
     # instead of waiting forever.
     out_reaped = queue.reap(conn)
-    out = {"started": 0, "producing": 0, "ready": 0, "dropped": 0}
+    out = {"started": 0, "producing": 0, "ready": 0, "dropped": 0, "held": 0}
     out["reaped"] = out_reaped
     # A planned post in a format production doesn't make, whose time has passed, won't happen.
     made = list(_cfg(policy).get("formats", ["photo", "carousel"]))

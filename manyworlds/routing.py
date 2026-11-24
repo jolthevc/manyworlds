@@ -68,12 +68,18 @@ def kind_costs(conn, kinds: list[str], *, since: datetime, policy: Policy | None
     return out
 
 
-def choose(conn, policy: Policy, output: str, *, key: str, now: datetime | None = None) -> tuple[str, dict]:
-    """The job kind for one `output` (e.g. story_clip) for the item `key` (a post), and why."""
+def choose(conn, policy: Policy, output: str, *, key: str, now: datetime | None = None,
+           allowed: list[str] | None = None) -> tuple[str, dict]:
+    """The job kind for one `output` (e.g. story_clip) for the item `key` (a post), and why. `allowed`: the kinds the
+    creator's production tier permits (brain.tiers.levels.<tier>.production.routes), in policy order; None = all."""
     cfg = policy.get("production", "routing", output, default={}) or {}
     kinds = list(cfg.get("kinds") or [])
     if not kinds:
         raise KeyError(f"no production.routing.{output}.kinds")
+    if allowed is not None:
+        kinds = [k for k in kinds if k in set(allowed)]
+        if not kinds:
+            raise KeyError(f"the tier allows none of production.routing.{output}.kinds: {list(allowed)}")
     now = now or datetime.now(timezone.utc)
     costs = kind_costs(conn, kinds, since=now - timedelta(days=float(cfg.get("days", 14))), policy=policy)
     ranked = sorted((k for k in kinds if costs[k]["accepted"] >= int(cfg.get("min_accepted", 5))),

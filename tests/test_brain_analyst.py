@@ -129,3 +129,41 @@ def test_a_finding_is_graded_by_its_own_subject_not_its_strongest_citation(conn,
         return
     f = evidence.findings(conn, mode="sandbox", creator_id=cid)[0]
     assert f["grade"] == subject["grade"] and float(f["effect"]) == subject["effect"]
+
+
+def test_the_model_call_waits_for_enough_new_evidence(conn, policy):
+    """brain.analyst.min_new_outcomes: the Opus call runs again only once that many more posts have outcomes; until
+    then the last guidance and findings stand and nothing is paid. A research question is always answered."""
+    cid = sandbox_history(conn, policy, 40)
+    need = policy.get("brain", "analyst", "min_new_outcomes")
+    assert need > 0
+    first = AnalystLLM(conn=conn)
+    out, _ = _run(conn, policy, "analyst", {"creator_id": str(cid)}, first)
+    assert len(first.calls) == 1 and out["finding_ids"]
+    findings = evidence.findings(conn, mode="sandbox", creator_id=cid)
+    again = AnalystLLM(conn=conn)
+    out2, job2 = _run(conn, policy, "analyst", {"creator_id": str(cid)}, again)
+    assert again.calls == [] and out2["guidance"] == out["guidance"] and not out2["insufficient"]
+    d = conn.execute("SELECT model, output FROM decisions WHERE job_id = %s", (job2,)).fetchone()
+    assert d["model"] is None and "new posts with outcomes" in d["output"]["gated"]
+    assert [f["id"] for f in evidence.findings(conn, mode="sandbox", creator_id=cid)] == [f["id"] for f in findings]
+    asked = AnalystLLM(conn=conn)
+    _run(conn, policy, "analyst", {"creator_id": str(cid), "question": "do mornings work?"}, asked)
+    assert len(asked.calls) == 1 and "do mornings work?" in asked.calls[0]["content"]
+    # Enough new outcomes: the call runs again (the gate counts from the last analysis that asked the model).
+    conn.execute("UPDATE decisions SET output = jsonb_set(output, '{n}', to_jsonb((output->>'n')::int - %s)) "
+                 "WHERE kind = 'analysis' AND creator_id = %s AND NOT output ? 'gated'", (need, cid))
+    later = AnalystLLM(conn=conn)
+    _run(conn, policy, "analyst", {"creator_id": str(cid)}, later)
+    assert len(later.calls) == 1
+
+
+def test_no_gate_without_a_threshold(conn, policy):
+    import dataclasses
+    pol = dataclasses.replace(policy, body={**policy.body, "brain": {**policy.body["brain"],
+                                                                     "analyst": {"effort": "medium", "min_new_outcomes": 0}}})
+    cid = sandbox_history(conn, pol, 40)
+    _run(conn, pol, "analyst", {"creator_id": str(cid)}, AnalystLLM(conn=conn))
+    llm = AnalystLLM(conn=conn)
+    _run(conn, pol, "analyst", {"creator_id": str(cid)}, llm)
+    assert len(llm.calls) == 1

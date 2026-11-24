@@ -41,6 +41,22 @@ def seed_base(post: dict, digits: int = 7) -> int:
     return int(source[:digits], 16)
 
 
+def tier_production(conn, policy: Policy, creator_id) -> dict:
+    """What the creator's production tier (creator_states.tier, set by the CEO; brain.tiers.default when unset) lets
+    production spend: brain.tiers.levels.<tier>.production, e.g. {candidates_per_scene, routes: {output: [kinds]}}.
+    {} when the tier names nothing (production's own settings then apply)."""
+    row = conn.execute("SELECT tier FROM creator_states WHERE creator_id = %s", (creator_id,)).fetchone()
+    tiers = policy.get("brain", "tiers", default={}) or {}
+    tier = (row or {}).get("tier") or tiers.get("default")
+    return dict(((tiers.get("levels") or {}).get(tier) or {}).get("production") or {})
+
+
+def candidates_per_scene(conn, policy: Policy, creator_id) -> int:
+    """Image candidates per scene: the creator's tier's (tier_production), else production.candidates_per_scene."""
+    n = tier_production(conn, policy, creator_id).get("candidates_per_scene")
+    return int(n if n is not None else _cfg(policy).get("candidates_per_scene", 4))
+
+
 def _seed(post: dict, offset: int, attempt: int) -> int:
     """A deterministic seed per post, piece and attempt: a rerun asks for the same output, a retry for a new one.
     Offsets keep pieces apart (scenes: i*1000, story clip: 500, talk: 700 + segment*1000, voice: 800 + segment*1000,
