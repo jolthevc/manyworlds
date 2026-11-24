@@ -252,6 +252,15 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
             out["advance_errors"] = out.get("advance_errors", 0) + 1
             if _advance_failed(conn, policy, post, e):
                 out["dropped"] += 1
+    # Songs made since the last tick are measured here, on the control plane (manyworlds.songs, music.measure).
+    try:
+        from .. import songs
+        measured = songs.measure_pending(conn, policy, store)
+    except Exception:  # noqa: BLE001 - measurements are evidence; production goes on without them
+        log.exception("measuring songs failed")
+        measured = {}
+    if measured.get("measured") or measured.get("failed"):
+        out["songs_measured"] = measured
     return out
 
 

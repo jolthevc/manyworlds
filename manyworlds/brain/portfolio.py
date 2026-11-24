@@ -89,7 +89,7 @@ def budget(conn, policy: Policy, now: datetime) -> dict:
 def snapshot(conn, policy: Policy, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     rows = conn.execute(
-        """SELECT c.id, c.handle, c.status, c.publish_mode, s.stage, s.tier, s.entered_at, coalesce(s.adjustments, 0) adj,
+        """SELECT c.id, c.handle, c.status, c.publish_mode, c.vertical, s.stage, s.tier, s.entered_at, coalesce(s.adjustments, 0) adj,
                   (SELECT count(*) FROM publications u JOIN posts p ON p.id = u.post_id
                     WHERE p.creator_id = c.id AND NOT u.simulated) AS real_posts,
                   (SELECT min(u.published_at) FROM publications u JOIN posts p ON p.id = u.post_id
@@ -109,7 +109,7 @@ def snapshot(conn, policy: Policy, now: datetime | None = None) -> dict:
             "stage": r["stage"] or "exploring", "adjustments": r["adj"], "real_posts": r["real_posts"],
             "days_live": (now - r["first_real"]).days if r["first_real"] else 0, "cost_usd": round(float(r["cost"]), 2),
             "account": r["account"], "conviction": conv, "value": value(policy, conv),
-            "talent": _talent(conn, r["id"]), "tier": r["tier"]})
+            "talent": _talent(conn, r["id"]), "tier": r["tier"], "vertical": r["vertical"]})
     week = now - timedelta(days=7)
     launches = {
         "running": conn.execute("SELECT count(*) n FROM launches WHERE status = 'running'").fetchone()["n"],
@@ -117,7 +117,11 @@ def snapshot(conn, policy: Policy, now: datetime | None = None) -> dict:
                                           ).fetchone()["n"],
         "last_7_days": conn.execute("SELECT count(*) n FROM approvals WHERE kind = 'launch' AND status IN "
                                     "('pending', 'approved') AND created_at > %s", (week,)).fetchone()["n"]}
-    return {"creators": creators, "budget": budget(conn, policy, now), "launches": launches}
+    out = {"creators": creators, "budget": budget(conn, policy, now), "launches": launches}
+    if any(c["vertical"] == "music" for c in creators):   # the music department's artists, genres, gaps, budget
+        from . import music_portfolio
+        out["music"] = music_portfolio.summary(conn, policy, now)
+    return out
 
 
 def _talent(conn, creator_id) -> dict | None:

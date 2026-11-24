@@ -33,18 +33,22 @@ def _label(row: dict) -> dict:
 
 
 def findings(conn, *, mode: Mode, scope: str | None = None, creator_id=None, cluster_id=None, market_id=None,
-             grades: tuple[str, ...] = GRADES, statuses: tuple[str, ...] = ("open",)) -> list[dict]:
+             grades: tuple[str, ...] = GRADES, statuses: tuple[str, ...] = ("open",), domain: str | None = None,
+             genre: str | None = None) -> list[dict]:
+    """Findings in the mode; `domain` (content | music) and `genre` narrow them (None: any)."""
     if mode not in ("real", "sandbox"):
         raise ValueError(f"unknown evidence mode {mode!r}")
     filters = """ (%(scope)s::text IS NULL OR scope = %(scope)s)
              AND (%(creator)s::uuid IS NULL OR creator_id = %(creator)s)
              AND (%(cluster)s::uuid IS NULL OR cluster_id = %(cluster)s)
              AND (%(market)s::uuid IS NULL OR market_id = %(market)s)
+             AND (%(domain)s::text IS NULL OR domain = %(domain)s)
+             AND (%(genre)s::text IS NULL OR genre = %(genre)s)
              AND grade = ANY(%(grades)s)
              AND status = ANY(%(statuses)s)
 """
     params = {"scope": scope, "creator": creator_id, "cluster": cluster_id, "market": market_id,
-              "grades": list(grades), "statuses": list(statuses)}
+              "grades": list(grades), "statuses": list(statuses), "domain": domain, "genre": genre}
     sql = f"SELECT * FROM findings WHERE {filters}"
     if mode == "sandbox":
         sql += f" UNION ALL SELECT * FROM simulated_findings WHERE {filters}"
@@ -103,10 +107,11 @@ def post_outcomes(conn, creator_id, n: int, mode: Mode, *, policy=None) -> dict:
 
 def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: str, creator_id=None, cluster_id=None,
                    market_id=None, effect=None, interval: tuple | None = None, n: int | None = None,
-                   sources=()) -> uuid.UUID:
+                   sources=(), domain: str = "content", genre: str | None = None) -> uuid.UUID:
     """A finding about a sandbox creator, or drawn from one or from simulated metrics, can only be
     recorded as simulated: the label is checked here, not trusted, so nothing simulated can reach
-    a real-mode read when the creator later goes live."""
+    a real-mode read when the creator later goes live. `domain`: content (posts) or music (songs);
+    `genre`: the genre a genre-scope finding is about."""
     if evidence != "simulated":
         if creator_id and mode_for(conn, creator_id) == "sandbox":
             raise ValueError(f"creator {creator_id} is in the sandbox: its findings must be evidence='simulated'")
@@ -119,10 +124,10 @@ def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: st
     table = "simulated_findings" if evidence == "simulated" else "findings"
     return conn.execute(
         f"""INSERT INTO {table} (scope, creator_id, cluster_id, market_id, statement, evidence, grade, effect,
-                                 interval_low, interval_high, n, sources)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                 interval_low, interval_high, n, sources, domain, genre)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (scope, creator_id, cluster_id, market_id, statement, evidence, grade, effect, low, high, n,
-         Jsonb(list(sources)))).fetchone()["id"]
+         Jsonb(list(sources)), domain, genre)).fetchone()["id"]
 
 
 def record_simulated_metrics(conn, post_id, rows: list[dict], *, model: str, panel_version: str) -> None:
@@ -136,15 +141,54 @@ def record_simulated_metrics(conn, post_id, rows: list[dict], *, model: str, pan
                           Jsonb(r["metrics"])))   # never the scenario's hidden truth (e.g. which posts broke out)
 
 
-def supersede(conn, *, creator_id) -> int:
-    """Close a creator's open creator-level analysis findings (both tables) when a new analysis replaces
-    them. Proven findings (experiments) and findings at other scopes are left alone."""
+def supersede(conn, *, creator_id=None, domain: str = "content", scope: str = "creator",
+              genre: str | None = None) -> int:
+    """Close the open analysis findings (both tables) a new analysis replaces: one domain (content: the analyst's
+    post findings; music: music_analysis), one scope, one creator (None: none) and, for music, one genre (None:
+    none). Proven findings (experiments) and findings at other scopes or domains are left alone."""
     n = 0
     for table in ("findings", "simulated_findings"):
         n += conn.execute(f"UPDATE {table} SET status = 'superseded', updated_at = now() "
-                          "WHERE creator_id = %s AND status = 'open' AND scope = 'creator' AND grade <> 'proven'",
-                          (creator_id,)).rowcount
+                          "WHERE creator_id IS NOT DISTINCT FROM %s AND status = 'open' AND scope = %s "
+                          "AND domain = %s AND genre IS NOT DISTINCT FROM %s AND grade <> 'proven'",
+                          (creator_id, scope, domain, genre)).rowcount
     return n
+
+
+def song_posts(conn, *, mode: Mode, creator_ids=None, policy=None) -> list[dict]:
+    """Every published post of the given creators (None: every creator with publications in this mode), in time
+    order, with its song (posts.song_id, None for a post without one), format and its outcome at the analysis target
+    age (brain.analysis.target_age_s: the first snapshot at or after it, within target_age_tolerance_s): reach,
+    saves, shares, likes, comments, views where the platform gave them. Posts not yet that old are left out. The
+    music analysis needs posts without songs too: they are each creator's baseline. `real` reads real publications
+    and metric_snapshots only; `sandbox` the simulated ones, each row labelled SIMULATED."""
+    if mode not in ("real", "sandbox"):
+        raise ValueError(f"unknown evidence mode {mode!r}")
+    target = int(policy.get("brain", "analysis", "target_age_s", default=259200) if policy else 259200)
+    tolerance = int(policy.get("brain", "analysis", "target_age_tolerance_s", default=86400) if policy else 86400)
+    ids = [str(c) for c in creator_ids] if creator_ids is not None else None
+    posts = conn.execute(
+        "SELECT DISTINCT ON (p.id) p.id, p.creator_id, p.song_id, p.format, u.published_at FROM posts p "
+        "JOIN publications u ON u.post_id = p.id WHERE u.simulated = %s "
+        "AND (%s::uuid[] IS NULL OR p.creator_id = ANY(%s::uuid[])) ORDER BY p.id, u.published_at DESC",
+        (mode == "sandbox", ids, ids)).fetchall()
+    keys = ("reach", "saves", "shares", "likes", "comments", "views")
+    out = []
+    for p in sorted(posts, key=lambda r: r["published_at"]):
+        obs = [m for m in metrics(conn, p["id"], mode=mode)
+               if m.get("post_age_s") is not None and target <= m["post_age_s"] <= target + tolerance]
+        if not obs:
+            continue
+        m = min(obs, key=lambda r: r["post_age_s"]).get("metrics") or {}
+        if m.get("reach") is None:
+            continue
+        row = {"post_id": str(p["id"]), "creator_id": str(p["creator_id"]),
+               "song_id": str(p["song_id"]) if p["song_id"] else None, "format": p["format"],
+               "published_at": p["published_at"], **{k: m[k] for k in keys if m.get(k) is not None}}
+        if mode == "sandbox":
+            row["label"] = LABEL
+        out.append(row)
+    return out
 
 
 def niche_trends(conn, creator_id, policy) -> dict | None:

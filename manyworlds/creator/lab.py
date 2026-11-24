@@ -199,6 +199,9 @@ def create_creator(conn, bible: CreatorBible, thesis_id, *, policy_version: str 
         (handle, Jsonb(body), Jsonb({"voice": {"engine": "kokoro", "voice": voice}})),
     ).fetchone()
     conn.execute("UPDATE theses SET creator_id = %s, status = 'launched' WHERE id = %s", (row["id"], thesis_id))
+    # A thesis for a music artist (brain.proposals._artist_thesis) launches a music creator.
+    conn.execute("UPDATE creators SET vertical = 'music' WHERE id = %s AND EXISTS (SELECT 1 FROM theses WHERE id = %s "
+                 "AND body->>'vertical' = 'music')", (row["id"], thesis_id))
     conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output, policy_version) "
                  "VALUES ('creator_launch', %s, %s, %s, %s)",
                  (row["id"], Jsonb({"thesis_id": str(thesis_id)}), Jsonb({"handle": handle}), policy_version))

@@ -64,9 +64,12 @@ def _outcome_sd(conn, policy: Policy, creator_id, mode) -> float:
     return float(_cfg(policy).get("default_sd", 0.6))
 
 
-def open_for(conn, creator_id) -> list[dict]:
-    """Open experiments in the creator's current evidence mode (a creator who went live leaves sandbox ones)."""
-    return conn.execute("SELECT * FROM experiments WHERE creator_id = %s AND status = 'open' AND mode = %s "
+def open_for(conn, creator_id, *, domain: str = "content") -> list[dict]:
+    """Open experiments in the creator's current evidence mode (a creator who went live leaves sandbox ones), of one
+    domain: content (post slots for the showrunner) or music (song slots per release batch, effect keys music:...)."""
+    music_key = "(effect_key LIKE 'music:%%')"
+    cond = music_key if domain == "music" else f"NOT coalesce({music_key}, false)"
+    return conn.execute(f"SELECT * FROM experiments WHERE creator_id = %s AND status = 'open' AND mode = %s AND {cond} "
                         "ORDER BY created_at", (creator_id, evidence.mode_for(conn, creator_id))).fetchall()
 
 
@@ -80,7 +83,7 @@ def open_from_findings(conn, policy: Policy, creator_id) -> list[str]:
     cfg = _cfg(policy)
     room = int(cfg.get("max_open_per_creator", 1)) - len(open_for(conn, creator_id))
     mode = evidence.mode_for(conn, creator_id)
-    found = evidence.findings(conn, mode=mode, creator_id=creator_id, grades=("tentative",))
+    found = evidence.findings(conn, mode=mode, creator_id=creator_id, grades=("tentative",), domain="content")
     found.sort(key=lambda f: -abs(float(f["effect"] or 0)))
     tested = {r["effect_key"] for r in conn.execute(
         "SELECT effect_key FROM experiments WHERE creator_id = %s AND mode = %s AND effect_key IS NOT NULL",
@@ -200,3 +203,122 @@ def review(conn, policy: Policy, creator_id) -> dict:
         if out:
             concluded.append({"experiment_id": str(exp["id"]), **out})
     return {"concluded": concluded, "opened": open_from_findings(conn, policy, creator_id)}
+
+
+# --- music experiments (spec 2026-11-23-music-department.md, section 2) ---------------------------------------------
+# A tentative music finding ("songs with an earlier first chorus did better") becomes a two-arm test on songs: arm A
+# follows the finding (the feature high, or low when the finding's effect is negative), arm B the other side. Slots
+# are assigned per release batch (music_assign: one arm per song, balanced and shuffled, seeded by the experiment
+# and the batch), the arm's instruction goes into the song's brief, and the songs carry the arm (songs.experiment_id,
+# songs.arm). The outcome is each song's outcome (brain.music_analysis: posts' log-lift, net of format), read once
+# both arms have music.experiments.min_songs_per_arm songs with outcomes.
+
+def _music_cfg(policy: Policy) -> dict:
+    return policy.get("music", "experiments", default={}) or {}
+
+
+def music_arms(policy: Policy, effect_key: str, *, positive: bool = True) -> list[dict] | None:
+    """Arms for music:feature:<name> (A follows the finding's direction); None for anything else."""
+    parts = effect_key.split(":")
+    if len(parts) != 3 or parts[0] != "music" or parts[1] != "feature" or not parts[2]:
+        return None
+    name = parts[2]
+    words = (_music_cfg(policy).get("instructions") or {}).get(name) or {}
+    hi = words.get("high") or f"{name} clearly high for this artist"
+    lo = words.get("low") or f"{name} clearly low for this artist"
+    a, b = (hi, lo) if positive else (lo, hi)
+    return [{"name": "A", "music_feature": name, "side": "high" if positive else "low", "instruction": a},
+            {"name": "B", "music_feature": name, "side": "low" if positive else "high", "instruction": b}]
+
+
+def music_open_from_findings(conn, policy: Policy, creator_id) -> list[str]:
+    """Open music experiments for the artist's tentative music findings about one feature, strongest first, up to
+    music.experiments.max_open_per_artist. One experiment per artist, effect and mode, ever."""
+    from . import music_analysis
+    c = _music_cfg(policy)
+    room = int(c.get("max_open_per_artist", 1)) - len(open_for(conn, creator_id, domain="music"))
+    mode = evidence.mode_for(conn, creator_id)
+    found = [f for f in music_analysis.findings(conn, mode=mode, creator_id=creator_id) if f["grade"] == "tentative"]
+    found.sort(key=lambda f: -abs(float(f["effect"] or 0)))
+    opened = []
+    for f in found:
+        if room <= 0:
+            break
+        effect = next((s.get("effect") for s in f["sources"] or [] if isinstance(s, dict) and s.get("effect")), "")
+        if not str(effect).startswith("feature:"):
+            continue
+        key = f"music:{effect}"
+        arms = music_arms(policy, key, positive=float(f["effect"] or 0) > 0)
+        row = conn.execute(
+            "INSERT INTO experiments (creator_id, hypothesis, arms, metric, min_sample, status, effect_key, "
+            "source_finding, mode) VALUES (%s, %s, %s, 'song_reach_lift', %s, 'open', %s, %s, %s) "
+            "ON CONFLICT (creator_id, effect_key, mode) WHERE effect_key IS NOT NULL DO NOTHING RETURNING id",
+            (creator_id, f["statement"], Jsonb(arms), int(c.get("min_songs_per_arm", 6)), key, f["id"],
+             mode)).fetchone()
+        if row:
+            opened.append(str(row["id"]))
+            room -= 1
+    return opened
+
+
+def music_assign(conn, policy: Policy, creator_id, *, batch_key: str, n_songs: int) -> list[dict | None]:
+    """The release batch's arms, one entry per song (None: no experiment for that song): the first open music
+    experiment's arms, balanced and shuffled (seeded by experiment and batch, so a rerun gets the same)."""
+    exps = open_for(conn, creator_id, domain="music")
+    if not exps or n_songs <= 0:
+        return [None] * max(n_songs, 0)
+    exp = exps[0]
+    rng = random.Random(int(hashlib.sha256(f"{exp['id']}:{batch_key}".encode()).hexdigest()[:12], 16))
+    arms = (["A", "B"] * (n_songs // 2 + 1))[:n_songs]
+    rng.shuffle(arms)
+    by = {a["name"]: a for a in exp["arms"]}
+    return [{"experiment_id": str(exp["id"]), "arm": a, "instruction": by[a]["instruction"]} for a in arms]
+
+
+def music_conclude(conn, policy: Policy, exp: dict) -> dict | None:
+    """Read a music experiment once both arms have their songs with outcomes; a clear difference is a proven music
+    finding (experimental, or simulated for sandbox artists). None while the sample isn't there."""
+    from . import music_analysis
+    mode = evidence.mode_for(conn, exp["creator_id"])
+    songs_in = conn.execute("SELECT id, arm FROM songs WHERE experiment_id = %s AND arm IS NOT NULL",
+                            (exp["id"],)).fetchall()
+    outs = music_analysis.outcomes(conn, policy, [str(exp["creator_id"])], mode=mode)
+    rows = [{"arm": r["arm"], "y": outs[str(r["id"])]["y"], "song_id": str(r["id"])}
+            for r in songs_in if str(r["id"]) in outs]
+    need = int(exp["min_sample"] or _music_cfg(policy).get("min_songs_per_arm", 6))
+    if min(sum(r["arm"] == "A" for r in rows), sum(r["arm"] == "B" for r in rows)) < need:
+        return None
+    res = compare(rows, policy)
+    status = ("confirmed" if res["effect"] > 0 else "reversed") if res["significant"] else "no_difference"
+    finding_id = None
+    with conn.transaction():
+        if not conn.execute("SELECT 1 FROM experiments WHERE id = %s AND status = 'open' FOR UPDATE",
+                            (exp["id"],)).fetchone():
+            return None
+        if status != "no_difference":
+            a = next(x for x in exp["arms"] if x["name"] == "A")
+            verb = "beat" if status == "confirmed" else "did worse than"
+            statement = (f"Music experiment: songs with {a['instruction']} {verb} the control by "
+                         f"{abs(res['effect']):.2f} log-lift ({res['n_a']} vs {res['n_b']} songs). "
+                         f"Tested: {exp['hypothesis']}")
+            source = [{"creator_id": str(exp["creator_id"])}, {"experiment_id": str(exp["id"])},
+                      {"songs": [r["song_id"] for r in rows]}] + \
+                ([{"table": "simulated_metrics"}] if mode == "sandbox" else [])
+            finding_id = evidence.record_finding(
+                conn, scope="creator", creator_id=exp["creator_id"], statement=statement,
+                evidence="simulated" if mode == "sandbox" else "experimental", grade="proven", effect=res["effect"],
+                interval=(res["low"], res["high"]), n=res["n_a"] + res["n_b"], sources=source, domain="music")
+        result = {"status": status, **res, "finding_id": str(finding_id) if finding_id else None}
+        conn.execute("UPDATE experiments SET status = 'concluded', result = %s, concluded_at = now(), updated_at = now() "
+                     "WHERE id = %s", (Jsonb(result), exp["id"]))
+    return result
+
+
+def music_review(conn, policy: Policy, creator_id) -> dict:
+    """Read due music experiments, then open new ones from the artist's tentative music findings."""
+    concluded = []
+    for exp in open_for(conn, creator_id, domain="music"):
+        out = music_conclude(conn, policy, exp)
+        if out:
+            concluded.append({"experiment_id": str(exp["id"]), **out})
+    return {"concluded": concluded, "opened": music_open_from_findings(conn, policy, creator_id)}
