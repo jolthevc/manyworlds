@@ -202,7 +202,7 @@ worker_images:
   # music: original songs (music.song) on the ComfyUI image: ACE-Step 1.5 split files (~10 GB) + Demucs htdemucs
   # (~80 MB) + Whisper for the bench's lyric check. Needs a talkcomfy image with handlers/music_song.py and demucs in
   # it (v15, NOT BUILT YET: build and smoke-test it before any music job is queued).
-  music: {image: mw-worker-talkcomfy, tag: v18, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+  music: {image: mw-worker-talkcomfy, tag: v19, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
