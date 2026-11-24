@@ -175,6 +175,25 @@ def voice_similarity(stem, sr: int, asset: dict, s: dict, embed: Callable | None
     return {**out, "embedding": sv.centroid(embs), "model": s.get("model")}
 
 
+def prompt_clip(src: Path, dest: Path, seconds: float, s: dict) -> Path:
+    """The prompt the zero-shot converter hears: the loudest fully voiced `seconds` stretch of the asset's prompt
+    audio (the seed's vocal stem), mono; the whole file when it is shorter or nothing is voiced enough."""
+    import numpy as np
+    a, sr = read_audio(src)
+    mono = _mono(a)
+    n = int(round(seconds * sr))
+    if len(mono) <= n:
+        return write_audio(dest, mono, sr)
+    spans = voiced_windows(mono, sr, {**s, "window_s": seconds, "hop_s": float(s.get("prompt_hop_s", 0.5)),
+                                      "max_windows": 0})
+    if spans:
+        start, end = max(spans, key=lambda ab: (_rms(mono[ab[0]:ab[1]]), -ab[0]))
+    else:
+        start = int(np.argmax([_rms(mono[i:i + n]) for i in range(0, len(mono) - n + 1, max(1, sr // 2))])) * max(1, sr // 2)
+        end = start + n
+    return write_audio(dest, mono[start:end], sr)
+
+
 # --- subprocesses ----------------------------------------------------------------------------------------------
 
 LAUNCH = ("import random, runpy, sys\n"
@@ -284,10 +303,11 @@ def _soulx(vocals: Path, ctx: JobContext, settings: dict, asset: dict, seed: int
                   pre.get("revision"))
         _link(repo / "pretrained_models", models)
         _state["weights"].add(ready)
-    prompt = ctx.fetch(asset["prompt_uri"], "prompt.wav")
     work = Path(ctx.workdir) / "soulx"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
+    prompt = prompt_clip(ctx.fetch(asset["prompt_uri"], "prompt_full.wav"), work / "prompt_clip.wav",
+                         float(settings.get("prompt_seconds", 8.0)), settings.get("voiced") or {})
     _free_song_engine()
     device = _device()
     python = _python("MW_SOULX_PYTHON", "/opt/svc-soulx/bin/python")
@@ -397,7 +417,7 @@ def convert(payload: dict, ctx: JobContext) -> HandlerResult:
     inst, inst_sr = read_audio(inst_path)
     random.seed(seed)
     t0 = time.monotonic()
-    conv_path, conv_sr = CONVERTERS[name](src, ctx, settings, asset, seed)
+    conv_path, conv_sr = CONVERTERS[name](src, ctx, {**settings, "voiced": payload.get("similarity") or {}}, asset, seed)
     convert_s = round(time.monotonic() - t0, 1)
     conv, conv_rate = read_audio(conv_path)
     conv_sr = conv_rate or conv_sr

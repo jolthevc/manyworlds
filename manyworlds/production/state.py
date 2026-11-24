@@ -37,7 +37,10 @@ STATE: dict[str, str] = {
     # the song of a music_video post (production.song)
     "song_jobs": "the music.song job ids (the mix, vocal and instrumental stems)",
     "song_repairs": "songs remade because their objective check failed (music.check.enforce)",
-    "song_media": "the chosen song by role: {mix, vocals, instrumental: {asset_id, uri, seconds}}",
+    "song_media": "the chosen song by role: {mix, vocals, instrumental: {asset_id, uri, seconds}}; with the artist's voice (music.voice), mix and vocals are the converted ones and source_vocals the song's own stem",
+    "song_voice_jobs": "the music.convert_voice job ids (the song's vocal stem in the artist's voice, remixed)",
+    "song_voice_repairs": "conversions remade because they fell under the enforced voice gate (music.voice.gate)",
+    "song_voice_skipped": "why the song kept its own voice (a conversion the policy refused)",
     # walk-and-talk motion clips
     "motion_jobs": "the one-take talking video's first motion clip job ids",
     "motion_segment_jobs": "per take, its first motion clip's job ids",

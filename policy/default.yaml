@@ -2056,6 +2056,7 @@ music:
         auto_shift: false          # source pitch kept: never shifted toward the prompt's register
         pitch_shift: 0
         sample_rate: 24000         # the model's output rate (config sample_rate)
+        prompt_seconds: 8.0        # the prompt clip: the most voiced stretch of the asset's prompt (the seed vocal stem)
         timeout_s: 900
       # RVC (github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI): code MIT. NOT verified: the assets repo
       # (HF lj1995/VoiceConversionWebUI: hubert_base, rmvpe.pt, pretrained_v2 f0G/f0D) is card-licensed MIT but its
@@ -2104,7 +2105,6 @@ music:
       seed_candidates: 8
       seed_seconds: 30
       min_distance: 0.35         # 1 - cosine to every other artist's centroid (creators must not sound alike)
-      prompt_seconds: 8.0        # the prompt clip: the most voiced stretch of the seed's vocal stem
       registers:                 # how the dataset spreads her range: song keys and tags per register
         low: {keys: ["E minor", "F major", "D minor"], tags: "low register, chest voice, intimate", bpm: [70, 90]}
         mid: {keys: ["G major", "A minor", "C major"], tags: "mid register, warm, conversational", bpm: [90, 115]}
@@ -2113,6 +2113,7 @@ music:
       dataset_seconds: 60
       dataset_keep_share: 0.8    # the most similar share of converted clips is kept for training
       min_train_clips: 8
+      default_tags: "pop, clear lead vocal"   # the vocal and genre words when the bible has none (bible.music.vocal_tags)
       target_minutes: [10, 30]
   # The voice-consistency bench (`mw bench music.convert_voice`): N songs for one test artist, each converted.
   voice_bench: {seconds: 30}

@@ -251,8 +251,9 @@ def engine_settings(policy: Policy, engine: str | None = None, variant: str | No
 
 
 def song_payload(policy: Policy, spec: dict, *, seed: int, check: bool = False, engine: str | None = None,
-                 variant: str | None = None, max_seconds: float | None = None) -> dict:
-    """The music.song job for a song spec (checked: raises SongRefused when `issues` finds any)."""
+                 variant: str | None = None, max_seconds: float | None = None, embed: dict | None = None) -> dict:
+    """The music.song job for a song spec (checked: raises SongRefused when `issues` finds any). `embed` (the
+    similarity settings, music.voice.similarity) has the worker store the vocal stem's voice embedding in its meta."""
     problems = issues(spec, policy)
     if problems:
         raise SongRefused("; ".join(problems))
@@ -266,6 +267,8 @@ def song_payload(policy: Policy, spec: dict, *, seed: int, check: bool = False, 
                "library_licence": str(c.get("library_licence") or "own-generated")}
     if check:
         payload["check"] = dict(c.get("check") or {})
+    if embed:
+        payload["embed"] = dict(embed)
     return payload
 
 

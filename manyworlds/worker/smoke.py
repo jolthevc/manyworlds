@@ -429,6 +429,76 @@ def check_music() -> list[str]:
     if roles != ["mix", "vocals", "instrumental"] or not check["passed"] or check["lufs"] is None:
         raise RuntimeError(f"the song handler's outputs came out wrong: {roles}, {check}")
     done.append("song handler: mix, stems and check on a stand-in song (loudness measured)")
+    return done + check_music_voice()
+
+
+def check_music_voice() -> list[str]:
+    """Singing voice conversion on the ComfyUI image (handlers/music_voice.py): each upstream repo is at its path,
+    its venv imports every module the handler runs (SoulX: preprocess.pipeline, cli.inference_svc's model; RVC:
+    infer/cli.py --help and the training scripts' packages), torch and transformers in each venv are still the
+    image's, and a stand-in conversion runs through the handler on the CPU (remix, voiced windows, similarity,
+    file order). Real conversions need the weights and a GPU: the first owner-approved music.convert_voice job."""
+    import subprocess
+
+    import numpy as np
+
+    from .handlers import music_voice as mv
+    from .runner import JobContext, handlers_for
+    handlers_for(["music.convert_voice", "music.train_voice"])
+    done = ["handlers: music.convert_voice, music.train_voice"]
+    probes = {
+        "SoulX-Singer": (os.environ.get("MW_SOULX_PYTHON", "/opt/svc-soulx/bin/python"),
+                         os.environ.get("MW_SOULX_DIR", "/opt/soulx-singer"),
+                         "import preprocess.pipeline, soulxsinger.models.soulxsinger_svc, transformers, torch; "
+                         "print(torch.__version__, transformers.__version__)"),
+        "RVC": (os.environ.get("MW_RVC_PYTHON", "/opt/svc-rvc/bin/python"), os.environ.get("MW_RVC_DIR", "/opt/rvc"),
+                "import faiss, parselmouth, av, ffmpeg, sklearn, torch.utils.tensorboard, transformers, torch; "
+                "print(torch.__version__, transformers.__version__)"),
+    }
+    import torch
+    import transformers
+    want = f"{torch.__version__} {transformers.__version__}"
+    for name, (python, repo, code) in probes.items():
+        p = subprocess.run([python, "-c", code], cwd=repo, env={**os.environ, "PYTHONPATH": repo}, capture_output=True,
+                           text=True, timeout=600)
+        if p.returncode != 0 or p.stdout.strip().splitlines()[-1:] != [want]:
+            raise RuntimeError(f"{name} venv: {p.stdout[-300:]} {p.stderr[-1500:]} (want torch/transformers {want})")
+        done.append(f"{name} venv imports its path on the image's torch/transformers ({want})")
+    rvc_python, rvc_repo = probes["RVC"][0], probes["RVC"][1]
+    p = subprocess.run([rvc_python, "infer/cli.py", "--help"], cwd=rvc_repo, capture_output=True, text=True,
+                       timeout=600, env={**os.environ, "PYTHONPATH": rvc_repo})
+    if p.returncode != 0 or "--f0-method" not in p.stdout:
+        raise RuntimeError(f"RVC infer/cli.py --help: {p.stderr[-1500:]}")
+    done.append("RVC infer/cli.py --help lists its flags")
+
+    sr = 48000
+    t = np.arange(sr * 10) / sr
+    voice = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    d = Path(tempfile.mkdtemp())
+    inputs = {"vocals.wav": np.stack([voice] * 2, axis=1), "instrumental.wav": np.stack([voice * 0.5] * 2, axis=1)}
+
+    class Store:
+        def get_file(self, uri, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            return mv.write_audio(dest, inputs[uri], sr)
+
+    converters, embedder, free = dict(mv.CONVERTERS), mv._embedder, mv._free_song_engine
+    mv.CONVERTERS["soulx_svc"] = lambda src, ctx, s, a, seed: (src, sr)
+    mv._embedder = lambda model: (lambda wav, rate: [1.0, 0.0, 0.0])
+    try:
+        res = mv.convert({"vocals_uri": "vocals.wav", "instrumental_uri": "instrumental.wav", "seed": 1,
+                          "asset": {"version": 1, "centroid": [1.0, 0.0, 0.0], "prompt_uri": "p"},
+                          "adapter": {"adapter": "soulx_svc", "licence_verified": True},
+                          "similarity": {"window_s": 4, "hop_s": 2, "min_windows": 1}, "remix": {}},
+                         JobContext(job=type("J", (), {"id": "smoke"})(), workdir=d, store=Store()))
+    finally:
+        mv.CONVERTERS.clear()
+        mv.CONVERTERS.update(converters)
+        mv._embedder, mv._free_song_engine = embedder, free
+    roles = [o.meta["role"] for o in res.outputs]
+    if roles != ["vocals", "mix"] or res.outputs[0].meta["similarity"] != 1.0:
+        raise RuntimeError(f"the voice handler's outputs came out wrong: {roles}, {res.outputs[0].meta}")
+    done.append("voice handler: converted vocal, new mix and similarity on a stand-in conversion")
     return done
 
 
