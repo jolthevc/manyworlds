@@ -1778,9 +1778,10 @@ sets:
 # per scene (one job) leaves room for the confirm stage to pick; failures get repaired.
 production:
   image_kind: image.zimage
-  # narrated_edit is out (owner 2026-11-19): anything with a voice is lip-synced talking video, which is not
-  # built yet (M10). The edit pipeline stays in code for the talking-video work.
-  formats: [photo, carousel, story_clip, story]   # formats production makes now; others wait in 'planned' until added
+  # The formats that passed the breadth test on GPUs (2026-11-24: photo, carousel, Story, narrated edit, story clip)
+  # are on. talking_video stays off until its drops are fixed (5/9, then 0/4 on the rerun). operations.mode (paused)
+  # and brain.strategist.launches_per_week (0) still decide whether anything runs.
+  formats: [photo, carousel, story, narrated_edit, story_clip]   # formats production makes now; others wait in 'planned'
   video_kind: comfy.wan_i2v       # used when routing has no entry for the output (owner 2026-11-22: ComfyUI first)
   # Which job kind makes each output (manyworlds.routing): the cheapest per accepted output over `days`, once it has
   # min_accepted; an `explore` share (by post) goes to the others. Before anything is measured, the order below.
