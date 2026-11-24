@@ -58,7 +58,11 @@ def test_the_plan_is_one_script_three_routes_with_short_talking_lines(raw_policy
 def test_the_estimate_counts_shared_pieces_once_and_v3_pays_for_its_motion(conn, policy):
     handle = _creator(conn, anchors=DESIGNED)
     out = breadth.run(conn, _paused(policy), "perf_compare", creator=handle, dry_run=True)
-    jobs = {i["id"]: {j["kind"]: j["n"] for j in i["estimate"]["jobs"]} for i in out["items"]}
+    jobs = {}
+    for i in out["items"]:   # one entry per take: summed per kind
+        jobs[i["id"]] = {}
+        for j in i["estimate"]["jobs"]:
+            jobs[i["id"]][j["kind"]] = jobs[i["id"]].get(j["kind"], 0) + j["n"]
     v1, v2, v3 = (jobs[i] for i in ITEMS)
     assert v1["image.zimage"] == 9 and "voice.speak" in v1
     assert "image.zimage" not in v2 and "voice.speak" not in v2 and "image.zimage" not in v3
