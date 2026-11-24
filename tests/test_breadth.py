@@ -437,3 +437,24 @@ def test_verdicts_per_format(raw_policy):
     assert v["photo"]["verdict"] == "go" and v["photo"]["usd_per_ready"] == 0.2
     assert v["talking_video"]["verdict"] == "no-go" and v["talking_video"]["drop_reasons"] == ["c: identity"]
     assert v["story"]["verdict"] == "incomplete" and v["bench:e"]["verdict"] == "go"
+
+
+def test_a_dropped_database_connection_reconnects_and_resumes_the_run(conn, policy, monkeypatch, capsys):
+    import psycopg
+    calls, conns = [], []
+
+    def fake_run(c, pol, plan, **kw):
+        calls.append(c)
+        if len(calls) == 1:
+            raise psycopg.OperationalError("the connection is closed")
+        return {"run": "r", "done": True}
+    monkeypatch.setattr(breadth, "run", fake_run)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cli.db, "connect", lambda: conns.append(object()) or conns[-1])
+    monkeypatch.setattr(cli.storage, "from_url", lambda: None)
+    args = cli.build_parser().parse_args(["test", "breadth", "--creator", _creator(conn)])
+    pol = dataclasses.replace(_paused(policy), body={**_paused(policy).body})
+    monkeypatch.setattr(breadth, "_cfg", lambda p: {"review_in_driver": False, "max_reconnects": 2, "loop_seconds": 1})
+    assert cli._test(args, conn, pol) == 0
+    assert len(calls) == 2 and calls[0] is conn and calls[1] is conns[0]
+    assert json.loads(capsys.readouterr().out)["done"] is True

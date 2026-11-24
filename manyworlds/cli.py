@@ -9,6 +9,8 @@ import os
 import sys
 import time
 
+import psycopg
+
 from . import bench, db, ledger, logs, policy as policy_mod, queue, storage, wakeup
 
 
@@ -359,12 +361,30 @@ def _test(args, conn, pol) -> int:
     if not args.dry_run and breadth._cfg(tpol).get("review_in_driver", True):
         from .llm import Claude
         llm = Claude(conn, tpol)
-    try:
-        out = breadth.run(conn, pol, args.plan, items=[i.strip() for i in args.items.split(",") if i.strip()]
-                          if args.items else None, run=args.run, creator=args.creator, store=store, llm=llm,
-                          dry_run=args.dry_run, once=args.once, hours=args.hours)
-    except ValueError as e:
-        raise SystemExit(str(e)) from None
+    # A long unattended run outlives database connections (2026-11-23: Neon dropped the driver's after ~90 min):
+    # reconnect and resume the same run, after its lease has lapsed, up to breadth.max_reconnects times.
+    cfg = breadth._cfg(tpol)
+    reconnects = 0
+    while True:
+        try:
+            out = breadth.run(conn, pol, args.plan, items=[i.strip() for i in args.items.split(",") if i.strip()]
+                              if args.items else None, run=args.run, creator=args.creator, store=store, llm=llm,
+                              dry_run=args.dry_run, once=args.once, hours=args.hours)
+            break
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            reconnects += 1
+            if args.dry_run or reconnects > int(cfg.get("max_reconnects", 20)):
+                raise
+            logging.getLogger("manyworlds.breadth").exception(
+                "breadth driver lost its database connection; reconnecting (%d)", reconnects)
+            time.sleep(float(cfg.get("loop_seconds", 60)) * 3)   # the dead driver's lease lapses first
+            conn = db.connect()
+            if llm is not None:
+                from .llm import Claude
+                spent, llm = llm.spent, Claude(conn, tpol)
+                llm.spent = spent
     _print({**out, **({"llm_usd": llm.spent} if llm is not None else {})})
     return 0
 
