@@ -73,7 +73,7 @@ RUN git clone https://github.com/meituan-longcat/LongCat-Video.git /opt/LongCat-
  && python -m venv --system-site-packages /opt/longcat \
  && /opt/longcat/bin/pip install --no-cache-dir -c /tmp/constraints-longcat-torch.txt -c /tmp/constraints-longcat.txt \
       "https://github.com/Dao-AILab/flash-attention/releases/download/v${FLASH_ATTN}/flash_attn-${FLASH_ATTN}+cu12torch${TORCH_MM}cxx11abi${ABI}-${PY}-${PY}-linux_x86_64.whl" \
-      transformers diffusers numpy loguru einops ftfy psutil av opencv-python imageio imageio-ffmpeg pyarrow \
+      transformers diffusers peft numpy loguru einops ftfy psutil av opencv-python imageio imageio-ffmpeg pyarrow \
       scikit-learn scikit-image scipy soundfile soxr librosa "audio-separator[gpu]" pyloudnorm nvidia-ml-py tzdata \
       onnx onnxruntime-gpu cffi chardet \
  && cd /opt/LongCat-Video && /opt/longcat/bin/python -c "import torch, torchvision, flash_attn, transformers, diffusers, audio_separator.separator, longcat_video.pipeline_longcat_video_avatar; assert transformers.__version__ == '4.41.0', transformers.__version__; print('longcat env', torch.__version__)" \

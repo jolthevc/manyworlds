@@ -10,6 +10,9 @@
 #                  placeholder package; the system's libsndfile comes with soundfile's wheel)
 transformers==4.41.0
 diffusers==0.35.1
+# peft: the image's own (newer) peft imports transformers.EncoderDecoderCache (4.42+), which breaks diffusers' peft
+# loader against the repo's transformers 4.41.0 (image build 2026-11-24): the venv takes a peft of that era
+peft==0.11.1
 numpy==1.26.4
 loguru==0.7.2
 einops==0.8.0
