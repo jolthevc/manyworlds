@@ -117,8 +117,26 @@ def test_a_speak_payload_carries_the_designed_voice_and_the_takes(policy):
     p = voice_lab.speak_payload(policy, voice, [{"text": "Hi.", "delivery": "softly"}, {"text": "Bye."}], seed=3)
     assert (p["ref_uri"], p["ref_text"], p["takes"], p["seed"]) == ("s3://b/v.wav", voice["ref_text"],
                                                                     policy.get("voice", "takes"), 3)
-    assert p["lines"] == [{"text": "Hi.", "delivery": "softly"}, {"text": "Bye."}]
+    assert p["lines"] == [{"text": "Hi."}, {"text": "Bye."}]      # ultimate cloning: the delivery would be read aloud
     assert p["params"]["pause_s"] == policy.get("voice", "pause_s")
+
+
+def test_deliveries_reach_the_model_only_where_it_follows_them(policy):
+    """Breadth rerun 2026-11-24: with ultimate cloning VoxCPM read the delivery aloud ("A quiet, sincere, one thing
+    nobody tells you...") and every directed line failed intelligibility. Controllable cloning keeps it."""
+    from manyworlds import policy as policy_mod
+
+    voice = {"ref_uri": "s3://b/v.wav", "ref_text": "Okay so this happened."}
+    lines = [{"text": "One thing nobody tells you.", "delivery": "quiet, sincere"},
+             {"text": "(musing) Walking home.", "pause_after_s": 0.4}]
+    assert voice_lab.speak_payload(policy, voice, lines)["lines"] == [
+        {"text": "One thing nobody tells you."}, {"text": "Walking home.", "pause_after_s": 0.4}]
+    body = dict(policy.body)
+    body["voice"] = {**body["voice"], "clone": "controllable"}
+    ctl = policy_mod.from_dict(body)
+    assert voice_lab.speak_payload(ctl, voice, lines)["lines"] == [
+        {"text": "One thing nobody tells you.", "delivery": "quiet, sincere"},
+        {"text": "(musing) Walking home.", "pause_after_s": 0.4}]
 
 
 def test_the_speak_payload_carries_natural_speech_as_policy_sets_it(policy):

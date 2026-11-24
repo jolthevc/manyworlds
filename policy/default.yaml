@@ -693,6 +693,10 @@ voice:
   # VoxCPM README shows the delivery parenthetical with controllable cloning; with ultimate cloning it is unmeasured:
   # listen to a few directed lines in the breadth test.
   clone: ultimate
+  # Measured 2026-11-24 (breadth rerun): with ultimate cloning the model READS the delivery aloud ("Musing, a little
+  # out of breath, walking home...", "A quiet, sincere, one thing..."): every directed line failed intelligibility.
+  # So deliveries go to the model only with controllable cloning (creator/voice_lab.speak_payload).
+  deliveries_spoken: {ultimate: false, controllable: true}
   clause_min_words: 2
   clause_gap_s: [0.18, 0.30]
   sentence_gap_s: [0.45, 0.70]

@@ -211,15 +211,37 @@ def speak_kind(policy: Policy) -> str:
     return _kind(policy, "speak")
 
 
+def _deliveries_spoken(policy: Policy, params: dict) -> bool:
+    """Whether a line's delivery goes to the model as its instruction: per clone mode (policy
+    voice.deliveries_spoken: {ultimate: false, controllable: true})."""
+    modes = _cfg(policy).get("deliveries_spoken") or {}
+    mode = str(params.get("clone") or "ultimate")
+    return bool(modes.get(mode, mode != "ultimate"))
+
+
+def _line(line: dict, keep_delivery: bool) -> dict:
+    out = {k: line[k] for k in ("text", "delivery", "pause_after_s") if line.get(k) is not None}
+    if not keep_delivery:
+        out.pop("delivery", None)
+        out["text"] = voices.split_instruction(out.get("text", ""))[1]
+    return out
+
+
 def speak_payload(policy: Policy, voice: dict, lines: list[dict], *, seed: int | None = None,
                   compare: bool = False) -> dict:
     """A voice.speak payload for a creator's designed voice (anchors.voice): lines [{text, delivery,
     pause_after_s}], each generated `voice.takes` times. `compare` (the breadth test) also makes the other
-    synthesis (whole line / clauses) as a second output, for listening side by side."""
+    synthesis (whole line / clauses) as a second output, for listening side by side.
+
+    Deliveries reach the model only where it follows them (`deliveries_spoken`): with ultimate cloning VoxCPM
+    continues the reference transcript and reads the delivery's parenthetical aloud ("A quiet, sincere, one thing
+    nobody tells you...": breadth rerun 2026-11-24, three of three directed lines), so the delivery and any inline
+    parenthetical are left out there; the line keeps its delivery in the post."""
+    params = worker_params(policy)
+    keep = _deliveries_spoken(policy, params)
     payload = {"ref_uri": voice["ref_uri"], "ref_text": voice["ref_text"],
-               "lines": [{k: line[k] for k in ("text", "delivery", "pause_after_s") if line.get(k) is not None}
-                         for line in lines],
-               "takes": int(_cfg(policy).get("takes", 1)), "seed": seed, "params": worker_params(policy)}
+               "lines": [_line(line, keep) for line in lines],
+               "takes": int(_cfg(policy).get("takes", 1)), "seed": seed, "params": params}
     if compare:
         payload["compare"] = True
     return payload
