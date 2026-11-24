@@ -77,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     cr = sub.add_parser("creator", help="show a creator's bible, anchors and jobs")
     cr.add_argument("creator")
     sub.add_parser("status", help="job counts, spend and where GPU money went (72 h)")
+    ib = sub.add_parser("inbox", help="what needs the owner: alerts not yet marked done, pending approvals, requests")
+    ib.add_argument("--done", nargs="*", type=int, metavar="ID", help="mark these alert ids done (no ids: all of them)")
+    ib.add_argument("--type", help="with --done: only alerts of this type")
+    ib.add_argument("--limit", type=int, default=50)
     mc = sub.add_parser("machines", help="each GPU machine: billed vs finished work")
     mc.add_argument("--hours", type=float, default=72)
     wc = sub.add_parser("worker-credentials",
@@ -290,9 +294,17 @@ def main(argv: list[str] | None = None) -> int:
         _print(bench.report(conn, pol, args.batch))
     elif args.cmd == "status":
         from .deploy import report
-        _print({"jobs": queue.counts(conn), "spend": ledger.totals(conn),
+        from . import notify
+        _print({"inbox": notify.counts(conn), "jobs": queue.counts(conn), "spend": ledger.totals(conn),
                 "cost_per_output": ledger.cost_per_output(conn), "brain_costs": ledger.brain_costs(conn),
                 "machines_72h": report.summary(report.machines(conn))})
+    elif args.cmd == "inbox":
+        from . import notify
+        if args.done is not None:
+            n = notify.mark_done(conn, args.done or None, type=args.type)
+            _print({"marked_done": n, **notify.counts(conn)})
+        else:
+            _print(notify.inbox(conn, limit=args.limit))
     elif args.cmd == "machines":
         from .deploy import report
         rows = report.machines(conn, hours=args.hours)

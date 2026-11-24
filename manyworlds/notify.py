@@ -140,3 +140,38 @@ def deliver(conn, policy: Policy, *, send: Sender | None = None, now: datetime |
             cast = "bigint" if table == "events" else "uuid"
             conn.execute(f"UPDATE {table} SET notified_at = %s WHERE id = ANY(%s::{cast}[])", (now, ids))
     return [{"type": it["type"], "id": it["id"]} for it in sent]
+
+
+# --- the inbox (2026-11-23: the owner reads alerts with `mw inbox`, no phone needed) ----------------------------------
+
+def inbox(conn, *, limit: int = 50) -> dict:
+    """What needs the owner, newest first: owner events not yet marked done (handled_at), pending approvals and open
+    requests addressed to the owner. Shown by `mw inbox`, counted in `mw status`."""
+    events = [dict(r) for r in conn.execute(
+        "SELECT e.id, e.type, e.subject, e.payload, e.created_at, c.handle FROM events e "
+        "LEFT JOIN creators c ON c.id = e.creator_id WHERE e.routed_to = 'owner' AND e.handled_at IS NULL "
+        "ORDER BY e.created_at DESC LIMIT %s", (limit,)).fetchall()]
+    by_type = {r["type"]: r["n"] for r in conn.execute(
+        "SELECT type, count(*) n FROM events WHERE routed_to = 'owner' AND handled_at IS NULL GROUP BY 1").fetchall()}
+    approvals = [dict(r) for r in conn.execute(
+        "SELECT id, kind, subject, reason, amount_usd, requested_by, created_at FROM approvals WHERE status = 'pending' "
+        "ORDER BY created_at").fetchall()]
+    requests = [dict(r) for r in conn.execute(
+        "SELECT id, kind, from_role, subject, argument, created_at FROM proposals WHERE to_role = 'owner' "
+        "AND status = 'open' ORDER BY created_at").fetchall()]
+    return {"counts": {"events": sum(by_type.values()), "approvals": len(approvals), "requests": len(requests)},
+            "events_by_type": by_type, "approvals": approvals, "requests": requests, "events": events}
+
+
+def counts(conn) -> dict:
+    """The inbox's counts only (for `mw status`)."""
+    return inbox(conn, limit=0)["counts"]
+
+
+def mark_done(conn, ids: list[int] | None = None, *, type: str | None = None) -> int:
+    """Mark owner events done: these ids, every event of a type, or (neither) all of them. Approvals and requests
+    are decided with their own commands (mw brain approvals / mw brain requests)."""
+    return conn.execute(
+        "UPDATE events SET handled_at = now() WHERE routed_to = 'owner' AND handled_at IS NULL "
+        "AND (%s::bigint[] IS NULL OR id = ANY(%s)) AND (%s::text IS NULL OR type = %s)",
+        (ids, ids, type, type)).rowcount

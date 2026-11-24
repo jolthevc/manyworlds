@@ -131,3 +131,16 @@ def test_ntfy_posts_to_the_topic(policy, monkeypatch):
     monkeypatch.setattr(notify.urllib.request, "urlopen", fake_urlopen)
     notify.ntfy_sender(policy)("Manyworlds: x", "body", "high")
     assert seen == {"url": "https://ntfy.sh/secret-topic", "data": b"body", "prio": "high"}
+
+
+def test_the_inbox_lists_open_alerts_approvals_and_owner_requests_until_marked_done(conn):
+    a = notify.owner_event(conn, "machine_stopped", payload={"reason": "max_usd"})
+    b = notify.owner_event(conn, "post_held", payload={"why": "x"})
+    conn.execute("INSERT INTO approvals (kind, subject, reason, requested_by) VALUES ('launch', '{}', 'r', 'strategist')")
+    box = notify.inbox(conn)
+    assert box["counts"] == {"events": 2, "approvals": 1, "requests": 0}
+    assert [e["id"] for e in box["events"]] == [b, a] and box["events_by_type"] == {"machine_stopped": 1, "post_held": 1}
+    assert notify.mark_done(conn, [a]) == 1 and notify.counts(conn)["events"] == 1
+    assert notify.mark_done(conn, type="post_held") == 1 and notify.counts(conn)["events"] == 0
+    notify.owner_event(conn, "x")
+    assert notify.mark_done(conn) == 1
