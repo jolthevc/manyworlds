@@ -128,7 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     ib.add_argument("--done", nargs="*", type=int, metavar="ID", help="mark these alert ids done (no ids: all of them)")
     ib.add_argument("--type", help="with --done: only alerts of this type")
     ib.add_argument("--limit", type=int, default=50)
-    mc = sub.add_parser("machines", help="each GPU machine: billed vs finished work")
+    mc = sub.add_parser("machines", help="each GPU machine: billed vs finished work; per family and pool: boot/busy/idle $, "
+                                         "first-pass rate, $ per accepted output and video second, accepted per GPU-hour")
     mc.add_argument("--hours", type=float, default=72)
     wc = sub.add_parser("worker-credentials",
                         help="create or rotate the GPU machines' scoped database login; prints "
@@ -356,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import notify
         _print({"inbox": notify.counts(conn), "jobs": queue.counts(conn), "spend": ledger.totals(conn),
                 "cost_per_output": ledger.cost_per_output(conn), "brain_costs": ledger.brain_costs(conn),
-                "machines_72h": report.summary(report.machines(conn))})
+                "machines_72h": report.summary(report.machines(conn)), "throughput_72h": report.throughput(conn)})
     elif args.cmd == "inbox":
         from . import notify
         if args.done is not None:
@@ -367,7 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "machines":
         from .deploy import report
         rows = report.machines(conn, hours=args.hours)
-        _print({"summary": report.summary(rows), "machines": rows})
+        _print({"summary": report.summary(rows), "throughput": report.throughput(conn, hours=args.hours),
+                "machines": rows})
     elif args.cmd == "posts":
         cid = _creator_id(conn, args.creator)
         _print(conn.execute("SELECT id, status, format, platform, scheduled_for, caption, qa_status, "
