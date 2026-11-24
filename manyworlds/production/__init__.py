@@ -123,5 +123,5 @@ from .talk import (  # noqa: F401
 )
 from .voice import (  # noqa: F401
     _advance_voice, _designed_voice, _marked_voice_lines, _sentence_lines, _voice_job, _voice_state, _with_audio,
-    voice_lines,
+    gate_misses, voice_lines,
 )

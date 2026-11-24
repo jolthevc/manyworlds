@@ -88,3 +88,79 @@ Public leaderboards are unreliable for open weights right now. One roundup [with
 1. Build the **emotion bank** for VoxCPM2 first. It costs nothing new and fixes the leak while restoring delivery.
 2. Run the bake-off against IndexTTS2.5 and Step-Audio-EditX.
 3. Confirm the Step-Audio-EditX and CosyVoice3 weights licences, and get legal sign-off on the Bilibili and Higgs terms, before adopting either.
+
+## 5. Benchmark plan: self-hosted expressive TTS against the delivery bank (2026-11-24, no runs)
+
+Built first (branch `fix/voice-continuity`): the **delivery bank** for VoxCPM2 (§2.2; policy
+`voice.delivery_bank`, `mw voice bank` / `mw voice bank-pick`) and a voice line that the intelligibility gate
+would reject is now voiced again before any talk clip (`production/voice.gate_misses`). The bake-off below decides
+whether any engine beats that baseline enough to justify a second voice stack. Nothing here is run without the
+owner's go for that run.
+
+### Candidates
+
+VRAM and speed are the authors' figures where cited above, otherwise estimates (est.). Licence status is for
+commercial use of both code and weights, as checked in §1; "check" means not yet confirmed.
+
+| Engine | Licence for us | VRAM | Speed | Delivery input |
+|---|---|---|---|---|
+| VoxCPM2 + delivery bank (baseline, deployed) | Apache-2.0 / Apache-2.0: clear | ~8-10 GB (est.) | measured on L40S in production | the bank clip the line continues from |
+| VoxCPM2 + bank + `prompt_tail_silence_s` 0.3 | same | same | same | same; tests the lost-first-words guess |
+| IndexTTS2.5 | Bilibili licence: commercial OK under 100M MAU / RMB 1bn; no use to improve other models. Legal sign-off needed | ~10-12 GB bf16 (est.) | RTF 0.21 on a 4090 (authors) | speaker clip + separate emotion clip (the bank clip), `emo_alpha` |
+| Step-Audio-EditX (3B) | code Apache-2.0; **weights licence: check the HF card** | 12-16 GB (authors) | est. RTF ~0.5 per pass | VoxCPM2 take, then 1-2 edit passes naming the emotion |
+| Chatterbox Turbo (350M) | MIT / MIT: clear (PerTh watermark on every output) | ~3-4 GB (est.) | est. faster than real time | `exaggeration` + inline tags (`[laugh]`, `[sigh]`) |
+| Qwen3-TTS Base 1.7B (optional 5th) | Apache-2.0 / Apache-2.0: clear | ~6-8 GB (est.) | est. RTF ~0.3 | reference clip only, so the same bank as VoxCPM2 |
+
+Left out: Higgs v2 (100k annual active users cap and a "Built with Higgs" notice; worth a run only if legal
+accepts the cap), Higgs v3, Fish S2, Voxtral, F5 (non-commercial); CosyVoice3 until its weights licence is shown.
+
+### How each plugs in (no adapter built yet)
+
+- One contract for every engine: the `voice.speak` payload and output meta stay as they are
+  (`{ref_uri, ref_text, lines: [{text, delivery, prompt, bank, pause_after_s}], takes, seed, params, embed}` in;
+  one wav plus `lines`/`clauses` timings, per-line `wer` and `transcript`, `embedding` when asked, out). Production,
+  the gate check, captions and lip sync never see which engine spoke.
+- Choosing an engine: `voices.engine(anchors)` returns the creator's engine from `anchors.voice.engine`
+  (`voxcpm` today). Each engine gets its own job kind through `voice.kinds` (e.g. `voice.speak.indextts`) and a
+  handler module beside `tts_voxcpm.py`. The shared parts (plan, trim, fade, assemble, takes chosen by WER, the
+  Whisper/ECAPA loaders) move to one helper module, so each adapter only implements `generate(text, line, refs,
+  seed) -> wav`.
+- Delivery per engine, the same bank for all of them:
+  - IndexTTS2.5: `line.prompt` is the emotion clip, `ref_uri` the speaker clip, `emo_alpha` from policy.
+  - Step-Audio-EditX: a VoxCPM2 take first, then edit passes with the bank's name as the emotion. It is a second
+    job kind chained after `voice.speak`, not a replacement for it.
+  - Chatterbox Turbo: the bank name maps to an `exaggeration` value in policy. Tags appear only where a line's
+    script asks for them (never written into a delivery).
+  - Qwen3-TTS Base: identical to VoxCPM2 (prompt clip + transcript).
+- Packaging: each engine in its own venv on the talkcomfy image (as LongCat and SVC are), with a smoke test in
+  `smoke.py` before push. A licence row goes into `policy.voice` per engine, and the autoscaler's
+  `job_kinds.<kind>.min_vram_gb` is set from the table above.
+
+### Bake-off design (cap $2)
+
+- **Lines:** the six in §3 plus "Two am. I take it back. I was not ready for anything." (the line that lost its
+  first words), so 7 lines, ~5-8 s each. One creator: the sandbox voice, with a bank made first with
+  `mw voice bank` (6 clips, minutes of GPU on the same machine).
+- **Engines:** the five in the table (Qwen3-TTS only if the time cap allows). Each line gets the same reference,
+  the same bank clip for its delivery, 3 seeds, and is auto-picked by WER as in production.
+- **Clips:** 5 engines × 7 lines × 3 seeds = 105 takes, ~12 min of audio. All of it runs on **one machine, one
+  `test-voice-bakeoff` batch**. Spend cap $2, deadline 2 h, registered by the autoscaler as always. Most of the
+  cost is boot and weights (~30-40 GB across engines on the container disk, never the weights volume: see the
+  LongCat incident). Est. ~1-1.5 h on an L40S/4090 at $0.5-0.9/h, so **$0.75-1.40**.
+- **Scores**, each per engine and per line:
+  1. **WER:** Whisper large-v3 (`speech.wer`). A line fails over the gate's 0.15; the engine's median must be
+     ≤ 0.1.
+  2. **First words:** whether the first two scripted words appear in the transcript's first three. This catches
+     the "and take it back" failure. Pass rate per engine.
+  3. **Leak:** `voice_lab.leaked`: any instruction word heard that is not in the script. Zero tolerated.
+  4. **Timbre stability:** the ECAPA cosine distance of every picked take to the base clip. Report the median and
+     the spread (max - min) across the 7 lines. An engine qualifies if its median is within 0.05 of VoxCPM2's and
+     its spread is ≤ `delivery_bank.max_distance`.
+  5. **Delivery-following:** the owner, blind, rates 1-5 whether the line sounds like its note. Optionally, an
+     automatic emotion classifier is reported alongside, but only once its licence is checked; never on its own.
+  6. **Naturalness:** the owner, blind, rates 1-5, plus a forced "which would you post" per line.
+- **Protocol:** files renamed to random ids, with a key in the run's report only. The listening sheet comes from
+  `mw test breadth-report`-style output: links, no engine names.
+- **Winner rule:** among engines passing 1-4, the best median of (naturalness + delivery). It replaces the
+  baseline only if it wins on at least 5 of 7 lines and passes the licence check. Otherwise the bank stays and the
+  bank's keywords and `max_distance` are tuned from the scores (they are guesses today).

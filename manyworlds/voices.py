@@ -206,3 +206,23 @@ def cosine_distance(a: list[float], b: list[float]) -> float:
     if not na or not nb:
         return 1.0
     return round(1.0 - dot / (na * nb), 4)
+
+
+def nearest_delivery(delivery: str | None, bank: dict[str, list[str]]) -> str | None:
+    """Which delivery-bank clip a line's delivery asks for (policy voice.delivery_bank): `bank` maps each delivery
+    name to its keywords. The name whose keywords the delivery mentions most wins; on a tie, the one mentioned
+    first ("flat, tired, then a small laugh" is deadpan before amused). Keywords match whole words or phrases,
+    case-insensitively. None when no keyword is mentioned: the line keeps the base clip."""
+    text = " ".join(re.findall(r"[a-z']+", (delivery or "").lower()))
+    if not text:
+        return None
+    best, best_key = None, None
+    for name, keywords in bank.items():
+        hits = [m.start() for k in keywords or [] if str(k).strip()
+                for m in [re.search(rf"\b{re.escape(' '.join(str(k).lower().split()))}\b", text)] if m]
+        if not hits:
+            continue
+        key = (-len(hits), min(hits))
+        if best_key is None or key < best_key:
+            best, best_key = name, key
+    return best

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from manyworlds import voices
 from manyworlds.creator.lab import KOKORO_VOICES
 
@@ -32,3 +34,23 @@ def test_a_single_stock_voice_passes_through_and_a_blend_is_mixed_by_weight():
         def load_single_voice(self, name):
             return {"af_bella": 10.0, "af_sky": 20.0}[name]
     assert voices.voice_arg(Pipe(), "af_bella:0.75+af_sky:0.25") == 12.5
+
+
+# --- the delivery bank: which clip a line's delivery asks for (policy voice.delivery_bank) ------------------------
+BANK = {"excited": ["excited", "upbeat", "fast"], "deadpan": ["flat", "dry", "tired", "matter of fact"],
+        "amused": ["amused", "laugh", "playful"], "confiding": ["quiet", "sincere"]}
+
+
+@pytest.mark.parametrize("delivery, expected", [
+    ("upbeat", "excited"),
+    ("flat, tired, then a small laugh", "deadpan"),      # two deadpan words beat one amused
+    ("playful, a bit dry", "amused"),                    # a tie: the first named wins
+    ("Matter of fact", "deadpan"),                       # phrases, any case
+    ("A quiet, sincere tone", "confiding"),
+    ("laughing", None),                                  # whole words only: "laugh" is not "laughing"
+    ("musing", None),                                    # nothing named: the base clip
+    ("", None),
+    (None, None),
+])
+def test_a_delivery_picks_the_bank_clip_it_names_most(delivery, expected):
+    assert voices.nearest_delivery(delivery, BANK) == expected

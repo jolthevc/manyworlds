@@ -248,6 +248,11 @@ def build_parser() -> argparse.ArgumentParser:
     vp = vsub.add_parser("pick", help="choose the voice from the latest finished design (automatic, or --candidate N)")
     vp.add_argument("creator")
     vp.add_argument("--candidate", type=int, help="this candidate index instead of the automatic choice")
+    vb = vsub.add_parser("bank", help="queue the delivery bank: one clip of her voice per delivery (a test batch)")
+    vb.add_argument("creator")
+    vb.add_argument("--pools", help="comma-separated GPU pools to pin the jobs to")
+    vbp = vsub.add_parser("bank-pick", help="review the finished bank clips and keep those that pass")
+    vbp.add_argument("creator")
     return p
 
 
@@ -469,7 +474,7 @@ def voice_candidates(conn, pol, creator_id, store=None) -> dict:
 
 
 def _voice(args, conn, pol) -> int:
-    """`mw voice design|candidates|pick <creator>` (manyworlds.creator.voice_lab)."""
+    """`mw voice design|candidates|pick|bank|bank-pick <creator>` (manyworlds.creator.voice_lab)."""
     from .creator import voice_lab
     cid = _creator_id(conn, args.creator)
     if args.voice_cmd == "design":
@@ -489,6 +494,18 @@ def _voice(args, conn, pol) -> int:
         return 0
     if args.voice_cmd == "candidates":
         _print(voice_candidates(conn, pol, cid, storage.from_url()))
+        return 0
+    if args.voice_cmd == "bank":     # the delivery bank: one clip per delivery, a test batch like design
+        handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
+        pools = [p.strip() for p in args.pools.split(",") if p.strip()] if args.pools else None
+        try:
+            jobs = voice_lab.bank(conn, pol, cid, batch=f"test-voice-{handle}", pools=pools)
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        _print({"jobs": {k: str(v) for k, v in jobs.items()}, "next": f"mw voice bank-pick {handle} once they finish"})
+        return 0
+    if args.voice_cmd == "bank-pick":
+        _print(voice_lab.pick_bank(conn, pol, cid))
         return 0
     job = conn.execute("SELECT id FROM jobs WHERE creator_id = %s AND kind = %s AND status = 'done' "
                        "ORDER BY created_at DESC LIMIT 1", (cid, voice_lab._kind(pol, "design"))).fetchone()

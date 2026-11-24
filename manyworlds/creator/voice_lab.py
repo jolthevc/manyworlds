@@ -5,6 +5,10 @@
     pick(conn, policy, creator_id, job, candidate=None) -> dict
                                                     one candidate, chosen automatically (or by index), becomes
                                                     anchors.voice
+    bank(conn, policy, creator_id) -> {delivery: job_id}
+                                                    one clip of her voice per policy delivery (voice.delivery_bank)
+    pick_bank(conn, policy, creator_id) -> dict     the clips that pass become anchors.voice.bank; speak_payload
+                                                    then gives a line the clip its delivery names
 
 The automatic choice is never made by ear (owner 2026-11-21): the candidate must say the anchor passage (word error
 rate within `voice.max_wer`), must sound unlike every other creator (speaker-embedding cosine distance at least
@@ -39,7 +43,8 @@ def _kind(policy: Policy, what: str) -> str:
 # is its older spelling), how lines are cloned (`clone`), the gaps between clauses and sentences, trimming and
 # fades, per-clause WER retries, the line ceiling, and the experimental breaths and fillers.
 NATURAL_KEYS = ("synthesis", "split_clauses", "clone", "clause_min_words", "clause_gap_s", "sentence_gap_s", "trim",
-                "fade_ms", "max_wer", "clause_retry_wer_factor", "line_max_wer", "breaths", "disfluency")
+                "fade_ms", "max_wer", "clause_retry_wer_factor", "line_max_wer", "breaths", "disfluency",
+                "prompt_tail_silence_s")
 
 
 def worker_params(policy: Policy) -> dict:
@@ -198,12 +203,12 @@ def pick(conn, policy: Policy, creator_id, job, candidate: int | None = None) ->
 
 
 def _decide(conn, policy: Policy, creator_id, job_id, inputs: dict, output: dict, rationale: str, *,
-            step: str = "voice_pick") -> None:
+            step: str = "voice_pick", kind: str = "voice_pick") -> None:
     conn.execute(
         """INSERT INTO decisions (kind, creator_id, inputs, output, policy_version, agent, job_id, step, rationale)
-           VALUES ('voice_pick', %s, %s, %s, %s, 'voice_lab', %s, %s, %s)
+           VALUES (%s, %s, %s, %s, %s, 'voice_lab', %s, %s, %s)
            ON CONFLICT (job_id, step) WHERE job_id IS NOT NULL DO NOTHING""",
-        (creator_id, Jsonb(inputs), Jsonb(output), policy.version, job_id, step, rationale))
+        (kind, creator_id, Jsonb(inputs), Jsonb(output), policy.version, job_id, step, rationale))
 
 
 def speak_kind(policy: Policy) -> str:
@@ -236,12 +241,150 @@ def speak_payload(policy: Policy, voice: dict, lines: list[dict], *, seed: int |
     Deliveries reach the model only where it follows them (`deliveries_spoken`): with ultimate cloning VoxCPM
     continues the reference transcript and reads the delivery's parenthetical aloud ("A quiet, sincere, one thing
     nobody tells you...": breadth rerun 2026-11-24, three of three directed lines), so the delivery and any inline
-    parenthetical are left out there; the line keeps its delivery in the post."""
+    parenthetical are left out there; the line keeps its delivery in the post. Instead, a line whose delivery
+    names one of the creator's delivery-bank clips continues from that clip (`prompt`: {ref_uri, ref_text}, its
+    name in `bank`), so the delivery comes from the audio it continues, never from words in the text."""
     params = worker_params(policy)
     keep = _deliveries_spoken(policy, params)
-    payload = {"ref_uri": voice["ref_uri"], "ref_text": voice["ref_text"],
-               "lines": [_line(line, keep) for line in lines],
+    out = []
+    for line in lines:
+        spoken = _line(line, keep)
+        inline = voices.split_instruction(line.get("text") or "")[0]
+        chosen = None if keep else bank_prompt(policy, voice, line.get("delivery") or inline)
+        if chosen:
+            spoken["prompt"] = {"ref_uri": chosen[1]["ref_uri"], "ref_text": chosen[1]["ref_text"]}
+            spoken["bank"] = chosen[0]
+        out.append(spoken)
+    payload = {"ref_uri": voice["ref_uri"], "ref_text": voice["ref_text"], "lines": out,
                "takes": int(_cfg(policy).get("takes", 1)), "seed": seed, "params": params}
     if compare:
         payload["compare"] = True
     return payload
+
+
+def _bank_cfg(policy: Policy) -> dict:
+    return _cfg(policy).get("delivery_bank") or {}
+
+
+def bank_prompt(policy: Policy, voice: dict, delivery: str | None) -> tuple[str, dict] | None:
+    """(name, clip) of the creator's delivery-bank clip a line's delivery asks for (voices.nearest_delivery over
+    the policy keywords of the deliveries she has a kept clip for), or None: the base clip."""
+    cfg, kept = _bank_cfg(policy), (voice or {}).get("bank") or {}
+    if not cfg.get("enabled") or not kept or not (delivery or "").strip():
+        return None
+    keywords = {name: (spec or {}).get("keywords") or [] for name, spec in (cfg.get("deliveries") or {}).items()
+                if (kept.get(name) or {}).get("ref_uri") and (kept.get(name) or {}).get("ref_text")}
+    name = voices.nearest_delivery(delivery, keywords)
+    return (name, kept[name]) if name else None
+
+
+# --- the delivery bank (policy voice.delivery_bank; research 2026-11-24-expressive-voice §2.2) -------------------
+def bank(conn, policy: Policy, creator_id, *, batch: str | None = None, pools: list[str] | None = None) -> dict:
+    """Enqueue one voice.speak job per policy delivery: the delivery's text in the creator's designed voice, made
+    with controllable cloning (the instruction is followed there, not read aloud; the base clip is the timbre
+    reference), `delivery_bank.takes` takes with the best by WER kept, and its speaker embedding (payload
+    `embed`) for `pick_bank`. Idempotent per voice, instruction and text. -> {delivery: job id}."""
+    cfg = _bank_cfg(policy)
+    row = conn.execute("SELECT anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    if not row:
+        raise ValueError(f"no creator {creator_id}")
+    if voices.engine(row["anchors"]) != "voxcpm":
+        raise ValueError("a delivery bank needs a designed voice first: mw voice design, then mw voice pick")
+    voice = row["anchors"]["voice"]
+    deliveries = cfg.get("deliveries") or {}
+    if not deliveries:
+        raise ValueError("policy voice.delivery_bank.deliveries is empty")
+    params = {**worker_params(policy), "clone": "controllable"}
+    jobs = {}
+    for name, spec in deliveries.items():
+        instruction, text = (spec.get("instruction") or "").strip(), (spec.get("text") or "").strip()
+        if not instruction or not text:
+            raise ValueError(f"delivery_bank.deliveries.{name} needs an instruction and a text")
+        digest = hashlib.sha256(f"{voice['ref_uri']}|{instruction}|{text}".encode()).hexdigest()
+        payload = {"ref_uri": voice["ref_uri"], "ref_text": voice["ref_text"],
+                   "lines": [{"text": text, "delivery": instruction}], "takes": int(cfg.get("takes", 1)),
+                   "seed": int(digest[:8], 16) % (1 << 31), "params": params, "embed": True, "bank": name}
+        jobs[name] = queue.enqueue(conn, speak_kind(policy), payload, creator_id=creator_id, batch=batch, pools=pools,
+                                   idempotency_key=f"{creator_id}:voice:bank:{name}:{digest[:12]}",
+                                   max_attempts=int(policy.get("queue", "max_attempts", default=3)))
+    return jobs
+
+
+def leaked(instruction: str, text: str, heard: str, ignore: list[str] | tuple = ()) -> list[str]:
+    """Words of the instruction the transcript has but the text does not (the delivery was read aloud), apart from
+    the `ignore` words (policy delivery_bank.leak_ignore: "a", "and"... a misheard filler is not a leak)."""
+    from ..speech import words
+    said, script, skip = set(words(heard)), set(words(text)), {str(w).lower() for w in ignore}
+    return [w for w in dict.fromkeys(words(instruction)) if w in said and w not in script and w not in skip]
+
+
+def review_clip(policy: Policy, spec: dict, meta: dict, base: list[float], others: list[list[float]]) -> dict:
+    """One bank clip judged: {kept, reasons, wer, leaked, distance (to her base clip), nearest_other, transcript}."""
+    cfg = _bank_cfg(policy)
+    max_wer, max_distance = float(cfg.get("max_wer", 0.1)), float(cfg.get("max_distance", 0.3))
+    min_distance = float(_cfg(policy).get("min_distance", 0.35))
+    heard = " ".join(str(line.get("transcript", "")) for line in meta.get("lines") or [] if isinstance(line, dict))
+    embedding = meta.get("embedding") or []
+    others = [o for o in others if o]
+    out = {"wer": meta.get("wer"),
+           "leaked": leaked(spec.get("instruction", ""), spec.get("text", ""), heard, cfg.get("leak_ignore") or ()),
+           "distance": voices.cosine_distance(embedding, base) if embedding and base else None,
+           "nearest_other": min((voices.cosine_distance(embedding, o) for o in others), default=None)
+           if embedding else None, "transcript": heard[:300]}
+    reasons = []
+    if out["wer"] is None or float(out["wer"]) > max_wer:
+        reasons.append(f"WER {out['wer']} over {max_wer}")
+    if out["leaked"]:
+        reasons.append(f"read its instruction aloud: {', '.join(out['leaked'])}")
+    if out["distance"] is None:
+        reasons.append("no speaker embedding to compare with her base clip")
+    elif out["distance"] > max_distance:
+        reasons.append(f"{out['distance']} from her base clip, over {max_distance}")
+    if out["nearest_other"] is not None and out["nearest_other"] < min_distance:
+        reasons.append(f"{out['nearest_other']} from another creator's voice, under {min_distance}")
+    return {**out, "kept": not reasons, "reasons": reasons}
+
+
+def pick_bank(conn, policy: Policy, creator_id) -> dict:
+    """Review the creator's finished bank jobs (`bank`) and store the clips that pass as anchors.voice.bank
+    {delivery: {ref_uri, ref_text, instruction, embedding, wer, distance, asset_id, job_id}}. A delivery whose
+    latest clip fails keeps no entry from that job (its lines continue from the base clip). Each verdict is a
+    decision row (kind `voice_bank`). -> {kept, rejected: {delivery: reasons}, waiting}."""
+    cfg = _bank_cfg(policy)
+    row = conn.execute("SELECT anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()
+    if not row or voices.engine(row["anchors"]) != "voxcpm":
+        return {"kept": [], "rejected": {}, "waiting": [], "reason": "no designed voice"}
+    voice = row["anchors"]["voice"]
+    base, others = voice.get("embedding") or [], _other_voices(conn, creator_id)
+    stored = dict(voice.get("bank") or {})
+    out: dict = {"kept": [], "rejected": {}, "waiting": []}
+    for name, spec in (cfg.get("deliveries") or {}).items():
+        job = conn.execute(
+            "SELECT id, status FROM jobs WHERE creator_id = %s AND kind = %s AND payload->>'bank' = %s "
+            "AND payload->>'ref_uri' = %s ORDER BY created_at DESC LIMIT 1",
+            (creator_id, speak_kind(policy), name, voice["ref_uri"])).fetchone()
+        if not job or job["status"] in ("queued", "running"):
+            out["waiting"].append(name)
+            continue
+        audio = conn.execute("SELECT id, uri, meta FROM assets WHERE job_id = %s AND kind = 'audio' "
+                             "ORDER BY uri LIMIT 1", (job["id"],)).fetchone()
+        verdict = (review_clip(policy, spec, audio["meta"] or {}, base, others) if audio
+                   else {"kept": False, "reasons": [f"the job is {job['status']} with no clip"]})
+        if verdict["kept"]:
+            stored[name] = {"ref_uri": audio["uri"], "ref_text": voices.strip_delivery(spec["text"]),
+                            "instruction": spec["instruction"], "embedding": (audio["meta"] or {}).get("embedding"),
+                            "wer": verdict["wer"], "distance": verdict["distance"], "asset_id": str(audio["id"]),
+                            "job_id": str(job["id"])}
+            out["kept"].append(name)
+        else:
+            if (stored.get(name) or {}).get("job_id") == str(job["id"]):
+                stored.pop(name)
+            out["rejected"][name] = verdict["reasons"]
+        _decide(conn, policy, creator_id, job["id"],
+                {"delivery": name, "instruction": spec.get("instruction"), "text": spec.get("text")},
+                {**{k: v for k, v in verdict.items() if k != "transcript"}, "delivery": name},
+                "kept" if verdict["kept"] else "; ".join(verdict["reasons"]), step=f"voice_bank:{name}",
+                kind="voice_bank")
+    conn.execute("UPDATE creators SET anchors = jsonb_set(anchors, '{voice,bank}', %s::jsonb) WHERE id = %s",
+                 (Jsonb(stored), creator_id))
+    return out

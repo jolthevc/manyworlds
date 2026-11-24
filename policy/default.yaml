@@ -751,6 +751,59 @@ voice:
   fade_ms: 8
   clause_retry_wer_factor: 3.0
   line_max_wer: 0.25
+  # A finished voice line whose worker transcript (the gate's own Whisper) is over the intelligibility gate's limit
+  # (review.video.intelligibility max_wer, short_line_max_wer for short lines) is voiced again with new seeds, at most
+  # gate_repairs times, before any talk clip is made over it (production/voice.gate_misses). line_max_wer above lets
+  # a 0.25 line through, and every talk take over it then failed the same way ("Two am. I take it back" heard as
+  # "and take it back", breadth rerun 2026-11-24).
+  gate_repairs: 2
+  # Seconds of silence added after the reference clip's last word before a line continues from it (ultimate cloning:
+  # the line starts where the prompt clip stops; worker tts_voxcpm.prompt_clip). A guess at why "Two am." was run
+  # into the clip's tail and lost: unmeasured, so off (0) until the bake-off compares it (needs the talkcomfy image
+  # rebuilt; an older worker ignores the key).
+  prompt_tail_silence_s: 0.0
+  # The delivery bank (research 2026-11-24-expressive-voice §2.2): ultimate cloning copies the prosody of the clip a
+  # line continues from, and reads a delivery written in the text aloud. So each creator gets a few short clips of
+  # her own designed voice, one per delivery, made once with controllable cloning (the delivery as the instruction,
+  # the base clip as the timbre reference; creator/voice_lab.bank, `mw voice bank`), each kept only if it says its
+  # text (max_wer), reads none of its instruction aloud, stays her voice (ECAPA cosine distance to her base clip at
+  # most max_distance, an estimate until the bake-off) and stays unlike every other creator (voice.min_distance).
+  # A line with a delivery then continues from the clip whose keywords its delivery names most (first named wins a
+  # tie), her base clip staying the timbre reference; no keyword, or no kept clip: the base clip, as before. The
+  # delivery never reaches the text. enabled: false makes every line use the base clip again.
+  delivery_bank:
+    enabled: true
+    takes: 3
+    max_wer: 0.1
+    max_distance: 0.3
+    # instruction words that do not count as read aloud when heard (a misheard filler is not a leak)
+    leak_ignore: [a, an, and, the, of, to, at, in, "on", but, then, little, bit]
+    deliveries:
+      excited:
+        instruction: "excited and bright, a little fast, smiling"
+        text: "No, wait, this actually worked! I did not think it would, and now I want to tell everyone."
+        keywords: [excited, upbeat, bright, energetic, enthusiastic, thrilled, hyped, fast, cheerful, happy, confident]
+      confiding:
+        instruction: "quiet and close, sincere, almost a whisper"
+        text: "Okay, can I tell you something? I have never said this on here, and I am still a bit nervous about it."
+        keywords: [quiet, soft, softly, sincere, confiding, whisper, whispering, gentle, intimate, serious, honest,
+                   vulnerable, slow]
+      deadpan:
+        instruction: "flat and dry, deadpan, tired"
+        text: "Great. The bus left without me again. Love that for me, honestly."
+        keywords: [flat, dry, deadpan, tired, sarcastic, unimpressed, matter of fact, bored, exhausted, wry]
+      amused:
+        instruction: "amused, laughing a little, playful"
+        text: "I tripped on the stairs in front of everyone, and then I just waved, like that was the plan."
+        keywords: [amused, laugh, laughing, playful, teasing, grin, grinning, smiling, cheeky, giggle, joking, fun]
+      storytelling:
+        instruction: "relaxed and casual, telling a story to a friend"
+        text: "So I get to the market really early, right, and the guy at the bread stall already knows my order."
+        keywords: [casual, story, storytelling, musing, relaxed, conversational, thoughtful, chatty, warm, easy]
+      questioning:
+        instruction: "curious, asking, rising at the end"
+        text: "So what would you have done? Would you have gone back for it, or just let it go?"
+        keywords: [curious, asking, question, questioning, wondering, puzzled, inviting, unsure]
   # EXPERIMENTAL, off: a quiet synthetic in-breath (numpy pink noise, band-limited, Hann envelope; nothing sampled)
   # in the gap before every n-th sentence, ending lead_s before it; skipped when the gap is shorter than the breath.
   breaths: {enabled: false, every_n_sentences: 3, gain_db: -42, seconds: [0.12, 0.22], band_hz: [500, 4000],

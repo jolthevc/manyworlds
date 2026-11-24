@@ -864,3 +864,74 @@ def test_a_spoken_piece_without_a_voice_line_logs_its_fallback(conn, policy, cap
                                           piece, store=_AudioStore(), transcriber=lambda *a, **k: [])
     assert words and words[0].start == pytest.approx(0.0)
     assert any("estimated timings" in r.getMessage() and "no voice line" in r.getMessage() for r in caplog.records)
+
+
+# --- a voice line that drops words is re-voiced before any talk clip is made over it --------------------------------
+# Breadth rerun 2026-11-24: "Two am. I take it back. I was not ready for anything." came out of voice.speak heard as
+# "and take it back. I was not ready for anything.": WER 3/12 = 0.25, which the voice job's own line ceiling
+# (voice.line_max_wer 0.25, failing only above it) let through. The intelligibility gate scores that same wav
+# (review.video._intelligibility reads the clip's audio_uri) at max_wer 0.15, so every talk take made over it was
+# rejected the same way: three paid talk clips over a voice line that could never pass.
+TWO_AM = _says("Two am. I take it back. I was not ready for anything.",
+               set={"location": "her living room sofa"}, framing={"shot_size": "medium shot", "device": "propped"},
+               blocking=[{"at_s": 0, "action": "talks to the phone", "eyeline": "lens"}])
+
+
+def _heard(conn, job, transcript, wer):
+    """The voice worker finished, its best take heard as `transcript` by its own Whisper (meta.wer, meta.lines)."""
+    uri, lines = _spoken(conn, job)
+    lines = [{**line, "transcript": transcript, "wer": wer} for line in lines]
+    conn.execute("UPDATE assets SET meta = %s WHERE uri = %s", (Jsonb({"lines": lines, "wer": wer}), uri))
+    return uri
+
+
+def test_a_voice_line_that_lost_its_first_words_is_voiced_again_not_lip_synced(conn, policy, store, tmp_path, joined):
+    from manyworlds import speech
+    policy = _talking(policy)
+    pid, _ = _directed_post(conn, policy, store, tmp_path, [SHOP, TWO_AM], voice=DESIGNED)
+    first, second = _voice_jobs(conn, pid)
+    _heard(conn, first, " ".join(line["text"] for line in SHOP["performance"]["lines"]), 0.0)
+    heard = "and take it back. I was not ready for anything."
+    wer = speech.wer(TWO_AM["performance"]["lines"][0]["text"], heard)
+    assert wer == 0.25 and wer > policy.get("review", "video", "intelligibility", "max_wer")
+    _heard(conn, second, heard, wer)
+    production.advance(conn, policy, now=NOW, store=store)
+    talks = _segment_jobs(conn, pid)
+    assert len(talks) == 1 and talks[0]["payload"]["script"].startswith("Right, quick one")   # segment 0 only
+    retry = [j for j in _voice_jobs(conn, pid) if j["idempotency_key"] == f"post:{pid}:voice:1:1"]
+    assert len(retry) == 1 and retry[0]["payload"]["seed"] != second["payload"]["seed"]      # new seeds
+    body = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
+    assert body["voice_repairs"] == 1 and body.get("follow_up_failures", 0) == 0
+    # The new line says every word: its talk clip is made over it.
+    good = _heard(conn, retry[0], TWO_AM["performance"]["lines"][0]["text"], 0.0)
+    production.advance(conn, policy, now=NOW, store=store)
+    talks = _segment_jobs(conn, pid)
+    assert len(talks) == 2 and talks[1]["payload"]["audio_uri"] == good
+
+
+def test_a_voice_line_that_keeps_losing_words_drops_the_post_after_its_repairs(conn, policy, store, tmp_path, joined):
+    policy = _talking(policy)
+    pid, _ = _directed_post(conn, policy, store, tmp_path, [TWO_AM], voice=DESIGNED)
+    for _ in range(int(policy.get("voice", "gate_repairs")) + 1):
+        [job] = _voice_jobs(conn, pid, "queued")
+        _heard(conn, job, "and take it back. I was not ready for anything.", 0.25)
+        production.advance(conn, policy, now=NOW, store=store)
+    row = conn.execute("SELECT status, body FROM posts WHERE id = %s", (pid,)).fetchone()
+    assert _segment_jobs(conn, pid) == []
+    why = row["body"].get("drop_reason") or row["body"].get("reroute_reason")   # rerouted to its photo if policy says
+    n = int(policy.get("voice", "gate_repairs"))
+    assert f"no voice passed review after {n} repairs" in why and row["body"]["voice_repairs"] == n
+
+
+def test_a_short_line_keeps_the_gates_short_line_allowance(conn, policy, store, tmp_path, joined):
+    """'Fight me.' heard as 'Fight me!' is fine, and one misheard word of three is within the gate's
+    short_line_max_wer: the line is not re-voiced for what the gate would pass."""
+    policy = _talking(policy)
+    short = _says("Wish me luck.", set={"location": "the shop doorway"},
+                  framing={"shot_size": "medium shot", "device": "selfie"},
+                  blocking=[{"at_s": 0, "action": "grins", "eyeline": "lens"}])
+    pid, _ = _directed_post(conn, policy, store, tmp_path, [short], voice=DESIGNED)
+    [job] = _voice_jobs(conn, pid)
+    _heard(conn, job, "Wish me lock.", 0.333)
+    production.advance(conn, policy, now=NOW, store=store)
+    assert len(_segment_jobs(conn, pid)) == 1
