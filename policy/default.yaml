@@ -596,6 +596,12 @@ generation:
     kind: comfy.wan_i2v
     keyframes: 1
     v2v: {steps: 4, start_step: 2, clip_vision: false}
+    # Repairs of a V2V take that failed lip_sync (production.talk.talk_repair; breadth run 2026-11-23: the mouth was
+    # never redrawn, openness ~0.001, and every reseeded repair scored the same corr): each repair lowers start_step
+    # by start_step_step (redraws more of the clip) down to start_step_floor. A knob (start_step, seed) whose repair
+    # scored the same lip-sync corr as the attempt before (within same_score_tolerance) is not tried again; with
+    # every knob spent the post is dropped with the reason instead of rendering the same clip again.
+    v2v_repair: {start_step_step: 1, start_step_floor: 0, same_score_tolerance: 0.005}
 
 # Designed voices (manyworlds/creator/voice_lab.py, worker/handlers/tts_voxcpm.py; owner 2026-11-22: a voice of
 # their own). VoxCPM2 (Apache-2.0) designs `candidates` voices from the bible's voice notes and appearance, each

@@ -3,7 +3,8 @@
 Owner 2026-11-21: voices are judged automatically, never by ear. A talking clip whose voice line garbles, drops or
 invents words fails the `intelligibility` gate before any paid video review. The word error rate (WER) is
 the edit distance between the script's words and the transcript's, over the script's length, after both are
-lower-cased and stripped of punctuation. The transcription is charged to the ledger (`hosted_api`).
+put in one spelling (`normalise`: lower case, no punctuation, numbers as digits, contractions expanded). The
+transcription is charged to the ledger (`hosted_api`).
 """
 
 from __future__ import annotations

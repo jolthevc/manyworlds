@@ -409,6 +409,7 @@ class TalkMotion(_Strict):
     kind: str | None
     keyframes: int
     v2v: Free
+    v2v_repair: Free | None = None
 
 
 class Generation(_Strict):

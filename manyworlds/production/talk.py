@@ -12,7 +12,7 @@ from ..policy import Policy
 from .common import SUNG, _cfg, _seed, _shot, _with_crops, _with_prompts, _with_shot, unmarked
 from .finish import captions_burned
 from .motion import _advance_motion, _last_frame, _motion_cfg, _needs_motion, talk_v2v
-from .steps import Step, _clip_state, _edit_state, advance_step
+from .steps import DropPost, Step, _clip_state, _edit_state, advance_step
 from .takes import _hybrid_cfg, _photo_per_shot, _take_index, _take_photo, _take_script, _take_shot, _talk_long_cfg
 from .voice import _advance_voice, _designed_voice, _with_audio, voice_lines
 
@@ -40,6 +40,9 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     motion = motion if motion and talk_v2v(policy) else None   # the research-script engine has no V2V
     if motion:
         params.update(_motion_cfg(policy).get("v2v") or {})
+    prior = ((body.get("talk_segment_jobs") or [])[segment] if segment is not None
+             and segment < len(body.get("talk_segment_jobs") or []) else body.get("talk_jobs") or [])
+    repair = talk_repair(conn, policy, [str(j) for j in prior], params, v2v=bool(motion))
     script = unmarked(_take_script(body, segment))
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"], "script": script,
@@ -53,12 +56,75 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     _with_audio(payload, audio)
     if motion:
         payload["video_uri"] = motion["uri"]
+    if repair:
+        payload["repair"] = repair
     if segment is not None:
         payload["segment"] = {"index": segment, "of": len(body["talk_segments"])}
     key = f"post:{post['id']}:talk:{attempt}" if segment is None else f"post:{post['id']}:talk:{segment}:{attempt}"
     return queue.enqueue(conn, _cfg(policy).get("talk_kind", "talk.infinitetalk"), payload,
                          creator_id=post["creator_id"], batch=f"post-{post['id']}", post_id=post["id"],
                          idempotency_key=key)
+
+
+def _take_history(conn, job_ids: list[str]) -> list[dict]:
+    """A take's earlier talk jobs, oldest first: {id, start_step, repair, passed, corr} (passed and corr from the
+    lip_sync review row of its video; None when it has none: a failed job, or the gate not enforced)."""
+    if not job_ids:
+        return []
+    rows = {str(r["id"]): r for r in conn.execute(
+        """SELECT j.id, j.payload->'params'->>'start_step' AS start_step, j.payload->'repair' AS repair,
+                  (SELECT r.passed FROM assets a JOIN reviews r ON r.asset_id = a.id
+                    WHERE a.job_id = j.id AND a.kind = 'video' AND r.gate = 'lip_sync' ORDER BY r.created_at DESC
+                    LIMIT 1) AS passed,
+                  (SELECT r.score FROM assets a JOIN reviews r ON r.asset_id = a.id
+                    WHERE a.job_id = j.id AND a.kind = 'video' AND r.gate = 'lip_sync' ORDER BY r.created_at DESC
+                    LIMIT 1) AS corr
+           FROM jobs j WHERE j.id = ANY(%s::uuid[])""", (job_ids,)).fetchall()}
+    return [dict(rows[j]) for j in job_ids if j in rows]
+
+
+def talk_repair(conn, policy: Policy, prior: list[str], params: dict, *, v2v: bool) -> dict | None:
+    """What a take's next talk job changes, given its earlier jobs (`prior`, oldest first); sets params.start_step
+    and returns the record kept in the job's payload.repair: {cause, knob, start_step, dead_knobs}. None for a first
+    take.
+
+    Breadth run 2026-11-23: V2V takes (walk-and-talk) failed lip_sync with the mouth never redrawn, and every repair
+    changed only the seed and scored the same. A lip_sync failure on a V2V take now redraws more: start_step one lower
+    per repair (generation.talk_motion.v2v_repair.start_step_step) down to start_step_floor; an earlier escalation
+    is kept by later repairs. A knob whose repair scored the same lip sync as the attempt before
+    (within same_score_tolerance) is dead: it is not tried again (dead_knobs says why), and when every knob is dead
+    the post is dropped with the reason (lip sync is a media defect) instead of rendering the same clip again."""
+    hist = _take_history(conn, prior)
+    if not hist:
+        return None
+    cfg = _motion_cfg(policy).get("v2v_repair") or {}
+    last = hist[-1]
+    record_before = last["repair"] or {}
+    dead = dict(record_before.get("dead_knobs") or {})
+    start = last["start_step"] if last["start_step"] is not None else params.get("start_step")
+    v2v = v2v and start is not None
+    if v2v:
+        params["start_step"] = int(start)
+    out = {"cause": None, "knob": "seed", "start_step": params.get("start_step"), "dead_knobs": dead}
+    if last["passed"] is not False:      # rejected by another gate, or the job failed: a new seed
+        return out
+    out["cause"] = "lip_sync"
+    tol = float(cfg.get("same_score_tolerance", 0.0))
+    if len(hist) >= 2 and hist[-2]["passed"] is False and last["corr"] is not None and hist[-2]["corr"] is not None \
+            and abs(float(last["corr"]) - float(hist[-2]["corr"])) <= tol:
+        knob = str(record_before.get("knob") or "seed")
+        dead[knob] = (f"attempt {len(hist)} changed {knob} and scored lip sync {float(last['corr']):.3f}, as attempt "
+                      f"{len(hist) - 1} did ({float(hist[-2]['corr']):.3f})")
+    for knob in (["start_step"] if v2v else []) + ["seed"]:
+        if knob in dead:
+            continue
+        if knob == "start_step":
+            floor, step = int(cfg.get("start_step_floor", 0)), int(cfg.get("start_step_step", 1))
+            if int(start) <= floor:
+                continue
+            params["start_step"] = max(floor, int(start) - step)
+        return {**out, "knob": knob, "start_step": params.get("start_step")}
+    raise DropPost("lip sync failed and no repair changes it: " + "; ".join(f"{k}: {v}" for k, v in dead.items()))
 
 
 def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, segment: int,
