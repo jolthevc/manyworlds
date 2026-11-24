@@ -741,6 +741,17 @@ voice:
   fade_ms: 8
   clause_retry_wer_factor: 3.0
   line_max_wer: 0.25
+  # A finished voice line whose worker transcript (the gate's own Whisper) is over the intelligibility gate's limit
+  # (review.video.intelligibility max_wer, short_line_max_wer for short lines) is voiced again with new seeds, at most
+  # gate_repairs times, before any talk clip is made over it (production/voice.gate_misses). line_max_wer above lets
+  # a 0.25 line through, and every talk take over it then failed the same way ("Two am. I take it back" heard as
+  # "and take it back", breadth rerun 2026-11-24).
+  gate_repairs: 2
+  # Seconds of silence added after the reference clip's last word before a line continues from it (ultimate cloning:
+  # the line starts where the prompt clip stops; worker tts_voxcpm.prompt_clip). A guess at why "Two am." was run
+  # into the clip's tail and lost: unmeasured, so off (0) until the bake-off compares it (needs the talkcomfy image
+  # rebuilt; an older worker ignores the key).
+  prompt_tail_silence_s: 0.0
   # EXPERIMENTAL, off: a quiet synthetic in-breath (numpy pink noise, band-limited, Hann envelope; nothing sampled)
   # in the gap before every n-th sentence, ending lead_s before it; skipped when the gap is shorter than the breath.
   breaths: {enabled: false, every_n_sentences: 3, gain_db: -42, seconds: [0.12, 0.22], band_hz: [500, 4000],

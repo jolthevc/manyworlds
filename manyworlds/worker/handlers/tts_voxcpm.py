@@ -283,6 +283,7 @@ def speech_config(params: dict) -> dict:
         "clause_gap": _span(params.get("clause_gap_s"), "clause_gap_s", pause),
         "sentence_gap": _span(params.get("sentence_gap_s"), "sentence_gap_s", pause),
         "fade_ms": _number(params.get("fade_ms", 0), "fade_ms", lo=0),
+        "prompt_tail": _number(params.get("prompt_tail_silence_s", 0.0), "prompt_tail_silence_s", lo=0),
         "max_wer": None, "retry_factor": None, "line_max_wer": None, "trim": None, "breaths": None,
         "disfluency": None}
     if params.get("max_wer") is not None and params.get("clause_retry_wer_factor") is not None:
@@ -458,14 +459,39 @@ def clone_mode(params: dict) -> str:
     return mode
 
 
-def clone_args(ref: Path, ref_text: str, delivery: str, mode: str = "ultimate") -> dict:
+def clone_args(ref: Path, ref_text: str, delivery: str, mode: str = "ultimate", *, prompt: Path | None = None) -> dict:
     """The cloning arguments (VoxCPM README). Ultimate cloning: `prompt_wav_path` + `prompt_text` (the reference and
     exactly what it says) plus `reference_wav_path`, on every line, the delivery staying the instruction in the
     text's leading parenthetical (voices.with_instruction). Controllable cloning (mode `controllable`): a line with
-    a delivery gets the reference clip alone."""
+    a delivery gets the reference clip alone. `prompt`: the clip the line continues from, when it differs from the
+    reference (the reference with a silent tail, `prompt_clip`)."""
     if mode == "controllable" and delivery:
         return {"reference_wav_path": str(ref)}
-    return {"prompt_wav_path": str(ref), "prompt_text": ref_text, "reference_wav_path": str(ref)}
+    return {"prompt_wav_path": str(prompt or ref), "prompt_text": ref_text, "reference_wav_path": str(ref)}
+
+
+def read_wav(path: Path):
+    """A 16-bit PCM wav (what write_wav writes) as (float32 mono samples, sample rate)."""
+    import numpy as np
+    with wave.open(str(path), "rb") as w:
+        if w.getsampwidth() != 2:
+            raise NonRetryable(f"{path.name} must be 16-bit PCM, got {8 * w.getsampwidth()}-bit")
+        sr, channels, raw = w.getframerate(), w.getnchannels(), w.readframes(w.getnframes())
+    x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32767
+    return (x.reshape(-1, channels).mean(axis=1) if channels > 1 else x), int(sr)
+
+
+def prompt_clip(ref: Path, seconds: float, workdir: Path) -> Path:
+    """The reference with `seconds` of silence after its last word (params.prompt_tail_silence_s; 0 = the
+    reference itself). Ultimate cloning continues the prompt clip, so a line starts where the clip stops: a clip
+    that ends on its last syllable leaves no boundary, and a short first sentence ("Two am.") can be run into the
+    clip's tail and lost (breadth rerun 2026-11-24). The reference_wav_path stays the unpadded clip."""
+    if seconds <= 0:
+        return ref
+    import numpy as np
+    wav, sr = read_wav(ref)
+    out = np.concatenate([wav, np.zeros(int(round(seconds * sr)), dtype=np.float32)])
+    return write_wav(Path(workdir) / f"{ref.stem}_prompt.wav", out, sr)
 
 
 # --- the handlers ------------------------------------------------------------------------------------------------
@@ -492,7 +518,8 @@ def design(payload: dict, ctx: JobContext) -> HandlerResult:
     return HandlerResult(outputs, recipe=recipe, meta={"output_seconds": round(total, 2)})
 
 
-def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int, *, strict: bool) -> dict:
+def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int, *, strict: bool,
+                 prompt: Path | None = None) -> dict:
     """Every line spoken as `cfg` says (whole lines or clauses), the best take of each piece kept, joined with the
     planned gaps: {audio, units, lines (timings), clauses, fillers, wer, failed}. `strict`: a line over the
     line ceiling fails the job (retryable); otherwise (the comparison variant) it is recorded in `failed`."""
@@ -504,7 +531,8 @@ def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int,
 
     def take(unit: dict, k: int, seed: int):
         wav = tts.generate(seed=seed, text=voices.with_instruction(unit["delivery"], unit["spoken"]),
-                           **clone_args(ref, p["ref_text"], unit["delivery"], mode), **_generation(params))
+                           **clone_args(ref, p["ref_text"], unit["delivery"], mode, prompt=prompt),
+                           **_generation(params))
         heard = asr(wav, sr)
         # against the words asked for only: a delivery is never spoken, so it is never in `spoken`
         return (wer(unit["spoken"], heard), k, seed, np.asarray(wav, dtype=np.float32).reshape(-1), heard)
@@ -581,13 +609,15 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
     ref = ctx.fetch(p["ref_uri"], "reference.wav")
     attempt = max(1, int(getattr(ctx.job, "attempts", 1) or 1))
     variant = "clauses" if cfg["split"] else "whole_line"
-    main = _voice_lines(p, cfg, tts, asr, ref, sr, attempt, strict=True)
     work = Path(ctx.workdir)
+    prompt = prompt_clip(ref, cfg["prompt_tail"], work)
+    main = _voice_lines(p, cfg, tts, asr, ref, sr, attempt, strict=True, prompt=prompt)
     meta = _audio_meta(main, sr, variant)
     outputs = [OutputFile(write_wav(work / "speech.wav", main["audio"], sr), "audio", meta)]
     if p["compare"]:
         other = "whole_line" if cfg["split"] else "clauses"
-        alt = _voice_lines(p, {**cfg, "split": not cfg["split"]}, tts, asr, ref, sr, attempt, strict=False)
+        alt = _voice_lines(p, {**cfg, "split": not cfg["split"]}, tts, asr, ref, sr, attempt, strict=False,
+                           prompt=prompt)
         alt_meta = {**_audio_meta(alt, sr, other), "compare_of": 0, "failed_lines": alt["failed"]}
         outputs.append(OutputFile(write_wav(work / f"speech_{other}.wav", alt["audio"], sr), "audio", alt_meta))
         meta["compare"] = [{k: m[k] for k in ("synthesis", "seconds", "wer")} | {"output": i}

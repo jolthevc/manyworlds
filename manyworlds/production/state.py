@@ -33,7 +33,7 @@ STATE: dict[str, str] = {
     # the designed voice
     "voice_jobs": "the one-take follow-up's voice.speak job ids",
     "voice_segment_jobs": "per take, its voice.speak job ids",
-    "voice_repairs": "never incremented (a voice line is not reviewed): the voice Step's repair counter",
+    "voice_repairs": "voice lines made again because the worker transcript shows the intelligibility gate would reject them (voice.gate_repairs)",
     # the song of a music_video post (production.song)
     "song_jobs": "the music.song job ids (the mix, vocal and instrumental stems)",
     "song_repairs": "songs remade because their objective check failed (music.check.enforce)",

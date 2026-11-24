@@ -39,7 +39,8 @@ def _kind(policy: Policy, what: str) -> str:
 # is its older spelling), how lines are cloned (`clone`), the gaps between clauses and sentences, trimming and
 # fades, per-clause WER retries, the line ceiling, and the experimental breaths and fillers.
 NATURAL_KEYS = ("synthesis", "split_clauses", "clone", "clause_min_words", "clause_gap_s", "sentence_gap_s", "trim",
-                "fade_ms", "max_wer", "clause_retry_wer_factor", "line_max_wer", "breaths", "disfluency")
+                "fade_ms", "max_wer", "clause_retry_wer_factor", "line_max_wer", "breaths", "disfluency",
+                "prompt_tail_silence_s")
 
 
 def worker_params(policy: Policy) -> dict:

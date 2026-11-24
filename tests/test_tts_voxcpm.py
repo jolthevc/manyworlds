@@ -410,3 +410,27 @@ def test_a_garbled_comparison_never_fails_the_job(fake, ctx, tmp_path):
     fake.transcripts = ["Okay so I went", "nothing", "alike"]
     res = _speak(ctx, tmp_path, [{"text": "Okay, so I went."}], params={**WHOLE, "line_max_wer": 0.25}, compare=True)
     assert res.outputs[0].meta["lines"][0]["wer"] == 0.0 and res.outputs[1].meta["failed_lines"] == [0]
+
+
+# --- lost first words (breadth rerun 2026-11-24: "Two am. I take it back" heard as "and take it back") -------------
+def test_trim_keeps_a_soft_first_word():
+    """The trim is not what ate "Two am.": it cuts only frames more than threshold_db under the loudest, and a tired,
+    quiet first word 20 dB under the rest of the line is far above that."""
+    soft, loud = _tone(SR, 0.25, amp=0.03), _tone(SR, 0.6, amp=0.3)
+    clip = np.concatenate([np.zeros(SR // 10, dtype=np.float32), soft, np.zeros(SR // 5, dtype=np.float32), loud])
+    cut = tts.trim(clip, SR, threshold_db=-40, frame_ms=10, pad_ms=30)
+    assert len(cut) >= len(soft) + SR // 5 + len(loud)
+
+
+def test_a_prompt_tail_gives_the_line_a_boundary_to_start_from(fake, ctx, tmp_path):
+    _speak(ctx, tmp_path, [{"text": "Two am. I take it back."}], params={"prompt_tail_silence_s": 0.3})
+    call = fake.calls[0]
+    assert call["prompt_wav_path"] != call["reference_wav_path"] and call["reference_wav_path"].endswith("reference.wav")
+    padded, sr = tts.read_wav(tts.Path(call["prompt_wav_path"]))
+    original, _ = tts.read_wav(tts.Path(call["reference_wav_path"]))
+    assert sr == SR and len(padded) == len(original) + int(0.3 * SR) and not padded[len(original):].any()
+    fake.calls.clear()
+    _speak(ctx, tmp_path, [{"text": "Two am."}])                    # off by default: the reference itself
+    assert fake.calls[0]["prompt_wav_path"] == fake.calls[0]["reference_wav_path"]
+    with pytest.raises(NonRetryable):
+        tts.speech_config({"prompt_tail_silence_s": -1})

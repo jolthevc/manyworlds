@@ -11,9 +11,10 @@ from .steps import Step, _status, advance_step
 
 
 # The designed voice (creator/voice_lab.py, worker/handlers/tts_voxcpm.py): for a creator whose voice engine is
-# voxcpm, each spoken piece is a voice.speak job first, a Step of its own (retried like any other on failure; nothing
-# reviews it here, its takes are chosen by WER on the worker), and the piece's job takes its wav. A rejected talk
-# clip is remade over the same voice line.
+# voxcpm, each spoken piece is a voice.speak job first, a Step of its own (retried like any other on failure; its
+# takes are chosen by WER on the worker), and the piece's job takes its wav. A rejected talk clip is remade over the
+# same voice line, so a line whose worker transcript already shows the intelligibility gate would reject it is voiced
+# again first (`gate_misses`, policy voice.gate_repairs).
 def _designed_voice(conn, post: dict) -> dict | None:
     """The creator's designed voice (anchors.voice), or None while they speak with Kokoro."""
     from .. import voices
@@ -63,14 +64,40 @@ def _marked_voice_lines(body: dict, segment: int | None = None) -> list[dict]:
     return _sentence_lines(text)
 
 
-def _voice_state(conn, job_ids: list[str]) -> tuple[str, Any]:
-    """A voice line is not reviewed here: done with an audio asset is chosen."""
+def gate_misses(policy: Policy, meta: dict | None) -> dict | None:
+    """Would the intelligibility gate reject this voice line? The voice worker already transcribed its best take
+    with the gate's own model (meta.wer, over the words it was asked to say), so this costs nothing. The gate scores
+    the same wav (review.video._intelligibility reads the clip's audio_uri) against review.video.intelligibility
+    max_wer (short_line_max_wer for a short line), which is tighter than the worker's own line ceiling
+    (voice.line_max_wer, failing only above it): a line that lost its first words ("Two am. I take it back..." heard
+    as "and take it back...", WER 0.25, breadth rerun 2026-11-24) passed the worker and then failed every talk take
+    made over it. None when it passes, the gate is not enforced, or the worker gave no score."""
+    from .. import speech
+    gate = policy.get("review", "video", "intelligibility", default={}) or {}
+    meta = meta or {}
+    if not gate.get("enforce") or meta.get("wer") is None:
+        return None
+    lines = [line for line in meta.get("lines") or [] if isinstance(line, dict)]
+    said = " ".join(str(line.get("text", "")) for line in lines)
+    limit = speech.max_wer_for(gate, len(speech.words(said))) if said else float(gate.get("max_wer", 0.15))
+    if float(meta["wer"]) <= limit:
+        return None
+    heard = " ".join(str(line.get("transcript", "")) for line in lines)
+    return {"wer": float(meta["wer"]), "max_wer": limit, "heard": heard[:300]}
+
+
+def _voice_state(conn, policy: Policy, job_ids: list[str]) -> tuple[str, Any]:
+    """Done with an audio asset is chosen, unless the worker's own transcript already shows the intelligibility gate
+    would reject it (`gate_misses`): then it is rejected and voiced again with new seeds, before any talk clip is
+    made over it."""
     status = _status(conn, job_ids[-1])
     if status in ("queued", "running"):
         return "waiting", None
     audio = conn.execute("SELECT id, uri, meta FROM assets WHERE job_id = %s AND kind = 'audio' ORDER BY uri LIMIT 1",
                          (job_ids[-1],)).fetchone()
-    return ("chosen", audio) if status == "done" and audio else ("failed", None)
+    if status != "done" or not audio:
+        return "failed", None
+    return ("rejected", None) if gate_misses(policy, audio["meta"]) else ("chosen", audio)
 
 
 def _voice_job(conn, policy: Policy, post: dict, voice: dict, lines: list[dict], attempt: int, *,
@@ -89,9 +116,9 @@ def _advance_voice(conn, policy: Policy, post: dict, body: dict, voice: dict | N
     here (a Kokoro creator, or no words), so the piece is made as before."""
     if voice is None or not lines:
         return "chosen", None
-    step = Step(jobs, lambda j: _voice_state(conn, j),
+    step = Step(jobs, lambda j: _voice_state(conn, policy, j),
                 lambda attempt: _voice_job(conn, policy, post, voice, lines, attempt, segment=segment),
-                ("voice_repairs", 0), ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))),
+                ("voice_repairs", int(policy.get("voice", "gate_repairs", default=2))),("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))),
                 "voice", label)
     return advance_step(body, step)
 
