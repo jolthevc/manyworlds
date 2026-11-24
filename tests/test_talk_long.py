@@ -403,7 +403,8 @@ def test_a_designed_voice_speaks_each_take_before_its_talk_job(conn, policy, sto
     for job, shot in zip((first, second), (SHOP, DOORWAY)):
         p = job["payload"]
         assert p["ref_uri"] == DESIGNED["ref_uri"] and p["ref_text"] == DESIGNED["ref_text"]
-        assert p["lines"] == [{"text": line["text"], "delivery": "dry, quick"} for line in shot["performance"]["lines"]]
+        # ultimate cloning (policy voice.deliveries_spoken): the delivery stays in the post, not in the model's text
+        assert p["lines"] == [{"text": line["text"]} for line in shot["performance"]["lines"]]
         assert p["takes"] == policy.get("voice", "takes")
     # A failed voice job is retried like any other step, with a new seed.
     conn.execute("UPDATE jobs SET status = 'failed' WHERE id = %s", (first["id"],))
@@ -433,8 +434,7 @@ def test_a_cutaway_uses_the_designed_voice_too(conn, policy, store, tmp_path, jo
                         (pid,)).fetchone()["n"] == 0
     jobs = _voice_jobs(conn, pid)
     assert len(jobs) == 3
-    assert jobs[1]["payload"]["lines"] == [{"text": "They still haven't cleaned that window, by the way.",
-                                            "delivery": "dry, quick"}]
+    assert jobs[1]["payload"]["lines"] == [{"text": "They still haven't cleaned that window, by the way."}]
     spoken = [_spoken(conn, j) for j in jobs]
     production.advance(conn, policy, now=NOW, store=store)
     [cut] = conn.execute("SELECT payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
@@ -672,8 +672,7 @@ def test_emphasis_marks_are_never_spoken(conn, policy, store, tmp_path, joined):
     assert production.unmarked("*so* good") == "so good"
     pid, body = _directed_post(conn, policy, store, tmp_path, [marked], voice=DESIGNED)
     [voice_job] = _voice_jobs(conn, pid)
-    assert voice_job["payload"]["lines"] == [{"text": "The samosas are back, and I am not okay.",
-                                              "delivery": "dry, quick"}]
+    assert voice_job["payload"]["lines"] == [{"text": "The samosas are back, and I am not okay."}]
     _spoken(conn, voice_job)
     production.advance(conn, policy, now=NOW, store=store)
     [talk] = _segment_jobs(conn, pid)
