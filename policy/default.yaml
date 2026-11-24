@@ -306,7 +306,11 @@ review:
     # Talking clips: the voice line transcribed (Whisper on Together, $0.0015 a minute, 2026-11-21) must match the
     # script within max_wer (word error rate), or the clip fails before any paid review (manyworlds.speech).
     # Voices are judged automatically, never by ear (owner 2026-11-21).
+    # Script and transcript are compared after manyworlds.speech.normalise (numbers as digits, "No. 2" = "number two",
+    # "6 p.m." = "six pm", contractions expanded). A line under short_line_words words is judged by short_line_max_wer
+    # (one misheard word of two is 0.5; 2026-11-23 breadth run dropped "Look one" heard "Look ones").
     intelligibility: {enforce: true, host: together, model: openai/whisper-large-v3, language: en, max_wer: 0.15,
+                      short_line_words: 4, short_line_max_wer: 0.5,
                       usd_per_minute: 0.0015, timeout_seconds: 120}
   # Directed outputs (a job payload with a `shot`, manyworlds.direction): the judge also sees the shot's summary and
   # beats and scores `direction` 1-10 on rubric policy/rubrics/direction-v<n>.yaml; below min_score it is rejected
