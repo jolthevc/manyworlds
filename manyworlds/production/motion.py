@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 
 from .. import queue
 from ..policy import Policy
-from .common import _cfg, _seed, _shot, _with_crops, _with_prompts, _with_shot, unmarked
+from .common import _cfg, _seed, _shot, _with_crops, _with_prompts, _with_shot, tier_production, unmarked
 from .steps import DropPost, Step, _clip_state, _edit_state, advance_step
 from .takes import _take_index, _take_photo, _take_script, _talk_long_cfg
 
@@ -144,7 +144,9 @@ def _story_clip_kind(conn, policy: Policy, post: dict) -> str:
     kind = _cfg(policy).get("video_kind", "comfy.wan_i2v")
     if (_cfg(policy).get("routing") or {}).get("story_clip"):   # the cheapest per accepted clip (manyworlds.routing)
         from .. import routing
-        kind, _ = routing.choose(conn, policy, "story_clip", key=str(post["id"]))
+        # only the routes her production tier allows (brain.tiers.levels.<tier>.production.routes.story_clip)
+        allowed = (tier_production(conn, policy, post["creator_id"]).get("routes") or {}).get("story_clip")
+        kind, _ = routing.choose(conn, policy, "story_clip", key=str(post["id"]), allowed=allowed)
     return kind
 
 

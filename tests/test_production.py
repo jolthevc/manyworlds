@@ -111,7 +111,7 @@ def test_a_due_post_becomes_ready_with_the_best_confirmed_image_per_scene(conn, 
     assert len(jobs) == 2
     p = jobs[0]["payload"]
     assert p["prompt"].startswith("mw_m, ") and "thin gold wire glasses" in p["prompt"] and "bus stop" in p["prompt"]
-    assert p["lora_uri"] == "s3://b/m.safetensors" and p["n"] == policy.get("production", "candidates_per_scene")
+    assert p["lora_uri"] == "s3://b/m.safetensors" and p["n"] == production.candidates_per_scene(conn, policy, cid)   # her tier's
     assert production.advance(conn, policy, now=NOW)["producing"] == 1      # still generating
     # Screen: image 2 is best; confirm runs on the top two (2 and 0) and passes both.
     finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok(identity=8), ok(identity=7), ok(identity=10), ok(identity=2)]), pid)
