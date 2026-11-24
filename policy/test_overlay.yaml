@@ -58,7 +58,9 @@ breadth:
   # Dry-run estimates (labelled as policy, not measured). Where finished attempts exist, their median is used.
   estimate:
     # talk renders scale with the take: ~50 s of GPU per output second (ComfyUI InfiniteTalk, 10 steps, 2026-11-22)
-    seconds_per_output_second: {talk.infinitetalk: 50}
+    # talk.longcat (LongCat 1.6, one take, INT8 on an L40S): an estimate, not measured: ~150 s per 3.2 s segment
+    # (8 steps of a ~14B DiT over 93 frames at 480p, plus decode) is ~47 s per output second.
+    seconds_per_output_second: {talk.infinitetalk: 50, talk.longcat: 50}
     boot_seconds: {default: 600, talkcomfy: 900}   # boot + image pull + model load per machine (talk weights first)
     review_usd_per_output: 0.01    # screen + confirm calls per reviewed output, roughly
   # What each capability needs before an item exercising it can run: policy switches that must be on (`requires`,
@@ -88,6 +90,7 @@ breadth:
     camera_follow: {requires: [generation.talk_motion.enabled]}
     camera_push_in: {requires: [generation.talk_motion.enabled]}
     longcat: {requires: [generation.talk_profiles.longcat]}
+    longcat16: {requires: [generation.talk_profiles.longcat16], kinds: [talk.longcat]}
     hd720: {requires: [generation.talk_profiles.hd720]}
     dancing: {requires: [dance.enabled], kinds: [comfy.wan_animate2]}
     reference_conditioning: {kinds: [image.qwen_edit]}
@@ -101,6 +104,11 @@ breadth:
     cut_on_motion: {requires: [finishing.transitions]}
     room_tone: {requires: [sound.enabled, sound.room_tone]}
     music: {requires: [sound.enabled, sound.music.enabled]}
+  # Long takes (manyworlds.long_take, plan `longtake`): where the finished take is measured on the control plane
+  # (colour drift against the first frame and face identity, at each checkpoint; a checkpoint past the end is the
+  # last frame), the frame size the mean colour is taken at, and whether the judge scores identity (one screen
+  # call per take, ~$0.01).
+  takes: {checkpoints_s: [0, 30, 60, 90], colour_sample_px: 64, identity: true}
   plans:
     # One item per capability and feature (the audit's 18, organised by what they exercise), with existing post
     # formats and handwritten shot sheets. Options: talk_profile (generation.talk_profiles, merged into the talk
@@ -367,3 +375,43 @@ breadth:
         - id: qwen_edit_bench
           exercises: [reference_conditioning]
           bench: {kind: image.qwen_edit, jobs: 2, extra: {images: ["@anchor"]}}
+    # One ~90 s line, two ways (docs/research/2026-11-23-avatar-and-music-critic.md, "First test"): LongCat-Video-
+    # Avatar 1.6 as one continuous take against our InfiniteTalk segment chain (30 s segments, each from the last
+    # frame of the one before, joined). Both say the same line in the creator's designed voice (one shared
+    # voice.speak job; skipped with the reason when the creator has none) from the same still (@anchor). The raw
+    # takes are compared: no repairs. Run: mw test breadth --plan longtake [--dry-run]; mw test breadth-report <run>.
+    longtake:
+      creator: maren.afterhours
+      items:
+        - id: talk_longcat16_90s
+          exercises: [talking, long_take, designed_voice, longcat16]
+          take:
+            kind: talk.longcat
+            profile: longcat16
+            image: "@anchor"
+            keyframes: 4
+            prompt: &longtake_prompt >-
+              A young woman with a warm, slightly tired smile sits on her sofa in the evening, lamp light from her
+              right, talking to her phone propped on the coffee table, chest-up framing, natural head movement,
+              small hand gestures, occasional glances away and back to the lens, real phone footage
+            script: &longtake_script >-
+              Okay, story time, because tonight was a lot. So I'm closing the bar, it's just me and the regulars,
+              and this guy I've never seen before walks in at five to two and asks for a cup of tea. Not a drink.
+              Tea. And I'm about to say we're closed, but he looks like he's had the worst day of his life, so I put
+              the kettle on. He sits at the end of the bar and doesn't say a word for ten minutes. Then he tells me
+              it's his first night back in the city in twelve years, and this used to be his dad's bar. His dad. The
+              guy who ran this place before the owners I work for. He points at a scratch on the counter and says he
+              made it with a bottle opener when he was nine, and he got grounded for a month. I've wiped that
+              scratch about a thousand times and never thought about it once. So we're just sitting there, and the
+              regulars start telling him stories about his dad, and he's laughing, and then he's crying a little, and
+              honestly so am I. He finished his tea, left a twenty under the cup, and said he'd come back on Friday.
+              Anyway. That's why I love this job. Tell me the best thing a stranger has ever said to you.
+        - id: talk_chain_90s
+          exercises: [talking, long_take, designed_voice]
+          take:
+            kind: talk.infinitetalk
+            max_segment_seconds: 30
+            image: "@anchor"
+            keyframes: 4
+            prompt: *longtake_prompt
+            script: *longtake_script

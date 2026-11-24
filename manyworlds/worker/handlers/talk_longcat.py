@@ -166,6 +166,16 @@ def newest_video(out_dir: Path) -> Path:
     return videos[-1]
 
 
+def _free_comfy() -> bool:
+    """Ask a ComfyUI server running in this worker to unload its models first (best effort)."""
+    try:
+        from .. import comfy
+        return comfy.free()
+    except Exception as e:  # noqa: BLE001 - freeing is best effort; the render may still fit
+        log.warning("could not free ComfyUI before LongCat: %s", e)
+        return False
+
+
 def _vram_gb() -> float | None:
     try:
         import torch
@@ -207,6 +217,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     prompt = payload.get("prompt") or "a person talks to the camera"
     out_dir = work / "longcat_out"
     shutil.rmtree(out_dir, ignore_errors=True)   # a rerun on the same machine never picks up a stale video
+    _free_comfy()   # an InfiniteTalk job before this one (same family: the runner frees nothing) holds the card
+
     cmd = build_command(checkpoint=avatar, input_json=write_input(work, image=image, audio=audio, prompt=prompt),
                         out_dir=out_dir, segments=n, quantization=quantization, params=params)
     t0 = time.monotonic()
