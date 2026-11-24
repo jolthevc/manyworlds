@@ -96,8 +96,11 @@ def curate(ctx: AgentContext, creator_id, *, kind: str | None = None, step: str 
         problems.append(f"a {out.kind} has {lo}-{hi} tracks; the plan had {len(tracks)} usable")
     if problems:
         return {"release_id": None, "refused": problems}
-    if conn.execute("SELECT 1 FROM releases WHERE creator_id = %s AND title = %s", (creator_id, out.title)).fetchone():
-        return {"release_id": None, "refused": ["a release of that title exists"]}
+    same = conn.execute("SELECT id FROM releases WHERE creator_id = %s AND title = %s", (creator_id, out.title)).fetchone()
+    if same:   # a rerun of the same step (a resumed run): the release it made
+        placed = [str(r["id"]) for r in conn.execute("SELECT id FROM songs WHERE release_id = %s ORDER BY track_number",
+                                                     (same["id"],)).fetchall()]
+        return {"release_id": str(same["id"]), "kind": out.kind, "title": out.title, "tracks": placed, "reused": True}
     rel = songs.new_release(conn, creator_id, out.kind, out.title or "untitled")
     for n, t in enumerate(tracks, start=1):
         songs.place(conn, t.song_id, rel, n)

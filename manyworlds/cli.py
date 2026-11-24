@@ -36,15 +36,21 @@ def _music(conn, pol, args) -> dict:
         if not args.handle:
             raise SystemExit("mw music sandbox <handle> --songs N")
         if args.create:
-            music_sandbox.create_artist(conn, args.handle, genre=args.genre or "indie")
+            music_sandbox.create_artist(conn, pol, args.handle, genre=args.genre or "indie")
         try:
-            return music_sandbox.run(conn, pol, Claude(conn, pol), args.handle, songs_n=args.songs, usd=args.usd)
+            return music_sandbox.run(conn, pol, Claude(conn, pol), args.handle, songs_n=args.songs, usd=args.usd,
+                                     run_id=args.run)
         except music_sandbox.NotSandbox as e:
             raise SystemExit(str(e)) from None
     if args.action == "measure":
         if args.batch:
             songs.register_batch(conn, args.batch)
-        return songs.measure_pending(conn, pol, storage.from_url(), limit=1000)
+        inline = bool(getattr(args, "inline", False))
+        out = songs.measure_pending(conn, pol, storage.from_url() if inline else None, limit=1000, inline=inline)
+        if not inline:   # queued on the finisher: the autoscaler starts it; the producer's tick stores the results
+            out["note"] = ("finish.measure_song jobs queued for the finisher; run `mw music measure` again (or wait "
+                           "for the producer's tick) to collect them, `mw music songs` to see the features")
+        return out
     if args.action == "songs":
         rows = conn.execute("SELECT id, title, version, genre, created_at, measure_error FROM songs "
                             "WHERE %s::uuid IS NULL OR creator_id = %s ORDER BY created_at", (cid, cid)).fetchall()
@@ -144,6 +150,8 @@ def build_parser() -> argparse.ArgumentParser:
     mu.add_argument("--songs", type=int, help="sandbox: songs to make (default music.sandbox.default_songs)")
     mu.add_argument("--usd", type=float, help="sandbox: the run's LLM cap (at most music.sandbox.max_usd)")
     mu.add_argument("--create", action="store_true", help="sandbox: create the sandbox artist first (--genre)")
+    mu.add_argument("--run", help="sandbox: resume this run id (its recorded calls are reused, not paid again)")
+    mu.add_argument("--inline", action="store_true", help="measure: measure here instead of queueing finish.measure_song")
     mu.add_argument("--batch", help="measure: a benchmark batch's songs (registered first)")
     mu.add_argument("--creator", help="songs / analyse: the artist's handle")
     mu.add_argument("--genre", help="analyse: one genre")

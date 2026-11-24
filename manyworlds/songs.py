@@ -158,24 +158,61 @@ def _cfg(policy: Policy) -> dict:
     return song_measure.cfg(policy)
 
 
+MEASURE_KIND = "finish.measure_song"   # the finisher's measurement job (worker/handlers/finish_video.py)
+
+
+def measure_mode(policy: Policy) -> str:
+    """'queue' (a finish.measure_song job on the finisher: 4 GB, dedicated CPUs) or 'inline' (here, in the calling
+    process: tests and big machines). 2026-11-24: a 2-minute 48 kHz stereo song was OOM-killed on the producer
+    (512 MB) measuring inline."""
+    return str(_cfg(policy).get("mode") or "queue")
+
+
+def measure_payload(policy: Policy, song: dict) -> dict:
+    """Everything the measurement needs, JSON-ready (the finish.measure_song payload): no database on the finisher."""
+    return {"song_id": str(song["id"]), "mix_uri": song["mix_uri"], "vocal_uri": song["vocal_uri"],
+            "lyrics": song["lyrics"], "title": song["title"], "policy": {"music": policy.body.get("music") or {}},
+            "policy_version": policy.version}
+
+
+def measure_files(payload: dict, policy: Policy, store, workdir: Path | None = None) -> dict:
+    """Download the mix and vocal stem, measure them (song_measure.measure), delete the files. Returns the measure."""
+    if workdir:
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="mw-song-", dir=str(workdir) if workdir else None) as tmp:
+        mix = store.get_file(payload["mix_uri"], Path(tmp) / ("mix" + Path(payload["mix_uri"]).suffix))
+        vocal = (store.get_file(payload["vocal_uri"], Path(tmp) / ("vocals" + Path(payload["vocal_uri"]).suffix))
+                 if payload.get("vocal_uri") else None)
+        out = song_measure.measure(str(mix), str(vocal) if vocal else None, payload.get("lyrics") or "",
+                                   policy=policy, title=payload.get("title") or "")
+    out["policy_version"] = payload.get("policy_version")
+    return out
+
+
+def record_measurement(conn, song_id, out: dict, *, policy_version: str | None) -> None:
+    """A measurement stored as the song's features (with the worker's lyric line coverage), its error cleared."""
+    song = get(conn, song_id)
+    feats = dict(out["features"])
+    check = (song or {}).get("worker_check") or {}
+    if check.get("line_coverage") is not None:
+        feats["line_coverage"] = check["line_coverage"]
+    store_features(conn, song_id, feats, detail=out.get("detail") or {},
+                   version=out.get("version") or song_measure.VERSION, policy_version=policy_version)
+    conn.execute("UPDATE songs SET measure_error = NULL, updated_at = now() WHERE id = %s", (song_id,))
+
+
+def _measure_failed(conn, song_id, error: str) -> None:
+    conn.execute("UPDATE songs SET measure_error = %s, measure_errors = measure_errors + 1, updated_at = now() "
+                 "WHERE id = %s", (error[:500], song_id))
+
+
 def measure_song(conn, policy: Policy, store, song_id) -> dict:
-    """Download the song's mix and vocal stem, measure them, store the features (with the worker's lyric line
-    coverage) at the current version. Returns what was stored."""
+    """Measure one song here (inline) and store its features at the current version. Returns the measure."""
     song = get(conn, song_id)
     if song is None or not song["mix_uri"]:
         raise KeyError(f"no song {song_id} with a mix")
-    with tempfile.TemporaryDirectory(prefix="mw-song-") as tmp:
-        mix = store.get_file(song["mix_uri"], Path(tmp) / ("mix" + Path(song["mix_uri"]).suffix))
-        vocal = (store.get_file(song["vocal_uri"], Path(tmp) / ("vocals" + Path(song["vocal_uri"]).suffix))
-                 if song["vocal_uri"] else None)
-        out = song_measure.measure(str(mix), str(vocal) if vocal else None, song["lyrics"], policy=policy,
-                                   title=song["title"])
-    check = song["worker_check"] or {}
-    if check.get("line_coverage") is not None:
-        out["features"]["line_coverage"] = check["line_coverage"]
-    store_features(conn, song_id, out["features"], detail=out["detail"], version=out["version"],
-                   policy_version=policy.version)
-    conn.execute("UPDATE songs SET measure_error = NULL, updated_at = now() WHERE id = %s", (song_id,))
+    out = measure_files(measure_payload(policy, song), policy, store)
+    record_measurement(conn, song_id, out, policy_version=policy.version)
     return out
 
 
@@ -190,11 +227,59 @@ def pending(conn, policy: Policy, *, limit: int | None = None) -> list:
          int(limit if limit is not None else c.get("per_tick", 2)))).fetchall()]
 
 
-def measure_pending(conn, policy: Policy, store=None, *, limit: int | None = None) -> dict[str, Any]:
-    """Measure songs that have no features at the current version (the producer's tick). One song's failure is
-    recorded on it and never stops the others."""
+def _measure_key(song_id, errors: int) -> str:
+    return f"song:{song_id}:measure:{song_measure.VERSION}:{errors}"
+
+
+def enqueue_measure(conn, policy: Policy, song_id):
+    """The song's finish.measure_song job: one per song, measurement version and failed attempt (idempotent), in
+    the song's own batch (a benchmark's songs are measured while operations are paused, like the benchmark)."""
+    from . import queue
+    song = get(conn, song_id)
+    return queue.enqueue(conn, MEASURE_KIND, measure_payload(policy, song), creator_id=song["creator_id"],
+                         batch=song["batch"] or f"song-{song_id}",
+                         idempotency_key=_measure_key(song_id, song["measure_errors"]))
+
+
+def collect_measurements(conn) -> dict[str, int]:
+    """Finished finish.measure_song jobs into the songs (each once): a done job's measure stored, a failed or dead
+    job counted against its song (measure_errors; music.measure.max_errors of them and the song is left)."""
+    out = {"measured": 0, "failed": 0}
+    for j in conn.execute(
+            "SELECT id, status, result, error, payload->>'song_id' AS song_id FROM jobs WHERE kind = %s "
+            "AND status IN ('done', 'failed', 'dead') AND NOT coalesce((result->>'recorded')::boolean, false)",
+            (MEASURE_KIND,)).fetchall():
+        res = j["result"] or {}
+        if j["status"] == "done" and res.get("song_features"):
+            m = res["song_features"]
+            record_measurement(conn, j["song_id"], m, policy_version=m.get("policy_version"))
+            out["measured"] += 1
+        else:
+            _measure_failed(conn, j["song_id"], f"{MEASURE_KIND} {j['status']}: {j['error'] or 'no result'}")
+            out["failed"] += 1
+        conn.execute("UPDATE jobs SET result = coalesce(result, '{}'::jsonb) || jsonb_build_object('recorded', true) "
+                     "WHERE id = %s", (j["id"],))
+    return out
+
+
+def measure_pending(conn, policy: Policy, store=None, *, limit: int | None = None,
+                    inline: bool | None = None) -> dict[str, Any]:
+    """Songs without features at the current version, measured: queued as finish.measure_song jobs on the finisher
+    (measure_mode queue; finished ones are collected here, every tick) or measured here (inline). One song's failure
+    is recorded on it and never stops the others."""
     if not _cfg(policy).get("enabled", False):
         return {"measured": 0}
+    inline = measure_mode(policy) == "inline" if inline is None else inline
+    if not inline:
+        out = {**collect_measurements(conn), "queued": 0}
+        n = limit if limit is not None else int(_cfg(policy).get("queue_per_tick", 20))
+        for sid in pending(conn, policy, limit=n):
+            waiting = conn.execute("SELECT 1 FROM jobs WHERE kind = %s AND payload->>'song_id' = %s "
+                                   "AND status IN ('queued', 'running')", (MEASURE_KIND, str(sid))).fetchone()
+            if not waiting:
+                enqueue_measure(conn, policy, sid)
+                out["queued"] += 1
+        return out if any(out.values()) else {"measured": 0}
     ids = pending(conn, policy, limit=limit)
     if not ids:
         return {"measured": 0}
@@ -208,8 +293,7 @@ def measure_pending(conn, policy: Policy, store=None, *, limit: int | None = Non
             out["measured"] += 1
         except Exception as e:  # noqa: BLE001 - a song that can't be measured stays unmeasured, with its reason
             log.exception("measuring song %s failed", sid)
-            conn.execute("UPDATE songs SET measure_error = %s, measure_errors = measure_errors + 1, updated_at = now() "
-                         "WHERE id = %s", (f"{type(e).__name__}: {e}"[:500], sid))
+            _measure_failed(conn, sid, f"{type(e).__name__}: {e}")
             out["failed"] += 1
     return out
 

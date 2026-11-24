@@ -64,8 +64,10 @@ def run(conn, policy: Policy, llm, handle: str, *, songs_n: int | None = None, u
     report: dict = {"handle": handle, "run": run_id, "songs_asked": n, "usd_cap": cap, "songs": []}
     try:
         with spend_cap(conn, cap):
-            if music_talent_manager.latest_dossier(conn, cid) is None:
-                report["dossier"] = music_talent_manager.onboard(ctx, cid)
+            report["dossier"] = music_talent_manager.onboard(ctx, cid)   # reused when one exists or was recorded
+            if report["dossier"].get("refused"):
+                report["stopped"] = f"the dossier was refused: {report['dossier']['refused']}"
+                return _finish(conn, ctx, report)
             career = music_talent_manager.review(ctx, cid, songs_wanted=n)
             report["career"] = {k: career[k] for k in ("state", "predictions", "requests", "dropped_briefs")}
             briefs = career["briefs"] or []
@@ -85,9 +87,14 @@ def run(conn, policy: Policy, llm, handle: str, *, songs_n: int | None = None, u
             report["slate"] = head_of_music.plan(ctx, include_sandbox=True, step=f"slate:{run_id}")
     except budget.OverBudget as e:
         report["stopped"] = str(e)
+    return _finish(conn, ctx, report)
+
+
+def _finish(conn, ctx, report: dict) -> dict:
     report["usd_spent"] = round(spent_in_cap_after(conn, ctx), 4)
-    report["llm_calls"] = conn.execute("SELECT count(*) n FROM decisions WHERE job_id = %s",
+    report["decisions"] = conn.execute("SELECT count(*) n FROM decisions WHERE job_id = %s",
                                        (ctx.job.id,)).fetchone()["n"]
+    report["resume"] = f"mw music sandbox {report['handle']} --songs {report['songs_asked']} --run {report['run']}"
     queue.complete(conn, ctx.job.id, "music-sandbox", {k: v for k, v in report.items() if k != "slate"})
     return report
 
@@ -99,16 +106,22 @@ def spent_in_cap_after(conn, ctx) -> float:
     return float(row["u"])
 
 
-def create_artist(conn, handle: str, *, genre: str, display_name: str | None = None) -> str:
+def create_artist(conn, policy: Policy, handle: str, *, genre: str, display_name: str | None = None) -> str:
     """A new sandbox music artist (publish_mode simulated, a sandbox scenario so its spend is tagged sandbox:, never a
-    portfolio creator): a minimal original bible the music talent manager builds the dossier from."""
+    portfolio creator): a minimal original bible and its version-1 profile (no model call: the talent manager's
+    dossier is stored in the profile, brain.agents.music_talent_manager.store_dossier)."""
     from psycopg.types.json import Jsonb
     if conn.execute("SELECT 1 FROM creators WHERE handle = %s", (handle,)).fetchone():
         raise ValueError(f"a creator {handle!r} exists")
     bible = {"display_name": display_name or handle, "age": 24, "archetype": "singer_songwriter",
              "persona": f"an original {genre} singer-songwriter (openly AI-generated, not based on anyone real)",
              "music": {"genre": genre}, "niche": f"{genre} music"}
-    return str(conn.execute(
+    cid = str(conn.execute(
         "INSERT INTO creators (handle, status, bible, anchors, publish_mode, vertical) VALUES (%s, 'draft', %s, %s, "
         "'simulated', 'music') RETURNING id",
         (handle, Jsonb(bible), Jsonb({"simulation": {"scenario": "music_sandbox", "seed": 0}}))).fetchone()["id"])
+    from .creator import profile as profile_mod
+    from .brain.agents.music_talent_manager import initial_profile
+    profile_mod.save(conn, policy, cid, initial_profile({"handle": handle, **bible}), author="music_sandbox",
+                     reason="sandbox artist: initial profile")
+    return cid

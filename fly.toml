@@ -29,12 +29,12 @@ primary_region = "iad"     # next to Neon us-east-2
   # The trend watcher (manyworlds.research.trends): runs only while policy trends.enabled; at most trends.daily_usd_max.
   trends = "trends loop"
   # The finisher (production.finish_mode: queue): video finishing (mix, grade, captions, cover) as finish.video jobs and
-  # the join of a long talking video's takes as finish.join jobs, off
+  # the join of a long talking video's takes as finish.join jobs and song measurements as finish.measure_song jobs, off
   # the producer's loop. The autoscaler starts its stopped machine while finish jobs wait (ensure_finisher; the
   # machine is never created there, only by deploy) and the worker exits once its queue has been empty for
   # gpu_pools.fly_finisher.idle_exit_seconds, so the machine stops until the next finish. After a deploy (which may
   # start it), a run the autoscaler did not register is refused at start and stopped by the enforcer.
-  finisher = "worker --pool fly_finisher --kinds finish.video,finish.join"
+  finisher = "worker --pool fly_finisher --kinds finish.video,finish.join,finish.measure_song"
 
 [[vm]]
   size = "shared-cpu-1x"

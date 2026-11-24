@@ -107,7 +107,7 @@ def answers():
 
 
 def _sandbox_ctx(conn, policy, llm, handle="maren-music"):
-    cid = music_sandbox.create_artist(conn, handle, genre="indie")
+    cid = music_sandbox.create_artist(conn, policy, handle, genre="indie")
     return cid
 
 
@@ -162,20 +162,20 @@ def test_the_sandbox_refuses_a_real_creator_and_a_cap_above_policy(conn, policy)
     handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (real,)).fetchone()["handle"]
     with pytest.raises(music_sandbox.NotSandbox):
         music_sandbox.run(conn, policy, StubLLM(conn=conn), handle, songs_n=1)
-    music_sandbox.create_artist(conn, "sandy", genre="pop")
+    music_sandbox.create_artist(conn, policy, "sandy", genre="pop")
     with pytest.raises(ValueError, match="max_usd"):
         music_sandbox.run(conn, policy, StubLLM(conn=conn), "sandy", usd=50)
 
 
 def test_the_run_stops_at_its_cap(conn, policy):
-    music_sandbox.create_artist(conn, "capped", genre="pop")
+    music_sandbox.create_artist(conn, policy, "capped", genre="pop")
     llm = RoleLLM(answers(), cost=1.0, conn=conn)
     rep = music_sandbox.run(conn, policy, llm, "capped", songs_n=2, usd=2.0, run_id="cap")
     assert "cap" in rep["stopped"] and len(llm.calls) == 2 and rep["usd_spent"] == 2.0
 
 
 def test_a_refused_song_never_reaches_the_gpu(conn, policy):
-    cid = music_sandbox.create_artist(conn, "refused", genre="pop")
+    cid = music_sandbox.create_artist(conn, policy, "refused", genre="pop")
     a = answers()
     a[lyrics.SongAnswer] = {"title": "x", "lyrics": "[Verse]\nin the style of a famous band", "tags": ["pop"],
                             "bpm": 100, "key": "A minor", "time_signature": "4", "duration_s": 30}
@@ -187,7 +187,7 @@ def test_a_refused_song_never_reaches_the_gpu(conn, policy):
 
 
 def test_real_takes_are_queued_and_the_pipeline_resumes_when_measured(conn, policy):
-    cid = music_sandbox.create_artist(conn, "queued", genre="indie")
+    cid = music_sandbox.create_artist(conn, policy, "queued", genre="indie")
     ctx = make_ctx(conn, policy, queue.enqueue(conn, "brain.music_pipeline", {}, creator_id=cid))
     ctx.llm = RoleLLM({**answers(), music_critic.Assessment: [SHIP, SONG_REVIEW]}, conn=conn)
     out = music_pipeline.run_song(ctx, cid, {"concept": "bus"}, key="q1")
@@ -211,7 +211,7 @@ def test_real_takes_are_queued_and_the_pipeline_resumes_when_measured(conn, poli
 
 
 def test_the_pipeline_agent_waits_by_enqueueing_its_continuation(conn, policy):
-    cid = music_sandbox.create_artist(conn, "agent", genre="indie")
+    cid = music_sandbox.create_artist(conn, policy, "agent", genre="indie")
     job = queue.enqueue(conn, "brain.music_pipeline", {"creator_id": str(cid), "brief": {"concept": "x"}, "key": "a1",
                                                        "test": True}, creator_id=cid)
     ctx = make_ctx(conn, policy, job)
@@ -249,7 +249,7 @@ def test_the_pipeline_is_composed_from_policy_per_artist(policy):
 
 
 def test_a_song_role_runs_alone_on_a_songs_draft_with_the_critics_fixes(conn, policy):
-    music_sandbox.create_artist(conn, "solo", genre="indie")
+    music_sandbox.create_artist(conn, policy, "solo", genre="indie")
     llm = RoleLLM(answers(), conn=conn)
     rep = music_sandbox.run(conn, policy, llm, "solo", songs_n=1, usd=5, run_id="s1")
     sid = rep["songs"][0]["song_id"]
@@ -361,3 +361,69 @@ def test_a_tentative_music_finding_becomes_a_song_experiment(conn, policy):
     assert out["concluded"][0]["status"] == "confirmed"
     f = evidence.findings(conn, mode="real", creator_id=cid, grades=("proven",), domain="music")
     assert len(f) == 1 and f[0]["evidence"] == "experimental"
+
+
+# --- the first real run (2026-11-24): a sandbox artist without a profile; reruns pay nothing twice ---------------------
+
+def _dossier_calls(llm) -> int:
+    return sum(1 for c in llm.calls if c.get("schema") is music_talent_manager.Dossier)
+
+
+def test_a_creator_without_a_profile_gets_its_dossier_stored(conn, policy):
+    from manyworlds.creator import profile as profile_mod
+    cid = conn.execute("INSERT INTO creators (handle, publish_mode, bible) VALUES ('bare', 'simulated', %s) RETURNING id",
+                       (Jsonb({"display_name": "Bare", "music": {"genre": "indie"}}),)).fetchone()["id"]
+    assert profile_mod.current(conn, cid) is None
+    llm = RoleLLM(answers(), conn=conn)
+    rep = music_sandbox.run(conn, policy, llm, "bare", songs_n=1, usd=5, run_id="b1")
+    assert "stopped" not in rep and [s["state"] for s in rep["songs"]] == ["done"]
+    version, body = profile_mod.current(conn, cid)
+    assert body["music_dossier"]["sonic_identity"]["genre"] == "indie" and version == 2   # v1 initial, v2 the dossier
+    assert music_talent_manager.latest_dossier(conn, cid)["profile_version"] == 2
+
+
+def test_create_makes_the_profile_and_reruns_reuse_what_was_paid_for(conn, policy, monkeypatch):
+    from types import SimpleNamespace
+
+    from manyworlds import cli
+    from manyworlds import llm as llm_mod
+    from manyworlds.creator import profile as profile_mod
+    llm = RoleLLM(answers(), conn=conn)
+    monkeypatch.setattr(llm_mod, "Claude", lambda conn_, pol_: llm)
+    args = SimpleNamespace(action="sandbox", handle="music-sim-indie", create=True, genre="indie", songs=2, usd=5.0,
+                           run="r1", creator=None, batch=None, record=False, inline=False)
+    rep = cli._music(conn, policy, args)
+    cid = conn.execute("SELECT id FROM creators WHERE handle = 'music-sim-indie'").fetchone()["id"]
+    assert profile_mod.current(conn, cid)[1]["music_dossier"]["story"] == "songs written on night buses"
+    assert [s["state"] for s in rep["songs"]] == ["done", "done"] and _dossier_calls(llm) == 1
+    assert rep["resume"] == "mw music sandbox music-sim-indie --songs 2 --run r1"
+    n = len(llm.calls)
+    again = cli._music(conn, policy, SimpleNamespace(**{**vars(args), "create": False}))   # the same run: free
+    assert len(llm.calls) == n and [s["song_id"] for s in again["songs"]] == [s["song_id"] for s in rep["songs"]]
+    cli._music(conn, policy, SimpleNamespace(**{**vars(args), "create": False, "run": "r2", "songs": 1}))
+    assert _dossier_calls(llm) == 1                                    # a new run: the dossier is not paid again
+
+
+def test_a_dossier_recorded_before_profiles_held_it_is_reused_not_rewritten(conn, policy):
+    """The first real run: the dossier call was recorded, then not found (refused for a generic phrase); a rerun
+    must reuse it."""
+    from manyworlds.creator import profile as profile_mod
+    cid = music_sandbox.create_artist(conn, policy, "earlier", genre="indie")
+    old = {**answers()[music_talent_manager.Dossier], "refused": "points at someone else's work ('sounds like')"}
+    old["sonic_identity"] = {**old["sonic_identity"], "voice": "sounds like late-night radio"}
+    job = queue.enqueue(conn, "brain.music_sandbox", {"run": "old"}, creator_id=cid)
+    conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output, agent, job_id, step) VALUES "
+                 "('music_talent_manager', %s, '{\"step\": \"dossier\"}', %s, 'music_talent_manager', %s, "
+                 "'music_talent_manager:dossier')", (cid, Jsonb(old), job))
+    llm = RoleLLM(answers(), conn=conn)
+    rep = music_sandbox.run(conn, policy, llm, "earlier", songs_n=1, usd=5, run_id="e1")
+    assert rep["dossier"]["reused"] and _dossier_calls(llm) == 0
+    assert profile_mod.current(conn, cid)[1]["music_dossier"]["sonic_identity"]["voice"] == "sounds like late-night radio"
+
+
+def test_a_dossier_naming_a_real_artist_stops_the_run_cleanly(conn, policy):
+    music_sandbox.create_artist(conn, policy, "named", genre="pop")
+    a = answers()
+    a[music_talent_manager.Dossier] = {"sonic_identity": {"genre": "pop", "sound_in_words": "like Adele"}}
+    rep = music_sandbox.run(conn, policy, RoleLLM(a, conn=conn), "named", songs_n=1, usd=5, run_id="n1")
+    assert "dossier was refused" in rep["stopped"] and rep["songs"] == []

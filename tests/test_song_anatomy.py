@@ -207,21 +207,84 @@ def test_revisions_releases_and_versioned_features(conn):
     assert songs.latest_features(conn, [first])[str(first)]["aesthetics_pq_mix"] == 7.0
 
 
-def test_the_producer_tick_measures_new_songs_on_the_control_plane(conn, policy, store, measured):
+def _measure_mode(policy, mode, **more):
+    body = dict(policy.body)
+    body["music"] = {**body["music"], "measure": {**body["music"]["measure"], "mode": mode, **more}}
+    return policy_mod.from_dict(body)
+
+
+def test_the_producer_tick_measures_new_songs_inline(conn, policy, store, measured):
+    inline = _measure_mode(policy, "inline")
     cid = creator(conn, publish_mode="instagram")
     mix = store.put_file(measured["mix"], "songs/mix.wav").uri
     vocal = store.put_file(measured["vocal"], "songs/vocals.wav").uri
     sid = songs.from_job(conn, _song_job(conn, cid, uris=(mix, vocal, mix + "?instrumental")))
     broken = songs.from_job(conn, _song_job(conn, cid, uris=tuple(f"file:///nowhere/{r}.wav" for r in music.ROLES)))
     from manyworlds import production
-    out = production.advance(conn, policy, store=store)
+    out = production.advance(conn, inline, store=store)
     assert out["songs_measured"] == {"measured": 1, "failed": 1}
     f = songs.latest_features(conn, [sid])[str(sid)]
     assert f["chorus_repeats"] == 3 and f["line_coverage"] == 0.9       # the worker's coverage kept with them
     assert conn.execute("SELECT version, policy_version FROM song_features WHERE song_id = %s",
-                        (sid,)).fetchone() == {"version": song_measure.VERSION, "policy_version": policy.version}
+                        (sid,)).fetchone() == {"version": song_measure.VERSION, "policy_version": inline.version}
     assert songs.get(conn, broken)["measure_errors"] == 1 and songs.get(conn, broken)["measure_error"]
-    assert songs.pending(conn, policy) == [broken]                      # measured once; the broken one is retried
+    assert songs.pending(conn, inline) == [broken]                      # measured once; the broken one is retried
+
+
+def _finisher_runs(conn, store, tmp_path, policy):
+    """The finisher's worker, here: every queued finish.measure_song job run by its handler and completed as the
+    runner completes it (the handler's meta in the result)."""
+    from manyworlds import queue
+    from manyworlds.worker import runner
+    from manyworlds.worker.handlers import finish_video
+    handler = runner.handlers_for([songs.MEASURE_KIND])[songs.MEASURE_KIND]
+    assert handler is finish_video.measure_song
+    ran = 0
+    for j in conn.execute("SELECT id, kind, payload, attempts, max_attempts, creator_id, batch FROM jobs "
+                          "WHERE kind = %s AND status = 'queued'", (songs.MEASURE_KIND,)).fetchall():
+        conn.execute("UPDATE jobs SET status = 'running', worker_id = 'fin', attempts = attempts + 1 WHERE id = %s",
+                     (j["id"],))
+        ctx = runner.JobContext(job=queue.Job(**j), workdir=tmp_path / str(j["id"]), store=store)
+        try:
+            res = handler(j["payload"], ctx, policy=policy)
+            queue.complete(conn, j["id"], "fin", {"asset_ids": [], **res.meta})
+        except Exception as e:  # noqa: BLE001 - as the runner: the job fails
+            conn.execute("UPDATE jobs SET status = 'failed', error = %s WHERE id = %s", (str(e)[:200], j["id"]))
+        ran += 1
+    return ran
+
+
+def test_songs_are_measured_on_the_finisher_not_the_producer(conn, policy, store, measured, tmp_path, raw_policy):
+    assert songs.measure_mode(raw_policy) == "queue"                    # shipped: the producer never measures
+    assert raw_policy.get("job_kinds", songs.MEASURE_KIND, "pools") == ["fly_finisher"]
+    assert raw_policy.family(songs.MEASURE_KIND) == "finish"
+    fly = (Path(__file__).resolve().parents[1] / "fly.toml").read_text(encoding="utf-8")
+    assert re.search(r'finisher = "worker --pool fly_finisher --kinds [^"]*finish\.measure_song', fly)
+    cid = creator(conn, publish_mode="instagram")
+    mix = store.put_file(measured["mix"], "songs/mix.wav").uri
+    vocal = store.put_file(measured["vocal"], "songs/vocals.wav").uri
+    sid = songs.from_job(conn, _song_job(conn, cid, uris=(mix, vocal, mix + "?instrumental"), batch="bench-music.song-z"))
+    broken = songs.from_job(conn, _song_job(conn, cid, uris=tuple(f"file:///nowhere/{r}.wav" for r in music.ROLES)))
+    from manyworlds import production
+    out = production.advance(conn, policy, store=None)                  # the producer: no store, nothing measured here
+    assert out["songs_measured"] == {"measured": 0, "failed": 0, "queued": 2}
+    jobs = conn.execute("SELECT batch, payload FROM jobs WHERE kind = %s ORDER BY batch", (songs.MEASURE_KIND,)).fetchall()
+    assert [j["batch"] for j in jobs] == ["bench-music.song-z", f"song-{broken}"]   # a bench song runs while paused
+    assert songs.measure_pending(conn, policy) == {"measured": 0}       # waiting: no second job
+    assert _finisher_runs(conn, store, tmp_path, policy) == 2
+    got = songs.measure_pending(conn, policy)
+    assert got["measured"] == 1 and got["failed"] == 1 and got["queued"] == 1   # the broken one tried again
+    f = songs.latest_features(conn, [sid])[str(sid)]
+    assert f["chorus_repeats"] == 3 and f["line_coverage"] == 0.9
+    assert songs.get(conn, broken)["measure_errors"] == 1
+    assert songs.measure_pending(conn, policy) == {"measured": 0}       # each finished job is collected once
+
+
+def test_a_long_song_is_measured_over_its_first_max_seconds(measured, raw_policy):
+    short = _measure_mode(raw_policy, "inline", max_seconds=10)
+    out = song_measure.measure(str(measured["mix"]), str(measured["vocal"]), policy=short)
+    assert out["features"]["duration_s"] == pytest.approx(10, abs=0.1) and out["detail"]["truncated_at_s"] == 10
+    assert "truncated_at_s" not in measured["out"]["detail"]
 
 
 def test_the_bench_report_lists_its_songs(conn, policy):

@@ -110,6 +110,18 @@ def clean_words(policy: Policy, obj: Any) -> list[str]:
     return word_issues(policy, json.dumps(obj, ensure_ascii=False, default=str))
 
 
+def name_issues(policy: Policy, obj: Any) -> list[str]:
+    """The narrower check for text that describes an artist in words (a dossier, a song brief): real names and
+    "the next <someone>" only. Phrases like "sounds like" or "inspired by" are fine there when no one is named;
+    they stay refused in lyrics, titles and tags (music.issues) and in A&R pitches (clean_words)."""
+    lc = music.cfg(policy).get("lyrics") or {}
+    text = json.dumps(obj, ensure_ascii=False, default=str)
+    out = [f"names a real artist ({n!r})" for n in music._name_hits(text, lc.get("banned_names"))]
+    if _NEXT.search(text):
+        out.append("pitches a copy of someone ('the next ...'): concepts are original")
+    return out
+
+
 # --- the call ------------------------------------------------------------------------------------------------------
 
 def ask(ctx: AgentContext, role: str, *, system: str, inp: BaseModel, out: type[T], creator_id, step: str,

@@ -179,13 +179,20 @@ def _sound(stereo, sr: int, c: dict) -> dict:
     import pyloudnorm as pyln
     from scipy.signal import resample_poly
     chans = stereo if stereo.ndim == 2 else stereo[None, :]
-    data = chans.T.astype("float64")                       # (samples, channels): pyloudnorm's layout
+    data = chans.T                                         # (samples, channels): pyloudnorm's layout, a view
     mono = chans.mean(axis=0)
     out: dict[str, Any] = {"duration_s": _r(chans.shape[1] / sr, 2)}
     lufs = pyln.Meter(sr).integrated_loudness(data) if chans.shape[1] >= int(sr * 0.4) else float("-inf")
     out["lufs_integrated"] = _r(lufs, 2)
     up = int(c.get("true_peak_oversample", 4))
-    tp = max(float(np.max(np.abs(resample_poly(ch, up, 1)))) for ch in chans)
+    # Oversampled in chunks (with a little overlap for the filter's edges): a 4x copy of a whole 48 kHz song is
+    # several hundred MB; a chunk is a few.
+    step, pad = int(sr * float(c.get("chunk_s", 10.0))), int(c.get("true_peak_overlap", 64))
+    tp = 0.0
+    for ch in chans:
+        for start in range(0, len(ch), step):
+            seg = ch[max(0, start - pad):start + step + pad]
+            tp = max(tp, float(np.max(np.abs(resample_poly(seg, up, 1)))))
     peak = float(np.max(np.abs(chans)))
     rms = float(np.sqrt(np.mean(mono ** 2)))
     out["true_peak_dbtp"] = _r(_db(tp), 2)
@@ -292,11 +299,11 @@ def _structure(y, sr: int, hop: int, chroma, mfcc, rms, c: dict) -> tuple[dict, 
     return out, {"sections": sections}
 
 
-def _vocal(vocal_path: str, mix_mono, sr: int, hop: int, c: dict) -> dict:
+def _vocal(vocal_path: str, mix_mono, sr: int, hop: int, c: dict, limit: float | None = None) -> dict:
     import librosa
     import numpy as np
     v = c.get("vocal") or {}
-    voc, _ = librosa.load(vocal_path, sr=sr, mono=True)
+    voc, _ = librosa.load(vocal_path, sr=sr, mono=True, duration=limit)   # straight to the analysis rate, mono
     n = min(len(voc), len(mix_mono))
     voc, mix = voc[:n], mix_mono[:n]
     frame = int(sr * float(v.get("frame_s", 0.05)))
@@ -326,13 +333,21 @@ def measure(mix_path: str, vocal_path: str | None = None, lyrics: str | None = N
     """The song's features ({"features": {...}, "detail": {...}}): see the module docstring."""
     import librosa
     import numpy as np
+    import gc
     c = cfg(policy)
-    stereo, native = librosa.load(mix_path, sr=None, mono=False)
+    # At most music.measure.max_seconds of the song (a longer file is measured over its start, and says so): the
+    # memory a measurement needs grows with the length; the finisher's 4 GB take a 6-minute 48 kHz stereo song.
+    limit = float(c.get("max_seconds", 360))
+    stereo, native = librosa.load(mix_path, sr=None, mono=False, duration=limit)
     stereo = np.asarray(stereo, dtype="float32")
     feats: dict[str, Any] = _sound(stereo, int(native), c)
     sr, hop = int(c.get("sample_rate", 22050)), int(c.get("hop_length", 512))
     mono = librosa.to_mono(stereo) if stereo.ndim == 2 else stereo
+    del stereo                                            # the native-rate stereo is done with: free it
     y = librosa.resample(mono, orig_sr=int(native), target_sr=sr) if int(native) != sr else mono
+    del mono
+    gc.collect()
+    truncated = feats.get("duration_s") is not None and float(feats["duration_s"]) >= limit - 0.05
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop)
     feats["tempo_bpm"] = _r(float(np.atleast_1d(tempo)[0]), 1)
     if len(beats) > 2:
@@ -341,12 +356,15 @@ def measure(mix_path: str, vocal_path: str | None = None, lyrics: str | None = N
     chroma = librosa.feature.chroma_stft(y=y, sr=sr, hop_length=hop)
     key, mode, conf, candidates = _key(chroma)
     feats.update(key=key, mode=mode, key_confidence=_r(conf))
-    spec = np.abs(librosa.stft(y, n_fft=int(c.get("n_fft", 2048)), hop_length=hop)) ** 2
+    mag = np.abs(librosa.stft(y, n_fft=int(c.get("n_fft", 2048)), hop_length=hop))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=int(c.get("n_fft", 2048)))
-    total = float(spec.sum()) or 1.0
+    band_power = (mag ** 2).sum(axis=1)                   # power per frequency bin, summed over time
+    total = float(band_power.sum()) or 1.0
     for name, (lo, hi) in (c.get("spectral_bands") or {}).items():
-        feats[f"spectral_{name}_share"] = _r(float(spec[(freqs >= lo) & (freqs < hi)].sum()) / total)
-    feats["spectral_centroid_hz"] = _r(float(np.mean(librosa.feature.spectral_centroid(S=np.sqrt(spec), sr=sr))), 1)
+        feats[f"spectral_{name}_share"] = _r(float(band_power[(freqs >= lo) & (freqs < hi)].sum()) / total)
+    feats["spectral_centroid_hz"] = _r(float(np.mean(librosa.feature.spectral_centroid(S=mag, sr=sr))), 1)
+    del mag
+    gc.collect()
     onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="time")
     feats["onset_density"] = _r(len(onsets) / max(len(y) / sr, 1e-9))
     mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop, n_mfcc=int(c.get("n_mfcc", 13)))
@@ -355,8 +373,10 @@ def measure(mix_path: str, vocal_path: str | None = None, lyrics: str | None = N
     struct, detail = _structure(y, sr, hop, chroma[:, :n], mfcc[:, :n], rms[:, :n], c)
     feats.update(struct)
     detail["key_candidates"] = candidates
+    if truncated:
+        detail["truncated_at_s"] = limit
     if vocal_path:
-        vocal = _vocal(vocal_path, y, sr, hop, c)
+        vocal = _vocal(vocal_path, y, sr, hop, c, limit)
         feats.update({k: v for k, v in vocal.items() if k != "vocal_seconds"})
         detail["vocal_seconds"] = vocal.get("vocal_seconds")
     if lyrics and not music.is_instrumental({"lyrics": lyrics}):

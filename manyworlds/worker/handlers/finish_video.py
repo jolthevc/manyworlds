@@ -64,3 +64,24 @@ def join(payload: dict[str, Any], ctx: JobContext, *, policy: Policy | None = No
 
 
 HANDLERS[JOIN_KIND] = join
+
+
+# finish.measure_song: a song's anatomy measured (manyworlds.song_measure: librosa, pyloudnorm) on the finisher, not the
+# producer's 512 MB VM (2026-11-24: a 2-minute 48 kHz stereo song was OOM-killed there). The payload is
+# songs.measure_payload (no database here); the measure goes back in the job's result (`song_features`) and the
+# producer's tick stores it (songs.collect_measurements).
+MEASURE_KIND = "finish.measure_song"
+MEASURE_NEEDS = ("song_id", "mix_uri")
+
+
+def measure_song(payload: dict[str, Any], ctx: JobContext, *, policy: Policy | None = None) -> HandlerResult:
+    from ... import songs
+    missing = [k for k in MEASURE_NEEDS if not payload.get(k)]
+    if missing:
+        raise NonRetryable(f"payload needs {missing} (songs.measure_payload)")
+    out = songs.measure_files(payload, policy_for(payload, policy), ctx.store, ctx.workdir / "measure")
+    return HandlerResult(outputs=[], recipe={"measured": payload["mix_uri"], "policy_version": payload.get("policy_version")},
+                         meta={"song_features": out})
+
+
+HANDLERS[MEASURE_KIND] = measure_song

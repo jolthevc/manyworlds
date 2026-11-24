@@ -130,6 +130,9 @@ job_kinds:
   # The join of a long talking video's takes (production.talk.advance_join, while finish_mode is queue): normalised and
   # joined on the finisher, not the producer's shared CPU (2026-11-23: it timed out there on every loop).
   finish.join:     {pools: [fly_finisher], outputs_per_job: 0}
+  # A song's measurements (manyworlds.songs, music.measure.mode queue): librosa on the finisher's 4 GB, not the producer's
+  # 512 MB (2026-11-24: a 2-minute 48 kHz stereo song was OOM-killed there).
+  finish.measure_song: {pools: [fly_finisher], outputs_per_job: 0}
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   # min_vram_gb (any kind): a worker whose card has less total memory doesn't serve the kind (worker.runner
   # kinds_that_fit); a card that can serve none destroys its own machine at start.
@@ -2122,8 +2125,16 @@ music:
   # measures new songs (per_tick a tick; a song that failed max_errors times is left with its error).
   measure:
     enabled: true
-    per_tick: 2
+    # queue: a finish.measure_song job per song on the finisher (the producer only enqueues and collects); inline: in
+    # the calling process (tests; `mw music measure --inline` on a big machine). The producer (512 MB) can't hold a
+    # full-length 48 kHz song in memory.
+    mode: queue
+    queue_per_tick: 20
+    per_tick: 2                  # inline: songs measured per tick
     max_errors: 3
+    max_seconds: 360             # a longer file is measured over its first max_seconds (detail.truncated_at_s)
+    chunk_s: 10.0                # true peak oversampled in chunks of this length
+    true_peak_overlap: 64        # samples of overlap between chunks (the resampling filter's edges)
     sample_rate: 22050
     hop_length: 512
     n_fft: 2048
