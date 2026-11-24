@@ -59,13 +59,14 @@ def enqueue(
 
 def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str | None = None,
           exclude: list | None = None, only_test: bool = False, batches: list[str] | None = None,
-          prefer: list[str] | None = None) -> Job | None:
+          prefer: list[str] | None = None, need_links: bool = False) -> Job | None:
     """Atomically take the next runnable job of the given kinds, or None. Jobs pinned to
     other pools are left for workers in those pools. `batches` (SQL LIKE patterns) limits it to those
     batches: while operations are paused, only tests and benchmarks run (manyworlds.operations). A job retried with
     a backoff (`fail(backoff_seconds=...)`) waits until its run_after. Within a
     priority, kinds in `prefer` (the model the worker has loaded) come first, so a machine serving several
-    families runs one model's work back to back instead of reloading 16-30 GB at every switch."""
+    families runs one model's work back to back instead of reloading 16-30 GB at every switch. With `need_links` (a
+    worker holding no storage key, manyworlds.deploy.presign) only jobs whose presigned links outlive an attempt."""
     row = conn.execute(
         """
         UPDATE jobs SET status = 'running',
@@ -83,6 +84,8 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
               AND NOT (id = ANY(%(exclude)s::uuid[]))
               AND (NOT %(only_test)s OR payload->>'test' = 'true')
               AND (%(batches)s::text[] IS NULL OR batch LIKE ANY(%(batches)s::text[]))
+              AND (NOT %(need_links)s OR coalesce((payload->'_storage'->>'claim_by')::float8, 0)
+                                         > extract(epoch FROM now()))
             ORDER BY priority DESC, (kind = ANY(%(prefer)s::text[])) DESC, created_at
             FOR UPDATE SKIP LOCKED
             LIMIT 1
@@ -90,7 +93,7 @@ def claim(conn, kinds: list[str], worker_id: str, lease_seconds: int, pool: str 
         RETURNING id, kind, payload, attempts, max_attempts, creator_id, batch
         """,
         {"worker": worker_id, "lease": lease_seconds, "kinds": kinds, "pool": pool, "exclude": list(exclude or []),
-         "only_test": only_test, "batches": batches, "prefer": list(prefer or [])},
+         "only_test": only_test, "batches": batches, "prefer": list(prefer or []), "need_links": need_links},
     ).fetchone()
     return Job(**row) if row else None
 

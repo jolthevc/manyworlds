@@ -142,6 +142,23 @@ class S3Store(ObjectStore):
         except Exception:  # noqa: BLE001
             return None
 
+    def presign(self, key: str, method: str, seconds: int) -> str:
+        """A presigned GET or PUT URL for `key` in this bucket (manyworlds.deploy.presign: links for rented machines,
+        which hold no storage key). Path-style addressing, so it works against any S3 endpoint (R2, a local stand-in)."""
+        if getattr(self, "_signer", None) is None:
+            import boto3
+            from botocore.config import Config
+
+            self._signer = boto3.client(
+                "s3", endpoint_url=self.client.meta.endpoint_url, region_name=self.client.meta.region_name,
+                config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
+        op = {"GET": "get_object", "PUT": "put_object"}[method]
+        return self._signer.generate_presigned_url(op, ExpiresIn=int(seconds),
+                                                   Params={"Bucket": self.bucket, "Key": key})
+
+    def read_bytes(self, key: str) -> bytes:
+        return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+
     def public_url(self, uri: str, seconds: int = 3600) -> str:
         """A presigned GET URL, so a platform can fetch the object without access to the bucket."""
         parsed = urlparse(uri)
@@ -158,6 +175,89 @@ def _not_found(error: Exception) -> bool:
     code = str((response.get("Error") or {}).get("Code", ""))
     status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
     return code in NOT_FOUND_CODES or status == 404
+
+
+class MissingLink(RuntimeError):
+    """A job asked the link store for an object it holds no link for: the job's links (manyworlds.deploy.presign)
+    don't cover what the handler reads or writes. Retrying elsewhere can't help; the worker fails the job."""
+
+
+MODEL_PREFIX = "models/"   # model mirrors (worker.models): a mirror with no link is treated as not mirrored
+
+
+class UrlStore(ObjectStore):
+    """The object store of a job on a rented machine that holds no storage key (policy
+    `security.worker_storage: presigned`): every object the job may read or write comes with it as a presigned link
+    (`payload._storage`, made on the control plane by manyworlds.deploy.presign). Handlers call the same interface
+    as on any other store.
+
+    links: {"prefix": "s3://bucket/", "get": {key: url}, "put": {key: url}, "absent": [key, ...], "expires": epoch}"""
+
+    def __init__(self, links: dict, *, timeout: float = 600, chunk: int = 1 << 20):
+        self.prefix = str(links["prefix"])
+        self.gets = dict(links.get("get") or {})
+        self.puts = dict(links.get("put") or {})
+        self.absent = set(links.get("absent") or [])
+        self.timeout = timeout
+        self.chunk = chunk
+
+    def _key(self, uri: str) -> str:
+        if not uri.startswith(self.prefix):
+            raise MissingLink(f"not an object of this store: {uri[:200]}")
+        return uri[len(self.prefix):]
+
+    def uri_for(self, key: str) -> str:
+        return self.prefix + key
+
+    def get_file(self, uri: str, local: Path) -> Path:
+        from urllib.request import urlopen
+
+        key = self._key(uri)
+        url = self.gets.get(key)
+        if url is None:
+            raise MissingLink(f"no read link for {key}")
+        local.parent.mkdir(parents=True, exist_ok=True)
+        part = local.with_name(local.name + ".dl")
+        with urlopen(url, timeout=self.timeout) as r, part.open("wb") as f:
+            shutil.copyfileobj(r, f, self.chunk)
+        part.replace(local)
+        return local
+
+    def put_file(self, local: Path, key: str) -> StoredObject:
+        from urllib.request import Request, urlopen
+
+        url = self.puts.get(key)
+        if url is None:
+            raise MissingLink(f"no write link for {key}")
+        size = local.stat().st_size
+        with local.open("rb") as f:
+            req = Request(url, data=f, method="PUT",
+                          headers={"Content-Length": str(size), "Content-Type": "application/octet-stream"})
+            with urlopen(req, timeout=self.timeout) as r:
+                r.read()
+        return StoredObject(uri=self.uri_for(key), sha256=_sha256(local), bytes=size)
+
+    def exists(self, key: str) -> bool:
+        """Inputs were checked when the links were made: a read link means it was there, `absent` that it was not.
+        A key the job only writes is reported missing (the work is redone, which handlers allow); a model mirror
+        with no link is not mirrored (the worker loads from Hugging Face). Anything else is a gap in the links."""
+        if key in self.gets:
+            return True
+        if key in self.absent or key in self.puts or key.startswith(MODEL_PREFIX):
+            return False
+        raise MissingLink(f"no link for {key}")
+
+    def size(self, key: str) -> int | None:
+        return None   # unknown without a HEAD link: callers treat it as missing and redo the copy
+
+    def public_url(self, uri: str, seconds: int = 3600) -> str:
+        url = self.gets.get(self._key(uri))
+        if url is None:
+            raise MissingLink(f"no read link for {uri[:200]}")
+        return url
+
+    def delete(self, uri: str) -> None:
+        raise MissingLink("a link store cannot delete")
 
 
 def from_url(url: str | None = None) -> ObjectStore:
