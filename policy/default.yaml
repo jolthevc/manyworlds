@@ -1052,8 +1052,10 @@ brain:
   # keeps max_themes themes; the showrunner sees the `shown` largest. No comments, no call.
   comment_themes: {enabled: true, role: comment_themes, effort: low, every_hours: 24, min_new: 3, window_days: 14,
                    max_comments: 80, comment_chars: 240, max_themes: 6, theme_chars: 200, shown: 6}
-  # The analyst agent (brain/agents/analyst.py): reasoning effort of its notes call.
-  analyst: {effort: medium}
+  # The analyst agent (brain/agents/analyst.py): reasoning effort of its notes call (llm.roles.brain, Opus), which runs
+  # only once min_new_outcomes more posts have outcomes (real metrics for a real creator) than at its last call;
+  # short of that its last guidance stands, free. A talent manager's research question is always answered.
+  analyst: {effort: medium, min_new_outcomes: 5}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
   # graded tentative only past a Bonferroni-corrected interval at family-wide alpha with min_n_tentative posts.
   analysis: {target_age_s: 259200, target_age_tolerance_s: 86400, min_n_any: 8, min_n_tentative: 20, min_group: 5, min_group_tentative: 10, bootstrap: 300, alpha: 0.1,
