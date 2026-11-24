@@ -11,6 +11,8 @@ music.convert_voice payload:
 Outputs, always in this order (assets/<creator>/<job>/00.wav, 01.wav on every rerun):
   00 vocals   the converted vocal, at the instrumental's rate, the stem's length and loudness (meta converted: true)
   01 mix      the converted vocal over the instrumental
+  (song mode, payload `song` in place of the stem uris: the voice bench makes the song in the same job first, then
+  also stores 02 source_mix, 03 source_vocals, 04 instrumental: the song as made, for listening side by side)
 The vocal's meta has `similarity` (voice_similarity against the asset's centroid: median over voiced windows),
 `source_similarity` (the stem before conversion, the same way: what the conversion bought), the stem's own
 `embedding` (its windows' centroid; the bench compares songs pairwise with it) and, with `check`, `line_coverage`.
@@ -398,12 +400,29 @@ def transcribe(vocals, sr: int, check: dict) -> str:
 
 # --- the jobs ----------------------------------------------------------------------------------------------------
 
+SONG_ROLES = ("source_mix", "source_vocals", "instrumental")   # a song-mode job's further outputs, in this order
+
+
+def _make_song(song: dict, ctx: JobContext) -> dict:
+    """Song mode (payload `song`, a music.song payload: the voice bench): the song made first in this job, on this
+    machine (handlers/music_song.generate in a sub-folder), so making and converting share one boot. Its outputs by
+    role: {mix, vocals, instrumental: OutputFile}."""
+    from . import music_song
+    sub = JobContext(job=ctx.job, workdir=Path(ctx.workdir) / "song", store=ctx.store, charges=ctx.charges)
+    res = music_song.generate(song, sub)
+    out = {o.meta["role"]: o for o in res.outputs}
+    if "vocals" not in out or "instrumental" not in out:
+        raise NonRetryable("the song has no vocal stem to convert (instrumental, or separation off)")
+    return out
+
+
 def convert(payload: dict, ctx: JobContext) -> HandlerResult:
     settings = payload.get("adapter") or {}
     name = _check_adapter(settings, CONVERTERS)
     asset = payload.get("asset") or {}
-    if not payload.get("vocals_uri") or not payload.get("instrumental_uri"):
-        raise NonRetryable("payload needs vocals_uri and instrumental_uri (a music.song job's stems)")
+    song_mode = bool(payload.get("song"))
+    if not song_mode and (not payload.get("vocals_uri") or not payload.get("instrumental_uri")):
+        raise NonRetryable("payload needs vocals_uri and instrumental_uri (a music.song job's stems), or a song")
     if not asset.get("prompt_uri") or not asset.get("centroid"):
         raise NonRetryable("payload has no voice asset (prompt clip and centroid)")
     if payload.get("seed") is None:
@@ -411,13 +430,18 @@ def convert(payload: dict, ctx: JobContext) -> HandlerResult:
     seed = int(payload["seed"])
     work = Path(ctx.workdir)
     work.mkdir(parents=True, exist_ok=True)
-    src = ctx.fetch(payload["vocals_uri"], "vocals.wav")
-    inst_path = ctx.fetch(payload["instrumental_uri"], "instrumental.wav")
+    made = _make_song(payload["song"], ctx) if song_mode else {}
+    if song_mode:
+        src, inst_path = made["vocals"].path, made["instrumental"].path
+    else:
+        src = ctx.fetch(payload["vocals_uri"], "vocals.wav")
+        inst_path = ctx.fetch(payload["instrumental_uri"], "instrumental.wav")
     stem, stem_sr = read_audio(src)
     inst, inst_sr = read_audio(inst_path)
     random.seed(seed)
     t0 = time.monotonic()
-    conv_path, conv_sr = CONVERTERS[name](src, ctx, {**settings, "voiced": payload.get("similarity") or {}}, asset, seed)
+    conv_path, conv_sr = CONVERTERS[name](src, ctx, {**settings, "voiced": payload.get("similarity") or {}}, asset,
+                                          seed)
     convert_s = round(time.monotonic() - t0, 1)
     conv, conv_rate = read_audio(conv_path)
     conv_sr = conv_rate or conv_sr
@@ -433,7 +457,7 @@ def convert(payload: dict, ctx: JobContext) -> HandlerResult:
             "adapter": name, "voice_version": asset.get("version")}
     vmeta = {**base, "role": "vocals", "similarity": sim["similarity"], "windows": sim["windows"], "p10": sim["p10"],
              "p90": sim["p90"], "embedding": sim["embedding"], "source_similarity": before["similarity"],
-             "embedding_model": sim["model"]}
+             "source_embedding": before["embedding"], "embedding_model": sim["model"]}
     check = payload.get("check")
     if check and check.get("lyrics"):
         heard = transcribe(vocal, inst_sr, check)
@@ -443,10 +467,15 @@ def convert(payload: dict, ctx: JobContext) -> HandlerResult:
     files = [OutputFile(write_audio(work / "voice_vocals.wav", vocal, inst_sr), "audio", vmeta),
              OutputFile(write_audio(work / "voice_mix.wav", mix, inst_sr), "audio",
                         {**base, "role": "mix", "similarity": sim["similarity"]})]
+    for role, src_role in zip(SONG_ROLES, ("mix", "vocals", "instrumental")):
+        if song_mode:   # the song as made, kept for listening side by side (after the converted pair: fixed keys)
+            o = made[src_role]
+            files.append(OutputFile(o.path, "audio", {**o.meta, "role": role, "converted": False}))
     recipe = {"adapter": name, "licence": settings.get("licence"), "repo": settings.get("repo"),
               "commit": settings.get("commit"), "voice_version": asset.get("version"), "seed": seed,
-              "vocals_uri": payload["vocals_uri"], "instrumental_uri": payload["instrumental_uri"],
-              "remix": payload.get("remix") or {}}
+              "vocals_uri": payload.get("vocals_uri"), "instrumental_uri": payload.get("instrumental_uri"),
+              "song": {k: (payload.get("song") or {}).get(k) for k in ("title", "tags", "seed", "duration_s")}
+              if song_mode else None, "remix": payload.get("remix") or {}}
     return HandlerResult(files, recipe=recipe, meta={"output_seconds": seconds, "convert_seconds": convert_s,
                                                      "similarity_seconds": sim_s})
 

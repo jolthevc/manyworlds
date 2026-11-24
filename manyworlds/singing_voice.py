@@ -91,12 +91,14 @@ def asset_fields(asset: dict) -> dict:
                                       "index_uri")}
 
 
-def convert_payload(policy: Policy, asset: dict, *, vocals_uri: str, instrumental_uri: str, seed: int,
-                    adapter: str | None = None, lyrics: str | None = None, check: bool = False) -> dict:
+def convert_payload(policy: Policy, asset: dict, *, seed: int, vocals_uri: str | None = None,
+                    instrumental_uri: str | None = None, song: dict | None = None, adapter: str | None = None,
+                    lyrics: str | None = None, check: bool = False) -> dict:
     """The music.convert_voice job: a song's stems into the artist's voice (checked: VoiceRefused when the adapter
-    may not run, the asset lacks what the adapter needs, or a stem is missing)."""
-    if not vocals_uri or not instrumental_uri:
-        raise VoiceRefused("a conversion needs the song's vocal and instrumental stems")
+    may not run, the asset lacks what the adapter needs, or a stem is missing). With `song` (a music.song payload,
+    the voice bench) the job makes the song itself first, on the same machine, and needs no stems."""
+    if not song and (not vocals_uri or not instrumental_uri):
+        raise VoiceRefused("a conversion needs the song's vocal and instrumental stems (or a song to make)")
     if not asset or not asset.get("prompt_uri") or not asset.get("centroid"):
         raise VoiceRefused("the artist has no voice asset (prompt clip and centroid): creator/music_voice builds one")
     name = adapter or adapter_for(policy, asset)
@@ -104,9 +106,12 @@ def convert_payload(policy: Policy, asset: dict, *, vocals_uri: str, instrumenta
     if name in TRAINERS and not asset.get("model_uri"):
         raise VoiceRefused(f"voice adapter {name!r} needs a trained model; this asset (v{asset.get('version')}) has none")
     c = cfg(policy)
-    payload = {"vocals_uri": vocals_uri, "instrumental_uri": instrumental_uri, "asset": asset_fields(asset),
-               "adapter": settings, "seed": int(seed) % (2**31), "similarity": similarity_settings(policy),
-               "remix": dict(c.get("remix") or {})}
+    payload = {"asset": asset_fields(asset), "adapter": settings, "seed": int(seed) % (2**31),
+               "similarity": similarity_settings(policy), "remix": dict(c.get("remix") or {})}
+    if song:
+        payload["song"] = dict(song)
+    else:
+        payload.update(vocals_uri=vocals_uri, instrumental_uri=instrumental_uri)
     if check and lyrics:
         mc = policy.get("music", "check", default={}) or {}
         payload["check"] = {"lyrics": lyrics, "asr_model": mc.get("asr_model"),
