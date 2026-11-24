@@ -518,7 +518,11 @@ def run(conn, policy: Policy, plan_name: str, *, items: list[str] | None = None,
     blockers = open_test_work(conn, pol, batch)
     if dry_run:
         return {**head, **_dry_run(conn, pol, plan, rid, todo, creators), "blockers": blockers}
-    if blockers and cfg.get("refuse_beside_open_tests", True):
+    # Only a new run is refused: resuming one that already has jobs must not be blocked by test work started since
+    # (2026-11-24: a relaunched long-take driver was refused 8 times while its GPU job kept rendering).
+    started = conn.execute("SELECT 1 FROM jobs WHERE batch = %s OR batch LIKE %s LIMIT 1",
+                           (batch, f"{batch}-%")).fetchone() is not None
+    if blockers and not started and cfg.get("refuse_beside_open_tests", True):
         raise SystemExit(f"other test work is open and could share or start machines: {blockers}. "
                          "Finish or cancel it first.")
     if operations.is_live(pol) and cfg.get("require_paused", True):

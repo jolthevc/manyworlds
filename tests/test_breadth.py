@@ -458,3 +458,12 @@ def test_a_dropped_database_connection_reconnects_and_resumes_the_run(conn, poli
     assert cli._test(args, conn, pol) == 0
     assert len(calls) == 2 and calls[0] is conn and calls[1] is conns[0]
     assert json.loads(capsys.readouterr().out)["done"] is True
+
+
+def test_a_started_run_resumes_even_beside_other_open_test_work(conn, policy, store):
+    pol = _paused(policy)
+    handle = _creator(conn)
+    first = breadth.run(conn, pol, "default", items=["photo_propped_pose"], creator=handle, store=store, once=True)
+    queue.enqueue(conn, "image.zimage", {}, batch="bench-image-y")          # test work opened since
+    again = breadth.run(conn, pol, "default", items=["photo_propped_pose"], creator=handle, store=store, once=True)
+    assert again["run"] == first["run"]
