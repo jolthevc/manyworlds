@@ -1281,10 +1281,12 @@ burned_captions:
   # Time captions from the voice line's transcript (review.video.intelligibility's hosted Whisper, verbose_json word
   # timestamps; paid once per voice line and cached on its asset as meta.words) instead of estimating them from
   # the line's spans. `word_timestamps: true` turns it on for every format; word_timestamps_formats for those listed
-  # (captions.word_timestamps_for(policy, format)): on for talking videos (2026-11-23 build: estimated timings
-  # drift on real takes, and the words are cached per voice line). Any failure falls back to estimates.
+  # (captions.word_timestamps_for(policy, format)): on for every spoken format that burns captions (talking videos
+  # since 2026-11-23: estimated timings drift on real takes; narrated edits since 2026-11-24; the words are cached per
+  # voice line). A narrated edit needs a designed voice line (payload.audio_uri) for them; without one it keeps the
+  # edit's own measured cues (docs/tech-debt.md). Any failure falls back to estimates and is logged.
   word_timestamps: false
-  word_timestamps_formats: [talking_video]
+  word_timestamps_formats: [talking_video, narrated_edit]
   # Characters the style's font cannot draw (emoji: libass draws no colour emoji, no bundled font has any) are
   # dropped (strip) rather than burned in as empty boxes or a fallback system font; keep = leave them.
   missing_glyphs: strip

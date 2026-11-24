@@ -221,11 +221,12 @@ def test_caption_style_resolution_order(raw_policy):
 
 def test_word_timestamps_per_format(raw_policy):
     assert cap.word_timestamps_for(raw_policy, "talking_video")
-    assert not cap.word_timestamps_for(raw_policy, "narrated_edit")
+    assert cap.word_timestamps_for(raw_policy, "narrated_edit")
+    assert not cap.word_timestamps_for(raw_policy, "story_clip")
 
     def bc(**kw):
         return policy_mod.from_dict({**raw_policy.body, "burned_captions": {**raw_policy.body["burned_captions"], **kw}})
-    assert cap.word_timestamps_for(bc(word_timestamps=True), "narrated_edit")
+    assert cap.word_timestamps_for(bc(word_timestamps=True, word_timestamps_formats=[]), "narrated_edit")
     assert not cap.word_timestamps_for(bc(word_timestamps_formats=[]), "talking_video")
     assert cap.word_timestamps_for(bc(word_timestamps=["narrated_edit"]), "narrated_edit")
 

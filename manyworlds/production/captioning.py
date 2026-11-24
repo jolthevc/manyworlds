@@ -6,7 +6,7 @@ from __future__ import annotations
 from psycopg.types.json import Jsonb
 
 from ..policy import Policy
-from .common import _pieces, _shot, unmarked
+from .common import _pieces, _shot, log, unmarked
 from .takes import _take_index, _take_script
 
 
@@ -92,7 +92,7 @@ def _voice_audio(conn, piece: dict) -> dict | None:
 def voice_words(conn, policy: Policy, audio: dict, store=None, *, transcriber=None) -> list[dict] | None:
     """A voice line's word timestamps [{word, start, end}] (burned_captions.word_timestamps): the asset's cached
     meta.words, else transcribed once (speech.timed_words, charged to the ledger) and cached there. None on any
-    failure (the captions then fall back to estimated timings)."""
+    failure (the captions then fall back to estimated timings; the failure is logged)."""
     import tempfile
     from pathlib import Path
 
@@ -107,9 +107,12 @@ def voice_words(conn, policy: Policy, audio: dict, store=None, *, transcriber=No
             path = store.get_file(audio["uri"], Path(tmp) / f"voice{Path(audio['uri']).suffix or '.wav'}")
             words = transcriber(conn, policy, path, float(meta.get("seconds") or 0), job_id=audio.get("job_id"),
                                 creator_id=audio.get("creator_id"))
-    except Exception:  # noqa: BLE001 - estimated timings are the fallback
+    except Exception as e:  # noqa: BLE001 - estimated timings are the fallback
+        log.warning("captions fall back to estimated timings: transcribing voice line %s failed: %s: %s",
+                    audio.get("id"), type(e).__name__, str(e)[:300])
         return None
     if not words:
+        log.warning("captions fall back to estimated timings: voice line %s transcribed to no words", audio.get("id"))
         return None
     conn.execute("UPDATE assets SET meta = COALESCE(meta, '{}'::jsonb) || %s WHERE id = %s",
                  (Jsonb({"words": words}), audio["id"]))
@@ -148,6 +151,8 @@ def _transcribed(conn, policy: Policy, piece: dict, script: str, offset: float, 
         return None
     audio = _voice_audio(conn, piece)
     if audio is None:
+        log.info("captions fall back to estimated timings (%s): piece %s has no voice line to transcribe",
+                 fmt, piece.get("id"))
         return None
     words = voice_words(conn, policy, audio, store, transcriber=transcriber)
     if not words:
@@ -157,7 +162,9 @@ def _transcribed(conn, policy: Policy, piece: dict, script: str, offset: float, 
     lead = float((piece["meta"] or {}).get("lead_s", LEAD_S)) if job.get("kind") == "image.narrated" else 0.0
     try:
         timed = captions.word_timings(words, script=script or None, offset=offset + lead)
-    except Exception:  # noqa: BLE001 - a malformed cache entry: estimates instead
+    except Exception as e:  # noqa: BLE001 - a malformed cache entry: estimates instead
+        log.warning("captions fall back to estimated timings: voice line %s's words did not align: %s: %s",
+                    audio.get("id"), type(e).__name__, str(e)[:300])
         return None
     return _drop_unscripted(timed, script, _fillers(audio["meta"] or {})) or None
 
