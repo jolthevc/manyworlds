@@ -421,7 +421,8 @@ def record_finish(conn, policy: Policy, post: dict, body: dict, video: dict, mad
     """The finished video's asset (or `video` itself when render_finish made nothing): its cover's keyframe asset
     (an uploaded cover), then the video asset at post-<id>/final.mp4 (an existing one is returned as it is). With
     `llm` (the judge), the finished file (`local`, else fetched) gets the final review once (manyworlds.review.final),
-    its result in body.final_review."""
+    its result in body.final_review. A talking post's finished file also gets the CPU lip-sync score
+    (manyworlds.review.sync, report-only, policy review.sync), its result in body.sync_review."""
     import tempfile
     from pathlib import Path
 
@@ -441,16 +442,29 @@ def record_finish(conn, policy: Policy, post: dict, body: dict, video: dict, mad
         (post["creator_id"], made["uri"], made["sha256"], made["bytes"], Jsonb({**made["meta"], "cover": cover}),
          Jsonb({"finished_from": made.get("finished_from"), "policy_version": policy.version}))).fetchone()
     # judged after the asset exists, so its final_* review rows land on it (review/final.py _rows)
-    if llm is not None:   # the finished file judged once (review.final; body.final_review, updated in place)
-        from ..review.final import review_final
-        try:
-            with tempfile.TemporaryDirectory(prefix="mw-final-") as tmp:
-                path = Path(local) if local else (store or storage.from_url()).get_file(made["uri"],
-                                                                                      Path(tmp) / "final.mp4")
-                review_final(conn, policy, llm, post, path, joins=join_times(conn, video),
-                             text_spans=made.get("text_spans") or [])
-        except Exception as e:  # noqa: BLE001 - a judge outage never holds a finished post; the error is kept
-            body["final_review"] = {"error": f"{type(e).__name__}: {e}"[:500], "passed": True}
+    from ..review import sync as sync_review
+    scored = sync_review.applies(policy, post)   # the lip-sync score (review.sync; CPU, free, report-only)
+    if llm is None and not scored:
+        return row
+    try:
+        with tempfile.TemporaryDirectory(prefix="mw-final-") as tmp:
+            path = Path(local) if local else (store or storage.from_url()).get_file(made["uri"],
+                                                                                  Path(tmp) / "final.mp4")
+            if scored:   # never raises: a file it can't score records why in body.sync_review
+                sync_review.review_sync(conn, policy, {**post, "body": body}, path)
+            if llm is not None:   # the finished file judged once (review.final; body.final_review, updated in place)
+                from ..review.final import review_final
+                try:
+                    review_final(conn, policy, llm, post, path, joins=join_times(conn, video),
+                                 text_spans=made.get("text_spans") or [])
+                except Exception as e:  # noqa: BLE001 - a judge outage never holds a finished post; the error is kept
+                    body["final_review"] = {"error": f"{type(e).__name__}: {e}"[:500], "passed": True}
+    except Exception as e:  # noqa: BLE001 - the finished file can't be fetched: the post ships, the error is kept
+        err = {"error": f"{type(e).__name__}: {e}"[:500], "passed": True}
+        if llm is not None:
+            body["final_review"] = err
+        if scored:
+            body["sync_review"] = err
     return row
 
 

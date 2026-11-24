@@ -51,6 +51,7 @@ STATE: dict[str, str] = {
     "sound": "what was mixed under the video, with licences and credits",
     "sound_error": "why the sound mix failed (the video shipped unmixed)",
     "final_review": "the finished file's final review (review.final), or the judge's error",
+    "sync_review": "the finished file's CPU lip-sync score (review.sync, report-only), or why it failed",
     "finish_jobs": "the finish.video job ids (production.finish_mode queue: the finish runs on the finisher)",
     "finish_repairs": "never incremented (a finish is not reviewed): the finish Step's repair counter",
     "finish_failures": "finish attempts that raised, or finish.video jobs that failed",

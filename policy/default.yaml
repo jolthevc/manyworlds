@@ -362,6 +362,35 @@ review:
     min_phone_real: 6
     max_end_drift_seconds: 0.1     # audio and video streams of the file end within this of each other
     timeout_seconds: 120
+  # The finished file's lip-sync score on the CPU (manyworlds.review.sync, 2026-11-23): the clip gate reads each take's
+  # score from its worker, before joins (long talks), V2V (walk-and-talk), the mix and the finish; this measures
+  # final.mp4 itself in record_finish (the producer). Frames at sample_fps (fewer past max_frames), frame_height px;
+  # mouth openness from MediaPipe's face landmarker (the control-plane image's `sync` extra, model at landmarker_path
+  # or MW_FACE_LANDMARKER); loudness at audio_rate Hz. Score: best correlation within +-max_lag_ms. Voice frames:
+  # loudness within speech_db_below_p95 dB of its 95th percentile. Open: above max(open_min, open_relative_to_p90 x
+  # the clip's p90 openness); shut: at most max(closed_max, closed_relative_to_p90 x it). Report-only (enforce false)
+  # until calibrated by eye: body.sync_review, a final_lip_sync review row, a review.sync decision.
+  sync:
+    enabled: true
+    enforce: false
+    formats: [talking_video]
+    sample_fps: 25
+    max_frames: 900
+    frame_height: 480
+    audio_rate: 16000
+    max_lag_ms: 200
+    min_frames: 25
+    min_corr: 0.3
+    min_face_share: 0.8
+    speech_db_below_p95: 30
+    open_min: 0.08
+    open_relative_to_p90: 0.35
+    closed_max: 0.05
+    closed_relative_to_p90: 0.15
+    max_silent_mouth_moving: 0.3
+    max_talking_mouth_closed: 0.5
+    landmarker_path: /opt/models/face_landmarker.task
+    timeout_seconds: 300
   max_repairs_per_post: 4    # day 5: regenerations allowed before a post is dropped
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
