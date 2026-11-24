@@ -3,6 +3,18 @@
 Known issues we chose not to fix yet, with when they must be fixed. "Before X" means the
 capability X does not go live until the item is closed. Updated 2026-11-23 (the gap sweep before the routing trial).
 
+## Noted 2026-11-24 (overnight: breadth test, music department, long takes)
+
+| Item | Why it matters | Where |
+|---|---|---|
+| The V2V lip-sync default (`generation.talk_motion.v2v.start_step: 2` of 4) barely redraws the mouth | walk-and-talk and push-in takes failed lip sync with a closed mouth; repairs now lower start_step, but the default should be set from a sweep | policy `generation.talk_motion.v2v` |
+| RVC (per-artist voice training) is refused | its assets repo adds a research-use clause; rmvpe/hubert weights' licences unstated: the owner decides | policy `music.voice.adapters.rvc` |
+| The music critic hears nothing yet | listener and aesthetics adapters are stubs: no `music.listen` worker kind, no hosted audio model checked | `music_listening.py` |
+| Music features measured on synthetic audio only; genre bands are unverified starting points | the first real songs calibrate them | `song_measure.py`, policy `music.genre_bands` |
+| head_of_music's cadence is recorded, not scheduled | nothing turns the slate into songs yet | `brain/agents/head_of_music.py` |
+| WER normaliser edge cases | "a hundred" vs 100, years as words | `speech.py` |
+| Rented machines still get the storage key | signed links built (`security.worker_storage: presigned`), off until a GPU check | `deploy/presign.py` |
+
 ## Noted 2026-11-24 (architecture review: deferred, larger items)
 
 | Item | Why it matters | Where |
