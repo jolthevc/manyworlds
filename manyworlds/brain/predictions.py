@@ -15,6 +15,9 @@ Metrics: median_reach (median reach at the target age, brain.analysis.target_age
 window), reach_growth (log of that median over the creator's median before the window). Nothing the agents control
 themselves (how many posts they publish) is a metric: a claim about it would only flatter the scorecard. A claim
 resolves once the window's last posts have reached the target age, and its horizon is clamped to policy.
+Song metrics (a claim about one song: `song_id`): song_median_reach (median reach of the posts using the song,
+published in the window), song_reach_lift (log of that median over the creator's median before the window, posts
+without the song).
 """
 
 from __future__ import annotations
@@ -26,14 +29,19 @@ from datetime import datetime, timedelta, timezone
 from ..policy import Policy
 from . import evidence
 
-METRICS = ("median_reach", "reach_growth")
+SONG_METRICS = ("song_median_reach", "song_reach_lift")
+METRICS = ("median_reach", "reach_growth", *SONG_METRICS)
 
 
 def record(conn, *, role: str, claim: str, metric: str, comparator: str, threshold: float, probability: float,
-           horizon_days: int, creator_id=None, market_id=None, decision_id=None, now: datetime | None = None):
-    """The prediction's id, or None when it can't be checked (unknown metric or comparator, no subject)."""
+           horizon_days: int, creator_id=None, market_id=None, decision_id=None, now: datetime | None = None,
+           song_id=None):
+    """The prediction's id, or None when it can't be checked (unknown metric or comparator, no subject; a song
+    metric without its song)."""
     now = now or datetime.now(timezone.utc)
     if metric not in METRICS or comparator not in ("above", "below") or creator_id is None:
+        return None
+    if (metric in SONG_METRICS) != (song_id is not None):
         return None
     p = min(max(float(probability), 0.0), 1.0)
     cfg = _cfg_p()
@@ -41,10 +49,10 @@ def record(conn, *, role: str, claim: str, metric: str, comparator: str, thresho
     mode = evidence.mode_for(conn, creator_id)
     return conn.execute(
         "INSERT INTO predictions (role, creator_id, market_id, claim, metric, comparator, threshold, probability, "
-        "horizon_days, mode, decision_id, resolve_at, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-        "%s, %s) RETURNING id",
+        "horizon_days, mode, decision_id, resolve_at, created_at, song_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
+        "%s, %s, %s, %s, %s) RETURNING id",
         (role, creator_id, market_id, claim[:500], metric, comparator, float(threshold), p, int(horizon_days), mode,
-         decision_id, now + timedelta(days=int(horizon_days)), now)).fetchone()["id"]
+         decision_id, now + timedelta(days=int(horizon_days)), now, song_id)).fetchone()["id"]
 
 
 _POLICY: dict = {"min_horizon_days": 7, "max_horizon_days": 180, "target_age_s": 259200}
@@ -72,11 +80,15 @@ def _reach(conn, post_id, mode) -> float | None:
     return float(v) if v is not None else None
 
 
-def _reaches(conn, creator_id, mode, start, end) -> list[float]:
+def _reaches(conn, creator_id, mode, start, end, *, song_id=None, without_song=None) -> list[float]:
+    """Reaches of the creator's posts published in (start, end]: only those using `song_id`, or (without_song)
+    only those not using that song."""
     simulated = mode == "sandbox"
     posts = conn.execute("SELECT p.id FROM posts p JOIN publications u ON u.post_id = p.id "
-                         "WHERE p.creator_id = %s AND u.simulated = %s AND u.published_at > %s AND u.published_at <= %s",
-                         (creator_id, simulated, start, end)).fetchall()
+                         "WHERE p.creator_id = %s AND u.simulated = %s AND u.published_at > %s AND u.published_at <= %s "
+                         "AND (%s::uuid IS NULL OR p.song_id = %s) "
+                         "AND (%s::uuid IS NULL OR p.song_id IS DISTINCT FROM %s)",
+                         (creator_id, simulated, start, end, song_id, song_id, without_song, without_song)).fetchall()
     return [r for r in (_reach(conn, p["id"], mode) for p in posts) if r is not None]
 
 
@@ -84,6 +96,19 @@ def measure(conn, pred: dict) -> float | None:
     start, end, mode = pred["created_at"], pred["resolve_at"], pred["mode"]
     if pred["metric"] not in METRICS:
         return None
+    if pred["metric"] in SONG_METRICS:
+        song = pred.get("song_id")
+        if song is None:
+            return None
+        window = _reaches(conn, pred["creator_id"], mode, start, end, song_id=song)
+        if not window:
+            return None
+        if pred["metric"] == "song_median_reach":
+            return statistics.median(window)
+        before = _reaches(conn, pred["creator_id"], mode, start - (end - start), start, without_song=song)
+        if not before or statistics.median(before) <= 0 or statistics.median(window) <= 0:
+            return None
+        return math.log(statistics.median(window) / statistics.median(before))
     window = _reaches(conn, pred["creator_id"], mode, start, end)
     if not window:
         return None

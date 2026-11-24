@@ -74,6 +74,17 @@ def image_block(data: bytes, media_type: str = "image/png") -> dict:
                                         "data": base64.standard_b64encode(data).decode()}}
 
 
+def audio_block(data: bytes, fmt: str = "mp3") -> dict:
+    """A clip of audio for an open model that hears (llm.open_models.<model>.audio: true; the music listener).
+    Claude takes no audio: a call with one to a Claude model fails as an OpenModelError."""
+    return {"type": "audio", "source": {"type": "base64", "format": fmt,
+                                        "data": base64.standard_b64encode(data).decode()}}
+
+
+def _has_audio(content: Any) -> bool:
+    return not isinstance(content, str) and any(isinstance(b, dict) and b.get("type") == "audio" for b in content)
+
+
 def _post_json(url: str, body: dict, key: str, timeout: float) -> dict:
     """POST JSON with a bearer key (in the header, never the URL). Errors carry no key."""
     from .deploy.providers import redact
@@ -106,8 +117,8 @@ def _read_stream(lines) -> dict:
     return {"choices": [{"message": {"content": "".join(text)}}], "usage": usage}
 
 
-def _openai_content(content: Any, vision: bool) -> Any:
-    """Anthropic-style content (a string or text/image blocks) as OpenAI chat content."""
+def _openai_content(content: Any, vision: bool, audio: bool = False) -> Any:
+    """Anthropic-style content (a string or text/image/audio blocks) as OpenAI chat content."""
     if isinstance(content, str):
         return content
     out = []
@@ -119,6 +130,11 @@ def _openai_content(content: Any, vision: bool) -> Any:
                 raise OpenModelError("not a vision model")
             src = block["source"]
             out.append({"type": "image_url", "image_url": {"url": f"data:{src['media_type']};base64,{src['data']}"}})
+        elif block.get("type") == "audio":
+            if not audio:
+                raise OpenModelError("not an audio model")
+            src = block["source"]
+            out.append({"type": "input_audio", "input_audio": {"data": src["data"], "format": src["format"]}})
         else:
             raise OpenModelError(f"unsupported content block {block.get('type')!r}")
     return out
@@ -327,6 +343,8 @@ class LLM:
             log.debug("effort %r not sent to open model %s (no verified reasoning parameter on its host)", effort, model)
             return self._open(model, system=system, content=content, schema=schema, creator_id=creator_id,
                               agent=agent)
+        if _has_audio(content):
+            raise OpenModelError(f"{model} takes no audio")
         return self._claude(model, system=system, content=content, schema=schema, effort=effort,
                             creator_id=creator_id, agent=agent)
 
@@ -413,7 +431,8 @@ class LLM:
             raise OpenModelError(f"{host['key_env']} is not set")
         body = {"model": spec["id"],
                 "messages": [{"role": "system", "content": system},
-                             {"role": "user", "content": _openai_content(content, bool(spec.get("vision")))}],
+                             {"role": "user", "content": _openai_content(content, bool(spec.get("vision")),
+                                                                         bool(spec.get("audio")))}],
                 "max_tokens": int(spec.get("max_tokens", self.policy.get("llm", "max_output_tokens", default=16000))),
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": schema.__name__, "strict": False,
