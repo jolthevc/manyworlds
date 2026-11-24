@@ -153,7 +153,7 @@ def test_the_sandbox_runs_the_department_end_to_end_without_the_gpu(conn, policy
     assert {"music_talent_manager", "music_songwriter", "music_producer", "music_lyricist", "music_vocal_director",
             "music_draft_review", "music_melody", "music_critique", "music_mix_master", "music_curator",
             "music_a_and_r", "music_head_of_music"} <= kinds
-    assert rep["llm_calls"] == len(llm.calls) - 0 or rep["llm_calls"] <= len(llm.calls)
+    assert 0 < rep["decisions"] <= len(llm.calls)
     assert draft
 
 
