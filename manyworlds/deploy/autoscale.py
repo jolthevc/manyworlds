@@ -277,6 +277,7 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
                       network_volume=p.get("network_volume") or None)
     if spec.network_volume:   # weights cached on the volume: downloaded once, not by every machine
         spec.env.update(MW_MODEL_DIR=f"{spec.network_volume['path']}/mw", HF_HOME=f"{spec.network_volume['path']}/hf")
+        spec.env.update(volume_env(spec.network_volume))
         spec.download_gb = 0.0
         if img.get("volume_disk_gb"):   # a merged machine: no member's weights on the container disk
             spec.disk_gb = int(img["volume_disk_gb"])
@@ -299,6 +300,42 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
                  (m.ref, m.usd_per_hour, getattr(m, "upfront_usd", 0.0), name))
     return {"group": name, "action": "launched", "kind": kind, "pool": pool,
             "usd_per_hour": m.usd_per_hour, "deadline_hours": hours, "max_usd": max_usd}
+
+
+def volume_env(vol: dict) -> dict[str, str]:
+    """What a machine on a weights volume needs to check it at boot (manyworlds.worker.volume): from the policy, so a
+    new prune list or floor reaches the next machine without a worker image rebuild."""
+    env = {"MW_VOLUME_PATH": str(vol["path"]), "MW_VOLUME_PRUNE": ",".join(str(p) for p in vol.get("prune") or [])}
+    if vol.get("size_gb") is not None:
+        env["MW_VOLUME_SIZE_GB"] = str(vol["size_gb"])
+    if vol.get("min_free_gb") is not None:
+        env["MW_VOLUME_MIN_FREE_GB"] = str(vol["min_free_gb"])
+    return env
+
+
+def volume_low(conn, policy: Policy, pool: str, now: datetime) -> dict | None:
+    """The pool's weights volume was last measured below its floor (by a worker at boot, gpu_groups.volume_*), within
+    network_volume.recheck_hours: a machine there would die at its first download, so the pool is skipped. After the
+    window one machine may try again (its boot prunes and measures anew)."""
+    vol = policy.get("gpu_pools", pool, "network_volume") or {}
+    if not vol or vol.get("min_free_gb") is None:
+        return None
+    sharing = [name for name, p in (policy.get("gpu_pools", default={}) or {}).items()
+               if (p.get("network_volume") or {}).get("id") == vol.get("id")]
+    last = conn.execute(
+        """SELECT name, volume_free_gb, volume_low, volume_checked_at FROM gpu_groups
+           WHERE pool = ANY(%s) AND volume_checked_at > %s ORDER BY volume_checked_at DESC LIMIT 1""",
+        (sharing, now - timedelta(hours=float(vol.get("recheck_hours", 0))))).fetchone()
+    if not last or not last["volume_low"]:
+        return None
+    return {"volume": vol.get("id"), "free_gb": float(last["volume_free_gb"]), "min_free_gb": float(vol["min_free_gb"]),
+            "checked_at": last["volume_checked_at"].isoformat(), "machine": last["name"]}
+
+
+def _report_volume_low(conn, pool: str, low: dict, now: datetime) -> None:
+    from .. import notify
+    notify.owner_event(conn, "volume_low", subject={"pool": pool, "volume": low["volume"]}, payload=low,
+                       dedupe_key=f"volume_low:{low['volume']}:{now:%Y-%m-%d}")
 
 
 def _work_pools(policy: Policy, w: dict) -> list[str]:
@@ -485,7 +522,7 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         recent = conn.execute(
             """SELECT name, stop_reason FROM gpu_groups
                WHERE %s = ANY(job_kinds) AND pool = ANY(%s) AND stopped_at > %s
-                 AND coalesce(stop_reason, '') NOT IN ('idle', 'manual')
+                 AND coalesce(stop_reason, '') NOT IN ('idle', 'manual') AND NOT coalesce(volume_low, false)
                ORDER BY stopped_at DESC LIMIT 1""", (kind, pools, now - cooldown)).fetchone()
         if recent:
             actions.append({"action": "cooldown", "kind": kind, "after": recent["name"],
@@ -509,6 +546,11 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             if not info or info["provider"] not in providers or not providers[info["provider"]].configured():
                 continue
             if info["provider"] in unfunded:
+                continue
+            low = volume_low(conn, policy, pool, now)
+            if low:   # its machines would die at their first download: the next pool (the plain one) instead
+                tried.append({"pool": pool, "error": f"volume_low: {low['free_gb']} GB free < {low['min_free_gb']}"})
+                _report_volume_low(conn, pool, low, now)
                 continue
             try:
                 launched = (launch_one(conn, mpol, providers, kind, pool, now, family=merged) if merged
@@ -544,18 +586,20 @@ def no_output_streak(conn, policy: Policy, family: str, now: datetime, pools: li
     img = policy.get("worker_images", family) or {}
     image = f"{img.get('image')}:{img.get('tag', 'latest')}" if img else None
     rows = conn.execute(
-        """SELECT g.name, g.image, g.stop_reason,
+        """SELECT g.name, g.pool, g.image, g.stop_reason,
                   count(a.id) FILTER (WHERE a.outcome = 'done') AS done, count(a.id) AS tried
            FROM gpu_groups g LEFT JOIN attempts a ON a.gpu_group = g.name
            WHERE g.family = %s AND g.stopped_at > %s AND coalesce(g.stop_reason, '') <> 'manual'
+             AND NOT coalesce(g.volume_low, false)   -- gave itself up on a full volume: volume_low routes around it
              AND (%s::text[] IS NULL OR g.pool = ANY(%s::text[]))
-           GROUP BY g.name, g.image, g.stop_reason, g.stopped_at
+           GROUP BY g.name, g.pool, g.image, g.stop_reason, g.stopped_at
            ORDER BY g.stopped_at DESC LIMIT %s""", (family, now - timedelta(hours=hours), pools, pools, n)).fetchall()
     failed = [r for r in rows if not r["done"] and (r["tried"] or r["stop_reason"] == "never_started")
               and (image is None or r["image"] in (None, image))]
     if len(rows) < n or len(failed) < n:
         return None
-    return {"machines": [r["name"] for r in failed], "image": image, "hours": hours}
+    return {"machines": [r["name"] for r in failed], "pools": sorted({r["pool"] for r in failed}), "image": image,
+            "hours": hours}
 
 
 def _brief(scores: list[dict]) -> list[dict]:

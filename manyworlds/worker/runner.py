@@ -551,7 +551,10 @@ def start(kinds: list[str], *, pool: str, policy: Policy, store: ObjectStore, co
     registered machine, retries the database a few times, and if the queue stays unreachable destroys its own
     machine: one that can't reach the queue can never do work, so it must not be paid for."""
     check_registered(pool)
+    vol = None
     if pool not in NO_GPU_POOLS:
+        from . import volume
+        vol = volume.check()   # a weights volume: stray paths deleted and free space measured before any download
         memory = gpu_memory_gb()
         fit = kinds_that_fit(kinds, policy, memory)
         if not fit:   # nothing this card can run: give the machine up rather than pay for it idling
@@ -566,13 +569,25 @@ def start(kinds: list[str], *, pool: str, policy: Policy, store: ObjectStore, co
         kinds = fit
     handlers = handlers_for(kinds)
     timeout = float(policy.get("queue", "connect_timeout_seconds", default=20))
+    worker = None
     for attempt in range(int(policy.get("queue", "startup_connect_attempts", default=3))):
         try:
-            return Worker(handlers=handlers, store=store, policy=policy, pool=pool,
-                          connect=lambda url=None: connect(url, timeout=timeout), self_destroy=self_destroy)
+            worker = Worker(handlers=handlers, store=store, policy=policy, pool=pool,
+                            connect=lambda url=None: connect(url, timeout=timeout), self_destroy=self_destroy)
+            break
         except Exception as e:  # noqa: BLE001 - some rented hosts block outbound database traffic
             log.warning("database unreachable (attempt %d): %s", attempt + 1, type(e).__name__)
-    if self_destroy is None:
-        from ..deploy.providers import self_destroy
-    log.error("database unreachable from this host; destroyed own machine: %s", self_destroy())
-    raise SystemExit(2)
+    if worker is None:
+        if self_destroy is None:
+            from ..deploy.providers import self_destroy
+        log.error("database unreachable from this host; destroyed own machine: %s", self_destroy())
+        raise SystemExit(2)
+    if vol is not None:
+        from . import volume
+        volume.record(worker.conn, worker.group, vol)
+        if vol["low"]:   # its first download would die of "Disk quota exceeded": give the machine up now
+            log.error("weights volume %s has %.1f GB free, below the floor of %s GB; giving up this machine",
+                      vol["path"], vol["free_gb"], vol["min_free_gb"])
+            worker._retire_machine()
+            raise SystemExit(4)
+    return worker
