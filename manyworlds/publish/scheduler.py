@@ -104,6 +104,12 @@ def publish_due(conn, policy, *, now: datetime, creator_id=None) -> dict:
             conn.execute("UPDATE posts SET status = %s, published_at = %s, external_id = %s, updated_at = now() "
                          "WHERE id = %s", ("simulated" if result["simulated"] else "published", published_at,
                                            result["external_id"], post["id"]))
+            from ..brain import series   # an episode counts once it is out, never when it is scheduled
+            try:
+                with conn.transaction():   # a savepoint: a series bug must never undo the publication record
+                    series.record_published(conn, post["id"], published_at=published_at, simulated=result["simulated"])
+            except Exception as e:  # noqa: BLE001 - the post is out; only its episode record is missing
+                out["errors"] = out.get("errors", []) + [f"{post['id']} series: {type(e).__name__}: {str(e)[:200]}"]
         out["simulated" if result["simulated"] else "published"] += 1
         if result["simulated"]:
             from ..brain import simulation

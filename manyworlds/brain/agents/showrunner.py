@@ -21,9 +21,9 @@ from pydantic import BaseModel, Field
 
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import archetypes, events, evidence, experiments, exploration, memory, planner, proposals
+from .. import archetypes, events, evidence, experiments, exploration, memory, planner, proposals, series
 from ..agent import AgentContext, commission, record_decision, register
-from . import analyst, style_director, talent_manager
+from . import analyst, comment_themes, style_director, talent_manager
 
 SYSTEM = planner.SYSTEM + """
 
@@ -55,6 +55,13 @@ class PlannedIdea(planner.PlannedPost):
     experiment: str = Field(default="", description="the slot id when this idea fills an experiment slot, else empty")
     slides: list[Slide] = Field(default_factory=list, description="a carousel's text slides in her brand (capability "
                                                                   "edits.text_slides), in order; empty for most posts")
+    # Series continuity (manyworlds.brain.series): flat fields only (a nested list once broke a grammar limit).
+    episode: int = Field(default=0, description="in a series: this episode's number (the series' next_episode, one "
+                                                "more for each later episode in this batch); else 0")
+    episode_premise: str = Field(default="", description="in a series: this episode's premise in one line; else empty")
+    opens_thread: str = Field(default="", description="a thread this post leaves open (a promised part 2, a running "
+                                                      "joke, a question to the audience), in one line; usually empty")
+    closes_threads: list[str] = Field(default_factory=list, description="ids of open threads this post pays off")
 
 
 class IdeaBatch(BaseModel):
@@ -159,6 +166,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     brief = talent_manager.latest_brief(conn, creator_id)
     brief_text = (f"Her talent manager's brief for these batches (follow it: it sets the focus, the series to run and "
                   f"what to stop): {json.dumps(brief['output'], default=str)}\n" if brief else "")
+    continuity_text = _continuity_text(conn, policy, creator_id, prof)
     staging_text = (f"Stagings you may give an idea (set `staging` to its name; most posts need none; the scene must "
                     f"show its setting, framing and wardrobe and the script follow its conventions): "
                     f"{json.dumps(stagings)}. {policy.get('stagings', 'rules', default='')} " if stagings else "")
@@ -193,6 +201,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"Learn from what reached people, not only from the scores; don't repeat scenes, jokes or captions:\n"
         f"{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30)), policy), default=str)}\n"
         f"Her series (a video belongs to one of these, by name): {json.dumps(planner.series_catalogue(prof), default=str)}\n"
+        f"{continuity_text}"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
         f"{niche_text}{play_text}{brief_text}{style_text}"
@@ -220,6 +229,28 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
             "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings, "flavors": flavors,
             "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore}
     return prompt, meta
+
+
+def _continuity_text(conn, policy, creator_id, prof) -> str:
+    """Where each series stands (manyworlds.brain.series: next episode number, last episodes, open threads, what its
+    audience asked for) and the latest comment themes (agents/comment_themes); empty when there is neither."""
+    view = series.planning_view(conn, policy, creator_id, planner.series_catalogue(prof))
+    themes = comment_themes.for_planning(conn, policy, creator_id)
+    for t in themes:
+        if t.get("series") in view and t["series"] and t.get("kind") in ("question", "request"):
+            view[t["series"]].setdefault("audience_asked", []).append(t["text"])
+    text = ""
+    if any(v.get("last_episodes") or v.get("open_threads") for v in view.values()):
+        text += (f"Where her series stand (an idea in a series sets `series`, `episode` (its next_episode; one more for "
+                 f"each later episode in this batch) and `episode_premise`; follow on from the last episodes without "
+                 f"repeating them, call back to them, answer what the audience asked; a post that pays off an open "
+                 f"thread lists its id in `closes_threads`, and one that leaves something open says so in "
+                 f"`opens_thread`; threads under \"\" are hers, not one series'): {json.dumps(view, default=str)}\n")
+    if themes:
+        text += (f"What her audience keeps saying in comments on her posts (themes, in our words; let it shape ideas, "
+                 f"answer a question or grant a request where it fits her; never quote or name a commenter): "
+                 f"{json.dumps([{k: t[k] for k in ('kind', 'text', 'series') if t.get(k)} for t in themes])}\n")
+    return text
 
 
 def _season(day: date, hemisphere: str) -> str:
@@ -284,6 +315,13 @@ class Showrunner:
                         "series": q.series, "caption": q.caption, "day": q.day, "platform": q.platform,
                         "exploratory": q.exploratory, "reasoning": q.reasoning, "canon_key": q.canon_key,
                         "staging": staging, "flavor": flavor}
+                if q.series:   # read back at publication, when the post becomes an episode (manyworlds.brain.series)
+                    body.update(episode=max(int(q.episode or 0), 0), episode_premise=q.episode_premise.strip())
+                if q.opens_thread.strip():
+                    body["opens_thread"] = q.opens_thread.strip()
+                closes = [t.strip().lower() for t in q.closes_threads if t.strip()]
+                if closes:
+                    body["closes_threads"] = closes
                 if move:   # the director (manyworlds.brain.director) starts that scene from the move's shot
                     body["move"] = move
                 if q.slides:   # carousel text slides (manyworlds.slides), carried to the post (ideas._DIRECTED_FIELDS)

@@ -12,6 +12,7 @@ any other module under manyworlds/brain reads these tables directly.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Literal
 
@@ -162,3 +163,50 @@ def niche_trends(conn, creator_id, policy) -> dict | None:
                     "rising": b.get("rising", []), "cooling": b.get("cooling", []),
                     "hooks_to_try": b.get("hooks_to_try", []), "avoid": b.get("avoid", [])}
     return None
+
+
+_MENTION = re.compile(r"@[\w.]+")
+_LINK = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
+
+
+def scrub(text: str) -> str:
+    """Comment text with every @handle and link taken out: a handle is never passed on, quoted or stored."""
+    return _LINK.sub("[link]", _MENTION.sub("@someone", text or "")).strip()
+
+
+def audience_comments(conn, creator_id, *, since, limit: int, chars: int) -> list[dict]:
+    """Recent comments on the creator's published posts, for planning (the comment themes): newest first, each
+    {"comment", "on_post", "series", "at"}, with handles and links scrubbed. Audience evidence like metrics, so only
+    this module reads it. Real only: comments exist only on real Instagram publications, never simulated ones.
+    Comments from any of our own accounts are left out (our creators never engage with each other), as are those
+    whose text has been cleared (comments.keep_days). Commenters never appear, not even as hashes."""
+    from ..research.apify import author_hash
+    ours = [h for h in (author_hash(r["handle"]) for r in conn.execute(
+        "SELECT handle FROM accounts WHERE handle IS NOT NULL").fetchall()) if h]
+    rows = conn.execute(
+        """SELECT m.text, m.commented_at, p.caption, p.body->>'series' AS series
+           FROM comments m JOIN publications u ON u.id = m.publication_id AND NOT u.simulated
+           JOIN posts p ON p.id = u.post_id
+           WHERE m.creator_id = %s AND m.text IS NOT NULL AND m.text <> '' AND m.created_at > %s
+             AND coalesce(m.reason, '') <> 'one of our accounts' AND NOT (coalesce(m.author_hash, '') = ANY(%s))
+           ORDER BY m.commented_at DESC NULLS LAST LIMIT %s""",
+        (creator_id, since, ours, int(limit))).fetchall()
+    return [{"comment": scrub(r["text"])[:chars], "on_post": scrub(r["caption"] or "")[:chars],
+             **({"series": r["series"]} if r["series"] else {}),
+             "at": r["commented_at"].isoformat() if r["commented_at"] else None} for r in rows]
+
+
+def creators_with_new_comments(conn, *, min_new: int, every, now) -> list:
+    """Active creators whose real posts gathered at least `min_new` comments (text kept, not from our accounts) since
+    their last comment_themes decision, and whose last one is older than `every` (a timedelta)."""
+    rows = conn.execute(
+        """SELECT m.creator_id FROM comments m JOIN publications u ON u.id = m.publication_id AND NOT u.simulated
+           JOIN creators c ON c.id = m.creator_id AND c.status = 'active'
+           LEFT JOIN LATERAL (SELECT max(d.created_at) AS at FROM decisions d
+                              WHERE d.kind = 'comment_themes' AND d.creator_id = m.creator_id) t ON true
+           WHERE m.text IS NOT NULL AND m.text <> '' AND coalesce(m.reason, '') <> 'one of our accounts'
+             AND m.created_at > coalesce(t.at, '-infinity'::timestamptz)
+             AND coalesce(t.at, '-infinity'::timestamptz) < %s
+           GROUP BY m.creator_id HAVING count(*) >= %s ORDER BY m.creator_id""",
+        (now - every, int(min_new))).fetchall()
+    return [r["creator_id"] for r in rows]
