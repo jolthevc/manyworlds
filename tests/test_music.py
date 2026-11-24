@@ -429,3 +429,27 @@ def test_the_bench_report_counts_songs_and_summarises_their_checks(conn, policy)
     assert r["measured"][0]["outputs"] == 1 and r["measured"][0]["sec_per_output_median"] == 60
     mc = r["music_checks"]
     assert mc["songs"] == 1 and mc["passed"] == 1 and mc["wer_median"] == 0.2 and mc["lufs_median"] == -11.0
+
+
+LYRICS = ("[Verse]\nThe kettle sings before I do\nSteam on the window, writing you\n"
+          "[Chorus]\nStay up, stay up, the night is ours\nCounting the streetlights instead of stars\n"
+          "[Verse]\nSocks on the tiles, a borrowed sweater\nEvery small hour feels a little better")
+
+
+def test_a_song_that_sings_every_line_and_repeats_its_chorus_covers_its_lyrics():
+    # 2026-11-23, the first real song: every line sung, the chorus repeated; WER scored it 6.0
+    heard = ("The kettle sing before I do. Steam on the window. You. Stay up, stay up. The night is size. Counting the "
+             "streetlights instead of stars Socks on the tiles, a borrowed sweater Every small hour feels a little "
+             "better. Stay up, stay up, the night is ours. Counting the streetlights instead of stars. Stay up, stay up.")
+    assert music.line_coverage(LYRICS, heard, min_line_ratio=0.7) == 1.0
+    assert music.line_coverage(LYRICS, "la la la, oh oh, yeah", min_line_ratio=0.7) == 0.0
+    assert music.line_coverage("[Instrumental]", heard, min_line_ratio=0.7) is None
+
+
+def test_with_a_coverage_floor_the_lyrics_verdict_ignores_wer():
+    from manyworlds.worker.handlers import music_song
+    check = {"max_wer": 0.35, "min_line_coverage": 0.7}
+    ok = music_song.judge(check, asked_s=120, seconds=120, lufs=None, lyric_wer=6.0, coverage=1.0)
+    bad = music_song.judge(check, asked_s=120, seconds=120, lufs=None, lyric_wer=0.1, coverage=0.4)
+    assert ok["passed"] and ok["line_coverage"] == 1.0 and bad["failed"] == ["lyrics"]
+    assert music_song.judge({"max_wer": 0.35}, asked_s=1, seconds=1, lufs=None, lyric_wer=6.0)["failed"] == ["lyrics"]

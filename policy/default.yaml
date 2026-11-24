@@ -1990,7 +1990,7 @@ music:
   separation: {engine: demucs, model: htdemucs, shifts: 1, overlap: 0.25}
   # Objective check on the worker (bench, and production while `enforce`): the vocal stem transcribed (Whisper, as
   # the designed voices are) against the sung words (WER), the length against the asked length, the mix's loudness.
-  check: {asr_model: openai/whisper-large-v3, max_wer: 0.35, max_duration_error_share: 0.1, lufs: [-20, -7],
+  check: {asr_model: openai/whisper-large-v3, max_wer: 0.35, min_line_coverage: 0.7, min_line_ratio: 0.7, max_duration_error_share: 0.1, lufs: [-20, -7],
           enforce: false}
   # A music_video post (production.formats: none yet): the song first (music.song), then one sung take lip-synced
   # to its vocal stem (production.talk_kind), the full mix laid under the video at the finish (production.mixing).

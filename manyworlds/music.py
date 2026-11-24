@@ -98,6 +98,29 @@ def sung_words(lyrics: str) -> str:
     return " ".join(w for line in lines for w in re.sub(r"\([^)]*\)", " ", line).split())
 
 
+def line_coverage(lyrics: str, heard: str, *, min_line_ratio: float) -> float | None:
+    """The share of the written lines that were sung: a line counts when some stretch of the transcript as long as
+    the line matches it at `min_line_ratio` or better (word sequence similarity). Unlike WER, a song that repeats
+    its chorus or holds long instrumental parts is not penalised for words that are sung again (2026-11-23: a
+    2-minute song that sang every line scored WER 6.0). None without lyrics."""
+    from difflib import SequenceMatcher
+    lines = [_plain(re.sub(r"\([^)]*\)", " ", line)).split() for _, ls in parse(lyrics) for line in ls]
+    lines = [w for w in lines if w]
+    if not lines:
+        return None
+    said = _plain(heard).split()
+    found = 0
+    for words in lines:
+        n = len(words)
+        best = 0.0
+        for start in range(0, max(1, len(said) - n + 1)):
+            best = max(best, SequenceMatcher(None, words, said[start:start + n + 2]).ratio())
+            if best >= min_line_ratio:
+                break
+        found += best >= min_line_ratio
+    return round(found / len(lines), 3)
+
+
 def tags_text(tags) -> str:
     """The engine's style prompt: tags as one comma-separated line (a string is taken as it is)."""
     if isinstance(tags, str):

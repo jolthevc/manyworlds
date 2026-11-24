@@ -217,10 +217,12 @@ def music_checks(conn, batch: str) -> dict[str, Any]:
         vals = [float(c[key]) for c in checks if c.get(key) is not None]
         return round(statistics.median(vals), 3) if vals else None
     return {"songs": len(rows), "passed": sum(1 for c in checks if c.get("passed")),
-            "wer_median": med("wer"), "duration_error_share_median": med("duration_error_share"),
+            "wer_median": med("wer"), "line_coverage_median": med("line_coverage"),
+            "duration_error_share_median": med("duration_error_share"),
             "lufs_median": med("lufs"),
             "each": [{"title": r["title"], "seconds": r["seconds"],
-                      **{k: c.get(k) for k in ("wer", "duration_error_share", "lufs", "failed", "passed")}}
+                      **{k: c.get(k) for k in ("wer", "line_coverage", "duration_error_share", "lufs", "failed",
+                                               "passed")}}
                      for r, c in zip(rows, checks)]}
 
 

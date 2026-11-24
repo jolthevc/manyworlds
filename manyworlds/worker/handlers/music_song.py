@@ -186,10 +186,14 @@ def transcribe(vocals, sr: int, check: dict) -> str:
                             "language": check.get("language", "en")})(mono, sr)
 
 
-def judge(check: dict, *, asked_s: float, seconds: float, lufs: float | None, lyric_wer: float | None) -> dict:
-    """The check's verdict from what was measured (pure): each limit that applies, and `passed`."""
+def judge(check: dict, *, asked_s: float, seconds: float, lufs: float | None, lyric_wer: float | None,
+          coverage: float | None = None) -> dict:
+    """The check's verdict from what was measured (pure): each limit that applies, and `passed`. With
+    `min_line_coverage` in the check, the lyrics pass on the share of written lines sung (repeats are fine); WER is
+    then reported only."""
     err = round(abs(seconds - asked_s) / asked_s, 3) if asked_s else None
-    out = {"asked_s": asked_s, "seconds": seconds, "duration_error_share": err, "lufs": lufs, "wer": lyric_wer}
+    out = {"asked_s": asked_s, "seconds": seconds, "duration_error_share": err, "lufs": lufs, "wer": lyric_wer,
+           "line_coverage": coverage}
     fails = []
     if err is not None and check.get("max_duration_error_share") is not None \
             and err > float(check["max_duration_error_share"]):
@@ -197,7 +201,10 @@ def judge(check: dict, *, asked_s: float, seconds: float, lufs: float | None, ly
     lo_hi = check.get("lufs")
     if lo_hi and (lufs is None or not float(lo_hi[0]) <= lufs <= float(lo_hi[1])):
         fails.append("loudness")
-    if lyric_wer is not None and check.get("max_wer") is not None and lyric_wer > float(check["max_wer"]):
+    if check.get("min_line_coverage") is not None:
+        if coverage is not None and coverage < float(check["min_line_coverage"]):
+            fails.append("lyrics")
+    elif lyric_wer is not None and check.get("max_wer") is not None and lyric_wer > float(check["max_wer"]):
         fails.append("lyrics")
     return {**out, "failed": fails, "passed": not fails}
 
@@ -245,7 +252,10 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         words = music_mod.sung_words(song["lyrics"]) if not song["instrumental"] else ""
         heard = transcribe(vocals, sr, check) if (vocals is not None and words) else None
         verdict = judge(check, asked_s=song["seconds"], seconds=seconds, lufs=loudness_lufs(mix, sr),
-                        lyric_wer=wer(words, heard) if heard is not None else None)
+                        lyric_wer=wer(words, heard) if heard is not None else None,
+                        coverage=(music_mod.line_coverage(song["lyrics"], heard,
+                                                          min_line_ratio=float(check.get("min_line_ratio", 0.7)))
+                                  if heard is not None else None))
         if heard is not None:
             verdict["transcript"] = heard[:2000]
         for f in files:   # every output knows whether its song passed (generated beds read the instrumental's)
