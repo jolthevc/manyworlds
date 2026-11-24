@@ -46,7 +46,7 @@ jobs:
         run: |
           for i in $(seq 1 10); do
             python -m manyworlds.deploy.autoscale --once --no-launch || echo "tick failed"
-            [ "$i" -lt 10 ] && sleep 180
+            if [ "$i" -lt 10 ]; then sleep 180; fi
           done
       - name: Start the next run
         if: always() && github.ref == 'refs/heads/main'
