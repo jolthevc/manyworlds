@@ -69,9 +69,12 @@ def _recent_with_scores(conn, creator_id, n: int, policy=None) -> list[dict]:
     rows = conn.execute(
         """SELECT p.id, p.format, p.caption, p.body->'scenes' AS scenes, p.body->>'canon' AS canon,
                   p.body->>'series' AS series, e.scores
-           FROM posts p LEFT JOIN ideas i ON i.post_id = p.id
-           LEFT JOIN LATERAL (SELECT scores FROM evaluations WHERE idea_id = i.id AND role = 'evaluator'
-                              ORDER BY created_at DESC LIMIT 1) e ON true
+           FROM posts p
+           -- one row per post: a post linked to several ideas (from_post and a scheduled idea) shows the
+           -- latest evaluation of any of them, never a second copy of itself
+           LEFT JOIN LATERAL (SELECT ev.scores FROM ideas i JOIN evaluations ev ON ev.idea_id = i.id
+                              WHERE i.post_id = p.id AND ev.role = 'evaluator'
+                              ORDER BY ev.created_at DESC LIMIT 1) e ON true
            WHERE p.creator_id = %s AND p.status <> 'dropped'
            ORDER BY coalesce(p.scheduled_for, p.created_at) DESC LIMIT %s""", (creator_id, n)).fetchall()
     outcomes = evidence.post_outcomes(conn, creator_id, n, evidence.mode_for(conn, creator_id), policy=policy)

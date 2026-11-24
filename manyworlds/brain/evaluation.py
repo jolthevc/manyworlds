@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import statistics
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -122,7 +123,17 @@ def checked(item_id, rate: float) -> bool:
         return False
     if rate >= 1:
         return True
-    return int(hashlib.sha256(str(item_id).encode()).hexdigest()[:8], 16) / 2**32 < rate
+    return int(hashlib.sha256(canonical_id(item_id).encode()).hexdigest()[:8], 16) / 2**32 < rate
+
+
+def canonical_id(item_id) -> str:
+    """One spelling per id: a UUID in any case, with or without braces, hyphens or a urn prefix, is the
+    same item (written as str(uuid.UUID)); anything else is compared trimmed and lower-cased."""
+    text = str(item_id).strip()
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text.lower()
 
 
 def latest(conn, *, idea_id=None, asset_id=None, role: str = "evaluator") -> dict | None:
@@ -139,8 +150,8 @@ def reference_items(rubric_name: str) -> list[dict]:
     """The fixed reference set for a rubric (policy/rubrics/reference/<rubric>.yaml)."""
     import yaml
 
-    from .rubrics import ROOT
-    body = yaml.safe_load((ROOT / "reference" / f"{rubric_name}.yaml").read_text(encoding="utf-8"))
+    from .rubrics import policy_root
+    body = yaml.safe_load((policy_root() / "reference" / f"{rubric_name}.yaml").read_text(encoding="utf-8"))
     return [{**item, "creator": body.get("creator", "")} for item in body["items"]]
 
 

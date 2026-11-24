@@ -455,8 +455,14 @@ def _brain_ops(args, conn, pol) -> int:
                 "runs": runs, "llm_usd": llm.spent})
         return 0
     if args.brain_cmd in ("rubric-drift", "calibrate"):
-        from .brain import evaluation, rubrics
-        with llm.tagged("evaluator", None):   # Brain spend, outside cost per output
+        from .brain import budget, evaluation, rubrics
+        # The evaluator's daily budget bounds these runs as it bounds its jobs: refused before the first call,
+        # stopped before any call once spent.
+        try:
+            budget.check(conn, pol, "evaluator")
+        except budget.OverBudget as e:
+            raise SystemExit(f"refused: {e}") from None
+        with llm.tagged("evaluator", None, before_call=lambda: budget.check(conn, pol, "evaluator")):
             if args.brain_cmd == "calibrate":
                 _print({**evaluation.calibrate(conn, pol, llm, _creator_id(conn, args.creator), posts=args.posts),
                         "llm_usd": llm.spent})

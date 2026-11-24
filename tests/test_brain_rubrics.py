@@ -51,3 +51,29 @@ def test_the_highest_version_file_wins(tmp_path):
         body["version"] = v
         (tmp_path / f"idea-v{v}.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
     assert rubrics.load("idea", root=tmp_path).version == 2
+
+
+def test_a_stray_draft_file_is_skipped_not_fatal(tmp_path, caplog):
+    shutil.copy(rubrics.ROOT / "idea-v1.yaml", tmp_path / "idea-v1.yaml")
+    (tmp_path / "idea-vdraft.yaml").write_text("not: a rubric\n", encoding="utf-8")
+    assert rubrics.load("idea", root=tmp_path).version == 1
+    assert "idea-vdraft.yaml" in caplog.text
+
+
+def test_a_file_whose_version_disagrees_with_its_name_is_refused(tmp_path):
+    body = yaml.safe_load((rubrics.ROOT / "idea-v1.yaml").read_text(encoding="utf-8"))
+    body["version"] = 1
+    (tmp_path / "idea-v2.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
+    with pytest.raises(ValueError, match="declares version 1.*v2"):
+        rubrics.load("idea", root=tmp_path)
+
+
+def test_rubrics_load_from_beside_mw_policy_when_it_has_them(tmp_path, monkeypatch):
+    (tmp_path / "rubrics").mkdir()
+    body = yaml.safe_load((rubrics.ROOT / "idea-v1.yaml").read_text(encoding="utf-8"))
+    body["version"] = 7
+    (tmp_path / "rubrics" / "idea-v7.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
+    monkeypatch.setenv("MW_POLICY", str(tmp_path / "custom.yaml"))
+    assert rubrics.load("idea").version == 7
+    monkeypatch.setenv("MW_POLICY", str(tmp_path / "elsewhere" / "custom.yaml"))   # no rubrics there: the repo's
+    assert rubrics.policy_root() == rubrics.ROOT and rubrics.load("idea").version == 1

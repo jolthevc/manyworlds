@@ -9,6 +9,8 @@ with a higher version, and the reference set is re-scored (manyworlds.brain.eval
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 import re
 from pathlib import Path
 
@@ -27,6 +29,7 @@ def _find_root() -> Path:
 
 
 ROOT = _find_root()
+log = logging.getLogger("manyworlds.brain.rubrics")
 
 
 class RubricChanged(RuntimeError):
@@ -59,20 +62,44 @@ class Rubric(BaseModel):
         return "\n".join(lines)
 
 
+def policy_root() -> Path:
+    """Where rubrics load from: the `rubrics/` beside the policy file MW_POLICY names, when it holds any
+    rubric, so a policy kept outside the repo carries its own; otherwise ROOT."""
+    path = os.environ.get("MW_POLICY")
+    if path:
+        beside = Path(path).resolve().parent / "rubrics"
+        if beside.is_dir() and any(beside.glob("*-v*.yaml")):
+            return beside
+    return ROOT
+
+
 def _root(root: Path | None) -> Path:
-    return Path(root) if root is not None else ROOT
+    return Path(root) if root is not None else policy_root()
+
+
+_VERSION = re.compile(r"-v(\d+)\.yaml$")
 
 
 def load(name: str, *, root: Path | None = None) -> Rubric:
+    """The highest version of rubric `name`. A file whose name carries no numeric version (a stray draft,
+    `idea-vdraft.yaml`) is skipped with a warning; one whose `version:` disagrees with its name is refused."""
     base = _root(root)
-    files = sorted(base.glob(f"{name}-v*.yaml"),
-                   key=lambda p: int(re.search(r"-v(\d+)\.yaml$", p.name).group(1)))
+    files = []
+    for p in base.glob(f"{name}-v*.yaml"):
+        m = _VERSION.search(p.name)
+        if m is None or p.name != f"{name}-v{m.group(1)}.yaml":
+            log.warning("skipping %s: not a versioned rubric file (%s-v<n>.yaml)", p, name)
+            continue
+        files.append((int(m.group(1)), p))
     if not files:
         raise FileNotFoundError(f"no rubric {name!r} in {base}")
-    raw = files[-1].read_bytes()
+    version, path = max(files)
+    raw = path.read_bytes()
     r = Rubric(**yaml.safe_load(raw), file_hash=hashlib.sha256(raw).hexdigest())
     if r.rubric != name:
-        raise ValueError(f"{files[-1].name} declares rubric {r.rubric!r}")
+        raise ValueError(f"{path.name} declares rubric {r.rubric!r}")
+    if r.version != version:
+        raise ValueError(f"{path.name} declares version {r.version}; the file name says v{version}")
     return r
 
 

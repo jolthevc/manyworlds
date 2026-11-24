@@ -4,10 +4,12 @@ planned them, and stores every score with what it was scored under."""
 from __future__ import annotations
 
 import dataclasses
+import uuid
 
 import pytest
 
 from manyworlds import queue
+from manyworlds.worker.runner import NonRetryable
 from manyworlds.brain import evaluation, ideas, runtime
 from manyworlds.brain.agents import evaluator
 
@@ -223,3 +225,46 @@ def test_an_idea_is_scored_once_unless_it_sits_near_a_floor_that_drops_ideas(con
     got = {str(r["id"]): r["samples"] for r in conn.execute("SELECT id, samples FROM evaluations WHERE role = 'evaluator'")}
     assert got[str(far)] == policy.get("brain", "evaluation", "samples") == 1
     assert got[str(near)] == 1 + extra
+
+
+def test_a_missing_or_unscorable_item_fails_permanently_with_a_reason(conn, policy, store):
+    cid = creator(conn)
+    gone = uuid.uuid4()
+    for payload, reason in (({"idea_id": str(gone)}, f"no idea {gone}"), ({"asset_id": str(gone)}, f"no asset {gone}"),
+                            ({"idea_id": "not-a-uuid"}, "not a uuid")):
+        job = queue.enqueue(conn, "brain.evaluator", payload)
+        out = runtime.tick(conn, policy, ScoringLLM(conn=conn), worker_id="w1")
+        assert out[0]["status"] == "failed" and reason in out[0]["error"], out
+        row = conn.execute("SELECT status, error FROM jobs WHERE id = %s", (job,)).fetchone()
+        assert row["status"] == "failed" and reason in row["error"]
+    vjob = queue.enqueue(conn, "comfy.wan_i2v", {}, creator_id=cid)
+    video = conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes) "
+                         "VALUES (%s, %s, 'video', 'file:///x/clip.mp4', 'x', 1) RETURNING id", (vjob, cid)).fetchone()["id"]
+    with pytest.raises(NonRetryable, match="is a video"):
+        evaluator.evaluate_asset(_ctx(conn, policy, ScoringLLM(conn=conn)), video, store=store)
+    gif = conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes) "
+                       "VALUES (%s, %s, 'image', 'file:///x/a.gif', 'x', 1) RETURNING id", (vjob, cid)).fetchone()["id"]
+    with pytest.raises(NonRetryable, match="not an image type"):
+        evaluator.evaluate_asset(_ctx(conn, policy, ScoringLLM(conn=conn)), gif, store=store)
+    assert conn.execute("SELECT count(*) n FROM evaluations").fetchone()["n"] == 0
+
+
+def test_rows_and_their_decision_commit_together(conn, policy, monkeypatch):
+    """A crash after the rows are written but before the decision is remembered leaves neither, so the
+    rerun stores one set, not two."""
+    idea = ideas.from_post(conn, planned_post(conn, creator(conn)))
+    ctx = _ctx(conn, policy, ScoringLLM(conn=conn))
+    real = evaluator.record_decision
+
+    def crash(*a, **kw):
+        real(*a, **kw)
+        raise RuntimeError("machine lost")
+    monkeypatch.setattr(evaluator, "record_decision", crash)
+    with pytest.raises(RuntimeError):
+        evaluator.evaluate_idea(ctx, idea)
+    assert conn.execute("SELECT count(*) n FROM evaluations").fetchone()["n"] == 0
+    assert conn.execute("SELECT count(*) n FROM decisions WHERE job_id = %s", (ctx.job.id,)).fetchone()["n"] == 0
+    monkeypatch.setattr(evaluator, "record_decision", real)
+    eid = evaluator.evaluate_idea(ctx, idea)
+    assert evaluator.evaluate_idea(ctx, idea) == eid
+    assert conn.execute("SELECT count(*) n FROM evaluations WHERE role = 'evaluator'").fetchone()["n"] == 1
