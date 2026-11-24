@@ -381,6 +381,7 @@ breadth:
     # voice.speak job; skipped with the reason when the creator has none) from the same still (@anchor). The raw
     # takes are compared: no repairs. Run: mw test breadth --plan longtake [--dry-run]; mw test breadth-report <run>.
     longtake:
+      max_usd: 2.7                 # owner-approved 2026-11-23: $3 for the 90 s test, incl. the voice design
       creator: maren.afterhours
       items:
         - id: talk_longcat16_90s

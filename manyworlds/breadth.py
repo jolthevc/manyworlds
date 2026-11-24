@@ -624,7 +624,7 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
                  state["bench_open_jobs"], spent)
         if state["done"] or once:
             break
-        cap = cfg.get("max_usd")
+        cap = plan.get("max_usd", cfg.get("max_usd"))   # a plan may set its own cap (longtake: owner-approved $3)
         if cap is not None and spent >= float(cap):
             state["spend_cap"] = {"spent_usd": round(spent, 2), "max_usd": float(cap)}
             state["cancelled_jobs"] = cancel_queued(conn, batch)
