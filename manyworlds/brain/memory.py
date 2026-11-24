@@ -4,6 +4,7 @@ Facts are versioned rows in `creator_memory`: places, routines, tastes, opinions
 people, the signature item, and canon (small facts posts have established). A single-valued fact
 (`key`, e.g. home) replaces the previous one by closing it (`valid_until`). The showrunner reads the
 open facts; scheduled posts add their canon, and a dropped post takes its canon back (`retract_post`).
+Series episodes and their threads are kept apart (manyworlds.brain.series) and enter only at publication.
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ def retract_post(conn, post_ids) -> int:
     ids = [p for p in (post_ids or []) if p is not None]
     if not ids:
         return 0
+    from . import series
+    series.retract(conn, ids)   # a dropped post is no series episode either (episodes enter only at publication)
     closed = conn.execute(
         "UPDATE creator_memory SET valid_until = now() WHERE source_post = ANY(%s::uuid[]) AND kind = 'canon' "
         "AND valid_until IS NULL RETURNING creator_id, key, replaces", ([str(p) for p in ids],)).fetchall()

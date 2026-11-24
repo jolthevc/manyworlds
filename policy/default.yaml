@@ -137,6 +137,7 @@ job_kinds:
   brain.talent_manager: {pools: [local], outputs_per_job: 0}
   brain.style_director: {pools: [local], outputs_per_job: 0}
   brain.market_lead: {pools: [local], outputs_per_job: 0}
+  brain.comment_themes: {pools: [local], outputs_per_job: 0}
   brain.scouts:    {pools: [local], outputs_per_job: 0}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
@@ -757,7 +758,8 @@ brain:
   # brand) and a monthly season (capsule wardrobe, trips). A launch step; existing creators get one when missing.
   style_director: {enabled: true, role: style_director, effort: medium, season_days: 30, min_faceless_families: 4}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
-                    creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0,
+                    comment_themes: 0.5}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -869,6 +871,14 @@ brain:
                    decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
+  # Series continuity (manyworlds.brain.series): episodes enter at publication; the showrunner sees, per series (at
+  # most max_series), its next episode number, the last episodes_shown episodes and up to threads_shown open threads.
+  series: {max_series: 6, episodes_shown: 3, threads_shown: 5}
+  # Comment themes (brain/agents/comment_themes.py): at most every every_hours per creator, once min_new comments
+  # arrived since the last summary; reads the last window_days (at most max_comments, each cut to comment_chars) and
+  # keeps max_themes themes; the showrunner sees the `shown` largest. No comments, no call.
+  comment_themes: {enabled: true, role: comment_themes, effort: low, every_hours: 24, min_new: 3, window_days: 14,
+                   max_comments: 80, comment_chars: 240, max_themes: 6, theme_chars: 200, shown: 6}
   # The analyst agent (brain/agents/analyst.py): reasoning effort of its notes call.
   analyst: {effort: medium}
   # The analyst (brain/analysis.py): outcomes at target_age_s as log-lift over the baseline window; effects
@@ -1969,6 +1979,9 @@ llm:
     # One short call when a failed video ships as its photo (production.reroute_caption): the caption written for
     # the video is rewritten for a still. Haiku: a light edit of text that already exists.
     caption_rewrite: claude-haiku-5-5
+    # Comment themes (brain/agents/comment_themes.py): a few themes from a creator's recent comments, at most daily;
+    # light summarising, so the cheapest model. Batched (llm.batch.roles): nobody waits on it.
+    comment_themes: claude-haiku-5-5
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
@@ -2026,7 +2039,7 @@ llm:
   # second: never the director, review or comment replies (those run outside brain jobs anyway).
   batch:
     enabled: true
-    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead]
+    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes]
     discount: 0.5              # the batch price as a share of the standard one (Anthropic pricing, checked 2026-11-23)
     gather_seconds: 30         # wait this long for other jobs' calls so they share a batch
     max_requests: 1000         # per batch (the API takes up to 100,000)
