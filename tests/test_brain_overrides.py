@@ -94,3 +94,36 @@ def test_agent_budgets_follow_the_effective_policy(conn, policy):
     queue.enqueue(conn, "brain.echo", {})
     out = runtime.tick(conn, policy, StubLLM(conn=conn), worker_id="w1")
     assert out[0]["status"] == "failed" and "budget" in out[0]["error"]
+
+
+def test_settings_and_version_come_from_one_snapshot(conn, policy):
+    """An override applied while the effective policy is being read never yields a version that doesn't match the
+    settings: the read is one statement, so a change landing after it is in neither the settings nor the version."""
+    overrides.propose(conn, policy, PATH, 0.5, author="a", reason="r")
+
+    class Racing:
+        """The connection, with another writer applying an override right after each statement."""
+        def __init__(self, c):
+            self.c, self.statements = c, 0
+
+        def execute(self, *a, **k):
+            cur = self.c.execute(*a, **k)
+            rows = cur.fetchall()
+            self.statements += 1
+            overrides.propose(self.c, policy, PATH, 0.4, author="b", reason="concurrent")
+            return _Rows(rows)
+
+    class _Rows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    racing = Racing(conn)
+    eff = overrides.effective_policy(racing, policy)
+    assert racing.statements == 1
+    assert eff.version == f"{policy.version}+o1" and eff.get("brain", "exploration_share") == 0.5

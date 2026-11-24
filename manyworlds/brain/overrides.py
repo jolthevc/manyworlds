@@ -46,11 +46,18 @@ def latest_version(conn) -> int:
 
 
 def effective_policy(conn, policy: Policy) -> Policy:
+    """The file policy with the latest override of each path, versioned by the latest override. Settings and version
+    come from one statement (one snapshot): read in two, an override applied in between would give a decision a
+    version that doesn't match the settings it ran under. The newest override is the latest row of its own path, so
+    the max over the latest rows is the max over all of them."""
     body = copy.deepcopy(policy.body)
-    for row in conn.execute("SELECT DISTINCT ON (path) path, value FROM policy_overrides "
-                            "ORDER BY path, version DESC").fetchall():
+    rows = conn.execute("SELECT path, value, max(version) OVER () AS latest FROM "
+                        "(SELECT DISTINCT ON (path) path, value, version FROM policy_overrides "
+                        "ORDER BY path, version DESC) d").fetchall()
+    for row in rows:
         _set_path(body, row["path"], row["value"])
-    return dataclasses.replace(policy, body=body, version=f"{policy.version}+o{latest_version(conn)}")
+    latest = int(rows[0]["latest"]) if rows else 0
+    return dataclasses.replace(policy, body=body, version=f"{policy.version}+o{latest}")
 
 
 def _matches(pattern: str, path: str) -> bool:

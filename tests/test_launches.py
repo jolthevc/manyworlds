@@ -138,3 +138,33 @@ def test_a_launch_that_cannot_train_stops_with_the_reason(conn, policy, monkeypa
     out = launches.advance(conn, policy)                                # the producer loop does not crash
     row = conn.execute("SELECT status, error FROM launches").fetchone()
     assert out["failed"] == 1 and row["status"] == "failed" and "reference images" in row["error"]
+
+
+def _launch_to_creator(conn, policy, monkeypatch, body):
+    t = conn.execute("INSERT INTO theses (summary, status, body) VALUES ('s', 'proposed', %s) RETURNING id",
+                     (Jsonb(body),)).fetchone()["id"]
+    _approve_launch(conn, t)
+    launches.advance(conn, policy)
+    _run_lab(conn, policy, monkeypatch)
+    launches.advance(conn, policy)                                     # the bible step finds the creator
+    return conn.execute("SELECT market_id, cluster_id FROM creators WHERE handle = 'newcook'").fetchone()
+
+
+def test_a_launched_creator_joins_the_market_its_thesis_names(conn, policy, monkeypatch):
+    row = _launch_to_creator(conn, policy, monkeypatch, {"summary": "s", "market": "slow living"})
+    m = conn.execute("SELECT id FROM markets WHERE name = 'slow living'").fetchone()
+    assert m and row["market_id"] == m["id"] and row["cluster_id"] is None
+
+
+def test_a_cohort_thesis_places_its_creator_in_its_market_and_cluster(conn, policy, monkeypatch):
+    m = conn.execute("INSERT INTO markets (name) VALUES ('night routine') RETURNING id").fetchone()["id"]
+    c = conn.execute("INSERT INTO clusters (market_id, name) VALUES (%s, 'quiet nights') RETURNING id", (m,)).fetchone()["id"]
+    row = _launch_to_creator(conn, policy, monkeypatch, {"summary": "s", "market_id": str(m), "cluster_id": str(c)})
+    assert (row["market_id"], row["cluster_id"]) == (m, c)
+    assert conn.execute("SELECT count(*) n FROM markets").fetchone()["n"] == 1   # no market made
+
+
+def test_a_thesis_without_a_market_leaves_the_creator_unplaced(conn, policy, monkeypatch):
+    row = _launch_to_creator(conn, policy, monkeypatch, {"summary": "s", "market_id": "not-a-uuid"})
+    assert row["market_id"] is None and row["cluster_id"] is None
+    assert conn.execute("SELECT count(*) n FROM markets").fetchone()["n"] == 0

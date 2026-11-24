@@ -540,7 +540,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
     from datetime import datetime, timezone
 
     from . import notify
-    from .brain import events, ideas, launches, portfolio, showrunner_loop
+    from .brain import discover, events, ideas, launches, portfolio, showrunner_loop
     from .brain import chief_of_staff
     from .brain.agents import market_lead, style_director, talent_manager
     from .deploy.providers import redact
@@ -564,6 +564,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
         talent_manager.ensure_reviews(conn, pol, now=now)   # each creator's career review, on its stage's cadence
         style_director.ensure(conn, pol, now=now)           # each creator's style and world, and the monthly season
         market_lead.ensure_reviews(conn, pol, now=now)      # each market that warrants a lead
+        discover.ensure_due(conn, pol, now=now)             # research discovery on its cadence (live only)
         chief_of_staff.tick(conn, pol, now=now)             # predictions resolved, stalled requests and agents reported
         r = launches.advance(conn, pol)            # approved launches walk the creator lab's steps
         return [{"launches": r}] if any(r.values()) else []

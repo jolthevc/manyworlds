@@ -603,19 +603,30 @@ def maybe_reconcile(conn, policy: Policy, providers: dict) -> list[dict]:
     return [{"action": "reconciled", **out}] if out["groups"] else []
 
 
-def housekeeping(conn, policy: Policy | None = None) -> list[dict]:
+def housekeeping(conn, policy: Policy | None = None, store=None, now: datetime | None = None) -> list[dict]:
     """Rules that hold whatever the master switch says, on the one loop that always runs: raw research
-    items are deleted once past their retention date (research privacy), and fixed monthly costs (policy
-    `fixed_costs`, e.g. the weights volume) accrue to the ledger daily."""
+    items are deleted once past their retention date (research privacy), fixed monthly costs (policy
+    `fixed_costs`, e.g. the weights volume) accrue to the ledger daily, and the JPEG copies made for Instagram
+    are deleted once their post is out or given up (manyworlds.publish.public_copies)."""
     from .. import ledger
     from ..research.apify import purge_expired
+    out: list[dict] = []
     try:
         n = purge_expired(conn)
         if policy is not None:
             ledger.accrue_fixed(conn, policy.get("fixed_costs", default=[]) or [])
-        return [{"action": "purged_research_items", "items": n}] if n else []
+        out += [{"action": "purged_research_items", "items": n}] if n else []
     except Exception as e:  # noqa: BLE001 - housekeeping never stops enforcement; retried next tick
-        return [{"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
+        out.append({"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]})
+    if policy is not None:
+        from .. import storage
+        from ..publish import public_copies
+        try:
+            r = public_copies.purge(conn, policy, store or storage.from_url, now=now)
+            out += [{"action": "purged_public_copies", **r}] if r["posts"] or r["failed"] else []
+        except Exception as e:  # noqa: BLE001 - as above: retried next tick
+            out.append({"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]})
+    return out
 
 
 def daily_summary(conn, policy: Policy, now: datetime | None = None) -> list[dict]:
