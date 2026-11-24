@@ -77,8 +77,15 @@ gpu_pools:
   # Secure H100 SXM (80 GB): the full-precision talk model on the card with no offloading, which ran out of memory
   # on a 48 GB L40S (2026-11-22). Ceiling $3/h: a pod RunPod prices above it is destroyed at once.
   runpod_secure_h100: {provider: runpod, gpu: h100, usd_per_hour: 3.00, interruptible: false, cloud: SECURE}
+  # Each machine checks the volume at boot (manyworlds.worker.volume): it deletes `prune` (paths under `path`; longcat:
+  # the ~47 GB the 90 s LongCat test of 2026-11-24 left in /models/longcat, which filled it), then measures free space
+  # (the lesser of the filesystem's figure and size_gb minus what is stored). Below min_free_gb (headroom for one
+  # missing model, not a whole family's weights: those are already there) it records the measurement and gives the
+  # machine up; the autoscaler skips this volume's pools for recheck_hours after a low reading, falling back to
+  # runpod_secure_l40s.
   runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
-                           network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models}}
+                           network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
+                                            prune: [longcat], min_free_gb: 15, recheck_hours: 6}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
   # Hosted APIs (Together): jobs run on the control plane (fly.toml process `hosted`); the host bills per output
   # (ledger `hosted_api`), so no machine is rented and nothing idles.
@@ -901,7 +908,8 @@ notify:
   machine_stop_reasons: [max_usd, daily_gpu_budget, stuck, never_started, attempt_timeout, unregistered]
   priority: {publish_held: high, launch_failed: high, provider_unfunded: high, not_launching: high,
              machine_stop_failed: urgent, machine_stopped: default, autoscaler_failed: high,
-             brain_step_failed: default, account_needed: default, approval_launch: high, daily_summary: low}
+             brain_step_failed: default, account_needed: default, approval_launch: high, daily_summary: low,
+             volume_low: high}
 
 # Master operating budget (spec 6): the Brain allocates inside it; raising it needs the owner.
 budget: {master_usd_per_month: 750, reserve_share: 0.15}
