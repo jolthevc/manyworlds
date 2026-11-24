@@ -199,3 +199,124 @@ def test_the_owner_can_pick_a_candidate_by_index_but_never_one_like_another_crea
     assert [r["step"] for r in rows] == ["voice_pick:candidate:0"] and rows[0]["output"]["override"] is True
     # the automatic pick is still its own decision
     assert voice_lab.pick(conn, policy, cid, job)["picked"]["index"] == 2
+
+
+# --- the delivery bank (policy voice.delivery_bank) --------------------------------------------------------------
+BASE = [1.0, 0.0, 0.0]
+NEAR = [0.95, 0.31, 0.0]      # cosine distance ~0.05 from BASE: the same voice in another mood
+DESIGNED = {"engine": "voxcpm", "ref_uri": "s3://b/voice/base.wav", "ref_text": "Okay so this happened.",
+            "embedding": BASE, "voice": "af_bella"}
+
+
+def _bank_policy(policy, **overrides):
+    v = policy.body["voice"]
+    return type(policy)(body={**policy.body, "voice": {**v, "delivery_bank": {**v["delivery_bank"], **overrides}}},
+                        version=policy.version)
+
+
+def _bank_done(conn, policy, cid, metas: dict):
+    """Each bank job finished, its clip's meta as given ({delivery: meta}; a missing delivery stays queued)."""
+    jobs = voice_lab.bank(conn, policy, cid)
+    for name, meta in metas.items():
+        conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (jobs[name],))
+        conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "
+                     "VALUES (%s, %s, 'audio', %s, 'x', 1, %s)",
+                     (jobs[name], cid, f"s3://b/voice/bank-{name}.wav", Jsonb(meta)))
+    return jobs
+
+
+def _clip(policy, name, *, wer=0.0, embedding=NEAR, heard=None):
+    text = policy.get("voice", "delivery_bank", "deliveries", name, "text")
+    return {"wer": wer, "embedding": embedding, "lines": [{"text": text, "transcript": heard or text}]}
+
+
+def test_the_bank_asks_for_one_clip_per_delivery_with_controllable_cloning(conn, policy):
+    cid = creator(conn, {"voice": DESIGNED})
+    jobs = voice_lab.bank(conn, policy, cid, batch="test-voice-x")
+    deliveries = policy.get("voice", "delivery_bank", "deliveries")
+    assert set(jobs) == set(deliveries)
+    for name, job in jobs.items():
+        row = conn.execute("SELECT kind, batch, payload FROM jobs WHERE id = %s", (job,)).fetchone()
+        p = row["payload"]
+        assert row["kind"] == "voice.speak" and row["batch"] == "test-voice-x"
+        assert (p["ref_uri"], p["ref_text"]) == (DESIGNED["ref_uri"], DESIGNED["ref_text"])
+        # the instruction is followed (not read aloud) with controllable cloning: the one place it is used
+        assert p["params"]["clone"] == "controllable"
+        assert p["lines"] == [{"text": deliveries[name]["text"], "delivery": deliveries[name]["instruction"]}]
+        assert p["embed"] is True and p["bank"] == name
+        assert p["takes"] == policy.get("voice", "delivery_bank", "takes")
+    assert voice_lab.bank(conn, policy, cid) == jobs                         # idempotent
+    with pytest.raises(ValueError, match="designed voice"):
+        voice_lab.bank(conn, policy, creator(conn))                         # Kokoro: no bank
+
+
+def test_bank_clips_are_kept_only_if_they_say_their_text_stay_her_voice_and_leak_nothing(conn, policy):
+    creator(conn, {"voice": {**DESIGNED, "ref_uri": "s3://b/o.wav", "embedding": [0.0, 0.0, 1.0]}})
+    cid = creator(conn, {"voice": DESIGNED})
+    _bank_done(conn, policy, cid, {
+        "excited": _clip(policy, "excited"),
+        "deadpan": _clip(policy, "deadpan", wer=0.3),                                   # garbled
+        "amused": _clip(policy, "amused", heard="Amused, laughing a little. " +
+                        policy.get("voice", "delivery_bank", "deliveries", "amused", "text")),  # read aloud
+        "confiding": _clip(policy, "confiding", embedding=[0.0, 1.0, 0.0]),            # not her voice any more
+        "storytelling": _clip(policy, "storytelling", embedding=None),                 # an old worker: no embedding
+    })
+    out = voice_lab.pick_bank(conn, policy, cid)
+    assert out["kept"] == ["excited"] and out["waiting"] == ["questioning"]
+    assert set(out["rejected"]) == {"deadpan", "amused", "confiding", "storytelling"}
+    assert "WER" in out["rejected"]["deadpan"][0]
+    assert "aloud" in out["rejected"]["amused"][0] and "amused" in out["rejected"]["amused"][0]
+    assert "from her base clip" in out["rejected"]["confiding"][0]
+    bank = anchors(conn, cid)["voice"]["bank"]
+    assert set(bank) == {"excited"}
+    assert bank["excited"]["ref_uri"] == "s3://b/voice/bank-excited.wav"
+    assert bank["excited"]["ref_text"] == policy.get("voice", "delivery_bank", "deliveries", "excited", "text")
+    assert anchors(conn, cid)["voice"]["ref_uri"] == DESIGNED["ref_uri"]              # the base voice unchanged
+    rows = conn.execute("SELECT step FROM decisions WHERE kind = 'voice_bank' AND creator_id = %s", (cid,)).fetchall()
+    assert len(rows) == 5
+    voice_lab.pick_bank(conn, policy, cid)                                             # a rerun decides nothing new
+    assert conn.execute("SELECT count(*) n FROM decisions WHERE kind = 'voice_bank' AND creator_id = %s",
+                        (cid,)).fetchone()["n"] == 5
+
+
+def test_a_bank_clip_too_close_to_another_creator_is_not_kept(conn, policy):
+    creator(conn, {"voice": {**DESIGNED, "ref_uri": "s3://b/o.wav", "embedding": NEAR}})
+    cid = creator(conn, {"voice": DESIGNED})
+    _bank_done(conn, policy, cid, {"excited": _clip(policy, "excited")})
+    out = voice_lab.pick_bank(conn, policy, cid)
+    assert out["kept"] == [] and "another creator" in out["rejected"]["excited"][0]
+
+
+def _with_bank(policy, *names):
+    return {**DESIGNED, "bank": {n: {"ref_uri": f"s3://b/voice/bank-{n}.wav",
+                                     "ref_text": policy.get("voice", "delivery_bank", "deliveries", n, "text")}
+                                 for n in names}}
+
+
+def test_a_line_continues_from_the_bank_clip_its_delivery_names(policy):
+    voice = _with_bank(policy, "deadpan", "excited")
+    p = voice_lab.speak_payload(policy, voice, [
+        {"text": "Two am. I take it back.", "delivery": "flat, tired, then a small laugh"},
+        {"text": "Six pm!", "delivery": "upbeat"},
+        {"text": "(dry) Great.", "delivery": None},            # an inline parenthetical names it too
+        {"text": "Anyway.", "delivery": "musing"},              # nothing in the bank: the base clip
+        {"text": "Fight me.", "delivery": "playful"},           # amused has no kept clip: the base clip
+        {"text": "Bye."}], seed=1)
+    first, second, third, fourth, fifth, last = p["lines"]
+    assert first == {"text": "Two am. I take it back.", "bank": "deadpan",
+                     "prompt": {"ref_uri": "s3://b/voice/bank-deadpan.wav",
+                                "ref_text": voice["bank"]["deadpan"]["ref_text"]}}   # no delivery in the text
+    assert second["bank"] == "excited" and third == {**third, "text": "Great.", "bank": "deadpan"}
+    assert all("prompt" not in line and "delivery" not in line for line in (fourth, fifth, last))
+    assert (p["ref_uri"], p["ref_text"]) == (DESIGNED["ref_uri"], DESIGNED["ref_text"])   # the timbre reference
+
+
+def test_the_bank_is_unused_when_off_or_when_deliveries_are_spoken(policy):
+    voice = _with_bank(policy, "excited")
+    lines = [{"text": "Six pm!", "delivery": "upbeat"}]
+    off = voice_lab.speak_payload(_bank_policy(policy, enabled=False), voice, lines)
+    assert off["lines"] == [{"text": "Six pm!"}]
+    v = policy.body["voice"]
+    controllable = type(policy)(body={**policy.body, "voice": {**v, "clone": "controllable"}}, version=policy.version)
+    assert voice_lab.speak_payload(controllable, voice, lines)["lines"] == [{"text": "Six pm!", "delivery": "upbeat"}]
+    assert voice_lab.speak_payload(policy, DESIGNED, lines)["lines"] == [{"text": "Six pm!"}]   # no bank yet

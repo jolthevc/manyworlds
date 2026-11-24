@@ -12,9 +12,13 @@ line wins. Voices are judged automatically, never by ear (owner 2026-11-21).
 
 voice.design payload {description, text, n, seed, params}: n candidate clips of `text` in the described voice, each
 with its word error rate, a speaker embedding and its pitch variance (creator/voice_lab.pick chooses one).
-voice.speak payload {ref_uri, ref_text, lines: [{text, delivery, pause_after_s}], takes, seed, params, compare}: one
-48 kHz wav of the lines in the cloned voice, plus each line's and each clause's timing; with `compare`, the other
-synthesis (whole line / clauses) as a second wav for the breadth test's comparison.
+voice.speak payload {ref_uri, ref_text, lines: [{text, delivery, pause_after_s, prompt, bank}], takes, seed, params,
+compare, embed}: one 48 kHz wav of the lines in the cloned voice, plus each line's and each clause's timing; with
+`compare`, the other synthesis (whole line / clauses) as a second wav for the breadth test's comparison. A line's
+`prompt` {ref_uri, ref_text} is a delivery-bank clip of the same voice (creator/voice_lab.bank, policy
+voice.delivery_bank): the line continues from it, so it takes that clip's delivery, while ref_uri stays the timbre
+reference (`reference_wav_path`); `bank` names it in the meta. `embed`: the output's speaker embedding and pitch
+variance in its meta (a bank clip, judged against the base clip).
 params {model, cfg_value, inference_timesteps, optimize, asr_model, language, embedding, pitch_hz, pause_s, clone,
 synthesis} and the natural-speech keys (`speech_config`; policy voice, plan 2026-11-22-video-quality-autonomous
 item 7).
@@ -223,15 +227,26 @@ def validate_speak(payload: dict) -> dict:
         pause = line.get("pause_after_s")   # None: the planned gap after the line (see `plan`)
         if pause is not None and (isinstance(pause, bool) or not isinstance(pause, (int, float)) or pause < 0):
             raise NonRetryable(f"line {i} pause_after_s must be a number of seconds >= 0")
+        prompt = line.get("prompt")         # a delivery-bank clip the line continues from (creator/voice_lab)
+        if prompt is not None:
+            if not isinstance(prompt, dict):
+                raise NonRetryable(f"line {i} prompt must be {{ref_uri, ref_text}}")
+            prompt = {"ref_uri": _text(prompt.get("ref_uri"), f"lines[{i}].prompt.ref_uri"),
+                      "ref_text": voices.strip_delivery(_text(prompt.get("ref_text"), f"lines[{i}].prompt.ref_text"))}
+        bank = line.get("bank")
+        if bank is not None and not isinstance(bank, str):
+            raise NonRetryable(f"line {i} bank must be text")
         out.append({"text": words, "delivery": (delivery or "").strip() or inline,
-                    "pause_after_s": None if pause is None else float(pause)})
+                    "pause_after_s": None if pause is None else float(pause), "prompt": prompt, "bank": bank})
     takes = _positive_int(payload.get("takes", 1), "takes")
-    compare = payload.get("compare", False)
-    if not isinstance(compare, bool):
-        raise NonRetryable(f"compare must be true or false, got {compare!r}")
+    flags = {}
+    for name in ("compare", "embed"):
+        flags[name] = payload.get(name, False)
+        if not isinstance(flags[name], bool):
+            raise NonRetryable(f"{name} must be true or false, got {flags[name]!r}")
     clone_mode(params)                      # a bad mode fails now, not after the first take
     return {"ref_uri": ref_uri, "ref_text": voices.strip_delivery(ref_text), "lines": out, "takes": takes,
-            "seed": _seed(payload), "params": params, "speech": speech_config(params), "compare": compare}
+            "seed": _seed(payload), "params": params, "speech": speech_config(params), **flags}
 
 
 # --- natural speech (plan 2026-11-22-video-quality-autonomous item 7; policy voice) ------------------------------
@@ -519,19 +534,24 @@ def design(payload: dict, ctx: JobContext) -> HandlerResult:
 
 
 def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int, *, strict: bool,
-                 prompt: Path | None = None) -> dict:
+                 prompts: dict[str, Path] | None = None) -> dict:
     """Every line spoken as `cfg` says (whole lines or clauses), the best take of each piece kept, joined with the
     planned gaps: {audio, units, lines (timings), clauses, fillers, wer, failed}. `strict`: a line over the
-    line ceiling fails the job (retryable); otherwise (the comparison variant) it is recorded in `failed`."""
+    line ceiling fails the job (retryable); otherwise (the comparison variant) it is recorded in `failed`.
+    `prompts`: the local clip for each prompt uri (the reference's own uri included)."""
     import numpy as np
 
     params, takes = p["params"], p["takes"]
     mode = clone_mode(params)
     units = plan(p["lines"], cfg, p["seed"])
+    prompts = prompts or {}
 
     def take(unit: dict, k: int, seed: int):
+        # A line with a delivery-bank clip continues from it (its prosody), the base reference staying the timbre.
+        bank = p["lines"][unit["line"]].get("prompt")
+        uri, text = (bank["ref_uri"], bank["ref_text"]) if bank else (p["ref_uri"], p["ref_text"])
         wav = tts.generate(seed=seed, text=voices.with_instruction(unit["delivery"], unit["spoken"]),
-                           **clone_args(ref, p["ref_text"], unit["delivery"], mode, prompt=prompt),
+                           **clone_args(ref, text, unit["delivery"], mode, prompt=prompts.get(uri)),
                            **_generation(params))
         heard = asr(wav, sr)
         # against the words asked for only: a delivery is never spoken, so it is never in `spoken`
@@ -580,7 +600,7 @@ def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int,
         heard = " ".join(chosen[ui]["heard"] for ui in mine)
         timings.append({"index": li, "start_s": clauses_meta[mine[0]]["start_s"],
                         "end_s": clauses_meta[mine[-1]]["end_s"], "text": line["text"], "delivery": line["delivery"],
-                        "clauses": mine, "wer": wer(asked, heard), "transcript": heard[:500]})
+                        "bank": line.get("bank"), "clauses": mine, "wer": wer(asked, heard), "transcript": heard[:500]})
         if cfg["line_max_wer"] is not None and timings[-1]["wer"] > cfg["line_max_wer"]:
             if strict:   # retryable: the next attempt draws new seeds (see `base`)
                 raise RuntimeError(f"line {li} came out with WER {timings[-1]['wer']} > {cfg['line_max_wer']} "
@@ -610,14 +630,21 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
     attempt = max(1, int(getattr(ctx.job, "attempts", 1) or 1))
     variant = "clauses" if cfg["split"] else "whole_line"
     work = Path(ctx.workdir)
-    prompt = prompt_clip(ref, cfg["prompt_tail"], work)
-    main = _voice_lines(p, cfg, tts, asr, ref, sr, attempt, strict=True, prompt=prompt)
+    prompts = {p["ref_uri"]: prompt_clip(ref, cfg["prompt_tail"], work)}
+    for line in p["lines"]:                 # each delivery-bank clip fetched once
+        uri = (line.get("prompt") or {}).get("ref_uri")
+        if uri and uri not in prompts:
+            prompts[uri] = prompt_clip(ctx.fetch(uri, f"prompt_{len(prompts):02d}.wav"), cfg["prompt_tail"], work)
+    main = _voice_lines(p, cfg, tts, asr, ref, sr, attempt, strict=True, prompts=prompts)
     meta = _audio_meta(main, sr, variant)
+    if p["embed"]:                          # a delivery-bank clip: judged against her base clip (voice_lab.pick_bank)
+        meta.update(embedding=_embedder(params)(main["audio"], sr),
+                    pitch_var=float(_pitch_variance(main["audio"], sr, params)))
     outputs = [OutputFile(write_wav(work / "speech.wav", main["audio"], sr), "audio", meta)]
     if p["compare"]:
         other = "whole_line" if cfg["split"] else "clauses"
         alt = _voice_lines(p, {**cfg, "split": not cfg["split"]}, tts, asr, ref, sr, attempt, strict=False,
-                           prompt=prompt)
+                           prompts=prompts)
         alt_meta = {**_audio_meta(alt, sr, other), "compare_of": 0, "failed_lines": alt["failed"]}
         outputs.append(OutputFile(write_wav(work / f"speech_{other}.wav", alt["audio"], sr), "audio", alt_meta))
         meta["compare"] = [{k: m[k] for k in ("synthesis", "seconds", "wer")} | {"output": i}

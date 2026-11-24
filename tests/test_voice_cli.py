@@ -91,3 +91,22 @@ def test_pick_without_a_finished_design_refuses(conn, policy):
     finished_design(conn, cid, [], status="running")
     with pytest.raises(SystemExit):
         cli._voice(_args("voice", "pick", _handle(conn, cid)), conn, policy)
+
+
+def test_cli_parses_the_bank_commands():
+    a = _args("voice", "bank", "maren", "--pools", "runpod_secure_l40s_vol")
+    assert (a.voice_cmd, a.creator, a.pools) == ("bank", "maren", "runpod_secure_l40s_vol")
+    assert _args("voice", "bank-pick", "maren").voice_cmd == "bank-pick"
+
+
+def test_bank_queues_test_jobs_and_bank_pick_reviews_them(conn, policy, capsys):
+    cid = creator(conn, {"voice": {"engine": "voxcpm", "ref_uri": "s3://b/base.wav", "ref_text": "Okay.",
+                                   "embedding": FAR}})
+    handle = _handle(conn, cid)
+    assert cli._voice(_args("voice", "bank", handle), conn, policy) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert set(out["jobs"]) == set(policy.get("voice", "delivery_bank", "deliveries"))
+    batches = {r["batch"] for r in conn.execute("SELECT batch FROM jobs WHERE creator_id = %s", (cid,)).fetchall()}
+    assert batches == {f"test-voice-{handle}"}
+    assert cli._voice(_args("voice", "bank-pick", handle), conn, policy) == 0
+    assert json.loads(capsys.readouterr().out)["waiting"] == list(out["jobs"])

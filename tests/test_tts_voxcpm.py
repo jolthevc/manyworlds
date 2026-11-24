@@ -434,3 +434,41 @@ def test_a_prompt_tail_gives_the_line_a_boundary_to_start_from(fake, ctx, tmp_pa
     assert fake.calls[0]["prompt_wav_path"] == fake.calls[0]["reference_wav_path"]
     with pytest.raises(NonRetryable):
         tts.speech_config({"prompt_tail_silence_s": -1})
+
+
+# --- the delivery bank: a line continues from its delivery's clip, her base clip the timbre reference ------------
+def test_a_bank_line_continues_from_its_clip_and_keeps_the_base_timbre(fake, ctx, tmp_path):
+    clip = tts.write_wav(tmp_path / "deadpan.wav", np.zeros(SR // 2, dtype=np.float32), SR)
+    bank_uri = ctx.store.put_file(clip, "voices/bank-deadpan.wav").uri
+    res = _speak(ctx, tmp_path, [
+        {"text": "Two am. I take it back.", "bank": "deadpan",
+         "prompt": {"ref_uri": bank_uri, "ref_text": "Great. Love that for me."}},
+        {"text": "Bye."}])
+    bank_call, plain = fake.calls
+    assert bank_call["prompt_text"] == "Great. Love that for me." and "prompt_" in bank_call["prompt_wav_path"]
+    assert bank_call["reference_wav_path"].endswith("reference.wav")            # timbre: her base clip
+    assert bank_call["text"] == "Two am. I take it back."                       # nothing to read aloud
+    assert plain["prompt_text"] == "Okay so this happened." and plain["prompt_wav_path"].endswith("reference.wav")
+    assert [line["bank"] for line in res.outputs[0].meta["lines"]] == ["deadpan", None]
+    assert "embedding" not in res.outputs[0].meta
+
+
+def test_a_bank_clip_job_reports_its_speaker_embedding(fake, ctx, tmp_path):
+    res = _speak(ctx, tmp_path, [{"text": "No, wait, this worked!", "delivery": "excited"}], embed=True,
+                 params={"clone": "controllable"})
+    meta = res.outputs[0].meta
+    assert meta["embedding"] and "pitch_var" in meta
+    assert fake.calls[0]["text"] == "(excited)No, wait, this worked!" and "prompt_text" not in fake.calls[0]
+
+
+@pytest.mark.parametrize("line", [
+    {"text": "hi", "prompt": "s3://b/c.wav"},
+    {"text": "hi", "prompt": {"ref_uri": "s3://b/c.wav"}},
+    {"text": "hi", "prompt": {"ref_text": "x"}},
+    {"text": "hi", "bank": 3},
+])
+def test_a_bad_bank_prompt_is_not_retried(line):
+    with pytest.raises(NonRetryable):
+        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [line]})
+    with pytest.raises(NonRetryable):
+        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}], "embed": "yes"})
