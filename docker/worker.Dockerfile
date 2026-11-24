@@ -11,8 +11,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HF_HOME=/models/hf
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg espeak-ng fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
+COPY docker/constraints-image.txt /tmp/constraints.txt
 COPY manyworlds ./manyworlds
-RUN pip install --no-cache-dir ".[${EXTRA}]" "huggingface_hub[cli]"
+# The ML stack is pinned (docker/constraints-image.txt): a rebuild installs what the last image was built with.
+RUN pip install --no-cache-dir -c /tmp/constraints.txt ".[${EXTRA}]" "huggingface_hub[cli]"
 COPY policy ./policy
 RUN if [ -n "$PREFETCH" ]; then for m in $PREFETCH; do python -c "import sys; from huggingface_hub import snapshot_download; snapshot_download(sys.argv[1])" "$m"; done; fi
 ENTRYPOINT ["mw"]

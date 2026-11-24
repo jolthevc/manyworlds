@@ -369,6 +369,21 @@ def next_start(conn, creator_id, today: date) -> date:
     return max(today + timedelta(days=1), last + timedelta(days=1))
 
 
+def showrunner_period_open(conn, creator_id, today: date) -> str | None:
+    """The showrunner period (batch `<creator>:<start>`, start today or later) still open for this creator, if
+    any: ideas proposed or being scheduled, or its analyst/showrunner job queued or running."""
+    row = conn.execute(
+        """SELECT batch FROM ideas WHERE creator_id = %(c)s AND status IN ('proposed', 'scheduling')
+             AND batch LIKE %(c)s::text || ':%%' AND split_part(batch, ':', 2) >= %(today)s
+           UNION ALL
+           SELECT %(c)s::text || ':' || coalesce(payload->>'start', payload->>'then_plan') FROM jobs
+           WHERE kind IN ('brain.showrunner', 'brain.analyst') AND creator_id = %(c)s
+             AND status IN ('queued', 'running')
+             AND coalesce(payload->>'start', payload->>'then_plan') >= %(today)s
+           LIMIT 1""", {"c": creator_id, "today": today.isoformat()}).fetchone()   # ISO dates order as text
+    return row["batch"] if row else None
+
+
 def ensure_plans(conn, policy: Policy, llm: StructuredLLM, *, now: datetime | None = None) -> list[dict]:
     """Plan the next period for every creator with less than plan_ahead_days planned."""
     cfg = _cfg(policy)
@@ -381,6 +396,10 @@ def ensure_plans(conn, policy: Policy, llm: StructuredLLM, *, now: datetime | No
             (list(cfg.get("auto_statuses", ["active"])),)).fetchall():
         start = next_start(conn, c["id"], now.date())
         if datetime.combine(start, time(0), tzinfo=timezone.utc) - now > ahead:
+            continue
+        held = showrunner_period_open(conn, c["id"], now.date())
+        if held:   # the showrunner was switched off mid-batch: its ideas own the period, never a second plan
+            out.append({"creator": c["handle"], "start": str(start), "skipped": f"showrunner batch open ({held})"})
             continue
         try:
             r = plan_period(conn, policy, llm, c["id"], start=start)

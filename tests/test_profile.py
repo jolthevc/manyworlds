@@ -156,3 +156,20 @@ def test_a_planned_post_in_an_unmade_format_expires_after_its_time(conn, policy)
                  "'planned', %s, %s)", (cid, Jsonb({"scenes": ["x"]}), datetime(2026, 11, 15, 12, tzinfo=timezone.utc)))
     assert production.advance(conn, policy, now=datetime(2026, 11, 15, 11, tzinfo=timezone.utc))["expired"] == 0
     assert production.advance(conn, policy, now=datetime(2026, 11, 15, 13, tzinfo=timezone.utc))["expired"] == 1
+
+
+def test_the_fallback_planner_leaves_a_period_the_showrunner_has_open(conn, policy):
+    """The showrunner switched off while its batch is proposed: the planner must not plan the same period."""
+    from psycopg.types.json import Jsonb
+    cid = built(conn, policy)
+    now = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
+    conn.execute("INSERT INTO ideas (creator_id, concept, format, body, attributes, status, batch) "
+                 "VALUES (%s, 'photo: dinner', 'photo', %s, '{}', 'proposed', %s)",
+                 (cid, Jsonb({"day": 0}), f"{cid}:2026-11-15"))
+    llm = PlanStub([post(0)])
+    out = planner.ensure_plans(conn, policy, llm, now=now)
+    assert out[0]["skipped"].startswith("showrunner batch open") and not llm.calls
+    assert conn.execute("SELECT count(*) n FROM posts WHERE creator_id = %s", (cid,)).fetchone()["n"] == 0
+    # once the batch is settled (scheduled or dropped), the planner plans again; an expired batch never holds it
+    conn.execute("UPDATE ideas SET status = 'dropped' WHERE creator_id = %s", (cid,))
+    assert planner.ensure_plans(conn, policy, llm, now=now)[0]["posts"] == 1

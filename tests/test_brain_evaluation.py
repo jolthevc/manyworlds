@@ -65,3 +65,10 @@ def test_double_check_sampling_is_deterministic():
     assert not any(evaluation.checked(i, 0) for i in ids) and all(evaluation.checked(i, 1) for i in ids)
     share = sum(evaluation.checked(i, 0.1) for i in ids) / len(ids)
     assert 0.05 <= share <= 0.15
+
+
+def test_double_check_sampling_does_not_depend_on_how_an_id_is_written():
+    for i in [uuid.uuid4() for _ in range(200)]:
+        spellings = [i, str(i), str(i).upper(), "{" + str(i) + "}", i.hex, f" {i} ", f"urn:uuid:{i}"]
+        assert len({evaluation.checked(s, 0.5) for s in spellings}) == 1
+        assert len({evaluation.canonical_id(s) for s in spellings}) == 1

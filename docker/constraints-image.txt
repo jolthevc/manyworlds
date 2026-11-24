@@ -1,0 +1,28 @@
+# Exact versions of the image worker's ML stack (docker/worker.Dockerfile, family "image"), as built into
+# worker-image-v27 (build-worker run 45099391014, 2026-11-23; v28 installed the same set). The image extra in
+# pyproject.toml is open ranges: without these, a rebuild could pull a new diffusers or transformers and break
+# Z-Image only on a rented GPU. Bump a pin on purpose, rebuild, smoke-test, then move worker_images.image.tag.
+# torch, numpy and pillow come with the base image (pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime); pinned so
+# nothing upgrades them.
+torch==2.8.0
+numpy==2.3.2
+pillow==11.0.0
+diffusers==0.43.0
+transformers==5.24.0
+tokenizers==0.23.3
+accelerate==1.16.0
+peft==0.22.0
+safetensors==0.8.0
+huggingface_hub==2.4.0
+hf-xet==1.8.0
+kokoro==0.9.4
+misaki==0.9.4
+soundfile==0.14.0
+imageio==2.38.2
+imageio-ffmpeg==0.8.1
+ftfy==6.3.1
+regex==2026.11.19
+spacy==3.8.18
+thinc==8.3.14
+curated-transformers==0.1.1
+spacy-curated-transformers==0.3.1

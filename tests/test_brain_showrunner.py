@@ -190,3 +190,21 @@ def test_flavors_are_offered_for_formats_made_now_and_kept_for_learning(conn, po
     rows = conn.execute("SELECT body, attributes FROM ideas ORDER BY body->>'day'").fetchall()
     assert rows[0]["body"]["flavor"] == "photo_dump" and rows[0]["attributes"]["flavor"] == "photo_dump"
     assert rows[1]["body"]["flavor"] == "" and "flavor" not in rows[1]["attributes"]
+
+
+def test_a_post_linked_to_two_ideas_is_one_recent_post(conn, policy):
+    from brain_helpers import planned_post
+    from manyworlds.brain import ideas as ideas_mod
+    cid = creator(conn)
+    post = planned_post(conn, cid)
+    first = ideas_mod.from_post(conn, post)
+    second = conn.execute("INSERT INTO ideas (creator_id, concept, format, body, attributes, status, post_id) "
+                          "SELECT creator_id, concept, format, body, attributes, 'planned', post_id FROM ideas "
+                          "WHERE id = %s RETURNING id", (first,)).fetchone()["id"]
+    for i, n in ((first, 4), (second, 8)):
+        conn.execute("INSERT INTO evaluations (item_kind, idea_id, creator_id, rubric, rubric_version, role, "
+                     "evaluator_model, prompt_version, scores, spreads, rationale, samples, created_at) VALUES "
+                     "('idea', %s, %s, 'idea', 1, 'evaluator', 'm', 'p', %s, '{}', '{}', 1, now() + %s * interval '1 second')",
+                     (i, cid, Jsonb({"novelty": n}), n))
+    recent = showrunner._recent_with_scores(conn, cid, 10, policy)
+    assert len(recent) == 1 and recent[0]["scores"] == {"novelty": 8}
