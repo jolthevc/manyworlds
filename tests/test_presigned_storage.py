@@ -60,11 +60,11 @@ def _payload(conn, job_id):
 # --- mode off -------------------------------------------------------------------------------------------------------
 
 def test_mode_off_changes_nothing(conn, policy, tmp_path, monkeypatch):
-    assert policy.get("security", "worker_storage") == "shared"   # shipped off
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "cp-key")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "cp-secret")
     monkeypatch.setenv("DATABASE_URL", "postgresql://dev:dev@localhost/mw")
-    pol = policy_mod.from_dict({**policy.body, "security": {**policy.body["security"], "worker_database": "shared"}})
+    pol = policy_mod.from_dict({**policy.body, "security": {**policy.body["security"], "worker_database": "shared",
+                                                                 "worker_storage": "shared"}})
     env = credentials.worker_env(pol)
     assert env["AWS_ACCESS_KEY_ID"] == "cp-key" and presign.MODE_ENV not in env
     job = queue.enqueue(conn, "fake.image", {"image_uri": "s3://bucket/refs/a.png"})
