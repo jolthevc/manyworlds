@@ -229,8 +229,13 @@ def _pool_price(policy: Policy, plan: dict, kind: str) -> tuple[str | None, floa
     return pools[0], float(policy.get("gpu_pools", pools[0], "usd_per_hour", default=0) or 0)
 
 
-def expected_jobs(policy: Policy, item: Item, creator) -> list[dict]:
-    """The jobs an item should make on its first try: [{kind, n, output_seconds}] (repairs come on top)."""
+SHARED_KINDS_NOTE = "scene photos and voice lines are made once per shared_key (production.common.piece_key)"
+
+
+def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = False) -> list[dict]:
+    """The jobs an item should make on its first try: [{kind, n, output_seconds}] (repairs come on top).
+    `shared_done`: an earlier item of the plan carries the same body.shared_key, so its scene photos and voice lines
+    are that item's jobs and are not counted again."""
     if item.bench:
         return [{"kind": item.bench["kind"], "n": int(item.bench.get("jobs", 1)), "output_seconds": None}]
     if item.take:
@@ -240,7 +245,8 @@ def expected_jobs(policy: Policy, item: Item, creator) -> list[dict]:
     from .talk_segments import estimate_seconds
     prod = policy.get("production", default={}) or {}
     body, scenes = item.body, item.body["scenes"]
-    out = [{"kind": prod.get("image_kind", "image.zimage"), "n": len(scenes), "output_seconds": None}]
+    out = [] if shared_done else [{"kind": prod.get("image_kind", "image.zimage"), "n": len(scenes),
+                                   "output_seconds": None}]
     wps = float(policy.get("generation", "talk_long", "words_per_second", default=2.5))
     designed = voices.engine((creator or {}).get("anchors") if creator else None) == "voxcpm"
     if item.format == "story_clip":
@@ -269,15 +275,17 @@ def expected_jobs(policy: Policy, item: Item, creator) -> list[dict]:
             else:
                 out.append({"kind": prod.get("talk_kind", "talk.infinitetalk"), "n": 1, "output_seconds": seconds})
                 shot = shots[i] if i < len(shots) else None
-                if production.moves(policy, shot) and production.talk_v2v(policy):
-                    out.append({"kind": motion, "n": len(production.motion_lengths(policy, seconds)),
-                                "output_seconds": None})
-            if designed:
+                borrowed = production.dance_reference(policy, shot) if production.talk_v2v(policy) else None
+                if borrowed or (production.moves(policy, shot) and production.talk_v2v(policy)):
+                    # a shot with a motion reference moves with it (Wan-Animate-2), else a story-clip motion clip
+                    out.append({"kind": "comfy.wan_animate2" if borrowed else motion,
+                                "n": len(production.motion_lengths(policy, seconds)), "output_seconds": None})
+            if designed and not shared_done:
                 out.append({"kind": "voice.speak", "n": 1, "output_seconds": None})
     return out
 
 
-def estimate(conn, policy: Policy, plan: dict, item: Item, creator) -> dict:
+def estimate(conn, policy: Policy, plan: dict, item: Item, creator, *, shared_done: bool = False) -> dict:
     """What an item should cost on its first try: GPU seconds per job (measured from finished attempts where they
     exist, else policy: autoscale.scale.default_job_seconds, or breadth.estimate.seconds_per_output_second for
     kinds priced by length), at its pool's price, plus the review calls. Labelled by source."""
@@ -287,7 +295,7 @@ def estimate(conn, policy: Policy, plan: dict, item: Item, creator) -> dict:
     review_usd = float(est.get("review_usd_per_output", 0))
     candidates = int(policy.get("production", "candidates_per_scene", default=4))
     jobs, gpu_usd, reviews = [], 0.0, 0.0
-    for j in expected_jobs(policy, item, creator):
+    for j in expected_jobs(policy, item, creator, shared_done=shared_done):
         if j["output_seconds"] is not None and j["kind"] in per_second:
             seconds, source = float(per_second[j["kind"]]) * float(j["output_seconds"]), "policy (per output second)"
         else:
@@ -363,6 +371,8 @@ def create_post(conn, policy: Policy, plan_name: str, run: str, item: Item, crea
                 "breadth_run": run, "breadth_plan": plan_name, "breadth_item": item.id,
                 "breadth_creator": creator["handle"],
                 "breadth_exercises": item.exercises, "breadth_options": item.options}
+        if body.get("shared_key"):   # a route comparison's items share photos, voice and seeds within this run only
+            body["shared_key"] = f"{body['shared_key']}:{run}"
         conn.execute("INSERT INTO posts (creator_id, platform, format, status, caption, body, scheduled_for) "
                      "VALUES (%s, %s, %s, 'planned', %s, %s, NULL)",
                      (creator["id"], item.body.get("platform", "instagram"), item.format, item.caption, Jsonb(body)))
@@ -544,9 +554,12 @@ def run(conn, policy: Policy, plan_name: str, *, items: list[str] | None = None,
 
 
 def _dry_run(conn, pol: Policy, plan: dict, rid: str, todo: list[Item], creators: dict) -> dict:
-    out, kinds, total = [], set(), 0.0
+    out, kinds, total, shared = [], set(), 0.0, set()
     for item in todo:
-        e = estimate(conn, pol, plan, item, creators[item.id])
+        key = str((item.body or {}).get("shared_key") or "")
+        e = estimate(conn, pol, plan, item, creators[item.id], shared_done=bool(key) and key in shared)
+        if key:
+            shared.add(key)
         kinds |= {j["kind"] for j in e["jobs"]}
         total += e["usd"]
         post = _post_for(conn, rid, item.id) if item.format else None

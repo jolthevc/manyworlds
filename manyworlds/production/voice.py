@@ -6,7 +6,7 @@ from typing import Any
 
 from .. import queue
 from ..policy import Policy
-from .common import _cfg, _seed, unmarked
+from .common import _cfg, _seed, piece_key, unmarked
 from .steps import Step, _status, advance_step
 
 
@@ -77,7 +77,8 @@ def _voice_job(conn, policy: Policy, post: dict, voice: dict, lines: list[dict],
                segment: int | None = None):
     from ..creator import voice_lab
     payload = voice_lab.speak_payload(policy, voice, lines, seed=_seed(post, 800 + (segment or 0) * 1000, attempt))
-    key = f"post:{post['id']}:voice:{attempt}" if segment is None else f"post:{post['id']}:voice:{segment}:{attempt}"
+    base = piece_key(post)   # shared across posts with one body.shared_key: one voice line for all of them
+    key = f"{base}:voice:{attempt}" if segment is None else f"{base}:voice:{segment}:{attempt}"
     return queue.enqueue(conn, voice_lab.speak_kind(policy), payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=key)
 

@@ -93,6 +93,10 @@ breadth:
     longcat16: {requires: [generation.talk_profiles.longcat16], kinds: [talk.longcat]}
     hd720: {requires: [generation.talk_profiles.hd720]}
     dancing: {requires: [dance.enabled], kinds: [comfy.wan_animate2]}
+    # The route comparison (plan perf_compare): the story_time edit grammar, and talking shots that perform a licensed
+    # motion reference (Wan-Animate-2), then V2V lip sync.
+    story_time: {requires: [generation.talk_edit.grammars.story_time]}
+    borrowed_motion: {requires: [dance.enabled, generation.talk_motion.enabled], kinds: [comfy.wan_animate2]}
     reference_conditioning: {kinds: [image.qwen_edit]}
     captions: {requires: [burned_captions.enabled]}
     caption_styles: {requires: [burned_captions.styles]}
@@ -416,3 +420,121 @@ breadth:
             keyframes: 4
             prompt: *longtake_prompt
             script: *longtake_script
+    # The talking-video route comparison (owner 2026-11-24: "the same video basically with Maren, cut how we'd actually
+    # cut it ... pick the best handful of production approaches and I can judge for myself", 30-45 s). One ~40 s
+    # story-time script, the story_time edit grammar (punch-ins at word gaps, two faceless cutaways under her voice),
+    # made three ways. The items share body.shared_key, so they share their scene photos and voice line (one job each:
+    # production.common.piece_key) and seeds: only the talking route differs. Each talking line is at most ~12 words
+    # (about 5 s), so v3's borrowed motion (one 81-frame Wan-Animate window at 16 fps) covers the whole shot.
+    #   v1: InfiniteTalk lip sync from each shot's photo (the current stack).
+    #   v2: LongCat-Video-Avatar 1.6 per shot (talk profile longcat16: params.model longcat_native).
+    #   v3: borrowed motion: each talking shot performs a licensed Pexels talking clip (Wan-Animate-2, motion only),
+    #       then V2V lip sync of her line onto it (production.motion, the walk-and-talk path).
+    perf_compare:
+      max_usd: 6                    # owner-approved 2026-11-24: about $4 for the three versions
+      creator: maren.afterhours
+      # Off the 150 GB weights volume (full since the 90 s LongCat test, 2026-11-24): the merged machine downloads its
+      # weights onto its own disk (autoscale.merged_image sizes it for every member).
+      pools:
+        talk: [runpod_secure_l40s]
+        comfy: [runpod_secure_l40s]
+        voice: [runpod_secure_l40s]
+        dance: [runpod_secure_l40s]
+        edit: [runpod_secure_l40s, runpod_secure_h100]
+        image: [runpod_comm_3090, runpod_comm_4090, vast_3090, vast_4090]
+      items:
+        - id: perf_v1_infinitetalk
+          exercises: [talking, story_time, cutaway_broll, designed_voice]
+          format: talking_video
+          caption: "the tea guy"
+          body: &perf_body
+            shared_key: perf-compare
+            edit_grammar: story_time
+            scenes: &perf_scenes
+              - "behind the bar of a small dim pub at closing time, leaning on the counter, talking to her phone propped on the bar"
+              - "behind the bar at closing time, eyebrows raised, talking to her phone propped on the bar"
+              - "behind the bar at closing time, laughing in disbelief, talking to her phone propped on the bar"
+              - "close-up of her hands filling a battered steel kettle at the bar sink, warm bar light, no face"
+              - "behind the bar at closing time, leaning in close to her phone, serious, talking quietly"
+              - "close-up of an old scratch in a worn wooden bar counter, a fingertip tracing it, warm bar light, no face"
+              - "behind the bar at closing time, shaking her head with a small smile, talking to her phone"
+              - "behind the bar at closing time, holding up a folded twenty, talking to her phone"
+              - "behind the bar at closing time, smiling warmly at her phone, wiping the counter"
+            shots:
+              - &perf_s0
+                set: &perf_set {location: "behind the bar of a small, dim neighbourhood pub at closing time", set_id: "pub_bar", time_of_day: "night", light_quality: "warm low bar lights, a neon sign behind her", color_temp: "warm"}
+                wardrobe: &perf_wardrobe {outfit_id: "bar_black_tee", outfit: "a plain black t-shirt, a dark apron tied at the waist", state: "end of a long shift"}
+                framing: {shot_size: "medium shot", angle: "eye level", device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "leans on the counter and starts the story", eyeline: lens}]
+                edit: {hook: "she starts mid-thought", on_screen_text: [{kind: hook, text: "the tea guy"}]}
+                performance: {lines: [{text: "Okay, story time. Five to two, I'm closing up.", delivery: "conspiratorial, amused"}]}
+              - &perf_s1
+                set: *perf_set
+                wardrobe: *perf_wardrobe
+                framing: {shot_size: "medium close-up", angle: "eye level", device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "raises her eyebrows", eyeline: lens}]
+                performance: {lines: [{text: "And this guy walks in. Never seen him before.", delivery: "intrigued"}]}
+              - &perf_s2
+                set: *perf_set
+                wardrobe: *perf_wardrobe
+                framing: {shot_size: "medium shot", angle: "eye level", device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "laughs and throws a hand up", eyeline: lens}]
+                performance: {lines: [{text: "Doesn't want a drink. Wants tea. At a bar!", delivery: "incredulous, laughing"}]}
+              - &perf_s3
+                cutaway: true
+                set: *perf_set
+                framing: {shot_size: "close-up", angle: "high angle", device: held, handheld: held}
+                performance: {lines: [{text: "He looked so done with life, I just put the kettle on.", delivery: "softer"}]}
+              - &perf_s4
+                set: *perf_set
+                wardrobe: *perf_wardrobe
+                framing: {shot_size: "close-up", angle: "eye level", device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "leans in close and lowers her voice", eyeline: lens}]
+                performance: {lines: [{text: "Ten minutes, he says nothing. Then: my dad owned this place.", delivery: "quiet, serious"}]}
+              - &perf_s5
+                cutaway: true
+                set: *perf_set
+                framing: {shot_size: "extreme close-up", angle: "high angle", device: held, handheld: held}
+                performance: {lines: [{text: "He points at this scratch. Says he made it when he was nine.", delivery: "tender"}]}
+              - &perf_s6
+                set: *perf_set
+                wardrobe: *perf_wardrobe
+                framing: {shot_size: "medium close-up", angle: "eye level", device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "shakes her head, half smiling", eyeline: lens}]
+                performance: {lines: [{text: "I've wiped that scratch, like, a thousand times. Never noticed.", delivery: "wry"}]}
+              - &perf_s7
+                set: *perf_set
+                wardrobe: *perf_wardrobe
+                framing: {shot_size: "medium shot", angle: "eye level", device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "holds up a folded note", eyeline: lens}]
+                performance: {lines: [{text: "He left a twenty under the cup. Said he'd be back Friday.", delivery: "warm"}]}
+              - &perf_s8
+                set: *perf_set
+                wardrobe: *perf_wardrobe
+                framing: {shot_size: "medium close-up", angle: "eye level", device: propped, handheld: none}
+                blocking: [{at_s: 0, action: "smiles, wiping the counter", eyeline: lens}]
+                performance: {lines: [{text: "Honestly? Best night of the week.", delivery: "warm, signing off"}]}
+        - id: perf_v2_longcat
+          exercises: [talking, story_time, cutaway_broll, designed_voice, longcat16]
+          format: talking_video
+          caption: "the tea guy"
+          options: {talk_profile: longcat16}
+          body: *perf_body
+        - id: perf_v3_borrowed_motion
+          exercises: [talking, story_time, cutaway_broll, designed_voice, borrowed_motion]
+          format: talking_video
+          caption: "the tea guy"
+          body:
+            shared_key: perf-compare
+            edit_grammar: story_time
+            scenes: *perf_scenes
+            shots:
+              - {<<: *perf_s0, motion_reference: perf-36931662-1}
+              - {<<: *perf_s1, motion_reference: perf-6965116-1}
+              - {<<: *perf_s2, motion_reference: perf-7988843-1}
+              - *perf_s3
+              - {<<: *perf_s4, motion_reference: perf-8814493-1}
+              - *perf_s5
+              - {<<: *perf_s6, motion_reference: perf-6965116-2}
+              - {<<: *perf_s7, motion_reference: perf-7988843-2}
+              - {<<: *perf_s8, motion_reference: perf-36931662-2}

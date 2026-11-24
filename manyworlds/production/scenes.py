@@ -9,7 +9,7 @@ from .. import queue
 from ..creator.lab import photo_prompt
 from ..policy import Policy
 from ..review import repair
-from .common import FOLLOW_UP_FORMATS, _cfg, _seed, _set, _shot, _with_shot
+from .common import FOLLOW_UP_FORMATS, _cfg, _seed, _set, _shot, _with_shot, piece_key
 from .steps import DropPost, Step, _scene_state
 
 
@@ -77,7 +77,7 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
         payload = adjust(payload)
     return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], pools=pools,
-                         idempotency_key=f"post:{post['id']}:{scene_i}:{attempt}")
+                         idempotency_key=f"{piece_key(post)}:{scene_i}:{attempt}")
 
 
 def start(conn, policy: Policy, post: dict) -> None:

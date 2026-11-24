@@ -22,7 +22,7 @@ from .. import queue
 from ..music import with_generated_beds
 from ..policy import Policy
 from .captioning import caption_style, caption_words, captions_from_words
-from .common import FOLLOW_UP_FORMATS, SPOKEN, SUNG, _cfg, _pieces, _shot, log
+from .common import FOLLOW_UP_FORMATS, SPOKEN, SUNG, _cfg, _pieces, _shot, log, seed_base
 from .mixing import _mix_sound, _sound_plan_from
 from .steps import Step, _edit_state, advance_step
 from .takes import _take_index
@@ -345,7 +345,7 @@ def _punch_in(plan: dict, policy: Policy, store, raw, d) -> tuple[Any, list | No
         info = media.probe(raw)
         size, seconds = (int(info["width"]), int(info["height"])), info.get("seconds")
         windows = cuts.talk_windows(plan["body"], plan.get("video_meta") or {}, plan.get("pieces") or [], seconds)
-        seed = int(str(plan["post"]["id"]).replace("-", "")[:8], 16) if plan["post"].get("id") else 0
+        seed = (seed_base({**plan["post"], "body": plan.get("body") or {}}, 8) if plan["post"].get("id") else 0)
         stretches = cuts.punch_plan(words, windows, float(seconds or 0), punch, seed=seed, fps=info.get("fps"))
         if not stretches:
             return raw, None, None, {}

@@ -98,6 +98,7 @@ BRIEF: dict[str, str] = {
     "song": "a music_video post's song (manyworlds.music spec: title, lyrics, tags, bpm, key, duration_s)",
     "template": "the shot-sheet archetype the caption style is looked up by",
     "breadth_run": "marks a breadth-test post, advanced only by its own driver",
+    "shared_key": "posts with the same key share scene photos, voice lines and seeds (a route comparison)",
 }
 
 STATE_KEYS = frozenset(STATE)

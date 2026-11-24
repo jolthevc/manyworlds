@@ -3,6 +3,7 @@ scene's shot sheet on a job's payload, the post row's status write and a made vi
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from psycopg.types.json import Jsonb
@@ -17,11 +18,34 @@ def _cfg(policy: Policy) -> dict:
     return policy.get("production", default={})
 
 
+def shared_key(post: dict) -> str:
+    """The post's `body.shared_key` ('' without): posts that carry the same one share their scene photos and voice
+    lines (one job each, by idempotency key) and their seeds, so a comparison of production routes (the breadth plan
+    perf_compare) differs only in what each route renders."""
+    body = post.get("body") or {}
+    return str(body.get("shared_key") or "").strip()
+
+
+def piece_key(post: dict) -> str:
+    """The idempotency-key prefix of a post's shareable pieces (scene photos, voice lines): the shared key's when
+    the post has one, else the post's own."""
+    shared = shared_key(post)
+    return f"shared:{shared}" if shared else f"post:{post['id']}"
+
+
+def seed_base(post: dict, digits: int = 7) -> int:
+    """The post's seed base: from its shared key when it has one (every sharing post asks for the same output), else
+    from its id."""
+    shared = shared_key(post)
+    source = hashlib.sha256(shared.encode()).hexdigest() if shared else str(post["id"]).replace("-", "")
+    return int(source[:digits], 16)
+
+
 def _seed(post: dict, offset: int, attempt: int) -> int:
     """A deterministic seed per post, piece and attempt: a rerun asks for the same output, a retry for a new one.
     Offsets keep pieces apart (scenes: i*1000, story clip: 500, talk: 700 + segment*1000, voice: 800 + segment*1000,
-    motion clip: 900 + segment*1000 + 3*clip in its chain)."""
-    return int(str(post["id"]).replace("-", "")[:7], 16) + offset + attempt * 10
+    motion clip: 900 + segment*1000 + 3*clip in its chain). Posts with one shared_key share their seeds."""
+    return seed_base(post) + offset + attempt * 10
 
 
 def unmarked(text: str) -> str:
