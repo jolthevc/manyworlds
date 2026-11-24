@@ -115,6 +115,20 @@ def caption_issues(policy: Policy, text: str) -> list[str]:
     return issues
 
 
+_SENTENCE = re.compile(r"[^.!?]+[.!?]*")
+SPOKEN_FORMATS = ("talking_video", "narrated_edit")
+
+
+def spoken_issues(policy: Policy, script: str) -> list[str]:
+    """Why a script won't sound spoken (policy `captions.spoken`): a sentence longer than max_words_per_sentence
+    (written prose, not talk; it also leaves no gap to cut on). Empty if fine, or without a limit."""
+    limit = int((policy.get("captions", "spoken", default={}) or {}).get("max_words_per_sentence", 0) or 0)
+    if not limit or not (script or "").strip():
+        return []
+    longest = max((len(s.split()) for s in _SENTENCE.findall(script)), default=0)
+    return [f"a {longest}-word sentence (spoken lines stay under {limit})"] if longest > limit else []
+
+
 def voice_rules(policy: Policy) -> str:
     """The voice rules as an instruction, so the model writes within them instead of having its ideas
     dropped afterwards (a dropped idea is generation already paid for)."""
@@ -123,6 +137,12 @@ def voice_rules(policy: Policy) -> str:
              f"Never use these words or phrases: {', '.join(cfg.get('banned_phrases', []))}.",
              "Never write: " + "; ".join((cfg.get("pattern_notes") or {}).values()) + "." if cfg.get("pattern_notes") else "",
              f"At most {int(cfg.get('max_emoji', 2))} emoji" + (", and no em dashes." if cfg.get("no_em_dash", True) else ".")]
+    spoken_cfg = cfg.get("spoken") or {}
+    said = [f"- {r}" for r in spoken_cfg.get("rules") or [] if str(r).strip()]
+    if said:
+        limit = int(spoken_cfg.get("max_words_per_sentence", 0) or 0)
+        rules.append("Spoken scripts (talking videos, narrated edits) are written to be said, not read:\n"
+                     + "\n".join(said) + (f"\n- No sentence over {limit} words." if limit else ""))
     return "\n\nVOICE (captions, on-screen text and scripts):\n" + "\n".join(r for r in rules if r)
 
 
@@ -257,6 +277,8 @@ def validate(policy: Policy, p, *, platforms: list[str], days: int, prof: dict |
         if p.format in _video_formats(policy) and p.series not in series:
             return None, f"video outside the creator's series ({p.series!r})"
     issues = caption_issues(policy, f"{p.caption} {p.script} {p.on_screen_text}")
+    if p.format in SPOKEN_FORMATS:
+        issues += spoken_issues(policy, p.script)
     if issues:
         return None, "reads as AI: " + ", ".join(issues)
     p.day = min(max(p.day, 0), days - 1)

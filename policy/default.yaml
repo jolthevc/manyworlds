@@ -605,6 +605,43 @@ generation:
   # the slower lip-synced ones by motion interpolation (finishing.interpolate), so the finish stage scales nothing.
   talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4,
                 output: {width: 1080, height: 1920, fps: 30, lufs: -14}}
+  # Cut-based talking edits (manyworlds.cuts; owner 2026-11-24: one long take reads clunky and costs the most GPU).
+  # A talking post follows a grammar: the idea's edit_grammar, else its creator's first archetype's (by_archetype),
+  # else default. punch_in: the finish crops in and out of a lip-synced take at word gaps (CPU only, the voice
+  # untouched): about every every_s [lo, hi] seconds, cycling through scales (1 = the full frame), never a stretch
+  # under min_shot_s; centred on her face, else on center (shares of the frame). lip_sync on_camera: a speaking shot
+  # without her face to camera (direction.faceless, or an angle in narrated_angles) is a cutaway under the voice,
+  # not a lip-sync render; all: only the director's own cutaways. director: rules added to the director's brief.
+  # STARTING VALUES, to calibrate from docs/research/2026-11-24-talking-video-calibration.md (real videos measured).
+  talk_edit:
+    default: story_time
+    by_archetype: {storyteller: story_time, educator: story_time, beauty_grwm: story_time, lifestyle_slow: commercial,
+                   food_home: commercial, maker: commercial, fashion_style: commercial, city_explorer: commercial,
+                   movement: commercial}
+    grammars:
+      story_time:
+        punch_in: {every_s: [2.0, 4.0], scales: [1.0, 1.2], min_shot_s: 1.2, center: [0.5, 0.4]}
+        lip_sync: on_camera
+        narrated_angles: ["over the shoulder", "from behind"]
+        director:
+          - "Most of it is her talking to the lens, close and handheld, one take per shot; the finish punches in and out between words, so don't plan a cut for every sentence."
+          - "Open on the hook line within the first second, her face already close; no greeting or intro."
+          - "Use a cutaway (cutaway true, her hands, the thing she talks about, the place) every 6-10 seconds at most, under the same voice; never for the hook or the punchline."
+          - "Keep each speaking shot to a few sentences; change the shot where the story moves (a new place, a time jump), not mid-thought."
+      commercial:
+        punch_in: {every_s: [3.0, 5.0], scales: [1.0, 1.12], min_shot_s: 1.5, center: [0.5, 0.4]}
+        lip_sync: on_camera
+        narrated_angles: ["over the shoulder", "from behind"]
+        director:
+          - "Cover one scene from 3-6 different angles: wide, medium, close-up, over the shoulder, her hands from her point of view; each shot is its own first frame."
+          - "Only the lines she says looking into the lens are lip-synced; give the other lines to shots that don't show her face to camera (hands, product, the place, from behind) so her voice carries over them."
+          - "Shots run 1.5-3 seconds; cut on an action (a pour, a reach, a turn) or at the end of a line."
+          - "End on her face to camera with the last line."
+      long_take:
+        punch_in: null
+        lip_sync: all
+        director:
+          - "One continuous take to camera; only for a sit-down talk where the cut would break the moment."
   # Walk-and-talk (plan 2026-11-22-video-quality-autonomous item 1; production, worker/comfy.py graph_v2v): a talking
   # take whose shot moves is made in two stages. First a silent motion clip from the take's photo (the story-clip
   # path, prompt compiled from the shot for i2v, as long as the take's voice line up to max_motion_seconds), then
@@ -1194,6 +1231,16 @@ captions:
     audience_question: "questions to the audience ('what about you?', 'anyone else?')"
     lesson: "lessons, reminders or morals"
     narrated_gratitude: "narrated gratitude"
+  # Scripts written to be said (planner.voice_rules, planner.spoken_issues; owner 2026-11-24: the voice sounded read).
+  # A sentence over max_words_per_sentence drops the idea before any GPU (it is prose, and leaves no gap to cut on).
+  spoken:
+    max_words_per_sentence: 22
+    rules:
+      - "Contractions always (I'm, it's, don't); short sentences and fragments; one idea per sentence."
+      - "Start in the middle of the moment, never with a greeting, an intro or 'so today'."
+      - "Leave room for her: a quick aside ('which, fine'), a small restart ('I mean, no, okay') at most once; never brackets."
+      - "Say numbers, times and names the way she would say them out loud ('two am', 'like forty quid')."
+      - "Put the punchline or the turn at the end of a sentence, where she can pause before it."
   no_em_dash: true
   voice_guide: >-
     Write like a real person people choose to follow, not a brand, a poet or an assistant. Be specific: name the

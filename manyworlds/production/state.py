@@ -97,6 +97,7 @@ BRIEF: dict[str, str] = {
     "slides": "a carousel's text slides (manyworlds.slides)",
     "song": "a music_video post's song (manyworlds.music spec: title, lyrics, tags, bpm, key, duration_s)",
     "template": "the shot-sheet archetype the caption style is looked up by",
+    "edit_grammar": "a talking post's edit grammar when the idea names one (manyworlds.cuts; else by archetype)",
     "breadth_run": "marks a breadth-test post, advanced only by its own driver",
 }
 

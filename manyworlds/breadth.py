@@ -255,7 +255,10 @@ def expected_jobs(policy: Policy, item: Item, creator) -> list[dict]:
         shots = body.get("shots") or []
         hybrid = bool(policy.get("generation", "talk_hybrid", "enabled", default=False)) and len(scenes) >= 2
         if shots:
-            takes = production.shot_takes(policy, shots, cutaways=hybrid)
+            from . import cuts
+            grammar = cuts.choose(policy, body)   # the estimate: the idea's grammar, else the default
+            takes = production.shot_takes(policy, shots, cutaways=hybrid,
+                                          narrate=lambda s, g=grammar: cuts.narrates(s, policy, g))
         else:
             takes = [(t, "talk", 0) for t in production.talk_segments(policy, body.get("script", ""), hybrid=hybrid)]
         motion = (policy.get("generation", "talk_motion", default={}) or {}).get("kind") or prod.get("video_kind")

@@ -363,6 +363,10 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
     if move:
         idea["move"] = {"name": move_name, "note": move.get("note", ""), "shot": move.get("shot") or {}}
     look = _style_view(conn, policy, creator_id)
+    cut_rules = ""
+    if fmt == "talking_video":   # how this talking post is cut (manyworlds.cuts): its grammar's rules
+        from .. import cuts
+        cut_rules = cuts.director_rules(policy, cuts.choose(policy, body, prof or bible))
     styled = ""
     if look:
         styled = (f"Her style, world and this month (keep the style, vary outfits and places): {json.dumps(look, default=str)}\n"
@@ -380,6 +384,7 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
                f"{json.dumps(_capped(dossier_view, items), default=str)}\n" if dossier_view else "")
             + (f"Her talent manager's current focus and what to stop: {json.dumps(_capped(manager, items), default=str)}\n"
                if manager else "")
+            + cut_rules
             + f"What is known about their life: {json.dumps(facts)}\n"
             + styled
             + (f"Shot types in her recent posts, with how often (vary them: don't lean on the most used; reach for her "

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from .. import logs, queue
+from .. import cuts, logs, queue
 from ..policy import Policy
 from .common import _cfg, _set, log, retract_dropped
 from .finish import _advance_finish, _advance_upscale, _finish_failed, finish_mode, finish_video
@@ -95,8 +95,10 @@ def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> s
             if post["format"] == "talking_video" and "talk_segments" not in body:
                 hybrid = bool(_hybrid_cfg(policy).get("enabled")) and len(chosen) >= 2
                 directed = _directed(policy, body)
-                takes = (shot_takes(policy, body["shots"], cutaways=hybrid) or script_takes(policy, body)
-                         if directed else [])
+                grammar = cuts.choose_for(conn, policy, body, post["creator_id"]) if directed else ""
+                takes = (shot_takes(policy, body["shots"], cutaways=hybrid,
+                                    narrate=lambda s, g=grammar: cuts.narrates(s, policy, g))
+                         or script_takes(policy, body) if directed else [])
                 if takes:
                     # Directed: one take per shot that speaks, cut only where the shots change; cutaway shots are
                     # narrated over their own photo (hybrid), the rest lip-synced from theirs. Never the hybrid's

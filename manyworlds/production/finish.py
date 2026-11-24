@@ -270,6 +270,16 @@ def _jsonable(value):
     return json.loads(json.dumps(value, default=str))
 
 
+def _talk_edit(conn, policy: Policy, post: dict, body: dict) -> tuple[str | None, dict | None]:
+    """A talking video's edit grammar (manyworlds.cuts.choose_for) and its punch-in settings (None without)."""
+    from .. import cuts
+    if post["format"] != "talking_video":
+        return None, None
+    name = cuts.choose_for(conn, policy, body, post["creator_id"])
+    punch = cuts.grammar(policy, name).get("punch_in") or None
+    return name or None, (dict(punch) if punch else None)
+
+
 def finish_plan(conn, policy: Policy, post: dict, body: dict, video: dict, store=None, *,
                 source: dict | None = None) -> dict:
     """Everything the finish reads from the database, JSON-ready: the finish.video payload (render_finish's input).
@@ -288,12 +298,19 @@ def finish_plan(conn, policy: Policy, post: dict, body: dict, video: dict, store
     frames = frames or [{"id": im.get("asset_id"), "uri": im["uri"]} for im in body.get("images") or []]
     handle = (conn.execute("SELECT handle FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["handle"]
               if grade else None)
-    style, words = None, None
+    style, words, cut_words = None, None, None
+    grammar, punch = _talk_edit(conn, policy, post, body)
     if burn:
         style = caption_style(conn, policy, post, body)
         if style is not None:
             timed = caption_words(conn, policy, body, video, store=store, fmt=fmt)
             words = None if timed is None else [dataclasses.asdict(w) for w in timed]
+    if punch:   # punch-ins cut only between words: the spoken words' timings, the captions' own when they have them
+        if words is None:
+            timed = caption_words(conn, policy, body, video, store=store, fmt=fmt)
+            cut_words = None if timed is None else [dataclasses.asdict(w) for w in timed]
+        else:
+            cut_words = words
     key = _final_key(post)
     beds = with_generated_beds(conn, policy)
     return _jsonable({
@@ -308,11 +325,37 @@ def finish_plan(conn, policy: Policy, post: dict, body: dict, video: dict, store
         "keyframes": [{"id": f["id"], "uri": f["uri"]} for f in frames],
         "grade": grade, "burn": burn, "handle": handle,
         "caption_style": style, "caption_words": words,
+        "talk_edit": grammar, "punch_in": punch, "cut_words": cut_words,
         "final_key": key, "cover_key": key.rsplit("/", 1)[0] + "/cover.jpg",
         # generated beds (sound.library.generated, off) join the library the finisher mixes from
         "policy": {s: beds.body.get(s) for s in FINISH_SECTIONS},
         "policy_version": policy.version,
     })
+
+
+def _punch_in(plan: dict, policy: Policy, store, raw, d) -> tuple[Any, list | None, str | None, dict]:
+    """The grammar's punch-ins (manyworlds.cuts), on the CPU before the captions: (the video to finish from, the
+    stretches made or None, the error when they failed, {"face": the face box after the punch-ins} when they were
+    made). Only inside the lip-synced takes, cut only between words; a failure leaves the video as it was."""
+    from .. import cuts, media
+    punch, words = plan.get("punch_in"), plan.get("cut_words") or []
+    if not punch or not words:
+        return raw, None, None, {}
+    try:
+        info = media.probe(raw)
+        size, seconds = (int(info["width"]), int(info["height"])), info.get("seconds")
+        windows = cuts.talk_windows(plan["body"], plan.get("video_meta") or {}, plan.get("pieces") or [], seconds)
+        seed = int(str(plan["post"]["id"]).replace("-", "")[:8], 16) if plan["post"].get("id") else 0
+        stretches = cuts.punch_plan(words, windows, float(seconds or 0), punch, seed=seed, fps=info.get("fps"))
+        if not stretches:
+            return raw, None, None, {}
+        face = face_box(lambda: list(_fetch_frames(store, plan.get("keyframes") or [], d / "faces")))
+        center = cuts.center_for(face, punch)
+        out = cuts.render_punch_ins(raw, d / "punched.mp4", stretches, size, center)
+        return out, stretches, None, {"face": cuts.punched_face_box(face, stretches, size, center)}
+    except Exception as e:  # noqa: BLE001 - a video without punch-ins beats none
+        log.warning("punch-ins failed for post %s: %s", plan["post"].get("id"), str(e)[:300])
+        return raw, None, f"{type(e).__name__}: {e}"[:300], {}
 
 
 def render_finish(plan: dict, policy: Policy, store, workdir) -> dict | None:
@@ -355,6 +398,7 @@ def render_finish(plan: dict, policy: Policy, store, workdir) -> dict | None:
             passes += 1
         except Exception as e:  # noqa: BLE001 - the video ships unmixed rather than not at all; the error is kept
             sound_error = f"{type(e).__name__}: {e}"[:500]
+    raw, punched, punch_error, face_cache = _punch_in(plan, policy, store, raw, d)
     cap, ovs, width, height = None, [], None, None
     if burn or body.get("shots"):
         info = media.probe(raw)
@@ -364,7 +408,8 @@ def render_finish(plan: dict, policy: Policy, store, workdir) -> dict | None:
         width, height = (finishing.finished_size(info["width"], info["height"], policy) if grade
                          else (info["width"], info["height"]))
         items = _overlay_items_from(fmt, body, meta_v, pieces, info.get("seconds"))
-        face = (face_box(lambda: list(_fetch_frames(store, plan.get("keyframes") or [], d / "faces")))
+        face = (face_cache["face"] if "face" in face_cache else
+                face_box(lambda: list(_fetch_frames(store, plan.get("keyframes") or [], d / "faces")))
                 if burn or items else None)
         if burn:
             words = [captions.Word(**w) for w in plan.get("caption_words") or []]
@@ -375,7 +420,7 @@ def render_finish(plan: dict, policy: Policy, store, workdir) -> dict | None:
                                           face_box=face,   # labels stay off the burned captions too
                                           avoid_bands=[captions.plan_band(cap)] if cap else ())
     text = cap is not None or bool(ovs)
-    if not grade and not text and not mixed:
+    if not grade and not text and not mixed and not punched:
         return None   # captions only, and nothing is said or shown
     out, cover = d / "final.mp4", None
     if grade:
@@ -405,12 +450,14 @@ def render_finish(plan: dict, policy: Policy, store, workdir) -> dict | None:
     elif text:
         _burn_text(raw, out, d / "captions", cap, ovs, policy)
         passes += 1
-    else:   # captions only and nothing said, but the sound was mixed
+    else:   # captions only and nothing said, but the sound was mixed or the takes punched in
         shutil.copyfile(raw, out)
     stored = store.put_file(out, plan["final_key"])
     meta = {"finished": grade, "look": look, "captions": cap.style_name if cap else None,
             "placement": cap.placement if cap else None, "passes": passes, "raw": str(plan["video"]["id"]),
             **({"sound": used} if used else {}), **({"sound_error": sound_error} if sound_error else {}),
+            **({"talk_edit": plan["talk_edit"]} if plan.get("talk_edit") else {}),
+            **({"punch_ins": punched} if punched else {}), **({"punch_error": punch_error} if punch_error else {}),
             **({"on_screen_text": [{"kind": o.kind, "text": o.text, "position": o.position} for o in ovs]}
                if ovs else {}),
             **({"sound_design": {"room_tone": getattr(cues.get("room_tone_synth"), "preset", None),

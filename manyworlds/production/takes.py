@@ -39,7 +39,8 @@ def hybrid_modes(segments: list[str], on_camera_share: float) -> list[str]:
     return modes
 
 
-def shot_takes(policy: Policy, shots: list, *, cutaways: bool = True) -> list[tuple[str, str, int]]:
+def shot_takes(policy: Policy, shots: list, *, cutaways: bool = True,
+               narrate=None) -> list[tuple[str, str, int]]:
     """A directed talking video's takes, one per shot that speaks: (text, mode, shot index), in order. The text is
     what the shot's lines say (`direction.spoken`, deliveries never included); mode is 'talk' (lip-synced on camera)
     or 'narrated' for a `cutaway` shot (its photo under the same voice). Without `cutaways` (hybrid off, or one
@@ -49,13 +50,16 @@ def shot_takes(policy: Policy, shots: list, *, cutaways: bool = True) -> list[tu
     from ..direction import ShotSheet, spoken
     from ..talk_segments import split_script
     sheets = [ShotSheet.model_validate(s) if isinstance(s, dict) else s for s in shots]
-    takes = [(spoken(s), s.cutaway, i) for i, s in enumerate(sheets)]
+    # `narrate` (the edit grammar, manyworlds.cuts.narrates): a speaking shot that doesn't show her face to camera
+    # is a cutaway under the voice too, so only the face-to-camera lines pay for lip sync.
+    cut_of = [bool(s.cutaway) or bool(narrate and narrate(s)) for s in sheets]
+    takes = [(spoken(s), cut_of[i], i) for i, s in enumerate(sheets)]
     takes = [t for t in takes if t[0]]
     if not takes:
         return []
     if all(cut for _, cut, _ in takes):
         # Only cutaways speak: a talking video needs her face, so the lines go to the first on-camera shot.
-        anchor = next((i for i, s in enumerate(sheets) if not s.cutaway), None)
+        anchor = next((i for i in range(len(sheets)) if not cut_of[i]), None)
         takes = ([(" ".join(text for text, _, _ in takes), False, anchor)] if anchor is not None
                  else [(text, False, i) for text, _, i in takes])
     elif not cutaways:
