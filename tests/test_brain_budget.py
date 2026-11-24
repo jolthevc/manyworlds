@@ -73,3 +73,21 @@ def test_per_creator_agents_get_more_budget_as_the_portfolio_grows(conn, policy)
     assert budget.daily_cap(policy, "showrunner", conn) == pytest.approx(base + 3 * per)
     assert budget.active_creators(conn) == n0 + 3
     assert budget.daily_cap(policy, "strategist", conn) == policy.get("brain", "llm_usd_per_day", "strategist")
+
+
+def test_calibrate_and_rubric_drift_are_refused_over_the_evaluators_budget(conn, policy, monkeypatch):
+    from manyworlds import cli
+    import manyworlds.llm as llm_mod
+
+    class NoCalls:   # the refusal comes before any model is asked
+        def __init__(self, *a, **kw):
+            self.spent = 0.0
+
+        def tagged(self, *a, **kw):
+            raise AssertionError("no LLM call may be set up over budget")
+    monkeypatch.setattr(llm_mod, "Claude", NoCalls)
+    cap = budget.daily_cap(policy, "evaluator", conn)
+    ledger.record(conn, category="llm", provider="m", quantity=1, unit="token", usd=cap + 0.01, agent="evaluator")
+    for argv in (["brain", "calibrate", "someone"], ["brain", "rubric-drift", "idea"]):
+        with pytest.raises(SystemExit, match="refused: agent evaluator is over its daily LLM budget"):
+            cli._brain_ops(cli.build_parser().parse_args(argv), conn, policy)
