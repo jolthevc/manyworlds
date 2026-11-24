@@ -612,7 +612,9 @@ generation:
   # under min_shot_s; centred on her face, else on center (shares of the frame). lip_sync on_camera: a speaking shot
   # without her face to camera (direction.faceless, or an angle in narrated_angles) is a cutaway under the voice,
   # not a lip-sync render; all: only the director's own cutaways. director: rules added to the director's brief.
-  # STARTING VALUES, to calibrate from docs/research/2026-11-24-talking-video-calibration.md (real videos measured).
+  # Calibrated 2026-11-24 from 83 measured public videos (docs/research/2026-11-24-talking-video-calibration.md):
+  # story_time from UGC talking videos (hard shots median 2.4 s, cutaways ~25%), commercial from day-in-the-life
+  # (hard shots median 1.1 s, face to camera ~1/3). Per-creator tuning comes from her own outcomes, not this table.
   talk_edit:
     default: story_time
     by_archetype: {storyteller: story_time, educator: story_time, beauty_grwm: story_time, lifestyle_slow: commercial,
@@ -626,16 +628,17 @@ generation:
         director:
           - "Most of it is her talking to the lens, close and handheld, one take per shot; the finish punches in and out between words, so don't plan a cut for every sentence."
           - "Open on the hook line within the first second, her face already close; no greeting or intro."
-          - "Use a cutaway (cutaway true, her hands, the thing she talks about, the place) every 6-10 seconds at most, under the same voice; never for the hook or the punchline."
+          - "About a quarter of the running time is cutaways (cutaway true: her hands, the thing she talks about, the place), one every 4-8 seconds, under the same voice; never for the hook or the punchline."
+          - "Put a short text hook on screen from the first frame (edit.on_screen_text), the story's claim in a few words."
           - "Keep each speaking shot to a few sentences; change the shot where the story moves (a new place, a time jump), not mid-thought."
       commercial:
-        punch_in: {every_s: [3.0, 5.0], scales: [1.0, 1.12], min_shot_s: 1.5, center: [0.5, 0.4]}
+        punch_in: {every_s: [2.5, 4.0], scales: [1.0, 1.12], min_shot_s: 1.0, center: [0.5, 0.4]}
         lip_sync: on_camera
         narrated_angles: ["over the shoulder", "from behind"]
         director:
           - "Cover one scene from 3-6 different angles: wide, medium, close-up, over the shoulder, her hands from her point of view; each shot is its own first frame."
           - "Only the lines she says looking into the lens are lip-synced; give the other lines to shots that don't show her face to camera (hands, product, the place, from behind) so her voice carries over them."
-          - "Shots run 1.5-3 seconds; cut on an action (a pour, a reach, a turn) or at the end of a line."
+          - "Shots run 1-2.5 seconds, a few up to 4; cut on an action (a pour, a reach, a turn) or at the end of a line. Most of the time is the place and her hands, with her face to camera about a third of it."
           - "End on her face to camera with the last line."
       long_take:
         punch_in: null
