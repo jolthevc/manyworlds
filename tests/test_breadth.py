@@ -374,3 +374,66 @@ def test_a_missing_overlay_starts_no_machine_for_test_work_and_tells_the_owner_o
     autoscale.tick(conn, pol, ps, now=NOW)
     n = conn.execute("SELECT count(*) n FROM events WHERE type = 'test_overlay_missing'").fetchone()["n"]
     assert n == 1
+
+
+# ------------------------------------------------------------------------------------------- unattended overnight
+
+def test_other_open_test_work_blocks_a_start_and_shows_in_the_dry_run(conn, policy, store):
+    pol = _paused(policy)
+    handle = _creator(conn)
+    queue.enqueue(conn, "image.zimage", {}, batch="bench-image-x")
+    dry = breadth.run(conn, pol, "default", items=["photo_propped_pose"], creator=handle, store=store, dry_run=True)
+    assert dry["blockers"] == {"bench-image-x": 1}
+    with pytest.raises(SystemExit):
+        breadth.run(conn, pol, "default", items=["photo_propped_pose"], creator=handle, store=store, once=True)
+
+
+def test_the_runs_own_batches_never_block_it(conn, policy):
+    pol = breadth.test_policy(_paused(policy))
+    for b in ("test-breadth-r3", "test-breadth-r3-dance", "test-breadth-r3.plates"):
+        queue.enqueue(conn, "image.zimage", {}, batch=b)
+    assert breadth.open_test_work(conn, pol, "test-breadth-r3") == {}
+
+
+def test_plate_jobs_of_the_runs_creators_are_adopted_into_a_test_batch(conn, policy):
+    pol = breadth.test_policy(_paused(policy))
+    cid = breadth._creator(conn, _creator(conn))["id"]
+    other = breadth._creator(conn, _creator(conn))["id"]
+    mine = queue.enqueue(conn, "image.zimage", {}, batch=f"post-sets-{cid}", creator_id=cid)
+    theirs = queue.enqueue(conn, "image.zimage", {}, batch=f"post-sets-{other}", creator_id=other)
+    assert breadth.adopt_plates(conn, pol, "test-breadth-r4", [str(cid)]) == 1
+    rows = {r["id"]: r["batch"] for r in conn.execute("SELECT id, batch FROM jobs").fetchall()}
+    assert rows[mine] == "test-breadth-r4.plates" and rows[theirs] == f"post-sets-{other}"
+    patterns = operations.test_batch_patterns(pol)
+    assert queue.claim(conn, ["image.zimage"], "w1", 60, pool="runpod_comm_3090", batches=patterns).id == mine
+
+
+def test_the_spend_counts_job_costs_and_the_machines_billed(conn):
+    job = queue.enqueue(conn, "image.zimage", {}, batch="test-breadth-r5")
+    conn.execute("INSERT INTO cost_entries (job_id, category, provider, quantity, unit, usd) VALUES "
+                 "(%s, 'llm', 'anthropic', 1, 'call', 0.5), (%s, 'gpu', 'runpod', 1, 's', 9.0)", (job, job))
+    conn.execute("INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, replicas, job_kinds, deadline, max_usd, "
+                 "started_at, billed_until, last_busy_at, billed_usd) VALUES ('mw-x', 'runpod', 'p', 1, 1, %s, "
+                 "now() + interval '1 h', 5, now(), now(), now(), 2.0)", (["image.zimage"],))
+    conn.execute("INSERT INTO attempts (job_id, worker_id, pool, started_at, gpu_group) VALUES (%s, 'w', 'p', now(), 'mw-x')",
+                 (job,))
+    assert breadth.run_spend(conn, "test-breadth-r5") == pytest.approx(2.5)   # attributed gpu time not double counted
+
+
+def test_the_cancel_at_a_stop_includes_the_plates_batch(conn):
+    p = queue.enqueue(conn, "image.zimage", {}, batch="test-breadth-r6.plates")
+    assert breadth.cancel_queued(conn, "test-breadth-r6") == 1
+    assert conn.execute("SELECT status FROM jobs WHERE id = %s", (p,)).fetchone()["status"] == "failed"
+
+
+def test_verdicts_per_format(raw_policy):
+    pol = breadth.test_policy(raw_policy)
+    items = [{"id": "a", "format": "photo", "status": "ready", "usd": 0.2},
+             {"id": "b", "format": "photo", "status": "ready", "usd": 0.2},
+             {"id": "c", "format": "talking_video", "status": "dropped", "usd": 1.0, "drop_reason": "identity"},
+             {"id": "d", "format": "story", "status": "producing", "usd": 0.1},
+             {"id": "e", "status": "done", "usd": 0.3}]
+    v = breadth.verdicts(pol, items)
+    assert v["photo"]["verdict"] == "go" and v["photo"]["usd_per_ready"] == 0.2
+    assert v["talking_video"]["verdict"] == "no-go" and v["talking_video"]["drop_reasons"] == ["c: identity"]
+    assert v["story"]["verdict"] == "incomplete" and v["bench:e"]["verdict"] == "go"

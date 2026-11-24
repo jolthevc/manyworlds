@@ -38,6 +38,9 @@ breadth:
   require_paused: true             # refuse while operations are live (the producer would advance these posts too)
   deadline_hours: 12               # from the run's first post; then queued jobs are cancelled and the run stops
   cancel_on_deadline: true
+  max_usd: 12                      # the run stops (queued jobs cancelled) once its jobs and machines have cost this
+  refuse_beside_open_tests: true   # other open test batches could share or start machines: finish them first
+  go: {min_pass_share: 0.6, min_items: 1}   # per-format verdict in the report: go at this ready share or better
   loop_seconds: 60                 # how often the driver advances its posts
   review_in_driver: true           # the driver reviews its batches under this overlay (direction report-only)
   report_url_seconds: 86400        # presigned links in the report last a day
