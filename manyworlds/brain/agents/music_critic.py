@@ -197,8 +197,8 @@ def critique(ctx: AgentContext, song_id, *, aesthetics=None, listener=None) -> d
     def compute():
         system = SYSTEM.replace("{max_fixes}", str(c.get("max_fixes", 3))).replace(
             "{roles}", ", ".join(c.get("fix_roles") or []))
-        out = ctx.llm.structured(role, system=system, content=_prompt(context, scores, heard, ids, policy),
-                                 schema=Assessment, effort=c.get("effort", "medium"), creator_id=song["creator_id"])
+        out = _ask(ctx, role, system=system, content=_prompt(context, scores, heard, ids, policy),
+                   creator_id=song["creator_id"])
         kept, dropped = check(out.model_dump(), ids, policy)
         return {"kind": "music_critique", "creator_id": song["creator_id"],
                 "inputs": {"song_id": str(song_id), "mode": context["mode"], "bands": context["bands"]["source"],
@@ -248,3 +248,80 @@ class MusicCritic:
 
 
 register(MusicCritic())
+
+
+def _ask(ctx: AgentContext, role: str, *, system: str, content: str, creator_id) -> Assessment:
+    """The critic's call, charged to the critic (its daily budget, or the run's cap inside music_roles.spend_cap)."""
+    from .. import budget
+    from ..music_roles import _guard
+    tag = budget.tag_for(ctx.conn, NAME, creator_id)
+    with ctx.llm.tagged(tag, ctx.job.id, before_call=_guard(ctx.conn, ctx.policy, tag), attempt=ctx.job.attempts):
+        return ctx.llm.structured(role, system=system, content=content, schema=Assessment,
+                                  effort=_cfg(ctx.policy).get("effort", "medium"), creator_id=creator_id)
+
+
+DRAFT_NOTE = """
+This is a DRAFT review, before any audio exists: you see the written song (lyrics, concept, the producer's settings,
+the vocal direction) and what can be counted from the text, not measurements of sound. Review what the draft
+decides (hook placement and strength, structure, lyric repetition and rhyme, tempo and length against the bands,
+fit with the artist). Fixes go to the role that wrote the part (songwriter, lyricist, producer, vocal_director).
+Verdict ship means: good enough to spend GPU on. Leave the prediction empty."""
+
+
+def draft_evidence(policy, draft: dict) -> tuple[dict, dict]:
+    """What a draft review can cite: features counted from the words and the settings ({name: value}) and where they
+    sit against the bands; ids as for a song (feature names, band.<feature>, lyrics, brief)."""
+    from ... import song_measure
+    words, prod, concept = draft.get("words") or {}, draft.get("production") or {}, draft.get("concept") or {}
+    feats = dict(song_measure.lyric_features(words.get("lyrics") or "", words.get("title") or "", policy=policy))
+    feats.pop("sung_syllables", None)
+    if prod.get("bpm"):
+        feats["tempo_bpm"] = prod["bpm"]
+    if prod.get("duration_s"):
+        feats["duration_s"] = prod["duration_s"]
+    if isinstance(concept.get("hook_at_s"), (int, float)) and concept.get("hook_line"):
+        feats["time_to_first_chorus_s"] = concept["hook_at_s"]   # planned, not measured
+    band = (draft.get("context") or {}).get("bands") or {}
+    return feats, {"features": feats, "position": music_analysis.position(feats, band), "nearest": [],
+                   "findings": (draft.get("context") or {}).get("findings") or [],
+                   "song": {"lyrics": words.get("lyrics"), "brief": draft.get("brief")}}
+
+
+def review_draft(ctx: AgentContext, draft: dict, *, step: str) -> dict:
+    """The critic on a written song before any GPU (the pipeline's revision loop): an Assessment checked like a song's
+    (findings and fixes must cite the evidence; fixes only to the writing roles), recorded once per job step
+    (decision kind music_draft_review). Nothing is routed to song_feedback: the pipeline hands the fixes to the roles
+    in the same run."""
+    c = _cfg(ctx.policy)
+    feats, context = draft_evidence(ctx.policy, draft)
+    ids = evidence_ids(context, None, None)
+    writers = [r for r in (c.get("fix_roles") or []) if r in (c.get("draft_fix_roles") or c.get("fix_roles") or [])]
+    role = str(c.get("role") or NAME)
+
+    def compute():
+        system = SYSTEM.replace("{max_fixes}", str(c.get("max_fixes", 3))).replace(
+            "{roles}", ", ".join(writers)) + DRAFT_NOTE
+        content = "\n".join([
+            f"CONCEPT: {json.dumps(draft.get('concept') or {}, default=str)}",
+            f"LYRICS:\n{(draft.get('words') or {}).get('lyrics') or '(none)'}",
+            f"PRODUCTION: {json.dumps(draft.get('production') or {}, default=str)}",
+            f"VOCAL: {json.dumps(draft.get('vocal') or {}, default=str)}",
+            f"COUNTED FROM THE DRAFT: {json.dumps(feats, default=str)}",
+            f"BANDS (advisory): {json.dumps(context['position'], default=str)}",
+            "FINDINGS: " + json.dumps([{"id": f"finding.{i + 1}", **f} for i, f in enumerate(context['findings'])],
+                                      default=str),
+            f"EVIDENCE IDS: {sorted(ids)}"])
+        out = _ask(ctx, role, system=system, content=content, creator_id=draft.get("creator_id"))
+        kept, dropped = check(out.model_dump(), ids, _with_roles(ctx.policy, writers))
+        kept["prediction"] = None
+        return {"kind": "music_draft_review", "creator_id": draft.get("creator_id"), "inputs": {"step": step},
+                "output": {**kept, "dropped": dropped}, "rationale": kept["summary"], "model": ctx.llm.model_for(role)}
+    return remember(ctx, f"draft:{step}", compute)
+
+
+def _with_roles(policy, roles: list[str]):
+    """The policy with the critic's fix roles narrowed (a draft's fixes go only to the writing roles)."""
+    from ... import policy as policy_mod
+    body = dict(policy.body)
+    body["music"] = {**body["music"], "critic": {**body["music"]["critic"], "fix_roles": roles}}
+    return policy_mod.Policy(body=body, version=policy.version)

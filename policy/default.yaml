@@ -817,7 +817,9 @@ brain:
   style_director: {enabled: true, role: style_director, effort: medium, season_days: 30, min_faceless_families: 4}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
                     creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0,
-                    comment_themes: 0.5, idea_reviser: 0.5, lyricist: 0.5, music_critic: 0.5}   # lyricist: original lyrics for song posts (music, off); director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    comment_themes: 0.5, idea_reviser: 0.5, lyricist: 0.5, music_critic: 0.5,
+                    head_of_music: 0.5, a_and_r: 0.5, music_talent_manager: 1.0, songwriter: 1.0, producer: 0.3,
+                    vocal_director: 0.3, melody: 0.3, mix_master: 0.3, curator: 0.3}   # lyricist: original lyrics for song posts (music, off); director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -904,7 +906,7 @@ brain:
   # rights goes to the owner.
   rights:
     routes: {tier_change: strategist, production_upgrade: strategist, budget: strategist, cohort: strategist,
-             research: analyst, experiment: talent_manager, escalate: owner}
+             research: analyst, experiment: talent_manager, escalate: owner, artist_concept: head_of_music}
     # kinds accepted as filed (within the requester's weekly allowance below): research runs the analyst at once,
     # an experiment is the manager's own call
     auto_accept: [research, experiment]
@@ -913,6 +915,8 @@ brain:
     max_open_per_creator: 3
     talent_manager: {research_per_week: 2, budget_per_week: 1, tier_change_per_week: 1}
     strategist: {max_usd_per_request: 20, tier_changes_per_day: 5}
+    head_of_music: {tier_change_per_week: 3}
+    music_talent_manager: {tier_change_per_week: 1}
   # Production tiers (creator_states.tier; the CEO sets them): what a creator's plan may use. usd_per_day is the
   # planning estimate the finance check uses for a change.
   tiers:
@@ -932,7 +936,8 @@ brain:
   # (the director, evaluator, reviewers and comment drafts spend without decisions by design).
   chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3,
                    decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts,
-                                     idea_reviser, comment_themes, music_critic]}
+                                     idea_reviser, comment_themes, music_critic, head_of_music, a_and_r,
+                                     music_talent_manager, curator]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # Series continuity (manyworlds.brain.series): episodes enter at publication; the showrunner sees, per series (at
@@ -2132,11 +2137,68 @@ music:
     max_fixes: 3
     nearest: 3
     fix_roles: [songwriter, lyricist, melody, producer, vocal_director, mix_master]
+    draft_fix_roles: [songwriter, lyricist, producer, vocal_director]   # a draft review's fixes (before any audio)
     commission: false
     aesthetics: {adapter: stub}
     listener: {adapter: stub, hosted_role: music_listener, worker_kind: music.listen, audio_format: mp3,
                max_audio_mb: 20}
     prediction: {horizon_days: 14, metrics: [song_median_reach, song_reach_lift]}
+  # The roles (spec section 3; brain/agents/<role>.py, shared machinery brain/music_roles.py). Each has its llm role
+  # (a model in llm.roles: swap a role's model there), effort and its own daily budget (brain.llm_usd_per_day.<role>).
+  roles:
+    head_of_music: {llm_role: head_of_music, effort: medium, max_concepts: 10, max_songs_per_week: 3}
+    a_and_r: {llm_role: a_and_r, effort: medium, max_pitches: 3, max_findings: 30}
+    music_talent_manager: {llm_role: music_talent_manager, effort: medium, songs_per_review: 2, recent_songs: 20,
+                           resolved_predictions: 10, max_predictions: 2}
+    songwriter: {llm_role: music_songwriter, effort: medium}
+    lyricist: {llm_role: lyricist}          # brain/lyrics.py: its own role and checks
+    producer: {llm_role: music_producer, effort: low}
+    vocal_director: {llm_role: music_vocal_director, effort: low}
+    melody: {llm_role: music_melody, effort: low, max_takes: 4}
+    mix_master: {llm_role: music_mix_master, effort: low, lufs_range: [-14, -8], max_true_peak_dbtp: -1.0}
+    curator: {llm_role: music_curator, effort: low, tracks: {single: [1, 1], ep: [3, 6], album: [8, 14]}}
+  # The song pipeline (manyworlds.music_pipeline): writing roles in order, the critic's draft review and up to
+  # revision_limit rounds of fixes before any GPU (a draft still judged rethink stops: stop_on_rethink), `takes`
+  # candidate takes (at most roles.melody.max_takes), then the after-take steps (voice_conversion: a slot, no-op until
+  # built). skip: roles left out; artists.<handle>: overrides per artist. poll_seconds/max_waits: how the
+  # brain.music_pipeline job waits for real takes. stub: the sandbox's stand-in measurements.
+  pipeline:
+    writing: [songwriter, producer, lyricist, vocal_director]
+    draft_review: true
+    revision_limit: 2
+    stop_on_rethink: true
+    takes: 2
+    after: [melody, music_critic, mix_master, voice_conversion]
+    skip: []
+    artists: {}
+    song_seconds: 30
+    best_songs_shown: 3
+    poll_seconds: 120
+    max_waits: 200
+    stub: {lufs: [-14, -8], hook_sd_s: 2.0, max_vocal_entry_s: 8, default_hook_s: 10}
+  # The music portfolio (brain.music_portfolio, spec section 6): head_of_music's share of the month's usable budget
+  # (the CEO's allocation), the genres the portfolio aims to cover, how close two artists may sound (RMS distance of
+  # standardised song-feature centroids) and how many artists one genre takes.
+  portfolio:
+    budget_share: 0.2
+    genres: [pop, indie, country, rock, rap, lofi]
+    min_artist_distance: 0.5
+    max_artists_per_genre: 3
+    min_shared_features: 4
+    feature_sources: [sound, structure, vocal, lyrics]
+  # Music experiments (brain.experiments music_*): a tentative finding about one feature becomes a two-arm test on
+  # songs, arms assigned per release batch; read once each arm has min_songs_per_arm songs with outcomes.
+  experiments:
+    min_songs_per_arm: 6
+    max_open_per_artist: 1
+    instructions:
+      time_to_first_chorus_s: {high: "the chorus arrives late (after 20 seconds), after a full verse",
+                               low: "the hook (chorus) lands within the first 8 seconds"}
+      chorus_repeats: {high: "the chorus repeats at least three times", low: "the chorus comes once or twice"}
+      time_to_first_vocal_s: {high: "an instrumental intro before the voice", low: "the voice from the first second"}
+  # The sandbox runner (`mw music sandbox <handle> --songs N [--usd X] [--create --genre G]`, manyworlds.music_sandbox):
+  # stubbed GPU, one LLM cap for the run.
+  sandbox: {max_usd: 5.0, default_songs: 3}
 
 # Dance and motion transfer (plan docs/superpowers/plans/2026-11-22-dance-motion-transfer.md): Wan2.2-Animate-2-14B
 # (Apache-2.0) in ComfyUI core (WanAnimate2ToVideo, WanAnimate2Cache; in our pin v0.45.0). OFF; graph only
@@ -2257,6 +2319,16 @@ llm:
     # The music critic (brain/agents/music_critic.py, music.critic): one call per song, reasoning over measurements,
     # bands, nearest songs and what the listener heard. Judgement, not volume: Sonnet.
     music_critic: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    # The music department's roles (music.roles.<role>.llm_role): judgement roles on Sonnet, the settings roles on Haiku.
+    head_of_music: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    a_and_r: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    music_talent_manager: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    music_songwriter: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    music_producer: claude-haiku-5-5
+    music_vocal_director: claude-haiku-5-5
+    music_melody: claude-haiku-5-5
+    music_mix_master: claude-haiku-5-5
+    music_curator: claude-haiku-5-5
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
@@ -2314,7 +2386,7 @@ llm:
   # second: never the director, review or comment replies (those run outside brain jobs anyway).
   batch:
     enabled: true
-    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes, idea_revise]
+    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes, idea_revise, head_of_music, a_and_r, music_curator]   # music: nobody waits on the slate, pitches or a release
     discount: 0.5              # the batch price as a share of the standard one (Anthropic pricing, checked 2026-11-23)
     gather_seconds: 30         # wait this long for other jobs' calls so they share a batch
     max_requests: 1000         # per batch (the API takes up to 100,000)

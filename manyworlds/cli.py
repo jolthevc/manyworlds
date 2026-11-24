@@ -30,6 +30,17 @@ def _music(conn, pol, args) -> dict:
         if row is None:
             raise SystemExit(f"no creator {args.creator!r}")
         cid = row["id"]
+    if args.action == "sandbox":
+        from . import music_sandbox
+        from .llm import Claude
+        if not args.handle:
+            raise SystemExit("mw music sandbox <handle> --songs N")
+        if args.create:
+            music_sandbox.create_artist(conn, args.handle, genre=args.genre or "indie")
+        try:
+            return music_sandbox.run(conn, pol, Claude(conn, pol), args.handle, songs_n=args.songs, usd=args.usd)
+        except music_sandbox.NotSandbox as e:
+            raise SystemExit(str(e)) from None
     if args.action == "measure":
         if args.batch:
             songs.register_batch(conn, args.batch)
@@ -128,7 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     lm.add_argument("--days", type=float, default=30)
     lm.add_argument("--tolerance", type=float, default=1.0, help="numeric difference counted as agreeing")
     mu = sub.add_parser("music", help="songs: measure them, list an artist's songs, analyse what works")
-    mu.add_argument("action", choices=["measure", "songs", "analyse"])
+    mu.add_argument("action", choices=["measure", "songs", "analyse", "sandbox"])
+    mu.add_argument("handle", nargs="?", help="sandbox: the sandbox artist's handle (a real creator is refused)")
+    mu.add_argument("--songs", type=int, help="sandbox: songs to make (default music.sandbox.default_songs)")
+    mu.add_argument("--usd", type=float, help="sandbox: the run's LLM cap (at most music.sandbox.max_usd)")
+    mu.add_argument("--create", action="store_true", help="sandbox: create the sandbox artist first (--genre)")
     mu.add_argument("--batch", help="measure: a benchmark batch's songs (registered first)")
     mu.add_argument("--creator", help="songs / analyse: the artist's handle")
     mu.add_argument("--genre", help="analyse: one genre")

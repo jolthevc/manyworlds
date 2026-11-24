@@ -27,7 +27,7 @@ from .. import notify, queue
 from ..policy import Policy
 from . import evidence
 
-KINDS = ("tier_change", "budget", "research", "experiment", "cohort", "production_upgrade", "escalate")
+KINDS = ("tier_change", "budget", "research", "experiment", "cohort", "production_upgrade", "escalate", "artist_concept")
 
 
 def _rights(policy: Policy) -> dict:
@@ -189,6 +189,8 @@ def _apply(conn, policy: Policy, p: dict, decided_by: str, now: datetime) -> dic
         return _open_experiment(conn, policy, p)
     if kind == "cohort":
         return _cohort_theses(conn, p)
+    if kind == "artist_concept":
+        return _artist_thesis(conn, p)
     return {"applied": {}}
 
 
@@ -251,6 +253,23 @@ def _cohort_theses(conn, p: dict) -> dict:
                            (body["title"] or "cohort concept", Jsonb({"proposal_id": str(p["id"])}), Jsonb(body))).fetchone()
         ids.append(str(row["id"]))
     return {"applied": {"theses": ids}} if ids else {"refused": "the cohort named no concepts"}
+
+
+def _artist_thesis(conn, p: dict) -> dict:
+    """An accepted artist concept (A&R to head_of_music) becomes a proposed thesis for a music artist (vertical music).
+    Launching it still takes the strategist's launch slots and the owner's approval (brain.launches)."""
+    c = p["subject"] or {}
+    if not c.get("concept"):
+        return {"refused": "the pitch has no concept"}
+    body = {"title": str(c.get("concept"))[:80], "archetype": "singer_songwriter", "vertical": "music",
+            "audience": "", "why_now": str(c.get("why_now") or p["argument"] or "")[:1000], "format_mix": [],
+            "differentiation": str(c.get("why_distinct") or ""), "risks": "", "production_fit": "",
+            "concept": c.get("concept"), "music": {k: c.get(k) for k in ("genre", "subgenre", "personality",
+                                                                         "sonic_identity", "story")},
+            "source": {"proposal_id": str(p["id"]), "finding_ids": c.get("finding_ids") or []}}
+    row = conn.execute("INSERT INTO theses (summary, evidence, body) VALUES (%s, %s, %s) RETURNING id",
+                       (body["title"], Jsonb({"proposal_id": str(p["id"])}), Jsonb(body))).fetchone()
+    return {"applied": {"thesis_id": str(row["id"])}}
 
 
 def _tier_month_delta(conn, policy: Policy, creator_id, tier: str) -> float:

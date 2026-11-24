@@ -81,8 +81,9 @@ def _content(bible: dict, idea: dict, problems: list[str] | None) -> str:
 
 
 def write_song(conn, policy: Policy, llm, *, creator_id, idea: dict, bible: dict | None = None,
-               max_seconds: float | None = None) -> dict:
-    """The song spec for an idea (music.Song fields), checked; raises music.SongRefused when every draft fails."""
+               max_seconds: float | None = None, before_call=None) -> dict:
+    """The song spec for an idea (music.Song fields), checked; raises music.SongRefused when every draft fails.
+    `before_call` replaces the lyricist's own budget check (the music pipeline's run cap)."""
     from . import budget
     if bible is None:
         row = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
@@ -93,7 +94,7 @@ def write_song(conn, policy: Policy, llm, *, creator_id, idea: dict, bible: dict
     agent = budget.tag_for(conn, AGENT, creator_id)
     problems: list[str] = []
     for _ in range(max(1, int(lc.get("max_attempts", 2)))):
-        with llm.tagged(agent, None, before_call=lambda: budget.check(conn, policy, agent)):
+        with llm.tagged(agent, None, before_call=before_call or (lambda: budget.check(conn, policy, agent))):
             out = llm.structured(AGENT, system=_system(policy, bible, cap), content=_content(bible, idea, problems),
                                  schema=SongAnswer, effort=str(lc.get("effort", "medium")), creator_id=creator_id)
         spec = {"title": out.title, "lyrics": out.lyrics, "tags": music.tags_text(out.tags), "bpm": out.bpm,
