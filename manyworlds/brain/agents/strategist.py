@@ -14,19 +14,22 @@ passes:
                otherwise the strategist approves within its authority and manyworlds.brain.launches takes over
 
 The whole run is one decision with the numbers it saw, what it proposed, and what was applied or refused.
-It reads real evidence only.
+It reads real evidence only. Its calls come with checkable predictions about the creators they concern
+(manyworlds.brain.predictions, role `strategist`, at most `max_predictions` a run, linked to the run's decision), so
+`mw brain scorecard` scores the CEO as it scores the talent managers; it sees its own scorecard each run.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import Literal
 
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ...worker.runner import NonRetryable
-from .. import portfolio, proposals
+from .. import portfolio, predictions, proposals
 from ..agent import AgentContext, register, remember
 
 SYSTEM = """You are the portfolio strategist of an AI creator studio that runs many openly AI-generated social
@@ -55,10 +58,24 @@ class RequestDecision(BaseModel):
     reason: str = Field(description="why, against the evidence and the budget; a rejection says what would change it")
 
 
+class Claim(BaseModel):
+    creator_id: str = Field(description="the creator the claim is about")
+    claim: str = Field(description="what you expect, in words")
+    metric: Literal["median_reach", "reach_growth"]
+    comparator: Literal["above", "below"]
+    threshold: float
+    probability: float = Field(description="0-1: how sure you are")
+    horizon_days: int
+
+
 class PortfolioPlan(BaseModel):
     stage_moves: list[StageMove]
     launches: list[LaunchProposal]
     requests: list[RequestDecision] = Field(default_factory=list, description="a decision on every open request addressed to you")
+    predictions: list[Claim] = Field(default_factory=list, description=(
+        "checkable claims behind your calls (a stage move, a tier, keeping a creator): what her reach will do over "
+        "the horizon, with your probability; scored later against real outcomes. None for a creator with no "
+        "published posts"))
     notes: str = Field(description="one or two sentences on the portfolio and why these choices")
 
 
@@ -161,7 +178,10 @@ class Strategist:
             markets = [dict(m) for m in ctx.conn.execute(
                 "SELECT id::text, name, conviction_mean, conviction_low, conviction_high, dossier->'thesis' thesis "
                 "FROM markets WHERE dossier ? 'thesis' ORDER BY conviction_mean DESC NULLS LAST LIMIT 10").fetchall()]
+            card = predictions.scorecard(ctx.conn, role=ROLE)
             prompt = (f"Portfolio (numbers from real outcomes only): {json.dumps(snap, default=str)}\n"
+                      f"Your own scored predictions so far (Brier: lower is better, 0.25 is a coin flip): "
+                      f"{json.dumps(card, default=str) if card else 'none scored yet'}\n"
                       f"Market theses from the market leads: {json.dumps(markets, default=str) if markets else 'none yet'}\n"
                       f"Requests addressed to you (decide every one; a talent manager's conviction is an argument to "
                       f"weigh, not a fact; requests labelled SIMULATED rest on sandbox data, which shows nothing about "
@@ -171,7 +191,9 @@ class Strategist:
                       f"({cfg.get('min_posts_before_downward')} real posts, {cfg.get('min_days_before_downward')} days live). "
                       f"Launch limits: {cfg.get('max_active_creators')} active creators, {cfg.get('launches_per_week')} "
                       f"launches a week, about ${cfg.get('est_launch_usd')} each. Propose stage moves and launches "
-                      f"(by thesis_id) with reasons; propose nothing where nothing is warranted.")
+                      f"(by thesis_id) with reasons; propose nothing where nothing is warranted. Back your calls "
+                      f"with up to {cfg.get('max_predictions')} checkable predictions about the creators concerned "
+                      f"(median_reach or reach_growth, above or below a threshold, with a probability).")
             plan = ctx.llm.structured("brain", system=SYSTEM, content=prompt, schema=PortfolioPlan,
                                       effort=cfg.get("effort", "medium"))
             moves = _apply_moves(ctx, snap, plan.stage_moves)
@@ -183,7 +205,32 @@ class Strategist:
                     "output": {"proposed": plan.model_dump(), "stage_moves": moves, "launches": launches,
                                "requests": decided}}
 
-        return remember(ctx, "portfolio", compute)
+        out = remember(ctx, "portfolio", compute)
+        return {**out, "predictions_recorded": _record_predictions(ctx, out)}
+
+
+ROLE = "strategist"
+
+
+def _record_predictions(ctx: AgentContext, out: dict) -> int:
+    """The run's claims (at most brain.strategist.max_predictions, each about a creator the run saw) into the
+    predictions ledger under role strategist, linked to the run's decision. A rerun of the job records none twice."""
+    conn, cap = ctx.conn, int(_cfg(ctx.policy).get("max_predictions", 5))
+    decision = conn.execute("SELECT id, inputs FROM decisions WHERE job_id = %s AND step = 'portfolio'",
+                            (ctx.job.id,)).fetchone()
+    if decision is None or conn.execute("SELECT 1 FROM predictions WHERE decision_id = %s",
+                                        (decision["id"],)).fetchone():
+        return 0
+    seen = {str(c.get("creator_id")) for c in (decision["inputs"] or {}).get("creators") or []}
+    made = 0
+    for c in ((out.get("proposed") or {}).get("predictions") or [])[:cap]:
+        if str(c.get("creator_id")) not in seen:
+            continue   # a claim about a creator it never saw (or made up) is not recorded
+        made += predictions.record(conn, role=ROLE, creator_id=c["creator_id"], decision_id=decision["id"],
+                                   claim=c["claim"], metric=c["metric"], comparator=c["comparator"],
+                                   threshold=c["threshold"], probability=c["probability"],
+                                   horizon_days=c["horizon_days"]) is not None
+    return made
 
 
 def _decide_requests(ctx: AgentContext, open_requests: list[dict], decisions: list) -> list[dict]:

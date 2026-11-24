@@ -975,6 +975,7 @@ brain:
     launches_per_week: 0               # owner 2026-11-21: no new creator launches for now (was 2)
     est_launch_usd: 3.0                # reference pack + voice + LoRA + Claude steps, roughly
     thesis_candidates: 8
+    max_predictions: 5                 # checkable claims recorded a run (role strategist, scored by mw brain scorecard)
     # Conviction: belief about weekly log growth of reach (real data only), prior N(prior_mean, prior_sd).
     conviction: {prior_mean: 0.0, prior_sd: 0.15, min_weeks: 3, voi_weight: 0.5, alternative_mean: 0.0, retire_margin: 0.02}
   exploration_share: 0.3          # share of each batch spent on untried directions and open experiments

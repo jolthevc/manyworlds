@@ -128,3 +128,30 @@ def test_the_shipped_policy_launches_nothing(conn, raw_policy):
     out, _ = _run(conn, pol, {"stage_moves": [], "notes": "n",
                               "launches": [{"thesis_id": str(t[0]), "cohort": "c", "reason": "r"}]})
     assert out["launches"]["requested"] == 0 and "per week" in out["launches"]["refused"][0]["why"]
+
+
+def test_the_ceo_files_checkable_predictions_that_the_scorecard_scores(conn, policy):
+    """The strategist's calls come with claims in the predictions ledger (role strategist), linked to its decision,
+    capped per run, only about creators it saw; a rerun records nothing twice."""
+    from manyworlds.brain import predictions
+    cid = creator(conn, publish_mode="instagram")
+    claim = {"creator_id": str(cid), "claim": "her reach grows", "metric": "median_reach", "comparator": "above",
+             "threshold": 800, "probability": 0.6, "horizon_days": 21}
+    ghost = {**claim, "creator_id": "00000000-0000-0000-0000-000000000000"}
+    pol = _with(policy, max_predictions=2)
+    plan = {"stage_moves": [], "launches": [], "notes": "n", "predictions": [claim, ghost, claim, claim]}
+    job = queue.enqueue(conn, "brain.strategist", {"day": "2026-11-20"})
+    ctx = make_ctx(conn, pol, job)
+    ctx.llm = PlanLLM(plan, conn=conn)
+    out = strategist.Strategist().run(ctx)
+    rows = conn.execute("SELECT role, creator_id, metric, threshold, probability, decision_id FROM predictions").fetchall()
+    decision = conn.execute("SELECT id FROM decisions WHERE job_id = %s", (job,)).fetchone()["id"]
+    assert out["predictions_recorded"] == 1 and len(rows) == 1     # the cap (2) cut the list; the ghost is refused
+    assert (rows[0]["role"], rows[0]["creator_id"], rows[0]["decision_id"]) == ("strategist", cid, decision)
+    assert "predictions" in ctx.llm.calls[0]["content"] and "none scored yet" in ctx.llm.calls[0]["content"]
+    assert strategist.Strategist().run(ctx)["predictions_recorded"] == 0                       # a rerun: none twice
+    assert conn.execute("SELECT count(*) n FROM predictions").fetchone()["n"] == 1
+    # Resolved, it shows on the CEO's scorecard (mw brain scorecard).
+    conn.execute("UPDATE predictions SET outcome = true, brier = 0.16, observed = 900, mode = 'real'")
+    card = predictions.scorecard(conn, role="strategist")
+    assert card and card[0]["role"] == "strategist" and card[0]["n"] == 1
