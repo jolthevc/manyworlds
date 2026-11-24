@@ -76,7 +76,8 @@ def pull_forward(conn, policy: Policy, *, now: datetime, start) -> dict:
         return {"pulled": 0, "why": "no warm machine"}
     open_jobs = conn.execute("SELECT count(*) n FROM jobs WHERE kind = %s AND status IN ('queued', 'running')",
                              (kind,)).fetchone()["n"]
-    if open_jobs > int(cfg.get("low_water_jobs", 2)):
+    low_water = int(cfg["low_water_jobs"]) if "low_water_jobs" in cfg else 2
+    if open_jobs > low_water:
         return {"pulled": 0, "why": "machine busy", "open_jobs": open_jobs}
     from ..deploy.enforce import billed_today
     cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
@@ -92,9 +93,9 @@ def pull_forward(conn, policy: Policy, *, now: datetime, start) -> dict:
         except Exception:  # noqa: BLE001 - a post that can't start stays planned
             log.exception("pulling post %s forward failed", post["id"])
             continue
-        body = conn.execute("SELECT body FROM posts WHERE id = %s", (post["id"],)).fetchone()["body"]
-        _set(conn, post["id"], "producing", {**body, "pulled_forward": {"at": now.isoformat(),
-                                                                         "machine": machine["name"]}})
+        body = dict(conn.execute("SELECT body FROM posts WHERE id = %s", (post["id"],)).fetchone()["body"])
+        body["pulled_forward"] = {"at": now.isoformat(), "machine": machine["name"]}
+        _set(conn, post["id"], "producing", body)
         pulled.append(str(post["id"]))
     return {"pulled": len(pulled), "posts": pulled, "machine": machine["name"]}
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from manyworlds import ledger, queue
+from manyworlds import ledger, policy as policy_mod, queue
 from manyworlds.deploy.enforce import tick
 
 T0 = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
@@ -60,8 +60,15 @@ def test_stops_idle_group_after_boot_grace_but_not_during_it(conn, policy):
     assert api.stopped == ["mw-image-4090-a"] and actions[0]["reason"] == "idle"
 
 
+def _usual(policy):
+    """The usual idle window: real work could still come (the no-demand stop is tested in test_pull_forward.py)."""
+    return policy_mod.from_dict({**policy.body, "gpu_runs": {
+        k: v for k, v in policy.body["gpu_runs"].items() if k != "idle_stop_minutes_no_demand"}})
+
+
 def test_yesterdays_failure_mode_is_caught(conn, policy):
     """Work finished at 08:19, nobody stopped the group: it must stop within the idle window."""
+    policy = _usual(policy)
     register(conn, "mw-image-4090-r2", hours=12, max_usd=100)
     job = queue.enqueue(conn, "image.zimage", {})
     conn.execute("INSERT INTO attempts (job_id, worker_id, pool, started_at, gpu_group) "
@@ -108,6 +115,7 @@ def _worked(conn, name, kind="image.zimage", at=T0):
 
 def test_a_machine_that_finished_its_work_stops_without_waiting_out_boot_grace(conn, policy):
     from manyworlds.deploy.enforce import idle_stop_minutes
+    policy = _usual(policy)
     _vast(conn, "mw-image-3090-vast-a")
     _worked(conn, "mw-image-3090-vast-a", at=T0 + timedelta(minutes=5))
     api = FakeAPI(["mw-image-3090-vast-a"])
