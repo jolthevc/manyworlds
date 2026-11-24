@@ -113,9 +113,32 @@ def _set(conn, post_id, status: str, body: dict, **cols) -> None:
 
 
 def retract_dropped(conn, post_ids) -> None:
-    """Every production path that drops posts calls this: their canon leaves creator memory (brain.memory)."""
+    """Every production path that drops posts calls this: their canon leaves creator memory (brain.memory), and
+    their still-queued jobs are cancelled (queue.cancel; running jobs are left to their worker), so nothing starts a
+    GPU machine for a post that will never use the output. A piece shared by idempotency key (body.shared_key) is
+    kept while any post that shares it is not dropped, and cancelled with the last one."""
+    from .. import queue
     from ..brain import memory
-    memory.retract_post(conn, post_ids)
+    ids = list(post_ids)
+    if not ids:
+        return
+    memory.retract_post(conn, ids)
+    rows = conn.execute(
+        """WITH gone AS (SELECT id, 'shared:' || btrim(coalesce(body->>'shared_key', '')) || ':' AS prefix
+                           FROM posts WHERE id = ANY(%(ids)s)),
+                live AS (SELECT DISTINCT 'shared:' || btrim(body->>'shared_key') || ':' AS prefix FROM posts
+                          WHERE status <> 'dropped' AND btrim(coalesce(body->>'shared_key', '')) <> '')
+           SELECT j.id FROM jobs j
+            WHERE j.status = 'queued'
+              AND (j.post_id IN (SELECT id FROM gone)
+                   OR EXISTS (SELECT 1 FROM gone g WHERE g.prefix <> 'shared::'
+                                 AND left(j.idempotency_key, length(g.prefix)) = g.prefix))
+              AND NOT EXISTS (SELECT 1 FROM live l WHERE left(coalesce(j.idempotency_key, ''), length(l.prefix))
+                                                          = l.prefix)""",
+        {"ids": ids}).fetchall()
+    cancelled = queue.cancel(conn, [r["id"] for r in rows], "post dropped")
+    if cancelled:
+        log.info("dropped posts %s: cancelled %d queued jobs", [str(i) for i in ids], len(cancelled))
 
 
 # Formats made from the post's chosen photos (the keys of followups.FOLLOW_UPS, named here so the scene and finish
