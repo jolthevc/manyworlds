@@ -78,9 +78,12 @@ from .captioning import (  # noqa: F401
     caption_lines, caption_placement, caption_plan, caption_style, caption_words, captions_from_words, voice_words,
 )
 from .common import (  # noqa: F401
-    FOLLOW_UP_FORMATS, SPOKEN, _cfg, _pieces, _seed, _set, _shot, _with_crops, _with_prompts, _with_shot, log, unmarked,
+    FOLLOW_UP_FORMATS, SPOKEN, _cfg, _pieces, _seed, _set, _shot, _with_crops, _with_prompts, _with_shot, log,
+    retract_dropped, unmarked,
 )
-from .core import _advance_failed, _slide_formats, advance, advance_post  # noqa: F401
+from .core import (  # noqa: F401
+    RerouteCaptionAnswer, _advance_failed, _slide_formats, advance, advance_post, reroute_caption,
+)
 from .finish import (  # noqa: F401
     FINISH_KIND, FINISH_SECTIONS, _advance_finish, _advance_upscale, _burn_text, _cover_row, _cover_upload,
     _existing_final, _fetch_frames, _final_key, _finish_failed, _finish_job, _finish_state, _give_up_finish, _jsonable,

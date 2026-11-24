@@ -220,6 +220,11 @@ class Review(_Strict):
 
 # --- production ------------------------------------------------------------------------------------------------------
 
+class RerouteCaption(_Strict):
+    enabled: bool
+    effort: Literal["low", "medium", "high"]
+
+
 class Production(_Strict):
     image_kind: str
     formats: list[str]
@@ -236,6 +241,7 @@ class Production(_Strict):
     max_job_failures_per_post: int
     max_ready_unpublished: int
     reroute_failed_video: dict[str, str]
+    reroute_caption: RerouteCaption | None = None   # the rerouted post's caption rewritten for a still (core)
     edit: Free
     finish_mode: Literal["queue", "inline"]   # where the finish renders (production.finish)
 

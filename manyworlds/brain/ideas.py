@@ -11,6 +11,8 @@ import uuid
 
 from psycopg.types.json import Jsonb
 
+from .. import queue
+
 log = logging.getLogger("manyworlds.ideas")
 
 # Plan fields that describe the idea; anything else in a post body is bookkeeping.
@@ -153,6 +155,15 @@ def schedule_ready(conn, policy, *, now, llm=None) -> dict:
                                  "body = body || '{\"drop_reason\": \"not evaluated (failed or timed out)\"}' "
                                  "WHERE id = %s AND status = 'proposed'", (r["id"],))
                     out["dropped"] += 1
+            # Their evaluations are no longer wanted: still-queued evaluator jobs are cancelled so they spend no
+            # evaluator budget (a running one is left to finish; its idea is already dropped).
+            unevaluated = [str(r["id"]) for r in rows if not r["evaluated"]]
+            if unevaluated:
+                waiting = [j["id"] for j in conn.execute(
+                    "SELECT id FROM jobs WHERE kind = 'brain.evaluator' AND status = 'queued' "
+                    "AND payload->>'idea_id' = ANY(%s)", (unevaluated,)).fetchall()]
+                out["cancelled"] = out.get("cancelled", 0) + len(
+                    queue.cancel(conn, waiting, "idea dropped unevaluated after brain.showrunner.max_wait_hours"))
             for r, why in qa_dropped:
                 conn.execute("UPDATE ideas SET status = 'dropped', updated_at = now(), body = body || %s "
                              "WHERE id = %s AND status = 'proposed'", (Jsonb({"drop_reason": why}), r["id"]))

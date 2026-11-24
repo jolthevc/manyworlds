@@ -186,3 +186,59 @@ def test_an_experiment_video_is_not_rerouted_to_a_photo(conn, policy, store, tmp
         video.run_pending(conn, policy, ClipStub(clip(identity=2)), store, tmp_path)
         state = production.advance(conn, policy, now=NOW)
     assert state["dropped"] == 1
+
+
+# --- the rerouted post's caption --------------------------------------------------------------------------------
+
+class CaptionStub:
+    """Answers the caption_rewrite role only; anything else would be a call this flow must not make."""
+
+    def __init__(self, caption="tea by the rainy window, just this", fail=False):
+        self.caption, self.fail, self.calls = caption, fail, []
+
+    def structured(self, role, *, system, content, schema, effort="high", creator_id=None):
+        self.calls.append({"role": role, "system": system, "content": content, "effort": effort})
+        assert role == "caption_rewrite"
+        if self.fail:
+            raise RuntimeError("model unavailable")
+        return schema(caption=self.caption)
+
+
+def _rerouted(conn, policy, store, tmp_path, llm, caption):
+    from test_video_review import _clip_jobs, _story_post
+    pid = _story_post(conn, policy, store, tmp_path)
+    conn.execute("UPDATE posts SET caption = %s WHERE id = %s", (caption, pid))
+    for _ in range(int(policy.get("review", "video", "max_repairs_per_post")) + 1):
+        job = _clip_jobs(conn, pid)[-1]
+        rendered(conn, store, tmp_path, job["id"])
+        video.run_pending(conn, policy, ClipStub(clip(identity=2)), store, tmp_path)
+        state = production.advance(conn, policy, now=NOW, llm=llm)
+    assert state["ready"] == 1
+    return conn.execute("SELECT format, caption, body FROM posts WHERE id = %s", (pid,)).fetchone()
+
+
+def test_a_rerouted_post_gets_its_caption_rewritten_for_the_photo(conn, policy, store, tmp_path):
+    disclosure = policy.get("scope", "disclosure_line")
+    llm = CaptionStub(caption="tea by the rainy window, just this")      # the model left the disclosure out
+    old = f"watch the steam rise, sound on 🎧 · {disclosure}"
+    row = _rerouted(conn, policy, store, tmp_path, llm, old)
+    assert row["format"] == "photo" and len(llm.calls) == 1
+    call = llm.calls[0]
+    assert "story_clip" in call["system"] and "photo" in call["system"] and disclosure in call["system"]
+    assert old in call["content"] and call["effort"] == policy.get("production", "reroute_caption", "effort")
+    assert row["body"]["caption_before_reroute"] == old
+    assert row["caption"].startswith("tea by the rainy window") and disclosure in row["caption"]   # kept by code
+
+
+def test_a_failed_caption_rewrite_keeps_the_old_caption_and_ships(conn, policy, store, tmp_path):
+    row = _rerouted(conn, policy, store, tmp_path, CaptionStub(fail=True), "watch the steam rise")
+    assert row["format"] == "photo" and row["caption"] == "watch the steam rise"
+    assert "caption_before_reroute" not in row["body"] and "model unavailable" in row["body"]["reroute_caption_error"]
+
+
+def test_the_caption_rewrite_is_skipped_without_a_model_or_a_caption(policy):
+    post = {"id": "p", "format": "story_clip", "caption": "watch this", "creator_id": None}
+    body: dict = {}
+    assert production.reroute_caption(policy, None, post, body, "photo") == "watch this" and body == {}
+    llm = CaptionStub()
+    assert production.reroute_caption(policy, llm, {**post, "caption": ""}, body, "photo") == "" and not llm.calls

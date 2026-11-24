@@ -59,6 +59,8 @@ STATE: dict[str, str] = {
     "drop_reason": "why the post was dropped (or, before a reroute, why its video failed)",
     "rerouted_from": "the video format a rerouted post was planned as (it shipped as a photo)",
     "reroute_reason": "the drop reason that sent the post to its reroute",
+    "caption_before_reroute": "the caption written for the video, before its rewrite for the photo (reroute_caption)",
+    "reroute_caption_error": "why the rerouted post's caption rewrite failed (the video's caption shipped)",
     "advance_errors": "ticks in which advancing the post raised",
     "advance_error": "the latest of those errors",
 }

@@ -217,6 +217,23 @@ def reap(conn) -> int:
     return len(rows)
 
 
+# A cancelled job is `dead` with this prefix on its error: the queue's terminal states are done, failed and dead
+# (the jobs status CHECK), and the failure reports (chief of staff, summary) leave cancelled jobs out.
+CANCELLED = "cancelled: "
+
+
+def cancel(conn, job_ids, reason: str) -> list[Any]:
+    """End jobs nobody needs any more, but only those still waiting (`queued`): a running job holds a lease and a
+    worker is spending on it, so it is never touched here. Returns the ids actually cancelled."""
+    ids = list(job_ids)
+    if not ids:
+        return []
+    rows = conn.execute(
+        "UPDATE jobs SET status = 'dead', error = %s, lease_until = NULL, updated_at = now() "
+        "WHERE id = ANY(%s) AND status = 'queued' RETURNING id", (f"{CANCELLED}{reason}"[:500], ids)).fetchall()
+    return [r["id"] for r in rows]
+
+
 def counts(conn, *, batch: str | None = None) -> list[dict[str, Any]]:
     return conn.execute(
         """

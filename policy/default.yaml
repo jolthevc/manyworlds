@@ -1590,6 +1590,9 @@ production:
   max_ready_unpublished: 6       # no new batch while a creator has this many made-but-unpublished posts
   # A video post whose clips keep failing review ships as a photo from its already-approved start frame.
   reroute_failed_video: {story_clip: photo, talking_video: photo}
+  # The rerouted post's caption, written for the video, is rewritten once for a still (llm role caption_rewrite);
+  # the old one is kept in body.caption_before_reroute. A failed call keeps the old caption.
+  reroute_caption: {enabled: true, effort: low}
   edit: {speed: 0.95, width: 1080, height: 1920, fps: 30, loudness_lufs: -14}   # narrated edits (image.narrated)
   # Where a video post's finish (production.finish: mix, grade, captions, cover) renders: `queue`, a finish.video job on the
   # finisher (a Fly machine the autoscaler starts; gpu_pools.fly_finisher), so minutes of 1080x1920 encodes never block
@@ -1950,6 +1953,9 @@ llm:
     talent_manager: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     style_director: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     market_lead: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}   # one run per active market a week
+    # One short call when a failed video ships as its photo (production.reroute_caption): the caption written for
+    # the video is rewritten for a still. Haiku: a light edit of text that already exists.
+    caption_rewrite: claude-haiku-5-5
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

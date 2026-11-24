@@ -3,7 +3,7 @@
 Facts are versioned rows in `creator_memory`: places, routines, tastes, opinions and running jokes,
 people, the signature item, and canon (small facts posts have established). A single-valued fact
 (`key`, e.g. home) replaces the previous one by closing it (`valid_until`). The showrunner reads the
-open facts; scheduled posts add their canon.
+open facts; scheduled posts add their canon, and a dropped post takes its canon back (`retract_post`).
 """
 
 from __future__ import annotations
@@ -19,12 +19,33 @@ _BIBLE_KINDS = {"home_and_places": "place", "interests": "taste", "opinions_and_
 
 
 def add(conn, creator_id, kind: str, text: str, *, source_post=None, key: str | None = None) -> uuid.UUID:
+    replaced = None
     if key:
-        conn.execute("UPDATE creator_memory SET valid_until = now() WHERE creator_id = %s AND key = %s "
-                     "AND valid_until IS NULL", (creator_id, key))
-    return conn.execute("INSERT INTO creator_memory (creator_id, kind, text, source_post, key) "
-                        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                        (creator_id, kind, text.strip(), source_post, key)).fetchone()["id"]
+        closed = conn.execute("UPDATE creator_memory SET valid_until = now() WHERE creator_id = %s AND key = %s "
+                              "AND valid_until IS NULL RETURNING id", (creator_id, key)).fetchall()
+        replaced = closed[0]["id"] if closed else None
+    return conn.execute("INSERT INTO creator_memory (creator_id, kind, text, source_post, key, replaces) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                        (creator_id, kind, text.strip(), source_post, key, replaced)).fetchone()["id"]
+
+
+def retract_post(conn, post_ids) -> int:
+    """A dropped post never happened: close the canon it introduced (as `add` closes a replaced fact), and reopen
+    the fact a keyed canon had replaced when nothing else holds that key now. Every path that drops a post calls
+    this. Returns how many canon facts were closed."""
+    ids = [p for p in (post_ids or []) if p is not None]
+    if not ids:
+        return 0
+    closed = conn.execute(
+        "UPDATE creator_memory SET valid_until = now() WHERE source_post = ANY(%s::uuid[]) AND kind = 'canon' "
+        "AND valid_until IS NULL RETURNING creator_id, key, replaces", ([str(p) for p in ids],)).fetchall()
+    for r in closed:
+        if r["key"] and r["replaces"]:
+            conn.execute(
+                "UPDATE creator_memory SET valid_until = NULL WHERE id = %s AND valid_until IS NOT NULL "
+                "AND NOT EXISTS (SELECT 1 FROM creator_memory o WHERE o.creator_id = %s AND o.key = %s "
+                "AND o.valid_until IS NULL)", (r["replaces"], r["creator_id"], r["key"]))
+    return len(closed)
 
 
 def _items(value) -> list[str]:

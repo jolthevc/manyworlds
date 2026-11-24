@@ -11,7 +11,7 @@ from datetime import date, datetime, time, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 
-from . import notify
+from . import notify, queue
 from .policy import Policy
 
 
@@ -40,7 +40,8 @@ def build(conn, policy: Policy, day: date) -> dict:
         "AND started_at < %(e)s", win).fetchone()
     brain_failed = conn.execute(
         "SELECT count(*) AS n FROM jobs WHERE kind LIKE 'brain.%%' AND status IN ('failed', 'dead') "
-        "AND updated_at >= %(s)s AND updated_at < %(e)s", win).fetchone()["n"]
+        "AND coalesce(error, '') NOT LIKE %(cancelled)s "   # a cancelled job (queue.cancel) did not fail
+        "AND updated_at >= %(s)s AND updated_at < %(e)s", {**win, "cancelled": queue.CANCELLED + "%"}).fetchone()["n"]
     published = conn.execute(
         "SELECT count(*) AS n FROM publications WHERE NOT simulated AND published_at >= %(s)s AND published_at < %(e)s",
         win).fetchone()["n"]
