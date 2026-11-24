@@ -116,7 +116,8 @@ from .takes import (  # noqa: F401
     hybrid_modes, script_takes, shot_takes, talk_segments,
 )
 from .talk import (  # noqa: F401
-    JOIN_KIND, JOIN_SECTIONS, _advance_long_talk, _cutaway_job, _join_job, _join_state, _talk_job, _take_history,
+    JOIN_KIND, JOIN_SECTIONS, _advance_long_talk, _cutaway_job, _existing_join, _join_job, _join_key, _join_state,
+    _talk_job, _take_history,
     advance_join, join_plan, join_talk, join_timeout, join_transitions, record_join, render_join, talk_repair,
 )
 from .voice import (  # noqa: F401

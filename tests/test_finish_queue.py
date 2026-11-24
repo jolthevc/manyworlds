@@ -331,7 +331,7 @@ def test_the_autoscaler_starts_the_finisher_only_while_finish_jobs_wait(conn, po
     assert g["deadline"] == T0 + timedelta(hours=runs["max_hours_by_family"]["finish"])
     assert float(g["max_usd"]) == runs["max_usd_by_family"]["finish"] and g["provider"] == "fly"
     assert float(g["usd_per_hour"]) == policy.pool("fly_finisher")["usd_per_hour"] and g["provider_ref"] == "m1"
-    assert list(g["job_kinds"]) == [production.FINISH_KIND]
+    assert sorted(g["job_kinds"]) == sorted([production.FINISH_KIND, production.JOIN_KIND])   # the pool's kinds
     autoscale.tick(conn, policy, ps, now=T0 + timedelta(minutes=1))
     assert len(fly.launched) == 1                                              # one finisher at a time
     # Past its deadline the enforcer stops it like any machine, and the billed time is in the ledger.
