@@ -1,0 +1,6 @@
+# Pins for the song stack on the ComfyUI image (docker/worker-talkcomfy.Dockerfile, job kind music.song).
+# demucs 4.0.1 is the last PyPI release (MIT, code and the htdemucs weights); julius is its resampler. Not built yet:
+# the first build (talkcomfy v15) checks these resolve beside the base image's torch and transformers 4.57.6. Bump a pin
+# on purpose, rebuild, smoke-test (python -m manyworlds.worker.smoke talkcomfy), then move worker_images.music.tag.
+demucs==4.0.1
+julius==0.2.7

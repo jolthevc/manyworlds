@@ -56,8 +56,11 @@ def direct_posts(conn, policy, llm, creator_id, posts) -> int:
     """Shot sheets for newly scheduled posts (manyworlds.brain.director), for the formats in policy
     `direction.direct_formats` while `direction.enabled`. `posts` is [(post_id, format, body)]. A director
     failure never drops a post: it is logged, nothing is recorded, and the post is made undirected."""
-    from . import budget, director
-    if llm is None or not posts or not policy.get("direction", "enabled", default=True):
+    from . import budget, director, lyrics
+    if llm is None or not posts:
+        return 0
+    lyrics.write_songs(conn, policy, llm, creator_id, posts)   # sung posts' songs first (policy music, off)
+    if not policy.get("direction", "enabled", default=True):
         return 0
     if budget.tag_for(conn, director.AGENT, creator_id).startswith(budget.SANDBOX):
         return 0   # sandbox test creators are never rendered: directing them would only spend

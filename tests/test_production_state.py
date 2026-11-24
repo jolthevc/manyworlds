@@ -76,7 +76,7 @@ def test_follow_up_formats_name_the_follow_ups():
 def test_the_package_reexports_its_modules_names():
     for module in (production.common, production.steps, production.scenes, production.takes, production.voice,
                    production.motion, production.talk, production.followups, production.captioning,
-                   production.mixing, production.finish, production.core, production.locks):
+                   production.mixing, production.finish, production.core, production.locks, production.song):
         for name, value in vars(module).items():
             if callable(value) and getattr(value, "__module__", None) == module.__name__:
                 assert getattr(production, name) is value, f"production.{name} is not {module.__name__}.{name}"

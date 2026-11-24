@@ -308,12 +308,14 @@ def check_talkcomfy() -> list[str]:
                 raise RuntimeError(f"Wan-Animate-2 graph (cache={cached}) doesn't match ComfyUI's nodes: "
                                    + "; ".join(problems))
         negatives = _check_negatives(info)
+        song = _check_song_graph(info)
     finally:
         comfy.stop()
     handlers_for(["comfy.wan_i2v", "comfy.wan_animate2"])
     done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat), story-clip and "
                 "Wan-Animate-2 graphs")
     done.append(negatives)
+    done.append(song)
 
     # The motion clip is resampled to the talk's 25 fps before V2V (talk_comfy.at_fps), with the image's ffmpeg.
     import imageio.v3 as iio
@@ -360,7 +362,74 @@ assert out.hidden_states is not None and len(out.hidden_states) == 3, out.hidden
         raise RuntimeError(f"lip-sync score failed: {s}")
     done.append("lip-sync score")
     done.append(_check_crops(d))
-    return done + check_voice()
+    return done + check_voice() + check_music()
+
+
+def _song_engine() -> dict:
+    """The shipped ACE-Step engine settings, as a music.song payload carries them."""
+    from .. import music
+    from .. import policy as policy_mod
+    return music.engine_settings(policy_mod.load())
+
+
+def _check_song_graph(info: dict) -> str:
+    """ACE-Step 1.5's song graph (worker/comfy_music.py) against ComfyUI's own nodes: the pinned ComfyUI has the
+    native ACE-Step 1.5 nodes, every input is known, and the key, time signature and language are among its choices."""
+    from . import comfy, comfy_music
+    g = comfy_music.graph_song(tags="warm indie pop, soft female vocal", lyrics="[Verse]\nla la", seconds=30, seed=1,
+                               bpm=96, key="C major", time_signature="4", language="en", engine=_song_engine())
+    problems = comfy.missing_inputs(g, info)
+    if problems:
+        raise RuntimeError("ACE-Step 1.5 song graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
+    req = info["TextEncodeAceStepAudio1.5"]["input"]["required"]
+    for name, value in (("keyscale", "C major"), ("timesignature", "4"), ("language", "en")):
+        spec = req[name]
+        choices = spec[0] if isinstance(spec[0], list) else (spec[1] if len(spec) > 1 else {}).get("options") or []
+        if choices and value not in choices:
+            raise RuntimeError(f"TextEncodeAceStepAudio1.5 {name} has no choice {value!r}")
+    return "ACE-Step 1.5 song graph matches ComfyUI's nodes"
+
+
+def check_music() -> list[str]:
+    """Songs on the ComfyUI image (handlers/music_song.py): Demucs and the loudness meter import, the handler loads,
+    and a stand-in song runs through the handler (stems, check, file order) on the CPU. A real song needs a GPU and
+    the weights: the first music.song job is that test."""
+    import numpy as np
+
+    _imports(["demucs.apply", "demucs.pretrained", "julius", "pyloudnorm", "soundfile"])
+    from .runner import JobContext, handlers_for
+    from .handlers import music_song as ms
+    handlers_for(["music.song"])
+    done = ["imports, handlers: music.song"]
+    sr = 48000
+    t = np.arange(sr * 2) / sr
+    tone = np.stack([0.3 * np.sin(2 * np.pi * 220 * t)] * 2, axis=1).astype(np.float32)
+    d = Path(tempfile.mkdtemp())
+
+    def fake_engine(song, ctx):
+        return ms.write_audio(Path(ctx.workdir) / "song_raw.wav", tone, sr)
+
+    engines, separators, transcribe = dict(ms.ENGINES), dict(ms.SEPARATORS), ms.transcribe
+    ms.ENGINES["ace_step_1_5"] = fake_engine
+    ms.SEPARATORS["demucs"] = lambda mix, rate, sep: (mix * 0.5, mix * 0.5)
+    ms.transcribe = lambda vocals, rate, check: "la la"
+    try:
+        res = ms.generate({"lyrics": "[Verse]\nla la", "tags": "pop", "key": "C major", "duration_s": 2, "seed": 1,
+                           "engine": _song_engine(), "separation": {"engine": "demucs"},
+                           "check": {"max_wer": 0.5, "max_duration_error_share": 0.1, "lufs": [-40, 0]}},
+                          JobContext(job=type("J", (), {"id": "smoke"})(), workdir=d, store=None))
+    finally:
+        ms.ENGINES.clear()
+        ms.ENGINES.update(engines)
+        ms.SEPARATORS.clear()
+        ms.SEPARATORS.update(separators)
+        ms.transcribe = transcribe
+    roles = [o.meta["role"] for o in res.outputs]
+    check = res.outputs[0].meta["check"]
+    if roles != ["mix", "vocals", "instrumental"] or not check["passed"] or check["lufs"] is None:
+        raise RuntimeError(f"the song handler's outputs came out wrong: {roles}, {check}")
+    done.append("song handler: mix, stems and check on a stand-in song (loudness measured)")
+    return done
 
 
 def check_voice() -> list[str]:
@@ -435,7 +504,7 @@ def check_voice() -> list[str]:
 
 
 CHECKS = {"image": check_image, "train": check_train, "talk": check_talk, "talkcomfy": check_talkcomfy,
-          "voice": check_voice}
+          "voice": check_voice, "music": check_music}
 
 
 def main(argv=None) -> int:

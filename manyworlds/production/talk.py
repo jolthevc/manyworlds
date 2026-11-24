@@ -9,7 +9,7 @@ from psycopg.types.json import Jsonb
 
 from .. import queue
 from ..policy import Policy
-from .common import _cfg, _seed, _shot, _with_crops, _with_prompts, _with_shot, unmarked
+from .common import SUNG, _cfg, _seed, _shot, _with_crops, _with_prompts, _with_shot, unmarked
 from .finish import captions_burned
 from .motion import _advance_motion, _last_frame, _motion_cfg, _needs_motion, talk_v2v
 from .steps import Step, _clip_state, _edit_state, advance_step
@@ -44,7 +44,8 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"], "script": script,
                "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),
-               "scene": f"{scene} Speaking to camera: {script}",   # the video judge scores against it
+               # the video judge scores against it (a music_video take sings its song's words)
+               "scene": f"{scene} {'Singing' if post['format'] in SUNG else 'Speaking'} to camera: {script}",
                "keyframes": int(policy.get("review", "video", "keyframes", default=4)), "seed": seed, "params": params}
     _with_prompts(payload, "talk", row["bible"], scene, shot=shot, policy=policy)
     _with_shot(payload, shot)

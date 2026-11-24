@@ -558,7 +558,7 @@ def test_mirror_and_pov_devices_compile(policy):
 
 
 PATHS = {"photo", "story_clip", "talk", "walk_and_talk", "motion_reference", "narrated_edit", "joiner",
-         "finish_overlays", "captions", "sound_mix", "slides"}
+         "finish_overlays", "captions", "sound_mix", "slides", "song"}   # song: music.song (policy music)
 
 
 def test_the_capability_catalogue_is_complete_and_names_real_paths(policy):
