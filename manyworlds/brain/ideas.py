@@ -119,8 +119,8 @@ def schedule_ready(conn, policy, *, now, llm=None) -> dict:
     """Turn showrunner batches into planned posts once every idea has a volume-evaluator evaluation.
     After `brain.showrunner.max_wait_hours` a batch is scheduled anyway and its unevaluated ideas are
     dropped: no idea becomes a post without an evaluation. An idea just under a feed-QA score floor is rewritten once
-    (manyworlds.brain.revise) and the batch waits, within the same max_wait, for the rewrite's evaluation. With an `llm`, each new post is then directed
-    (`direct_posts`), outside the scheduling transaction so a slow or failed call never holds or undoes it."""
+    (manyworlds.brain.revise) and the batch waits, within the same max_wait, for the rewrite's evaluation. With an
+    `llm`, each new post is then directed (`direct_posts`), outside the scheduling transaction so a slow or failed call never holds or undoes it."""
     from datetime import date, timedelta
 
     from psycopg.types.json import Jsonb
