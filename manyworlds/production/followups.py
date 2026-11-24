@@ -68,4 +68,19 @@ def _advance_follow_up(conn, policy: Policy, post: dict, body: dict, chosen: lis
             return mstate, None
     if vstate != "chosen" or mstate != "chosen":
         return "waiting", None
-    return advance_step(body, _follow_up(conn, policy, post, body, chosen, audio, motion))
+    state, video = advance_step(body, _follow_up(conn, policy, post, body, chosen, audio, motion))
+    if state == "chosen" and video and post["format"] == "narrated_edit":
+        _keep_photo_spans(conn, body, video)
+    return state, video
+
+
+def _keep_photo_spans(conn, body: dict, video: dict) -> None:
+    """A narrated edit's real per-photo spans (the image.narrated video's meta `photo_spans`) into body.photo_spans,
+    so the finish times each shot's on-screen text where its photo plays. An older edit has none: the finish then
+    shares the video evenly. Rewritten from the chosen video each tick, so a remade edit replaces them."""
+    row = conn.execute("SELECT meta FROM assets WHERE id = %s", (video["id"],)).fetchone()
+    spans = ((row or {}).get("meta") or {}).get("photo_spans")
+    if spans:
+        body["photo_spans"] = spans
+    else:
+        body.pop("photo_spans", None)

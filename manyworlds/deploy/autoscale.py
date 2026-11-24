@@ -405,6 +405,16 @@ def over_budget(conn, policy: Policy) -> str | None:
             "daily_total_budget" if total_cap is not None and ledger.bill_today(conn) >= float(total_cap) else None)
 
 
+def overlay_missing(conn, kind: str, error: "policy_mod.OverlayMissing", now: datetime) -> dict:
+    """Test work whose overlay file is gone gets no machine (policy.OverlayMissing). The owner hears once per
+    missing file a day (a deduplicated owner event); other work goes on launching."""
+    from .. import notify
+    notify.owner_event(conn, "test_overlay_missing", subject={"path": error.path},
+                       payload={"kind": kind, "batches": error.batches, "error": str(error)},
+                       dedupe_key=f"test_overlay_missing:{error.path}:{now:%Y-%m-%d}")
+    return {"action": "overlay_missing", "kind": kind, "path": error.path, "batches": error.batches}
+
+
 def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime) -> list[dict]:
     cfg = policy.get("autoscale", default={})
     cooldown = timedelta(minutes=float(cfg.get("relaunch_cooldown_minutes", 15)))
@@ -442,7 +452,11 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         if all(policy.get("gpu_pools", p, "provider") == "local" for p in pools):
             continue  # runs on the control host (e.g. reviews), not on rented GPUs
         # The machine family: the kind's own, or a merge group (autoscale.merge_families) the work's batches use.
-        mpol = policy_mod.for_batches(policy, w.get("batches"))
+        try:
+            mpol = policy_mod.for_batches(policy, w.get("batches"))
+        except policy_mod.OverlayMissing as e:   # never run test work on the plain policy: it boots more machines
+            actions.append(overlay_missing(conn, kind, e, now))
+            continue
         merged = machine_family(mpol, kind)
         merged = merged if merged in merge_groups(mpol) else None
         mfam = merged or _family(policy, kind)

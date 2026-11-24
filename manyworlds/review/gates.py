@@ -27,7 +27,6 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from .. import direction
 from ..creator.lab import appearance_prompt
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
@@ -75,8 +74,8 @@ class ImageReviews(BaseModel):
 def gates_for(scene: str | None, shot: dict | None = None, *, plate: bool = False) -> tuple[str, ...]:
     """The gates an image is judged on. A set plate or outfit reference (payload `plate`, manyworlds.creator.sets)
     has nobody in it, so it has no identity gate: an identity row would always fail and count as a reject."""
-    no_face = plate or direction.faceless(shot)   # a plate has nobody; a POV or cutaway shot shows no face
-    base = tuple(g for g in GATES if not (no_face and g == "identity"))
+    face = common.judges_identity(shot, plate=plate)   # a plate has nobody; a POV or cutaway shot shows no face
+    base = tuple(g for g in GATES if face or g != "identity")
     return base + (("scene",) if scene else ()) + (("direction",) if shot else ())
 
 
@@ -85,7 +84,7 @@ def decide(r: CandidateReview, cfg: dict, scene: str | None = None, *, shot: dic
     verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
                "realism": r.realism >= int(cfg.get("min_realism", 6)),
                "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
-    if plate or direction.faceless(shot):
+    if not common.judges_identity(shot, plate=plate):
         del verdict["identity"]
     if scene:  # a judge that leaves it out passes: fit is a preference, not a safety line
         verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))
@@ -205,9 +204,12 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         # close calls are worth the stronger model.
         if stage == "screen" and len(stages) > 1 and cfg.get("clear_pass_margin") is not None:
             m = int(cfg["clear_pass_margin"])
+            face = common.judges_identity(shot, plate=plate)   # a faceless shot's identity score judges nothing
             for a in list(still):
                 res = results[a["id"]]
-                if (res["identity_score"] is None or res["identity_score"] >= int(cfg.get("min_identity", 7)) + m)                         and (res["realism_score"] or 0) >= int(cfg.get("min_realism", 6)) + m:
+                identity_clear = (not face or res["identity_score"] is None
+                                  or res["identity_score"] >= int(cfg.get("min_identity", 7)) + m)
+                if identity_clear and (res["realism_score"] or 0) >= int(cfg.get("min_realism", 6)) + m:
                     res["clear_pass"] = True
                     still.remove(a)
         # Only the best screen passes are worth a confirm: a post uses its top candidates.

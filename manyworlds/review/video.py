@@ -35,7 +35,6 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from .. import direction
 from ..creator.lab import appearance_prompt
 from ..llm import StructuredLLM, image_block
 from ..policy import Policy
@@ -82,7 +81,7 @@ class ClipReview(BaseModel):
 
 def gates_for(scene: str | None, shot: dict | None = None) -> tuple[str, ...]:
     """A POV or cutaway clip (direction.faceless) shows no face, so it is not judged on identity."""
-    base = tuple(g for g in GATES if not (g == "identity" and direction.faceless(shot)))
+    base = tuple(g for g in GATES if g != "identity" or common.judges_identity(shot))
     return base + (("scene",) if scene else ()) + (("direction",) if shot else ())
 
 
@@ -123,19 +122,21 @@ def decide(r: ClipReview, cfg: dict, scene: str | None = None, *, shot: dict | N
         verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))
     if shot:
         verdict["direction"] = common.direction_passes(r.direction, policy)
-    if direction.faceless(shot):
+    if not common.judges_identity(shot):
         del verdict["identity"]
     return verdict
 
 
-def clear_pass(r: ClipReview, cfg: dict) -> bool:
+def clear_pass(r: ClipReview, cfg: dict, shot: dict | None = None) -> bool:
     """The screen passed the clip on every scored bar by at least `clear_pass_margin` points: the paid confirm
-    (about $0.05 a clip, as much as or more than a render) only checks the close calls. Off when unset."""
+    (about $0.05 a clip, as much as or more than a render) only checks the close calls. Off when unset. A clip
+    with no face (common.judges_identity) is not held back by an identity score that judges nothing."""
     margin = cfg.get("clear_pass_margin")
     if margin is None:
         return False
     m = int(margin)
-    return (r.identity >= int(cfg.get("min_identity", 7)) + m and r.motion >= int(cfg.get("min_motion", 6)) + m
+    identity_clear = not common.judges_identity(shot) or r.identity >= int(cfg.get("min_identity", 7)) + m
+    return (identity_clear and r.motion >= int(cfg.get("min_motion", 6)) + m
             and r.realism >= int(cfg.get("min_realism", 6)) + m)
 
 
@@ -273,7 +274,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                     held["reason"] = f"{len(per)} identity scores for {len(frames)} keyframes"
                 verdict["dance_identity"], scores["dance_identity"] = held["passed"], held["min"]
             passed = all(verdict.values()) and all(ok for ok, _ in checks.values())
-            clear = stage == "screen" and len(stages) > 1 and passed and clear_pass(r, cfg)
+            clear = stage == "screen" and len(stages) > 1 and passed and clear_pass(r, cfg, shot)
             exclude = (detail.unasked(r, shot) or set()) | (set() if motion_ref else {"identity_per_frame"})
             details = {**r.model_dump(exclude=exclude), "model": llm.model_for(role),
                        "stage": stage, "clear_pass": clear, **({"dance_identity": held} if held else {})}

@@ -14,7 +14,8 @@ script's chunks share the line's length by word count.
 With `captions: false` (production sets it when the post's captions are burned in at the finish stage,
 manyworlds.captions), no captions are drawn here; the on-screen hook still is. Either way the video's meta keeps the
 caption cues ([{text, start_s, end_s}] in the video's time) and the voice's lead and tail, so the finish stage can time
-its captions. *Emphasis* asterisks in the script are never spoken or drawn.
+its captions, and `photo_spans` ([{start_s, end_s}] per photo) says where each photo plays (production stores it as
+body.photo_spans to time each shot's on-screen text). *Emphasis* asterisks in the script are never spoken or drawn.
 """
 
 from __future__ import annotations
@@ -96,6 +97,17 @@ def supplied_cues(payload: dict, script: str, lead: float, seconds: float) -> li
     return out
 
 
+def photo_frames(n: int, total: float, fps: int) -> int:
+    """Frames per photo: an equal share of the voice's length each, whole frames (at least one)."""
+    return max(int(total / n * fps), 1)
+
+
+def photo_spans(n: int, frames: int, fps: int) -> list[dict]:
+    """Where each photo really plays in the edit: `frames` frames each, back to back, in order (the video's meta
+    `photo_spans`, [{start_s, end_s}] per photo; production.finish times each shot's on-screen text by them)."""
+    return [{"start_s": round(i * frames / fps, 3), "end_s": round((i + 1) * frames / fps, 3)} for i in range(n)]
+
+
 def render(payload: dict, ctx: JobContext) -> HandlerResult:
     import numpy as np
     import soundfile as sf
@@ -137,8 +149,7 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
 
     # Photos: equal share of the voice's length each, slow zoom alternating in and out.
     paths = [ctx.fetch(u, f"img_{i}.png") for i, u in enumerate(images)]
-    per = total / len(paths)
-    frames = max(int(per * fps), 1)
+    frames = photo_frames(len(paths), total, fps)
     inputs, filters = [], []
     for i, p in enumerate(paths):
         # One frame in: zoompan makes exactly `frames` frames from it. (A looped input would make
@@ -175,8 +186,10 @@ def render(payload: dict, ctx: JobContext) -> HandlerResult:
         raise RuntimeError(f"ffmpeg exited {proc.returncode}: {proc.stderr[-2000:]}")
     seconds = round(total, 2)
     timed = [{"text": text, "start_s": round(a, 3), "end_s": round(b, 3)} for text, a, b in cues]
+    spans = photo_spans(len(paths), frames, fps)   # the finish times each shot's on-screen text by them
     return HandlerResult([OutputFile(out, "video", {"seconds": seconds, "width": w, "height": h, "lead_s": lead,
-                                                    "tail_s": tail, "cues": timed, "captions": draw_captions})],
+                                                    "tail_s": tail, "cues": timed, "captions": draw_captions,
+                                                    "photo_spans": spans})],
                          recipe={"kind": "narrated_edit", "voice": voice, "speed": speed, "script": script,
                                  "images": images, "on_screen_text": hook,
                                  **({"audio_uri": audio_uri} if audio_uri else {"tts": "hexgrad/Kokoro-82M"})},

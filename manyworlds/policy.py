@@ -150,16 +150,30 @@ def overlay_batches(policy: Policy) -> list[str]:
     return [str(b) for b in (policy.get("operations", "test_overlay", "batches", default=[]) or [])]
 
 
+class OverlayMissing(RuntimeError):
+    """Work in a test-overlay batch whose overlay file is gone. Running it under the plain policy would spend money
+    the test never planned (2026-11-24: without the overlay's merged machine, three cold L40S boots instead of one),
+    so callers refuse that work and tell the owner (deploy.autoscale) instead of falling back."""
+
+    def __init__(self, path: str, batches: list[str]):
+        self.path, self.batches = str(path), batches
+        super().__init__(f"test overlay {path} is missing; refusing work in test batches {batches}")
+
+
 def for_batches(policy: Policy, batches: list[str | None] | None) -> Policy:
     """The policy for work in these batches: with the test overlay (operations.test_overlay.path) when any of them
-    starts with one of its prefixes, else `policy` itself. A missing overlay file leaves the policy as it is."""
+    starts with one of its prefixes, else `policy` itself. A missing overlay file raises OverlayMissing for such
+    work: never a silent fall back to the plain policy."""
     path, prefixes = policy.get("operations", "test_overlay", "path"), overlay_batches(policy)
-    if not path or not prefixes or not any(b and str(b).startswith(tuple(prefixes)) for b in (batches or [])):
+    tests = [str(b) for b in (batches or []) if b and str(b).startswith(tuple(prefixes))] if prefixes else []
+    if not path or not tests:
         return policy
     try:
         return with_overlay(policy, path)
     except FileNotFoundError:
-        return policy
+        log.error("test overlay %s is missing (operations.test_overlay.path): work in batches %s is refused",
+                  path, tests)
+        raise OverlayMissing(path, tests) from None
 
 
 def for_batch(policy: Policy, batch: str | None) -> Policy:

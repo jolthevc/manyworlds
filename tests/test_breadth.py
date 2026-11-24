@@ -347,3 +347,30 @@ def test_the_merged_machine_has_its_own_caps_and_a_small_disk_on_the_volume(poli
     empty = tmp_path / "empty.yaml"
     empty.write_text("# nothing\n", encoding="utf-8")
     assert policy_mod.with_overlay(policy, empty).body == policy.body                      # an empty overlay is no-op
+
+
+def _without_overlay(policy, tmp_path):
+    gone = str(tmp_path / "no_such_overlay.yaml")
+    return policy_mod.from_dict(policy_mod.deep_merge(policy.body, {"operations": {"test_overlay": {"path": gone}}}))
+
+
+def test_a_missing_overlay_refuses_test_work_instead_of_falling_back(policy, tmp_path):
+    pol = _without_overlay(policy, tmp_path)
+    prefix = policy_mod.overlay_batches(pol)[0]
+    with pytest.raises(policy_mod.OverlayMissing):
+        policy_mod.for_batch(pol, f"{prefix}r9")
+    assert policy_mod.for_batch(pol, "posts-1") is pol and policy_mod.for_batches(pol, [None]) is pol
+
+
+def test_a_missing_overlay_starts_no_machine_for_test_work_and_tells_the_owner_once(conn, policy, registry, tmp_path):
+    pol = _without_overlay(_paused(policy), tmp_path)
+    pools = ["runpod_secure_l40s_vol"]
+    queue.enqueue(conn, "comfy.wan_i2v", {}, batch="test-breadth-r9", pools=pools, priority=1)
+    queue.enqueue(conn, "voice.speak", {}, batch="bench-voice.speak-y", pools=pools)   # unrelated work still runs
+    ps = providers()
+    actions = autoscale.tick(conn, pol, ps, now=NOW)
+    assert [a["kind"] for a in actions if a.get("action") == "overlay_missing"] == ["comfy.wan_i2v"]
+    assert [n for n, _ in ps["runpod"].launched] and all(n.startswith("mw-voice-") for n, _ in ps["runpod"].launched)
+    autoscale.tick(conn, pol, ps, now=NOW)
+    n = conn.execute("SELECT count(*) n FROM events WHERE type = 'test_overlay_missing'").fetchone()["n"]
+    assert n == 1
