@@ -53,7 +53,8 @@ The package (one module per stage; this module re-exports every name, so `from m
   talk        talk jobs, the hybrid's cutaways, long talk segments and their join
   followups   the one video made from the chosen photos (FOLLOW_UPS) and its voice and motion first
   captioning  the captions plan: spoken words timed in the finished video, style, placement
-  mixing      the sound under a finished video
+  song        a music_video post's song (music.song: the mix and its stems; policy music, off)
+  mixing      the sound under a finished video (a music video's song in place of its vocal stem)
   finish      the upscale Step, the finish Step (a finish.video job) and finish_video (mix, grade, captions,
               on-screen text, cover): finish_plan, render_finish, record_finish
   core        advance_post, advance (the tick) and counting posts whose advance raises
@@ -78,7 +79,7 @@ from .captioning import (  # noqa: F401
     caption_lines, caption_placement, caption_plan, caption_style, caption_words, captions_from_words, voice_words,
 )
 from .common import (  # noqa: F401
-    FOLLOW_UP_FORMATS, SPOKEN, _cfg, _pieces, _seed, _set, _shot, _with_crops, _with_prompts, _with_shot, log,
+    FOLLOW_UP_FORMATS, SPOKEN, SUNG, _cfg, _pieces, _seed, _set, _shot, _with_crops, _with_prompts, _with_shot, log,
     retract_dropped, unmarked,
 )
 from .core import (  # noqa: F401
@@ -92,10 +93,13 @@ from .finish import (  # noqa: F401
     record_finish,
     render_finish, shot_spans, text_spans, text_windows,
 )
-from .followups import FOLLOW_UPS, _advance_follow_up, _edit_job, _follow_up, _keep_photo_spans  # noqa: F401
+from .followups import (  # noqa: F401
+    FOLLOW_UPS, _advance_follow_up, _advance_sung, _edit_job, _follow_up, _keep_photo_spans,
+)
+from .song import _song_job, _song_state, advance_song, sung_text  # noqa: F401
 from .locks import lease_name, post_lease, release_post_lease, take_post_lease  # noqa: F401
 from .mixing import (  # noqa: F401
-    _mix_sound, _piece_loader, _sound_cues_from, _sound_plan_from, _sound_ref, sound_cues, sound_plan,
+    _mix_sound, _piece_loader, _song_ref, _sound_cues_from, _sound_plan_from, _sound_ref, sound_cues, sound_plan,
 )
 from .motion import (  # noqa: F401
     _advance_clip_edit, _advance_motion, _chain_jobs, _clip_job, _clip_params, _dance_kind, _last_frame, _motion_cfg,
