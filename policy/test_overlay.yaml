@@ -53,7 +53,7 @@ breadth:
     voice: [runpod_secure_l40s_vol, runpod_secure_l40s]
     dance: [runpod_secure_l40s_vol, runpod_secure_l40s]
     edit: [runpod_secure_l40s, runpod_secure_h100]   # off the 150 GB weights volume: Qwen-Image-Edit is ~58 GB
-    image: [runpod_comm_3090, runpod_comm_4090]   # Vast has no credit; RunPod community cards for photos and narrated edits
+    image: [runpod_comm_3090, runpod_comm_4090, vast_3090, vast_4090]   # RunPod or Vast community cards (2026-11-23: RunPod 3090s ran out mid-run)
   # Dry-run estimates (labelled as policy, not measured). Where finished attempts exist, their median is used.
   estimate:
     # talk renders scale with the take: ~50 s of GPU per output second (ComfyUI InfiniteTalk, 10 steps, 2026-11-22)
