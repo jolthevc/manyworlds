@@ -13,6 +13,7 @@ capability X does not go live until the item is closed. Updated 2026-11-23 (the 
 | Music features measured on synthetic audio only; genre bands are unverified starting points | the first real songs calibrate them | `song_measure.py`, policy `music.genre_bands` |
 | head_of_music's cadence is recorded, not scheduled | nothing turns the slate into songs yet | `brain/agents/head_of_music.py` |
 | WER normaliser edge cases | "a hundred" vs 100, years as words | `speech.py` |
+| The RunPod weights volume (150 GB, `runpod_secure_l40s_vol`) is full: ~47 GB of LongCat weights sit in `/models/longcat` | every volume machine dies at its first download; the no-output guard then stops the volume pool for 24 h. `MW_LONGCAT_DIR` now points at the container disk; the stray directory still has to be deleted from a pod with the volume mounted (owner's go), or the volume grown. Nothing checks a volume's free space before work is routed to it | policy `gpu_pools.runpod_secure_l40s_vol`, `worker_images.talk.env` |
 | Rented machines still get the storage key | signed links built (`security.worker_storage: presigned`), off until a GPU check | `deploy/presign.py` |
 
 ## Noted 2026-11-24 (architecture review: deferred, larger items)
