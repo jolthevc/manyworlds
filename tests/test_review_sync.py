@@ -35,6 +35,11 @@ def _envelope(seconds=8.0, seed=3):
     return np.array(out[:int(seconds * FPS)])
 
 
+def _beat(seconds=8.0):
+    """A steady beat: 12 frames voiced, 13 silent (one a second). Half a beat off, no lag within +-200 ms aligns it."""
+    return np.array([1.0 if i % 25 < 12 else 0.0 for i in range(int(seconds * FPS))])
+
+
 def _loud(env):
     """Log RMS of a tone shaped by `env`, as review.sync measures it."""
     from manyworlds.worker import lipsync
@@ -56,7 +61,8 @@ def test_a_mouth_following_the_voice_scores_high_and_out_of_step_low(policy):
     late = sync.score(np.roll(opening, 3), loud, FPS, policy)   # 120 ms late: inside the window, found
     assert late["corr"] > 0.9 and late["lag_ms"] == 120.0
 
-    far = sync.score(_envelope(seed=11) * 0.4, loud, FPS, policy)   # the mouth says other words
+    beat = _beat()   # out of step: a mouth half a beat behind (480 ms), past +-max_lag_ms
+    far = sync.score(np.roll(beat, 12) * 0.4, _loud(beat), FPS, policy)
     assert far["corr"] is None or far["corr"] < 0.3
     assert sync.decide(far, policy)[0] is False
 
@@ -70,9 +76,9 @@ def test_a_mouth_following_the_voice_scores_high_and_out_of_step_low(policy):
 def test_no_face_frames_are_left_out_and_counted(policy):
     env = _envelope()
     opening = env * 0.4
-    opening[:40] = np.nan
+    opening[:80] = np.nan
     s = sync.score(opening, _loud(env), FPS, policy)
-    assert s["face_share"] == round(1 - 40 / len(env), 3) and s["corr"] > 0.9
+    assert s["face_share"] == round(1 - 80 / len(env), 3) and s["corr"] > 0.9
     assert sync.decide(s, policy)[0] is False   # face in too few frames
 
 
@@ -101,7 +107,7 @@ def test_measure_reads_the_file_frames_and_sound_in_step(policy, tmp_path):
     env = _envelope()
     in_step = sync.measure(_clip(tmp_path / "in.mp4", env), policy, brightness)
     assert in_step["corr"] > 0.8 and abs(in_step["lag_ms"]) <= 80 and in_step["frames"] >= 90
-    off = sync.measure(_clip(tmp_path / "off.mp4", env, mouth=_envelope(seed=11)), policy, brightness)
+    off = sync.measure(_clip(tmp_path / "off.mp4", _beat(), mouth=np.roll(_beat(), 12)), policy, brightness)
     assert off["corr"] is None or off["corr"] < 0.3
 
 
