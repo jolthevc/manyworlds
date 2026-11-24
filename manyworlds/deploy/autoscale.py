@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from .. import db
 from .. import policy as policy_mod
 from ..policy import Policy
-from . import credentials, enforce, scoring
+from . import credentials, enforce, presign, scoring
 from .providers import (LaunchSpec, NoCapacity, Provider, ProviderError, all_providers,
                         image_published, redact)
 
@@ -572,8 +572,21 @@ def update_prices(conn, prices: dict[str, float]) -> None:
                      "AND usd_per_hour <> %s", (usd, name, usd))
 
 
+def refresh_links(conn, policy: Policy, store=None) -> list[dict]:
+    """Presigned mode (security.worker_storage: presigned): sign or re-sign the storage links of every job a rented
+    machine could claim (manyworlds.deploy.presign). A failure is reported, never fatal to the tick."""
+    try:
+        if store is None:
+            from .. import storage
+            store = storage.from_url()
+        n = presign.refresh(conn, policy, store)
+    except Exception as e:  # noqa: BLE001 - the enforcer and the rest of the tick must still run
+        return [{"action": "links_failed", "error": f"{type(e).__name__}: {e}"[:300]}]
+    return [{"action": "links_signed", "jobs": n}] if n else []
+
+
 def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime | None = None,
-         launch: bool = True, dry_run: bool = False) -> list[dict]:
+         launch: bool = True, dry_run: bool = False, store=None) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     holder = uuid.uuid4().hex
     lease_s = float(policy.get("autoscale", "tick_lease_seconds", default=600))
@@ -590,6 +603,8 @@ def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime 
         if not dry_run:
             update_prices(conn, api.prices)
         actions += enforce.tick(conn, policy, api, now=now, dry_run=dry_run)
+        if not dry_run and presign.enabled(policy):   # before launching: a machine claims only jobs with links
+            actions += refresh_links(conn, policy, store)
         if launch and not dry_run:
             actions += scale_up(conn, policy, providers, now=now)
             actions += ensure_finisher(conn, policy, providers, now=now)

@@ -19,7 +19,7 @@ import threading
 import time
 import traceback
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -27,7 +27,8 @@ from psycopg.types.json import Jsonb
 
 from .. import db, ledger, logs, operations, queue
 from ..policy import Policy
-from ..storage import ObjectStore
+from ..deploy import presign
+from ..storage import MissingLink, ObjectStore, UrlStore
 
 log = logging.getLogger("manyworlds.worker")
 
@@ -174,6 +175,7 @@ class Worker:
         connect: Callable = db.connect,
         group: str | None = None,
         self_destroy: Callable[[], str | None] | None = None,
+        need_links: bool | None = None,
     ):
         self.handlers = handlers
         self.store = store
@@ -194,6 +196,9 @@ class Worker:
         # One of three independent layers; see manyworlds.deploy.autoscale.
         self.group = group if group is not None else os.environ.get("MW_GROUP")
         self._self_destroy = self_destroy
+        # No storage key on this machine (security.worker_storage: presigned): only jobs carrying fresh links.
+        self.need_links = presign.needs_links() if need_links is None else need_links
+        self.link_timeout = float(policy.get("security", "presigned", "http_timeout_seconds", default=600))
         self._busy = False
         self._idle_since = time.monotonic()
         self.last_kind: str | None = None   # model affinity: claim the loaded model's kinds first, free on a switch
@@ -295,7 +300,8 @@ class Worker:
             prefer = [k for k in self.handlers if self.last_kind and
                       family_of(self.policy, k) == family_of(self.policy, self.last_kind)]
             job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease, self.pool,
-                              batches=operations.test_batch_patterns(self.policy), prefer=prefer)
+                              batches=operations.test_batch_patterns(self.policy), prefer=prefer,
+                              need_links=self.need_links)
             if job is None:
                 if idle_exit_seconds is not None and time.monotonic() - idle_since > idle_exit_seconds:
                     break
@@ -371,14 +377,15 @@ class Worker:
         log_ctx.enter_context(logs.context(attempt_id=attempt_id))
         try:
             with tempfile.TemporaryDirectory(prefix="mw-") as tmp:
-                ctx = JobContext(job=job, workdir=Path(tmp), store=self.store, charges=charges)
+                job, store = self._job_store(job)
+                ctx = JobContext(job=job, workdir=Path(tmp), store=store, charges=charges)
                 result = self.handlers[job.kind](job.payload, ctx)
                 # A long job (hours of LoRA training) leaves this connection idle; poolers and
                 # Neon drop idle connections, and losing it here would throw away the result.
                 self._ensure_conn()
                 if lost.is_set():
                     raise RuntimeError("lease lost to another worker; discarding outputs")
-                asset_ids = self._store_outputs(job, result)
+                asset_ids = self._store_outputs(job, result, store)
             # Charge wall time including upload: the rented GPU is billed while we wait.
             gpu_seconds = time.monotonic() - t0
             self._charge(job, attempt_id, gpu_seconds)
@@ -392,7 +399,7 @@ class Worker:
                 # ours to finish. The cost stays charged; the attempt is lost, not done.
                 outcome, error = "lost", "lease lost before completion; result not recorded"
                 log.warning("job %s: lease lost before completion; result discarded", job.id)
-        except NonRetryable as e:
+        except (NonRetryable, MissingLink) as e:   # links that miss an object fail the same on any machine
             error = f"{type(e).__name__}: {e}"
             self._ensure_conn()   # the connection may have died with the job: charge and fail on a live one
             self._charge(job, attempt_id, time.monotonic() - t0)
@@ -429,12 +436,23 @@ class Worker:
             )
             log_ctx.close()
 
-    def _store_outputs(self, job: queue.Job, result: HandlerResult) -> list:
+    def _job_store(self, job: queue.Job) -> tuple[queue.Job, ObjectStore]:
+        """The job as its handler sees it and the store it uses: a job carrying presigned links (payload._storage,
+        manyworlds.deploy.presign) reads and writes through them only, and its handler never sees the links."""
+        links = job.payload.get(presign.FIELD) if isinstance(job.payload, dict) else None
+        if not links:
+            if self.need_links:
+                raise MissingLink("this machine holds no storage key and the job carries no links")
+            return job, self.store
+        payload = {k: v for k, v in job.payload.items() if k != presign.FIELD}
+        return replace(job, payload=payload), UrlStore(links, timeout=self.link_timeout)
+
+    def _store_outputs(self, job: queue.Job, result: HandlerResult, store: ObjectStore | None = None) -> list:
         ids = []
         creator = str(job.creator_id) if job.creator_id else "unassigned"
         for i, out in enumerate(result.outputs):
             key = f"assets/{creator}/{job.id}/{i:02d}{out.path.suffix}"
-            stored = self.store.put_file(out.path, key)
+            stored = (store or self.store).put_file(out.path, key)
             # Same job + same key = same asset: a rerun after preemption overwrites, never duplicates.
             row = self.conn.execute(
                 """

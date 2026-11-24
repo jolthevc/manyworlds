@@ -757,7 +757,25 @@ operations: {mode: paused, test_batch_prefixes: [bench-, test-],
 # What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).
 # required: no machine starts without the scoped credential; shared: fall back to the control plane's own.
 # worker_storage is shared until a bucket-scoped R2 token exists (WORKER_AWS_ACCESS_KEY_ID/_SECRET_ACCESS_KEY).
-security: {worker_database: required, worker_storage: shared}
+# worker_storage: presigned gives machines no storage key at all: every job carries presigned links for what it reads
+# and writes (manyworlds.deploy.presign), signed on the control plane by the autoscaler tick. Off (shared) until both
+# GPU worker images are rebuilt with it and it has run on a GPU.
+security:
+  worker_database: required
+  worker_storage: shared
+  presigned:
+    link_seconds: 43200              # a link's life: queue wait plus the attempt (at least attempt + 2 x refresh_ahead)
+    max_link_seconds: 604800         # S3 SigV4's limit (7 days)
+    refresh_ahead_seconds: 1800      # re-sign a claimable job's links this long before its claim_by (> tick_seconds)
+    upload_margin_seconds: 900       # added to the longest attempt (gpu_runs.max_attempt_minutes_*): outputs upload last
+    refresh_batch: 500               # jobs signed per autoscaler tick
+    http_timeout_seconds: 600        # one GET or PUT through a link on the worker
+    # Kinds on our own machines keep the store's keys and get no links: the Fly finisher, hosted APIs and the Brain.
+    keyed_kinds: ["finish.*", "hosted.*", "brain.*"]
+    # Write links per job: assets/<creator>/<job>/<NN><suffix> for NN below max(outputs_per_job, output_slots).
+    output_slots: 8
+    output_suffixes: [.png, .jpg, .webp, .mp4, .wav, .mp3, .json, .safetensors]
+    extra_puts: {train.lora: ["logs/{job_id}/train.log"]}   # objects a handler writes itself (train_lora's log)
 
 # Owner alerts (manyworlds.notify): owner events and pending approvals pushed via ntfy (topic in NTFY_TOPIC).
 # max_age_hours: older unsent items are never pushed (no flood when the topic is first set).

@@ -22,10 +22,18 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U mw -d manyworlds" --health-interval 2s --health-retries 30
+      # the local S3 stand-in (docker-compose.yml): presigned worker storage round-trips through it (test_presigned_storage.py)
+      s3:
+        image: adobe/s3mock:latest
+        env:
+          COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: manyworlds
+          initialBuckets: manyworlds
+        ports: ["9090:9090"]
     env:
       DATABASE_URL: postgresql://mw:mw@localhost:5432/manyworlds
       MW_POLICY: policy/default.yaml
       MW_POOL: local
+      MW_TEST_S3_ENDPOINT: http://localhost:9090
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
