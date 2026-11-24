@@ -70,11 +70,11 @@ def advance_song(conn, policy: Policy, post: dict, body: dict) -> tuple[str, Any
         body["song_media"] = {role: {"asset_id": m["asset_id"], "uri": m["uri"], "seconds": m["meta"].get("seconds")}
                               for role, m in media.items()}
         if not body.get("song_id"):
-            _register(conn, post, body)
+            _register_song(conn, post, body)
     return state, media
 
 
-def _register(conn, post: dict, body: dict) -> None:
+def _register_song(conn, post: dict, body: dict) -> None:
     """The chosen song as a songs row, the post linked to it (manyworlds.songs.for_post); measured later on the
     control plane (songs.measure_pending). Bookkeeping: a failure here never holds the post up."""
     from .. import songs

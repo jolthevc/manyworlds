@@ -18,6 +18,34 @@ def _print(obj) -> None:
     print(json.dumps(obj, indent=2, default=str))
 
 
+def _music(conn, pol, args) -> dict:
+    """`mw music measure [--batch B]`: measure unmeasured songs now (a batch's are registered first);
+    `mw music songs --creator H`: an artist's songs with their features; `mw music analyse [--creator H | --genre G]
+    [--record]`: what goes with outcomes (brain.music_analysis), in the artist's mode (else real)."""
+    from . import songs
+    from .brain import music_analysis
+    cid = None
+    if args.creator:
+        row = conn.execute("SELECT id FROM creators WHERE handle = %s", (args.creator,)).fetchone()
+        if row is None:
+            raise SystemExit(f"no creator {args.creator!r}")
+        cid = row["id"]
+    if args.action == "measure":
+        if args.batch:
+            songs.register_batch(conn, args.batch)
+        return songs.measure_pending(conn, pol, storage.from_url(), limit=1000)
+    if args.action == "songs":
+        rows = conn.execute("SELECT id, title, version, genre, created_at, measure_error FROM songs "
+                            "WHERE %s::uuid IS NULL OR creator_id = %s ORDER BY created_at", (cid, cid)).fetchall()
+        feats = songs.latest_features(conn, [r["id"] for r in rows])
+        return {"songs": [{**r, "features": feats.get(str(r["id"]))} for r in rows]}
+    scope = "creator" if cid else "genre" if args.genre else "portfolio"
+    result = music_analysis.analyse(conn, pol, scope=scope, creator_id=cid, genre=args.genre)
+    if args.record:
+        result["finding_ids"] = music_analysis.record(conn, pol, result)
+    return result
+
+
 def _open_run(group: str | None, connect=None) -> bool:
     """Whether `group` is a registered machine run that is not stopped (gpu_groups): the finisher works only then."""
     if not group:
@@ -99,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     lm.add_argument("--usd", type=float, default=1.0, help="judge: most to spend")
     lm.add_argument("--days", type=float, default=30)
     lm.add_argument("--tolerance", type=float, default=1.0, help="numeric difference counted as agreeing")
+    mu = sub.add_parser("music", help="songs: measure them, list an artist's songs, analyse what works")
+    mu.add_argument("action", choices=["measure", "songs", "analyse"])
+    mu.add_argument("--batch", help="measure: a benchmark batch's songs (registered first)")
+    mu.add_argument("--creator", help="songs / analyse: the artist's handle")
+    mu.add_argument("--genre", help="analyse: one genre")
+    mu.add_argument("--record", action="store_true", help="analyse: record the findings (domain music)")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
@@ -316,6 +350,8 @@ def main(argv: list[str] | None = None) -> int:
         _print(conn.execute("SELECT id, status, format, platform, scheduled_for, caption, qa_status, "
                             "body->'scenes' AS scenes, body->'images' AS images, body->>'drop_reason' AS drop_reason "
                             "FROM posts WHERE creator_id = %s ORDER BY scheduled_for", (cid,)).fetchall())
+    elif args.cmd == "music":
+        _print(_music(conn, pol, args))
     elif args.cmd == "reap":
         print(f"reaped {queue.reap(conn)} jobs")
     elif args.cmd == "llm":

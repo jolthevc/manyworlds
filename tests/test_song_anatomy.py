@@ -211,8 +211,8 @@ def test_the_producer_tick_measures_new_songs_on_the_control_plane(conn, policy,
     cid = creator(conn, publish_mode="instagram")
     mix = store.put_file(measured["mix"], "songs/mix.wav").uri
     vocal = store.put_file(measured["vocal"], "songs/vocals.wav").uri
-    sid = songs.from_job(conn, _song_job(conn, cid, uris=(mix, vocal, mix)))
-    broken = songs.from_job(conn, _song_job(conn, cid, uris=("file:///nowhere/x.wav",) * 3))
+    sid = songs.from_job(conn, _song_job(conn, cid, uris=(mix, vocal, mix + "?instrumental")))
+    broken = songs.from_job(conn, _song_job(conn, cid, uris=tuple(f"file:///nowhere/{r}.wav" for r in music.ROLES)))
     from manyworlds import production
     out = production.advance(conn, policy, store=store)
     assert out["songs_measured"] == {"measured": 1, "failed": 1}
@@ -507,3 +507,18 @@ def test_findings_accept_the_genre_scope_and_carry_a_domain(conn):
     plain = evidence.record_finding(conn, scope="creator", statement="t", evidence="observational", grade="speculative")
     assert conn.execute("SELECT domain FROM findings WHERE id = %s", (plain,)).fetchone()["domain"] == "content"
     assert uuid.UUID(str(fid))
+
+
+def test_mw_music_lists_and_analyses_songs(conn, policy):
+    from types import SimpleNamespace
+
+    from manyworlds import cli
+    assert cli.build_parser().parse_args(["music", "analyse", "--genre", "pop"]).action == "analyse"
+    cid, ids = _history(conn, policy, 10, real=True, effect=0.5)
+    handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
+    args = SimpleNamespace(action="songs", creator=handle, genre=None, batch=None, record=False)
+    listed = cli._music(conn, policy, args)["songs"]
+    assert [str(s["id"]) for s in listed] == ids and listed[0]["features"]["chorus_repeats"]
+    out = cli._music(conn, policy, SimpleNamespace(action="analyse", creator=handle, genre=None, batch=None,
+                                                   record=True))
+    assert out["scope"] == "creator" and out["n"] == 7 and "finding_ids" in out
