@@ -378,7 +378,7 @@ review:
     max_frames: 900
     frame_height: 480
     audio_rate: 16000
-    max_lag_ms: 200
+    max_lag_ms: 120   # +-200 rewarded a mouth half a syllable off on short syllables (2026-11-23)
     min_frames: 25
     min_corr: 0.3
     min_face_share: 0.8
