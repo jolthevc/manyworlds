@@ -209,6 +209,15 @@ def judge(check: dict, *, asked_s: float, seconds: float, lufs: float | None, ly
     return {**out, "failed": fails, "passed": not fails}
 
 
+def vocal_embedding(vocals, sr: int, settings: dict) -> dict:
+    """The vocal stem's voice (payload `embed`: music.voice.similarity): its voiced windows' centroid (ECAPA,
+    handlers/music_voice.embed_windows) as `embedding`, with the window count."""
+    from ... import singing_voice
+    from . import music_voice
+    embs = music_voice.embed_windows(music_voice._mono(vocals), sr, settings)
+    return {"embedding": singing_voice.centroid(embs), "windows": len(embs), "embedding_model": settings.get("model")}
+
+
 # --- the job ------------------------------------------------------------------------------------------------------
 
 def generate(payload: dict, ctx: JobContext) -> HandlerResult:
@@ -244,7 +253,10 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         t1 = time.monotonic()
         vocals, rest = SEPARATORS[sep["engine"]](mix, sr, sep)
         sep_s = round(time.monotonic() - t1, 1)
-        files.append(OutputFile(write_audio(work / "song_vocals.wav", vocals, sr), "audio", {**base, "role": "vocals"}))
+        vmeta = {**base, "role": "vocals"}
+        if payload.get("embed"):   # a voice candidate or dataset song (creator/music_voice.py): the stem's voice
+            vmeta.update(vocal_embedding(vocals, sr, payload["embed"]))
+        files.append(OutputFile(write_audio(work / "song_vocals.wav", vocals, sr), "audio", vmeta))
         files.append(OutputFile(write_audio(work / "song_instrumental.wav", rest, sr), "audio",
                                 {**base, "role": "instrumental"}))
     check = payload.get("check")

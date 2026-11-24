@@ -99,9 +99,61 @@ def dance_reference(policy: Policy, extra: dict[str, Any] | None) -> dict:
         raise ValueError(str(e)) from None
 
 
+# The voice-consistency test (music.convert_voice in song mode): original sung songs in different keys, tempos and
+# moods for one test artist, each made and converted into her voice in one job. The first two are SONGS' sung ones.
+VOICE_KIND = "music.convert_voice"
+VOICE_SONGS = [
+    {"title": "Low Tide Letters", "tags": "slow acoustic ballad, intimate vocal, fingerpicked guitar, soft strings",
+     "bpm": 76, "key": "E minor",
+     "lyrics": "[Verse]\nI wrote your name in the low tide sand\nThe water took it, I understand\n"
+               "[Chorus]\nOh, the sea keeps all my letters\nEvery wave a little better\nOh, the sea keeps all my letters"},
+    {"title": "Neon on the Ceiling", "tags": "bright dance pop, confident vocal, four on the floor, glossy synths",
+     "bpm": 124, "key": "D major",
+     "lyrics": "[Verse]\nLights on the ceiling spinning round\nShoes in my hand, I hear the sound\n"
+               "[Chorus]\nTurn it up, turn it up tonight\nNeon on the ceiling, everything is bright"},
+]
+
+
+def voice_songs() -> list[dict]:
+    """The voice test's songs: SONGS' sung ones, then VOICE_SONGS."""
+    return [s for s in SONGS if not s.get("instrumental")] + VOICE_SONGS
+
+
+def enqueue_voice_test(conn, policy: Policy, jobs: int, *, batch: str, extra: dict[str, Any] | None,
+                       pools: list[str] | None) -> str:
+    """`mw bench music.convert_voice --jobs N --extra '{"creator_id": ...}'`: N songs for one test artist (her
+    voice asset, anchors.music_voice), each made and converted in one job, its converted vocal checked for lyric line
+    coverage. Raises ValueError before anything is queued when the artist has no asset or the adapter is refused."""
+    from . import music, singing_voice
+    extra = dict(extra or {})
+    cid = extra.get("creator_id")
+    row = conn.execute("SELECT anchors->'music_voice' AS v FROM creators WHERE id = %s", (cid,)).fetchone() if cid else None
+    asset = (row or {}).get("v")
+    if not asset:
+        raise ValueError("this benchmark needs a test artist with a voice asset: --extra '{\"creator_id\": ...}' "
+                         "(creator/music_voice.advance builds one)")
+    seconds = float(extra.get("duration_s") or policy.get("music", "voice_bench", "seconds", default=30))
+    songs = voice_songs()
+    for i in range(jobs):
+        spec = {**songs[i % len(songs)], "duration_s": seconds}
+        song = music.song_payload(policy, spec, seed=7000 + i, check=True,
+                                  embed=singing_voice.similarity_settings(policy))
+        try:
+            payload = singing_voice.convert_payload(policy, asset, seed=7100 + i, song=song,
+                                                    adapter=extra.get("adapter"), lyrics=spec["lyrics"], check=True)
+        except singing_voice.VoiceRefused as e:
+            raise ValueError(str(e)) from None
+        queue.enqueue(conn, VOICE_KIND, payload, batch=batch, pools=pools, creator_id=cid,
+                      max_attempts=int(policy.get("queue", "max_attempts", default=3)))
+    return batch
+
+
 def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = None,
             extra: dict[str, Any] | None = None, pools: list[str] | None = None,
             profile: str | None = None) -> str:
+    if kind == VOICE_KIND:
+        return enqueue_voice_test(conn, policy, jobs, batch=batch or f"bench-{kind}-{uuid.uuid4().hex[:6]}",
+                                  extra=extra, pools=pools)
     if kind.startswith(("talk.", "hosted.", "comfy.")) and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("this benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
@@ -176,9 +228,11 @@ def report(conn, policy: Policy, batch: str) -> dict[str, Any]:
     # A video job's outputs are its videos: keyframes and crops are only for review. A song job's is its mix (the
     # stems come with it).
     rows = [{**r, "outputs": r["videos"]} if is_video_kind(r["kind"])
-            else {**r, "outputs": r["songs"]} if r["kind"] == MUSIC_KIND else r for r in rows]
+            else {**r, "outputs": r["songs"]} if r["kind"] in (MUSIC_KIND, VOICE_KIND) else r for r in rows]
     out: dict[str, Any] = {"batch": batch, "jobs": queue.counts(conn, batch=batch),
                            "spend": ledger.totals(conn, batch=batch), "measured": []}
+    if any(r["kind"] == VOICE_KIND for r in rows):
+        out["voice_consistency"] = voice_consistency(conn, policy, batch)
     if any(r["kind"] == MUSIC_KIND for r in rows):
         out["music_checks"] = music_checks(conn, batch)
         out["song_features"] = song_features(conn, batch)
@@ -237,6 +291,42 @@ def song_features(conn, batch: str) -> list[dict]:
                         ([str(i) for i in ids],)).fetchall()
     return [{"song_id": str(r["id"]), "title": r["title"], "features": feats.get(str(r["id"])),
              **({"measure_error": r["measure_error"]} if r["measure_error"] else {})} for r in rows]
+def voice_consistency(conn, policy: Policy, batch: str) -> dict[str, Any]:
+    """The voice test over a batch: each converted vocal's similarity to the artist's centroid (and the song's own
+    voice before conversion), lyric line coverage of the converted vocal, the songs' voices against each other
+    (pairwise cosine of each converted vocal's embedding, and of the unconverted stems'), medians, and the voice
+    gate's report-only verdict (music.voice.gate)."""
+    from . import singing_voice
+    rows = conn.execute(
+        """SELECT j.id, j.payload->'song'->>'title' AS title, s.meta
+           FROM assets s JOIN jobs j ON j.id = s.job_id
+           WHERE j.batch = %s AND j.kind = %s AND j.status = 'done' AND s.meta->>'role' = 'vocals'
+           ORDER BY j.created_at, s.uri""", (batch, VOICE_KIND)).fetchall()
+    each, converted, source = [], {}, {}
+    for r in rows:
+        m = r["meta"] or {}
+        name = f"{r['title'] or 'song'} [{str(r['id'])[:8]}]"
+        each.append({"title": name, "similarity": m.get("similarity"), "source_similarity": m.get("source_similarity"),
+                     "line_coverage": m.get("line_coverage"), "windows": m.get("windows"), "p10": m.get("p10"),
+                     "gate": singing_voice.gate(m.get("similarity"), policy)})
+        if m.get("embedding"):
+            converted[name] = m["embedding"]
+        if m.get("source_embedding"):
+            source[name] = m["source_embedding"]
+
+    def med(values):
+        vals = [float(v) for v in values if v is not None]
+        return round(statistics.median(vals), 4) if vals else None
+    pairs, src_pairs = singing_voice.pairwise(converted), singing_voice.pairwise(source)
+    return {"songs": len(rows),
+            "similarity_median": med(e["similarity"] for e in each),
+            "similarity_min": min((e["similarity"] for e in each if e["similarity"] is not None), default=None),
+            "source_similarity_median": med(e["source_similarity"] for e in each),
+            "line_coverage_median": med(e["line_coverage"] for e in each),
+            "pairwise_median": med(p["similarity"] for p in pairs),
+            "pairwise_min": min((p["similarity"] for p in pairs), default=None),
+            "source_pairwise_median": med(p["similarity"] for p in src_pairs),
+            "pairwise": pairs, "each": each}
 
 
 def _profile(gen: dict, section: str, profile: str | None) -> dict:

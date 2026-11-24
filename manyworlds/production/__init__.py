@@ -96,7 +96,8 @@ from .finish import (  # noqa: F401
 from .followups import (  # noqa: F401
     FOLLOW_UPS, _advance_follow_up, _advance_sung, _edit_job, _follow_up, _keep_photo_spans,
 )
-from .song import _register_song, _song_job, _song_state, advance_song, sung_text  # noqa: F401
+from .song import (_register_song, _song_advance_voice, _song_job, _song_state, _song_voice_asset,  # noqa: F401
+                   _song_voice_job, _song_voice_state, advance_song, sung_text)
 from .locks import lease_name, post_lease, release_post_lease, take_post_lease  # noqa: F401
 from .mixing import (  # noqa: F401
     _mix_sound, _piece_loader, _song_ref, _sound_cues_from, _sound_plan_from, _sound_ref, sound_cues, sound_plan,

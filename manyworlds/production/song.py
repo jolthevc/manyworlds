@@ -5,7 +5,16 @@ place of the stem (production.mixing). The song's spec is the brief's `song` (br
 
 A song job is a Step of its own: retried with a new seed when its machine fails; while music.check.enforce, a song
 whose objective check failed (lyric WER, length, loudness) is remade with a new seed, up to
-music.video.max_repairs_per_post."""
+music.video.max_repairs_per_post.
+
+The artist's own voice (music.voice, OFF): while music.voice.enabled and the creator has a voice asset
+(anchors.music_voice, creator/music_voice.py), the chosen song is followed by music.convert_voice (its vocal stem in
+her voice, source pitch kept, remixed over the instrumental), and the sung take and the finish use the converted
+vocal and mix; the song's own stem stays in song_media.source_vocals. A conversion the policy refuses (an adapter
+whose licence is unverified) is skipped and said in body.song_voice_skipped: the post goes on with the song's voice.
+While music.voice.gate.enforce (and a calibrated min_similarity), a conversion under it is remade, up to
+music.video.max_repairs_per_post. A post whose conversion started keeps converting if the switch is later turned off.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +22,7 @@ import logging
 from typing import Any
 
 from .. import music, queue
+from .. import singing_voice as sv
 from ..policy import Policy
 from .common import _cfg, _seed
 from .steps import DropPost, Step, _status, advance_step
@@ -50,6 +60,69 @@ def _song_job(conn, policy: Policy, post: dict, body: dict, attempt: int):
                          post_id=post["id"], idempotency_key=f"post:{post['id']}:song:{attempt}")
 
 
+# --- the artist's own voice ------------------------------------------------------------------------------------------
+
+def _song_voice_asset(conn, post: dict) -> dict | None:
+    row = conn.execute("SELECT anchors->'music_voice' AS v FROM creators WHERE id = %s",
+                       (post["creator_id"],)).fetchone()
+    return (row or {}).get("v") or None
+
+
+def _song_voice_state(conn, policy: Policy, job_ids: list[str]) -> tuple[str, Any]:
+    """chosen ({vocals, mix: {asset_id, uri, meta}}), waiting, rejected (under the enforced voice gate) or failed."""
+    status = _status(conn, job_ids[-1])
+    if status in ("queued", "running"):
+        return "waiting", None
+    if status != "done":
+        return "failed", None
+    rows = conn.execute("SELECT id, uri, meta FROM assets WHERE job_id = %s AND kind = 'audio' ORDER BY uri",
+                        (job_ids[-1],)).fetchall()
+    media = {str((r["meta"] or {}).get("role")): {"asset_id": str(r["id"]), "uri": r["uri"], "meta": r["meta"] or {}}
+             for r in rows if (r["meta"] or {}).get("role") in sv.ROLES}
+    if set(media) != set(sv.ROLES):
+        return "failed", None
+    verdict = sv.gate(media["vocals"]["meta"].get("similarity"), policy)
+    media["vocals"]["meta"] = {**media["vocals"]["meta"], "voice_gate": verdict}
+    if verdict["enforced"] and verdict["passed"] is False:
+        return "rejected", None
+    return "chosen", media
+
+
+def _song_voice_job(conn, policy: Policy, post: dict, body: dict, song: dict, asset: dict, attempt: int):
+    payload = sv.convert_payload(policy, asset, vocals_uri=song["vocals"]["uri"],
+                                 instrumental_uri=song["instrumental"]["uri"], seed=_seed(post, 650, attempt),
+                                 lyrics=(body.get("song") or {}).get("lyrics"), check=True)
+    return queue.enqueue(conn, sv.kind(policy, "convert"), payload, creator_id=post["creator_id"],
+                         batch=f"post-{post['id']}", post_id=post["id"],
+                         idempotency_key=f"post:{post['id']}:song_voice:v{asset.get('version')}:{attempt}")
+
+
+def _song_advance_voice(conn, policy: Policy, post: dict, body: dict, song: dict) -> tuple[str, Any]:
+    """('chosen', the song's media with the converted vocals and mix), ('skipped', the song's media unchanged),
+    ('waiting', None) or ('dropped', None)."""
+    started = bool(body.get("song_voice_jobs"))
+    if not started and (not sv.enabled(policy) or "vocals" not in song or "instrumental" not in song):
+        return "skipped", song
+    asset = _song_voice_asset(conn, post)
+    if not asset:
+        return "skipped", song
+    if not started:
+        try:     # refused before any GPU: the policy, not the song, is the reason
+            sv.convert_payload(policy, asset, vocals_uri=song["vocals"]["uri"],
+                               instrumental_uri=song["instrumental"]["uri"], seed=0)
+        except sv.VoiceRefused as e:
+            body["song_voice_skipped"] = str(e)
+            return "skipped", song
+    step = Step(body.setdefault("song_voice_jobs", []), lambda j: _song_voice_state(conn, policy, j),
+                lambda attempt: _song_voice_job(conn, policy, post, body, song, asset, attempt),
+                ("song_voice_repairs", int(policy.get("music", "video", "max_repairs_per_post", default=2))),
+                ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))), "voice conversion")
+    state, media = advance_step(body, step)
+    if state != "chosen":
+        return state, None
+    return "chosen", {**song, "source_vocals": song["vocals"], "vocals": media["vocals"], "mix": media["mix"]}
+
+
 def advance_song(conn, policy: Policy, post: dict, body: dict) -> tuple[str, Any]:
     """('chosen', the song's media by role), ('waiting', None) or ('dropped', None). The chosen media are kept in
     body.song_media ({role: {asset_id, uri, seconds}}) for the talk job and the finish."""
@@ -66,6 +139,10 @@ def advance_song(conn, policy: Policy, post: dict, body: dict) -> tuple[str, Any
     except DropPost as e:   # the first job's spec was refused (later attempts are caught by advance_step)
         body["drop_reason"] = str(e)
         return "dropped", None
+    if state == "chosen":
+        state, media = _song_advance_voice(conn, policy, post, body, media)
+        if state == "skipped":
+            state = "chosen"
     if state == "chosen":
         body["song_media"] = {role: {"asset_id": m["asset_id"], "uri": m["uri"], "seconds": m["meta"].get("seconds")}
                               for role, m in media.items()}

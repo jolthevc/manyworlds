@@ -78,6 +78,38 @@ RUN git clone https://github.com/meituan-longcat/LongCat-Video.git /opt/LongCat-
       onnx onnxruntime-gpu cffi chardet \
  && cd /opt/LongCat-Video && /opt/longcat/bin/python -c "import torch, torchvision, flash_attn, transformers, diffusers, audio_separator.separator, longcat_video.pipeline_longcat_video_avatar; assert transformers.__version__ == '4.46.3', transformers.__version__; print('longcat env', torch.__version__)" \
  && python -c "import transformers; assert transformers.__version__ == '4.57.6', transformers.__version__"
+# Singing voice conversion (handlers/music_voice.py, kinds music.convert_voice / music.train_voice, family music; policy
+# music.voice, OFF). Each upstream pins torch/transformers below ours, so each gets its own venv over the image's
+# packages (--system-site-packages: torch, torchaudio, transformers 4.57.6 come from the image, never reinstalled) and
+# only the packages its path imports, filtered from its own pinned requirements at the pinned commit.
+#   SoulX-Singer (Apache-2.0 code and weights): preprocess.pipeline (RMVPE F0; vocal_sep and MIDI off) + cli.inference_svc;
+#     preprocess.utils hard-imports g2p (ToJyutping, g2pM, g2p_en + nltk). Weights download at the first job.
+#   RVC WebUI (MIT code; its assets' licences unverified, policy refuses it): infer/cli.py and train/*.py from the repo
+#     root; faiss, parselmouth, ffmpeg-python, av, tensorboard, scikit-learn.
+ARG SOULX_REF=81aeb3ae772c70093c3de74dc23c92d983801ae4
+ARG RVC_REF=81eed5e8f68b6bed1789f682fe78cdd324495afc
+ENV MW_SOULX_DIR=/opt/soulx-singer MW_SOULX_PYTHON=/opt/svc-soulx/bin/python \
+    MW_RVC_DIR=/opt/rvc MW_RVC_PYTHON=/opt/svc-rvc/bin/python
+COPY docker/constraints-svc.txt /tmp/constraints-svc.txt
+RUN git clone https://github.com/Soul-AILab/SoulX-Singer.git /opt/soulx-singer \
+ && git -C /opt/soulx-singer checkout ${SOULX_REF} && rm -rf /opt/soulx-singer/.git \
+ && grep -iE '^(accelerate|omegaconf|librosa|scipy|soundfile|tqdm|einops|tojyutping|g2pm|g2p_en|g2p-en|nltk)([=<>~ ]|$)' \
+      /opt/soulx-singer/requirements.txt > /tmp/req-soulx.txt \
+ && for p in ToJyutping g2pM g2p_en nltk; do grep -qi "^${p}" /tmp/req-soulx.txt || echo "${p}" >> /tmp/req-soulx.txt; done \
+ && cat /tmp/req-soulx.txt \
+ && python -m venv --system-site-packages /opt/svc-soulx \
+ && /opt/svc-soulx/bin/pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/constraints-svc.txt -r /tmp/req-soulx.txt \
+ && cd /opt/soulx-singer && /opt/svc-soulx/bin/python -c "import preprocess.pipeline, soulxsinger.models.soulxsinger_svc, transformers, torch; assert transformers.__version__ == '4.57.6'; print('soulx ok', torch.__version__)"
+RUN git clone https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git /opt/rvc \
+ && git -C /opt/rvc checkout ${RVC_REF} && rm -rf /opt/rvc/.git \
+ && grep -iE '^(faiss-cpu|librosa|praat-parselmouth|scipy|soundfile|ffmpeg-python|av|tensorboard|scikit-learn|tqdm)([=<>~ ]|$)' \
+      /opt/rvc/requirments_cu128_py312.txt > /tmp/req-rvc.txt \
+ && for p in faiss-cpu praat-parselmouth ffmpeg-python av tensorboard scikit-learn; do grep -qi "^${p}" /tmp/req-rvc.txt || echo "${p}" >> /tmp/req-rvc.txt; done \
+ && cat /tmp/req-rvc.txt \
+ && python -m venv --system-site-packages /opt/svc-rvc \
+ && /opt/svc-rvc/bin/pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/constraints-svc.txt -r /tmp/req-rvc.txt \
+ && mkdir -p /opt/rvc/assets/weights /opt/rvc/assets/indices \
+ && cd /opt/rvc && /opt/svc-rvc/bin/python -c "import faiss, parselmouth, av, ffmpeg, sklearn, torch.utils.tensorboard, transformers; print('rvc ok')"
 # Lip-sync score (manyworlds/worker/lipsync.py) in its own environment, as in the research-script talk image.
 ARG MEDIAPIPE=0.10.21
 ARG LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task

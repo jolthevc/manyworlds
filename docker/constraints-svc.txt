@@ -1,0 +1,13 @@
+# Pins for singing voice conversion on the ComfyUI image (docker/worker-talkcomfy.Dockerfile; job kinds
+# music.convert_voice and music.train_voice, worker/handlers/music_voice.py). Both upstream repos are pinned by commit
+# in the Dockerfile (and policy music.voice.adapters.*.commit); their own pinned requirements are filtered at build time
+# to the packages their inference/training paths import (read 2026-11-23 at those commits), and these constraints keep
+# what the image already fixes. torch, torchaudio and transformers are NEVER reinstalled: each venv sees the image's
+# (--system-site-packages; /tmp/constraints.txt holds torch==<base>, torchaudio==<base>, transformers==4.57.6). Upstream
+# asks for older ones (SoulX: torch 2.2, transformers 4.41.2; RVC: torch<2.8, transformers<4.50): unverified on ours,
+# so the smoke test imports every module the handlers run, and the first owner-approved GPU job is the real test.
+# numpy stays the image's for the same reason (both upstreams ask numpy<2).
+# Bump a pin on purpose, rebuild, smoke-test (python -m manyworlds.worker.smoke music), then move worker_images.music.tag.
+numpy<3
+# RVC (requirments_cu128_py312.txt asks faiss-cpu>=1.13,<2)
+faiss-cpu>=1.13,<2
