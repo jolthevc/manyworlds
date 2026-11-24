@@ -362,7 +362,59 @@ assert out.hidden_states is not None and len(out.hidden_states) == 3, out.hidden
         raise RuntimeError(f"lip-sync score failed: {s}")
     done.append("lip-sync score")
     done.append(_check_crops(d))
-    return done + check_voice() + check_music()
+    return done + check_longcat() + check_voice() + check_music()
+
+
+# What the LongCat environment must import: the avatar script's own imports (pipeline, INT8 loader, audio encoders,
+# vocal separator, ffmpeg writer) and FlashAttention 2's kernels (the DiT's only attention path).
+LONGCAT_IMPORTS = ("torch", "torchvision", "flash_attn", "flash_attn_2_cuda", "transformers", "diffusers",
+                   "librosa", "pyloudnorm", "onnxruntime", "audio_separator.separator",
+                   "longcat_video.pipeline_longcat_video_avatar", "longcat_video.modules.quantization",
+                   "longcat_video.audio_process", "longcat_video.audio_process.torch_utils",
+                   "longcat_video.audio_process.vocal_separator")
+
+
+def check_longcat(python: str | None = None, repo: Path | None = None) -> list[str]:
+    """LongCat-Video-Avatar 1.6's native path (handlers/talk_longcat.py): the handler, its environment importing
+    everything the script needs on the image's own torch, and the script accepting every flag the handler passes
+    (its --help, which runs the script's imports first)."""
+    import json
+    import subprocess
+
+    from .handlers import talk_longcat
+    from .runner import handlers_for
+    handlers_for(["talk.longcat"])
+    python = python or talk_longcat.PYTHON
+    repo = Path(repo or talk_longcat.REPO_DIR)
+    if not (repo / talk_longcat.SCRIPT).exists():
+        raise RuntimeError(f"LongCat repo missing: no {repo / talk_longcat.SCRIPT}")
+    probe = ("import importlib, json, sys, torch; [importlib.import_module(m) for m in sys.argv[1:]]; "
+             "import transformers; print(json.dumps({'torch': torch.__version__, "
+             "'transformers': transformers.__version__}))")
+    proc = subprocess.run([python, "-c", probe, *LONGCAT_IMPORTS], cwd=str(repo), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"the LongCat environment can't import its modules: {(proc.stderr or proc.stdout)[-1500:]}")
+    versions = json.loads(proc.stdout.strip().splitlines()[-1])
+    import torch
+    if versions["torch"] != torch.__version__:
+        raise RuntimeError(f"the LongCat environment replaced torch: {versions['torch']} != {torch.__version__}")
+    proc = subprocess.run([python, str(repo / talk_longcat.SCRIPT), "--help"], cwd=str(repo), capture_output=True,
+                          text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"the LongCat avatar script fails to start: {(proc.stderr or proc.stdout)[-1500:]}")
+    from .. import policy as policy_mod
+    pol = policy_mod.load()
+    params = {**(pol.get("generation", "talk", default={}) or {}),
+              **(pol.get("generation", "talk_profiles", "longcat16", default={}) or {})}
+    flags = [a.split("=", 1)[0] for a in talk_longcat.build_command(
+        checkpoint=Path("/w/LongCat-Video-Avatar-1.6"), input_json=Path("/w/in.json"), out_dir=Path("/w/out"),
+        segments=28, quantization="int8", params={**params, "compile": True}, python=python, repo=repo)
+        if a.startswith("--") and a not in ("--standalone", "--nproc_per_node=1")]
+    unknown = [f for f in flags if f not in proc.stdout]
+    if unknown:
+        raise RuntimeError(f"the LongCat avatar script doesn't take {unknown}")
+    return [f"LongCat 1.6 environment (torch {versions['torch']}, transformers {versions['transformers']}, "
+            "FlashAttention 2) and the avatar script's flags"]
 
 
 def _song_engine() -> dict:
