@@ -100,8 +100,6 @@ def avatar_patterns(quantization: str) -> list[str]:
 def ensure_weights(root: Path, quantization: str, *, min_free_gb: float = 0) -> tuple[Path, Path]:
     """The avatar and base checkpoints under `root`, side by side as the script expects; downloaded once (a rerun
     skips files already there). Refuses, as a machine fault, a disk without room for them."""
-    from huggingface_hub import snapshot_download
-
     avatar, base = root / AVATAR.split("/")[1], root / BASE.split("/")[1]
     root.mkdir(parents=True, exist_ok=True)
     marker = root / f".complete-{quantization}"
@@ -112,6 +110,7 @@ def ensure_weights(root: Path, quantization: str, *, min_free_gb: float = 0) -> 
         if free + have < need:
             raise RuntimeError(f"No space left on device for LongCat weights: {free:.0f} GB free, "
                                f"{have:.0f} GB there, {need:.0f} GB needed")
+        from huggingface_hub import snapshot_download
         token = os.environ.get("HF_TOKEN") or None
         snapshot_download(AVATAR, local_dir=str(avatar), allow_patterns=avatar_patterns(quantization), token=token)
         snapshot_download(BASE, local_dir=str(base), allow_patterns=BASE_FILES, token=token)

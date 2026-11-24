@@ -43,7 +43,7 @@ VOICE_KIND = "voice.speak"
 # --------------------------------------------------------------------------------------------------------- the item
 
 def cfg(policy: Policy) -> dict:
-    return policy.get("breadth", "takes", default={}) or {}
+    return (policy.get("breadth", default={}) or {}).get("takes") or {}
 
 
 def validate(item_id: str, take: Any) -> dict:
