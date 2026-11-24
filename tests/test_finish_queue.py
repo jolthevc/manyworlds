@@ -201,8 +201,10 @@ def test_production_enqueues_the_finish_waits_and_records_it(conn, database_url,
     assert asset["job_id"] is None and asset["recipe"]["finished_from"] == raw    # the post's asset, as inline
 
 
-def test_a_failed_finish_job_is_retried_then_the_unfinished_video_ships(conn, policy, store, tmp_path):
-    p, pid, cid, job = _edit_post(conn, _mode(_finishing(policy), "queue"), store, tmp_path)
+@pytest.mark.parametrize("how", ["hold", "ship"])
+def test_a_failed_finish_job_is_retried_then_the_post_is_held_or_shipped(conn, policy, store, tmp_path, how):
+    from test_edit import _give_up
+    p, pid, cid, job = _edit_post(conn, _give_up(_mode(_finishing(policy), "queue"), how), store, tmp_path)
     raw = _edited(conn, store, tmp_path, cid, job)
     limit = p.get("finishing", "max_failures")
     for attempt in range(limit):
@@ -211,11 +213,17 @@ def test_a_failed_finish_job_is_retried_then_the_unfinished_video_ships(conn, po
                             (pid, production.FINISH_KIND)).fetchall()
         assert fj["idempotency_key"] == f"post:{pid}:finish:{attempt}"
         conn.execute("UPDATE jobs SET status = 'failed', error = 'ffmpeg broke' WHERE id = %s", (fj["id"],))
-    assert production.advance(conn, p, now=NOW, store=store)["ready"] == 1
-    body = conn.execute("SELECT body FROM posts WHERE id = %s", (pid,)).fetchone()["body"]
-    assert body["video"]["uri"] == raw and "video_raw" not in body
-    assert body["finish_failures"] == limit and len(body["finish_jobs"]) == limit
-    assert "ffmpeg broke" in body["finish_skipped"] and body.get("finish_repairs", 0) == 0
+    out = production.advance(conn, p, now=NOW, store=store)
+    row = conn.execute("SELECT status, body FROM posts WHERE id = %s", (pid,)).fetchone()
+    body = row["body"]
+    assert body["finish_failures"] == limit and len(body["finish_jobs"]) == limit and "video_raw" not in body
+    assert body.get("finish_repairs", 0) == 0
+    if how == "hold":
+        assert out["held"] == 1 and row["status"] == "held" and "ffmpeg broke" in body["finish_held"]
+        assert "video" not in body and "finish_skipped" not in body
+    else:
+        assert out["ready"] == 1 and row["status"] == "ready" and body["video"]["uri"] == raw
+        assert "ffmpeg broke" in body["finish_skipped"] and "finish_held" not in body
     event = conn.execute("SELECT type, routed_to FROM events WHERE creator_id = %s", (cid,)).fetchone()
     assert event == {"type": "finish_failed", "routed_to": "owner"}
 

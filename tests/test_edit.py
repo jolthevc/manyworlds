@@ -239,13 +239,39 @@ def test_each_switch_alone_and_both_off(conn, policy, store, tmp_path, fake_ffmp
     assert fake_ffmpeg == [] and body["video"]["uri"] == raw and "video_raw" not in body
 
 
-def test_a_finish_that_keeps_failing_ships_the_unfinished_video_and_tells_the_owner(conn, policy, store, tmp_path,
-                                                                                    monkeypatch):
+def _give_up(policy, how: str):
+    return dataclasses.replace(policy, body={**policy.body, "finishing": {**policy.body["finishing"], "on_give_up": how}})
+
+
+def test_a_finish_that_keeps_failing_holds_the_post_and_tells_the_owner(conn, policy, store, tmp_path, monkeypatch):
+    """Fails closed (finishing.on_give_up: hold, as shipped): the unfinished video is never ready, never published."""
     from manyworlds import finishing
     def broken(*a, **k):
         raise RuntimeError("ffmpeg could not finish raw.mp4")
     monkeypatch.setattr(finishing, "finish", broken)
     policy, pid, cid, job = _edit_post(conn, _finishing(policy, captions=False), store, tmp_path)
+    assert policy.get("finishing", "on_give_up") == "hold"
+    _edited(conn, store, tmp_path, cid, job)
+    limit = policy.get("finishing", "max_failures")
+    for _ in range(limit - 1):
+        assert production.advance(conn, policy, now=NOW, store=store)["producing"] == 1
+    out = production.advance(conn, policy, now=NOW, store=store)
+    assert out["held"] == 1 and out["ready"] == 0
+    row = conn.execute("SELECT status, body FROM posts WHERE id = %s", (pid,)).fetchone()
+    body = row["body"]
+    assert row["status"] == "held" and "could not finish" in body["finish_held"] and "finish_skipped" not in body
+    assert body["finish_failures"] == limit and "video" not in body
+    event = conn.execute("SELECT type, routed_to, payload FROM events WHERE creator_id = %s", (cid,)).fetchone()
+    assert (event["type"], event["routed_to"], event["payload"]["action"]) == ("finish_failed", "owner", "hold")
+    assert production.advance(conn, policy, now=NOW, store=store)["held"] == 0     # never picked up again
+
+
+def test_on_give_up_ship_still_ships_the_unfinished_video(conn, policy, store, tmp_path, monkeypatch):
+    from manyworlds import finishing
+    def broken(*a, **k):
+        raise RuntimeError("ffmpeg could not finish raw.mp4")
+    monkeypatch.setattr(finishing, "finish", broken)
+    policy, pid, cid, job = _edit_post(conn, _give_up(_finishing(policy, captions=False), "ship"), store, tmp_path)
     raw = _edited(conn, store, tmp_path, cid, job)
     limit = policy.get("finishing", "max_failures")
     for _ in range(limit - 1):

@@ -1811,13 +1811,14 @@ production:
 # Finishing (manyworlds.finishing, 2026-11-22): grade, grain, hook text, loudness and the cover frame of a finished
 # video: production's finish stage (production.finish; on the finisher machine while production.finish_mode is queue)
 # runs it once per video post of the formats listed, with the burned-in captions in the same ffmpeg pass where ffmpeg has libass. A finish that fails
-# max_failures times ships the unfinished video and tells the owner.
+# max_failures times is held (never published) and the owner told; on_give_up: ship ships the unfinished video instead.
 # Looks are gentle and natural: every value is clamped to `limits`, so no look can oversaturate.
 finishing:
   enabled: true
   formats: [talking_video, narrated_edit, story_clip, music_video]
   trim_head_s: 0.4   # silent clips lose their still opening (an I2V clip starts frozen on its photo); spoken ones keep sync
   max_failures: 3
+  on_give_up: hold   # after max_failures: hold (fails closed: status held, owner told) or ship (the unfinished video)
   # Top clips look like plain phone footage: bright, flat, slightly overexposed, no cinematic grade, no vignette
   # (docs/research/2026-11-23-readiness-and-craft.md). So the default is phone_native; the phone_* looks are what a
   # phone's own processing does in that light. In a look, `grain` and `sharpen` are that look's strengths (phones

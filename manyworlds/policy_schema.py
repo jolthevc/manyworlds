@@ -337,6 +337,7 @@ class Finishing(_Strict):
     formats: list[str]
     trim_head_s: Num
     max_failures: int
+    on_give_up: Literal["hold", "ship"] = "hold"   # a finish given up: hold the post (fails closed) or ship it unfinished
     default_look: str
     look_by_creator: dict[str, str]
     look_by_set: dict[str, str]

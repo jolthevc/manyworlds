@@ -87,7 +87,7 @@ from .core import (  # noqa: F401
 )
 from .finish import (  # noqa: F401
     FINISH_KIND, FINISH_SECTIONS, _advance_finish, _advance_upscale, _burn_text, _cover_row, _cover_upload,
-    _existing_final, _fetch_frames, _final_key, _punch_in, _talk_edit, _finish_failed, _finish_job, _finish_state, _give_up_finish, _jsonable,
+    _existing_final, _fetch_frames, _final_key, _punch_in, _talk_edit, _finish_failed, _finish_job, _finish_state, _give_up_finish, give_up_action, _jsonable,
     _keyframe_cover, _overlay_items_from, _spans_from, _switched_on, _text_fonts, _upscale_job, captions_burned,
     face_box, finish_mode, finish_plan, finish_video, finishes, join_times, narrated_spans, overlay_items,
     record_finish,
