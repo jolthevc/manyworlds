@@ -1019,16 +1019,16 @@ brain:
   # for a change. The showrunner plans within posts_per_day_max and
   # video_share_max (proposals.tier_dials); production spends within `production` (production.common.tier_production):
   # image candidates per scene (else production.candidates_per_scene) and the routes each output may take (a subset
-  # of production.routing.<output>.kinds, in its order; unlisted = all). Economy never pays a hosted video API.
+  # of production.routing.<output>.kinds, in its order; unlisted = all). Economy and standard keep the 4 candidates of before (cheap; judging is the cost); economy never pays a hosted video API.
   tiers:
     default: economy
     levels:
       economy:  {posts_per_day_max: 2, video_share_max: 0.3, usd_per_day: 0.5,
-                 production: {candidates_per_scene: 2, routes: {story_clip: [comfy.wan_i2v]}}}
+                 production: {candidates_per_scene: 4, routes: {story_clip: [comfy.wan_i2v]}}}
       standard: {posts_per_day_max: 3, video_share_max: 0.5, usd_per_day: 1.5,
-                 production: {candidates_per_scene: 3}}
-      premium:  {posts_per_day_max: 4, video_share_max: 0.7, usd_per_day: 4.0,
                  production: {candidates_per_scene: 4}}
+      premium:  {posts_per_day_max: 4, video_share_max: 0.7, usd_per_day: 4.0,
+                 production: {candidates_per_scene: 6}}
   # The predictions ledger (manyworlds.brain.predictions): a claim with nothing published to measure closes unscored.
   predictions: {give_up_days: 14, min_horizon_days: 7, max_horizon_days: 180}
   # Market leads (brain/agents/market_lead.py): activated for a market with min_creators active portfolio creators, or
