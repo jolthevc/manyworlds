@@ -831,7 +831,7 @@ operations: {mode: paused, test_batch_prefixes: [bench-, test-],
 # GPU worker images are rebuilt with it and it has run on a GPU.
 security:
   worker_database: required
-  worker_storage: presigned        # GPU check 2026-11-24 (one image job); back to shared unless it passes
+  worker_storage: shared           # presigned passed one image job on a Vast 4090 (2026-11-24); talk/comfy/music workers untested
   presigned:
     link_seconds: 43200              # a link's life: queue wait plus the attempt (at least attempt + 2 x refresh_ahead)
     max_link_seconds: 604800         # S3 SigV4's limit (7 days)
