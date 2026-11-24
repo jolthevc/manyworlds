@@ -47,6 +47,8 @@ class Thesis(BaseModel):
     risks: str
     production_fit: str = Field(description="how well cheap image/short-video generation can execute it")
     score: float = Field(description="0-10 expected value of testing this, all things considered")
+    market: str = Field(default="", description="the market (category) it belongs to, lowercase: one of the known "
+                                                "markets when one fits, else a short new name")
 
 
 class ThesisSet(BaseModel):
@@ -68,6 +70,11 @@ def _portfolio(conn) -> list[dict]:
     return conn.execute(
         "SELECT handle, status, bible->>'archetype' AS archetype, bible->>'niche' AS niche FROM creators"
     ).fetchall()
+
+
+def _markets(conn) -> list[str]:
+    """Market names a thesis can belong to (launches.place puts its creator there, so market leads see it)."""
+    return [r["name"] for r in conn.execute("SELECT name FROM markets ORDER BY name").fetchall()]
 
 
 def plan_research(conn, policy: Policy, llm: StructuredLLM) -> ResearchPlan:
@@ -109,7 +116,8 @@ def write_theses(conn, policy: Policy, llm: StructuredLLM) -> list[dict]:
     prompt = (
         f"Research summary (last 30 days, anonymised):\n{json.dumps(summary, default=str)}\n\n"
         f"Existing creators: {json.dumps(_portfolio(conn), default=str)}\n"
-        f"Scope: {scope.get('niche')}. Never touch: {scope.get('excluded_topics')}.\n\n"
+        f"Scope: {scope.get('niche')}. Never touch: {scope.get('excluded_topics')}.\n"
+        f"Known markets: {json.dumps(_markets(conn))}\n\n"
         f"Propose {k} distinct creator opportunities to test. Each must be an original fictional "
         f"adult creator archetype, executable with AI photos and short videos, labeled as AI. "
         f"Ground 'why_now' in the numbers above. Score honestly; spread the bets across different "
@@ -151,3 +159,31 @@ def discover(conn, policy: Policy, llm: StructuredLLM, source: ApifySource) -> d
     pulls = run_research(conn, policy, plan, source)
     theses = write_theses(conn, policy, llm)
     return {"plan": plan.model_dump(), "pulls": pulls, "theses": theses}
+
+
+DISCOVER_KIND = "brain.scouts"
+
+
+def ensure_due(conn, policy: Policy, *, now=None):
+    """Discovery on a cadence (policy `research.discover.every_days`; 0 = by hand only), from the Brain's cycle
+    (cli.brain_steps): one `brain.scouts` job when the last discovery, by this cadence or by hand (`mw discover`), is
+    at least that old. Never while `operations.mode` is paused (manyworlds.operations). The run itself stays within
+    research's own limits (`research.max_items_per_run` per pull, the scouts' daily LLM budget on the brain worker).
+    Returns the job id, or None when nothing is due."""
+    from datetime import datetime, timedelta, timezone
+
+    from .. import operations, queue
+
+    if not operations.is_live(policy):
+        return None
+    every = float(policy.get("research", "discover", "every_days", default=7) or 0)
+    if every <= 0:
+        return None
+    now = now or datetime.now(timezone.utc)
+    last = conn.execute(
+        "SELECT greatest((SELECT max(created_at) FROM jobs WHERE kind = %s), "
+        "(SELECT max(created_at) FROM decisions WHERE kind = 'research_plan')) AS t", (DISCOVER_KIND,)).fetchone()["t"]
+    if last is not None and now - last < timedelta(days=every):
+        return None
+    period = int(now.timestamp() // (every * 86400))
+    return queue.enqueue(conn, DISCOVER_KIND, {"period": period}, idempotency_key=f"discover:{period}")

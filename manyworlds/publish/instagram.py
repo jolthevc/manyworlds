@@ -122,6 +122,11 @@ def _clean(text: str, token: str | None) -> str:
     return re.sub(r"(X-Amz-[A-Za-z]+=)[^&\s\"']+", r"\1<redacted>", redact(text))
 
 
+def public_key(uri: str) -> str:
+    """The bucket key of an image's JPEG copy for Instagram (manyworlds.publish.public_copies deletes it later)."""
+    return "public/" + uri.split("/", 3)[-1].rsplit(".", 1)[0] + ".jpg"
+
+
 def public_jpeg(store, uri: str, tmp: Path) -> str:
     """A JPEG copy of the image in our bucket, served by a presigned URL Instagram can fetch."""
     from PIL import Image
@@ -129,8 +134,7 @@ def public_jpeg(store, uri: str, tmp: Path) -> str:
     src = store.get_file(uri, tmp / Path(uri).name)
     out = src.with_suffix(".jpg")
     Image.open(src).convert("RGB").save(out, "JPEG", quality=92)
-    key = uri.split("/", 3)[-1].rsplit(".", 1)[0] + ".jpg"
-    stored = store.put_file(out, f"public/{key}")
+    stored = store.put_file(out, public_key(uri))
     return store.public_url(stored.uri, int(_POLICY.get("url_seconds", 3600)))
 
 

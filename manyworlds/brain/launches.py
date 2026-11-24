@@ -17,11 +17,16 @@ launch stops and a `launch_failed` event goes to the owner. Launches start from 
 
 from __future__ import annotations
 
+import logging
+import re
+
 from psycopg.types.json import Jsonb
 
 from .. import notify, queue
 from ..creator import lab
 from ..policy import Policy
+
+log = logging.getLogger("manyworlds.launches")
 
 LLM_STEPS = ("bible", "anchors", "profile")
 NEXT = {"bible": "references", "references": "anchors", "anchors": "lora", "lora": "profile", "profile": "dossier",
@@ -53,6 +58,40 @@ def start_approved(conn) -> int:
              AND NOT EXISTS (SELECT 1 FROM launches l WHERE l.approval_id = a.id)
            ON CONFLICT (approval_id) DO NOTHING RETURNING id""", (UUID_RE,)).fetchall()
     return len(rows)
+
+
+def _uuid(value) -> str | None:
+    return str(value).lower() if value and re.match(UUID_RE, str(value), re.I) else None
+
+
+def place(conn, thesis_id, creator_id) -> dict:
+    """The creator's market (and cluster) from its thesis, so market leads see it (brain.agents.market_lead counts
+    a market's creators). A thesis names its market by id (`body.market_id`: a cohort's theses, brain.proposals) or
+    by name (`body.market`: discovery); a named market is found or created by its unique name, as the trend analyst
+    does (research.trends). A cluster is taken only by id (`body.cluster_id`) and only when it belongs to that market;
+    clusters have no unique name, so none is made here. A thesis that names neither leaves the creator unplaced (logged).
+    A creator already placed keeps its market and cluster."""
+    row = conn.execute("SELECT body FROM theses WHERE id = %s", (thesis_id,)).fetchone()
+    body = (row or {}).get("body") or {}
+    market_id = None
+    if (mid := _uuid(body.get("market_id"))) and conn.execute("SELECT 1 FROM markets WHERE id = %s", (mid,)).fetchone():
+        market_id = mid
+    cluster_id = None
+    if (cl := _uuid(body.get("cluster_id"))):
+        c = conn.execute("SELECT market_id FROM clusters WHERE id = %s", (cl,)).fetchone()
+        if c and (market_id is None or str(c["market_id"]) == market_id):
+            cluster_id, market_id = cl, str(c["market_id"])
+    name = str(body.get("market") or "").strip()
+    if market_id is None and name:
+        market_id = str(conn.execute(
+            "INSERT INTO markets (name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+            (name,)).fetchone()["id"])
+    if market_id is None:
+        log.info("launch: thesis %s names no market; creator %s stays unplaced", thesis_id, creator_id)
+        return {"market_id": None, "cluster_id": None}
+    conn.execute("UPDATE creators SET market_id = coalesce(market_id, %s), cluster_id = coalesce(cluster_id, %s) "
+                 "WHERE id = %s", (market_id, cluster_id, creator_id))
+    return {"market_id": market_id, "cluster_id": cluster_id}
 
 
 def _status(conn, job_ids: list[str], *, min_done: int | None = None) -> str:
@@ -190,6 +229,7 @@ def advance(conn, policy: Policy) -> dict:
                 continue
             launch = {**launch, "creator_id": cid["creator_id"]}
             conn.execute("UPDATE launches SET creator_id = %s WHERE id = %s", (cid["creator_id"], launch["id"]))
+            place(conn, launch["thesis_id"], cid["creator_id"])
         nxt = NEXT[step]
         if nxt == "ready":
             _ready(conn, launch)

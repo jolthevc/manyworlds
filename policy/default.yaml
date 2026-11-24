@@ -134,6 +134,7 @@ job_kinds:
   brain.talent_manager: {pools: [local], outputs_per_job: 0}
   brain.style_director: {pools: [local], outputs_per_job: 0}
   brain.market_lead: {pools: [local], outputs_per_job: 0}
+  brain.scouts:    {pools: [local], outputs_per_job: 0}
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}
@@ -629,6 +630,9 @@ research:
     instagram: apify~instagram-hashtag-scraper
     tiktok: clockworks~tiktok-scraper
   usd_per_1k_items: {instagram: 2.70, tiktok: 1.70}   # for the ledger; check the Apify invoice
+  # Discovery on a cadence (brain.discover.ensure_due, from the Brain cycle; a brain.scouts job): every_days after the
+  # last discovery (scheduled or `mw discover`); 0 = by hand only. Never while operations.mode is paused.
+  discover: {every_days: 7}
 
 # Trend watcher (manyworlds.research.trends; `mw trends tick|loop|brief <niche>|spend`; Fly process `trends`).
 # Owner 2026-11-22: know what is working, hot or cooling, hooks and patterns, at most $3 a day. Off until the owner
@@ -859,7 +863,7 @@ brain:
   # decision_agents: the agents that record a decision every run (brain/runtime); only they can spend "without output"
   # (the director, evaluator, reviewers and comment drafts spend without decisions by design).
   chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3,
-                   decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director]}
+                   decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # The analyst agent (brain/agents/analyst.py): reasoning effort of its notes call.
@@ -2078,6 +2082,10 @@ queue:
 
 publishing:
   max_late_hours: 6            # a real post later than this is left ready, not sent in a burst with others
+  # JPEG copies made for Instagram (public/ in the bucket) are deleted this many days after their post was published,
+  # held or dropped (manyworlds.publish.public_copies, from the autoscaler's housekeeping).
+  public_copy_keep_days: 7
+  public_copy_purge_batch: 200   # posts per housekeeping tick
 
 # Instagram (manyworlds.publish.instagram, metrics, comments), per Meta's docs v27.0 (read 2026-11-21).
 # login unified: the Instagram API with Unified Login on graph.facebook.com, one Business Integration System User
