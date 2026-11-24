@@ -80,11 +80,15 @@ def retract_dropped(conn, post_ids) -> None:
 
 # Formats made from the post's chosen photos (the keys of followups.FOLLOW_UPS, named here so the scene and finish
 # modules need not import the job makers).
-FOLLOW_UP_FORMATS = ("narrated_edit", "story_clip", "talking_video")
+FOLLOW_UP_FORMATS = ("narrated_edit", "story_clip", "talking_video", "music_video")
 
 
 # Follow-ups that speak: voiced first by the designed voice, when the creator has one.
 SPOKEN = ("narrated_edit", "talking_video")
+
+# Follow-ups that sing (policy music, off): the song first (production.song), the take lip-synced to its vocal stem,
+# the full mix under the finished video. Never voiced by the designed voice; kept in sync (no trimmed opening).
+SUNG = ("music_video",)
 
 
 def _pieces(conn, video: dict) -> tuple[dict, list[dict]]:

@@ -1,0 +1,43 @@
+# Musician archetypes (manyworlds.brain.archetypes; merged in by policy brain.archetypes.extra). Same schema as
+# archetypes-v1.yaml. For AI musician creators made with the music toolbox (policy `music`, OFF until the owner turns
+# it on after a benchmark): original songs (music.original_song), sung clips (actions.sing_to_camera), beds.
+#
+# Original artists only: the creator is an original person with her own sound. Never a real artist's name, voice,
+# song or "type beat"; genre, mood and instrument words describe the sound (brain/lyrics.py checks every song).
+# Disclosure is non-negotiable: the bio and every caption carry scope.disclosure_line; a lyric never claims she is human.
+version: musician-v1
+archetypes:
+  singer_songwriter:
+    words: [music, musician, singer, songwriter, song, songs, band, guitar, piano, producer, vocalist]
+    summary: "an original singer-songwriter: her songs, the writing behind them, the life they come from"
+    audience_promise: "a voice and songs that feel like theirs, the story behind each line, and being there before the song is finished"
+    communicates: "song-led: short sung snippets to the lens (one take, the hook), writing-process clips with a voiceover or labels, lyric carousels; she talks between songs only briefly"
+    mix: {photo: 0.15, carousel: 0.3, story: 0.15, video: 0.4}
+    talk_share: 0.3
+    lean_on: [music.original_song, actions.sing_to_camera, devices.propped, framing.medium_close_up, framing.close_up, actions.prop_work, edits.text_slides, edits.hook_text, edits.labels, edits.voiceover_broll, music.instrumental_bed, sound.room_tone]
+    avoid: [actions.motion_reference]
+    series_patterns:
+      - {name: "weekly song drop", premise: "a new original snippet every week, same day; the hook sung to the propped phone, the title as a label", uses: [music.original_song, actions.sing_to_camera, edits.labels]}
+      - {name: "writing it with you", premise: "a song in progress over a few posts: the first line, the chorus, the bridge; followers vote on a word in the captions", uses: [music.original_song, edits.voiceover_broll, edits.text_slides]}
+      - {name: "the line behind the song", premise: "a lyric carousel: one line per slide, the last slide what it is about", uses: [edits.text_slides]}
+      - {name: "late-night version", premise: "the same song stripped back, quieter, a different room", uses: [music.original_song, actions.sing_to_camera, sound.room_tone]}
+    hooks: ["the hook sung in the first second", "a label: 'wrote this at 2am'", "the one line people will quote, on screen first", "'part 2 of the song you asked for'"]
+    edit_grammar: ["one continuous sung take per clip (lip sync can't cut mid-line)", "medium close-up or closer so the mouth reads", "15-30 s snippets; the full song lives off-platform", "process clips: hands on the instrument, a notebook, labels per stage"]
+    success_signals: [saves, shares, rewatches, comments quoting a line, follows from the post]
+    pitfalls: ["sounding like a named real artist, or saying so", "quoting or echoing an existing song", "a still face singing with nothing moving: open on motion or the hook label", "hands playing an instrument in close-up (fingers read as AI): show the instrument held, not fingering", "full songs as posts (too long; snippets carry)"]
+  bedroom_producer:
+    words: [beats, producer, lofi, lo-fi, instrumental, ambient, synth, electronic]
+    summary: "an original producer of instrumentals: beats, beds and ambient pieces, the room they are made in"
+    audience_promise: "music to study, work or wind down to, and the satisfaction of a track coming together"
+    communicates: "music-led and faceless most of the time: POV of the desk and the room, labels per stage, the track carries it; rarely on camera"
+    mix: {photo: 0.2, carousel: 0.2, story: 0.2, video: 0.4}
+    talk_share: 0.05
+    lean_on: [music.instrumental_bed, music.original_song, devices.pov, framing.close_up, devices.locked_off, edits.labels, text.labels_only, sound.room_tone]
+    avoid: [actions.talk]
+    series_patterns:
+      - {name: "a beat a day", premise: "a short new instrumental every day over the same desk shot, the mood as a label", uses: [music.instrumental_bed, edits.labels]}
+      - {name: "music for", premise: "an instrumental for a moment (rain, a train, a late shift), the moment as the picture", uses: [music.instrumental_bed, devices.pov]}
+    hooks: ["the drop or the best bar first", "a label naming the moment it's for", "the room at night, lamp on"]
+    edit_grammar: ["locked-off desk shot or slow POV", "7-20 s loops", "no voice"]
+    success_signals: [saves, rewatches, shares]
+    pitfalls: ["'type beat' titles or any real artist's name", "real gear brands and logos", "hands on keys in close-up"]

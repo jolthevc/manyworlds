@@ -101,8 +101,14 @@ def sound_plan(conn, policy: Policy, post: dict, body: dict, video: dict) -> dic
 
 def _sound_plan_from(policy: Policy, post: dict, body: dict,
                      load: Callable[[], tuple[dict, list[dict]]]) -> dict | None:
-    """sound_plan from `load()` (see _sound_cues_from): the same plan with no database, on the finisher."""
+    """sound_plan from `load()` (see _sound_cues_from): the same plan with no database, on the finisher. A sung post
+    (music_video) is the one exception: its track is the song's full mix (body.song_media.mix) in place of the
+    lip-synced vocal stem, nothing under it, whether or not sound is on (a vocal stem alone never ships)."""
     from .. import sound
+    song = _song_ref(post, body, policy)
+    if song is not None:
+        return {"song": song, "room_tone": None, "music": None, "effects": [], "ir": None, "mic": None,
+                "room_tone_synth": None, "room_size": None}
     design = sound.design(body.get("shots"), seed_key=str(post["id"]), policy=policy)
     if design is None:
         return None
@@ -112,6 +118,19 @@ def _sound_plan_from(policy: Policy, post: dict, body: dict,
         cues["music"] = sound.bed_music(sound.library(policy), post["format"], policy, seed_key=str(post["id"]))
     return {**cues, "room_tone_synth": design.room_tone if cues["room_tone"] is None else None,
             "room_size": design.room_size, "mic": cues["mic"] or design.mic}
+
+
+def _song_ref(post: dict, body: dict, policy: Policy):
+    """The song under a sung post (production.common.SUNG), as a library-style SoundRef, or None."""
+    from .. import sound
+    from .common import SUNG
+    mix = (body.get("song_media") or {}).get("mix") if post.get("format") in SUNG else None
+    if not mix or not mix.get("uri"):
+        return None
+    spec = body.get("song") or {}
+    return sound.SoundRef(uri=str(mix["uri"]), licence=str(policy.get("music", "library_licence", default="own-generated")),
+                          source=f"music.song (asset {mix.get('asset_id')}): {spec.get('title') or 'untitled'}",
+                          tag=str(spec.get("title") or "song"), kind="music")
 
 
 def _mix_sound(policy: Policy, store, cues: dict, raw, workdir) -> tuple:
@@ -125,8 +144,10 @@ def _mix_sound(policy: Policy, store, cues: dict, raw, workdir) -> tuple:
         if "://" not in ref.uri:
             return Path(ref.uri)
         return store.get_file(ref.uri, d / f"{name}{Path(ref.uri).suffix or '.wav'}")
-    used = [r for r in (cues["room_tone"], cues["music"], *(e for e, _ in cues["effects"]), cues["ir"]) if r]
-    mixed = sound.mix(raw, d / "mixed.mp4", room_tone=local(cues["room_tone"], "room") if cues["room_tone"] else None,
+    used = [r for r in (cues.get("song"), cues["room_tone"], cues["music"], *(e for e, _ in cues["effects"]),
+                        cues["ir"]) if r]
+    mixed = sound.mix(raw, d / "mixed.mp4", song=local(cues["song"], "song") if cues.get("song") else None,
+                      room_tone=local(cues["room_tone"], "room") if cues["room_tone"] else None,
                       effects=[(local(r, f"fx{k}"), at_s, None) for k, (r, at_s) in enumerate(cues["effects"])],
                       music=local(cues["music"], "music") if cues["music"] else None,
                       ir=local(cues["ir"], "ir") if cues["ir"] else None, mic=cues["mic"],

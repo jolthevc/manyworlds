@@ -34,6 +34,10 @@ STATE: dict[str, str] = {
     "voice_jobs": "the one-take follow-up's voice.speak job ids",
     "voice_segment_jobs": "per take, its voice.speak job ids",
     "voice_repairs": "never incremented (a voice line is not reviewed): the voice Step's repair counter",
+    # the song of a music_video post (production.song)
+    "song_jobs": "the music.song job ids (the mix, vocal and instrumental stems)",
+    "song_repairs": "songs remade because their objective check failed (music.check.enforce)",
+    "song_media": "the chosen song by role: {mix, vocals, instrumental: {asset_id, uri, seconds}}",
     # walk-and-talk motion clips
     "motion_jobs": "the one-take talking video's first motion clip job ids",
     "motion_segment_jobs": "per take, its first motion clip's job ids",
@@ -81,6 +85,7 @@ BRIEF: dict[str, str] = {
     "script": "the post's spoken words (a narrated edit's script, a talking video's lines, a story clip's motion)",
     "on_screen_text": "a narrated edit's on-screen text",
     "slides": "a carousel's text slides (manyworlds.slides)",
+    "song": "a music_video post's song (manyworlds.music spec: title, lyrics, tags, bpm, key, duration_s)",
     "template": "the shot-sheet archetype the caption style is looked up by",
     "breadth_run": "marks a breadth-test post, advanced only by its own driver",
 }

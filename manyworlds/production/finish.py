@@ -19,9 +19,10 @@ from typing import Any, Callable
 from psycopg.types.json import Jsonb
 
 from .. import queue
+from ..music import with_generated_beds
 from ..policy import Policy
 from .captioning import caption_style, caption_words, captions_from_words
-from .common import FOLLOW_UP_FORMATS, SPOKEN, _cfg, _pieces, _shot, log
+from .common import FOLLOW_UP_FORMATS, SPOKEN, SUNG, _cfg, _pieces, _shot, log
 from .mixing import _mix_sound, _sound_plan_from
 from .steps import Step, _edit_state, advance_step
 from .takes import _take_index
@@ -294,6 +295,7 @@ def finish_plan(conn, policy: Policy, post: dict, body: dict, video: dict, store
             timed = caption_words(conn, policy, body, video, store=store, fmt=fmt)
             words = None if timed is None else [dataclasses.asdict(w) for w in timed]
     key = _final_key(post)
+    beds = with_generated_beds(conn, policy)
     return _jsonable({
         "post": {"id": post["id"], "creator_id": post["creator_id"], "format": fmt},
         "body": body,
@@ -307,7 +309,9 @@ def finish_plan(conn, policy: Policy, post: dict, body: dict, video: dict, store
         "grade": grade, "burn": burn, "handle": handle,
         "caption_style": style, "caption_words": words,
         "final_key": key, "cover_key": key.rsplit("/", 1)[0] + "/cover.jpg",
-        "policy": {s: policy.body.get(s) for s in FINISH_SECTIONS}, "policy_version": policy.version,
+        # generated beds (sound.library.generated, off) join the library the finisher mixes from
+        "policy": {s: beds.body.get(s) for s in FINISH_SECTIONS},
+        "policy_version": policy.version,
     })
 
 
@@ -335,7 +339,7 @@ def render_finish(plan: dict, policy: Policy, store, workdir) -> dict | None:
     look, sound_error = None, None
     raw = store.get_file(plan["source_uri"], d / "raw.mp4")
     trim_s = float(finishing.cfg(policy).get("trim_head_s", 0) or 0)
-    if trim_s > 0 and fmt not in SPOKEN:
+    if trim_s > 0 and fmt not in SPOKEN and fmt not in SUNG:   # a sung take stays in sync with its song
         # An image-to-video clip opens on its still start photo for a beat: the first frame must already move.
         try:
             raw = media.trim_start(raw, d / "trimmed.mp4",
@@ -386,7 +390,7 @@ def render_finish(plan: dict, policy: Policy, store, workdir) -> dict | None:
                 **policy.body, "finishing": {**finishing.cfg(policy), "fonts_dir": str(fonts)}})
         # A format nobody speaks in (a story clip) is levelled as a bed, not loudnormed to the voice target.
         graded = finishing.finish(raw, out if not text or one_pass else d / "graded.mp4", look=look,
-                                  ass=ass, has_voice=fmt in SPOKEN, policy=fpolicy)
+                                  ass=ass, has_voice=fmt in SPOKEN or fmt in SUNG, policy=fpolicy)
         passes += 1
         if text and not one_pass:   # no libass here: the Pillow drawings, a second pass
             _burn_text(graded, out, d / "captions", cap, ovs, policy)
@@ -475,7 +479,7 @@ def finish_video(conn, policy: Policy, post: dict, body: dict, video: dict, stor
         return existing
     plan = finish_plan(conn, policy, post, body, video, store, source=source)
     with tempfile.TemporaryDirectory(prefix="mw-finish-") as tmp:
-        made = render_finish(plan, policy, store, Path(tmp))
+        made = render_finish(plan, with_generated_beds(conn, policy), store, Path(tmp))
         return record_finish(conn, policy, post, body, video, made, store, llm=llm,
                              local=made.get("path") if made else None)
 

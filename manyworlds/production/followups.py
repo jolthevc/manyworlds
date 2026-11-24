@@ -7,7 +7,7 @@ from typing import Any
 
 from .. import queue
 from ..policy import Policy
-from .common import SPOKEN, _cfg, unmarked
+from .common import SPOKEN, SUNG, _cfg, unmarked
 from .finish import captions_burned
 from .motion import _advance_motion, _clip_job, _needs_motion
 from .steps import Step, _clip_state, _edit_state, advance_step
@@ -34,7 +34,9 @@ def _edit_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
 # Formats made from the post's chosen photos: body key for their jobs, job maker, state, name.
 FOLLOW_UPS = {"narrated_edit": ("edit_jobs", _edit_job, _edit_state, "edit"),
               "story_clip": ("clip_jobs", _clip_job, _clip_state, "clip"),
-              "talking_video": ("talk_jobs", _talk_job, _clip_state, "clip")}
+              "talking_video": ("talk_jobs", _talk_job, _clip_state, "clip"),
+              # a sung take (policy music, off): the talk job over the song's vocal stem (production.song)
+              "music_video": ("talk_jobs", _talk_job, _clip_state, "clip")}
 
 
 def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], audio: dict | None = None,
@@ -51,6 +53,8 @@ def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict],
 
 def _advance_follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict],
                        store=None) -> tuple[str, Any]:
+    if post["format"] in SUNG:
+        return _advance_sung(conn, policy, post, body, chosen)
     audio, vstate = None, "chosen"
     started = bool(body.get(FOLLOW_UPS[post["format"]][0]))
     voice = _designed_voice(conn, post) if post["format"] in SPOKEN else None
@@ -72,6 +76,21 @@ def _advance_follow_up(conn, policy: Policy, post: dict, body: dict, chosen: lis
     if state == "chosen" and video and post["format"] == "narrated_edit":
         _keep_photo_spans(conn, body, video)
     return state, video
+
+
+def _advance_sung(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]) -> tuple[str, Any]:
+    """A music_video post: its song (production.song), then one take that sings the vocal stem to camera (the talk
+    job with the stem as its audio: sing_to_camera). An instrumental song has nothing to sing: the post is dropped."""
+    from .song import advance_song, sung_text
+    sstate, media = advance_song(conn, policy, post, body)
+    if sstate != "chosen":
+        return sstate, None
+    if "vocals" not in media:
+        body["drop_reason"] = "the song has no vocal stem to sing (instrumental, or separation off)"
+        return "dropped", None
+    body.setdefault("talk_script", sung_text(body))
+    audio = {"uri": media["vocals"]["uri"], "meta": media["vocals"]["meta"]}
+    return advance_step(body, _follow_up(conn, policy, post, body, chosen, audio))
 
 
 def _keep_photo_spans(conn, body: dict, video: dict) -> None:

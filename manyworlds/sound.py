@@ -409,12 +409,14 @@ def duck_filter(policy: Policy | None, spec: dict | None = None) -> str:
 def plan(*, has_voice: bool, duration_s: float | None = None, room_tone: Path | str | None = None,
          effects: Iterable[tuple[Path | str, float, float | None]] = (), music: Path | str | None = None,
          ir: Path | str | None = None, mic: str | None = None, room_tone_synth: RoomTone | None = None,
-         room_size: str | None = None, polish: bool | None = None, policy: Policy | None) -> MixPlan:
+         room_size: str | None = None, polish: bool | None = None, song: Path | str | None = None,
+         policy: Policy | None) -> MixPlan:
     """The inputs and filter graph for `mix`. `effects` are (path, at_s, gain_db or None for the policy gain).
     A video without audio gets a silent stand-in voice of `duration_s`, so every bed ends with the video.
     `room_tone_synth` is a procedural bed, used when no `room_tone` file is given. `polish` (None = policy) runs
     the voice polish chain with the room `room_size` (None = the policy default); an impulse response replaces
-    its aecho room."""
+    its aecho room. `song` (a music video): the song's full mix IS the track, from its start, in place of the video's
+    own audio (the lip-synced vocal stem), cut to `duration_s`; nothing else is mixed in."""
     c = cfg(policy)
     m = c.get("mix") or {}
     sr = int(c.get("sample_rate", 48000))
@@ -425,6 +427,11 @@ def plan(*, has_voice: bool, duration_s: float | None = None, room_tone: Path | 
     def add(args: list[str]) -> int:
         inputs.append(args)
         return len(inputs)          # input 0 is the video
+
+    if song is not None:
+        n = add(["-i", str(song)])
+        trim = f",atrim=end={_num(duration_s)}" if duration_s else ""
+        return MixPlan(inputs=inputs, graph=f"[{n}:a]{fmt}{trim}[mix]")
 
     if has_voice:
         voice_src = "0:a"
@@ -510,18 +517,20 @@ def _has_audio(video: Path, timeout: float) -> bool:
 def mix(video: Path | str, out: Path | str, *, room_tone: Path | str | None = None,
         effects: Iterable[tuple[Path | str, float, float | None]] = (), music: Path | str | None = None,
         ir: Path | str | None = None, mic: str | None = None, room_tone_synth: RoomTone | None = None,
-        room_size: str | None = None, polish: bool | None = None, policy: Policy,
+        room_size: str | None = None, polish: bool | None = None, song: Path | str | None = None, policy: Policy,
         timeout: float | None = None) -> Path:
     """The video with its sound designed (see the module docstring) into `out`: video copied, audio AAC. Inputs are
-    local files the caller fetched (library URIs go through the object store first)."""
+    local files the caller fetched (library URIs go through the object store first). With `song` (a music video)
+    the song's mix replaces the video's audio (plan)."""
     from .media import duration, ffmpeg
     m = cfg(policy).get("mix") or {}
     timeout = float(timeout or m.get("timeout_seconds", 600))
     video, out = Path(video), Path(out)
     has_voice = _has_audio(video, timeout)
-    length = duration(video) if (not has_voice or room_tone_synth is not None) else None
+    length = duration(video) if (not has_voice or room_tone_synth is not None or song is not None) else None
     p = plan(has_voice=has_voice, duration_s=length, room_tone=room_tone, effects=list(effects or ()), music=music,
-             ir=ir, mic=mic, room_tone_synth=room_tone_synth, room_size=room_size, polish=polish, policy=policy)
+             ir=ir, mic=mic, room_tone_synth=room_tone_synth, room_size=room_size, polish=polish, song=song,
+             policy=policy)
     cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video)]
     for args in p.inputs:
         cmd += args

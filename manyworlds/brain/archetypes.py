@@ -41,16 +41,32 @@ def _load(path: str, digest: str) -> dict:   # digest keys the cache on content,
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
 
-def library(policy: Policy | None = None) -> dict:
-    """{version, default_communicates, archetypes: {name: playbook}}; empty when the file is missing."""
-    name = (policy.get("brain", "archetypes", "file", default=DEFAULT_FILE) if policy else DEFAULT_FILE) or DEFAULT_FILE
+def _read(name: str) -> dict | None:
     path = ROOT / name
     if not path.exists():
+        return None
+    return _load(str(path), hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def library(policy: Policy | None = None) -> dict:
+    """{version, default_communicates, archetypes: {name: playbook}}; empty when the file is missing. The files in
+    `brain.archetypes.extra` (e.g. musician-v1.yaml) add their archetypes after the main file's; a name the main
+    file already has keeps the main file's playbook."""
+    name = (policy.get("brain", "archetypes", "file", default=DEFAULT_FILE) if policy else DEFAULT_FILE) or DEFAULT_FILE
+    lib = _read(name)
+    if lib is None:
         return {"version": None, "archetypes": {}}
-    raw = path.read_bytes()
-    lib = _load(str(path), hashlib.sha256(raw).hexdigest())
-    return {"version": lib.get("version") or name, "default_communicates": lib.get("default_communicates", ""),
-            "archetypes": lib.get("archetypes") or {}}
+    archetypes = dict(lib.get("archetypes") or {})
+    versions = [str(lib.get("version") or name)]
+    for extra in (policy.get("brain", "archetypes", "extra", default=[]) if policy else []) or []:
+        more = _read(str(extra))
+        if more is None:
+            continue
+        versions.append(str(more.get("version") or extra))
+        for k, v in (more.get("archetypes") or {}).items():
+            archetypes.setdefault(k, v)
+    return {"version": "+".join(versions), "default_communicates": lib.get("default_communicates", ""),
+            "archetypes": archetypes}
 
 
 def names(policy: Policy | None = None) -> list[str]:

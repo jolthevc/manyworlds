@@ -128,6 +128,10 @@ job_kinds:
   # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
   voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
   voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  # Original songs (worker/handlers/music_song.py, policy `music`): ACE-Step 1.5 in ComfyUI core on the ComfyUI image,
+  # family music; then Demucs splits a vocal and an instrumental stem. turbo DiT 2B + 1.7B LM + VAE ~10 GB of weights,
+  # fits 16 GB+; not benchmarked. Only `mw bench music.song` and production music_video posts (off) queue it.
+  music.song:      {min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_comm_4090, vast_5090, runpod_secure_l40s], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -175,6 +179,11 @@ worker_images:
   # voxcpm in it (v9 and later).
   voice: {image: mw-worker-talkcomfy, tag: v14, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1}}
+  # music: original songs (music.song) on the ComfyUI image: ACE-Step 1.5 split files (~10 GB) + Demucs htdemucs
+  # (~80 MB) + Whisper for the bench's lyric check. Needs a talkcomfy image with handlers/music_song.py and demucs in
+  # it (v15, NOT BUILT YET: build and smoke-test it before any music job is queued).
+  music: {image: mw-worker-talkcomfy, tag: v15, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
 
@@ -201,12 +210,12 @@ autoscale:
   scale:
     drain_target_minutes: {default: 30, train: 180}
     history_days: 7
-    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200, talk: 900, comfy: 180, edit: 240}
+    default_job_seconds: {default: 120, image: 60, video: 300, train: 7200, talk: 900, comfy: 180, edit: 240, music: 150}
   # Production work (made lead_hours ahead) waits to share one machine: each machine bills a boot,
   # model load and idle tail (~7-10 min) however few jobs it runs. Lab work and benchmarks start at once.
   batch:
     # image 20: a Salad image machine bills boot + a 20-min idle tail around ~20 min of work (39% busy, 2026-11-21)
-    min_work_minutes: {default: 10, image: 20, video: 25, train: 0, talk: 25, comfy: 25}   # start once this much work waits (median job times)...
+    min_work_minutes: {default: 10, image: 20, video: 25, train: 0, talk: 25, comfy: 25, music: 15}   # start once this much work waits (median job times)...
     max_wait_minutes: {default: 180}                       # ...or once the oldest job has waited this long
     urgent_priority: 1                                     # jobs at this priority or above never wait
   bench_machines: 1              # machines for pinned benchmark work, whatever its size (it measures one machine)
@@ -752,7 +761,8 @@ budget: {master_usd_per_month: 750, reserve_share: 0.15}
 
 brain:
   # The archetype library (manyworlds.brain.archetypes): playbooks the talent manager, showrunner and director read.
-  archetypes: {file: archetypes-v1.yaml}
+  # extra: more playbook files merged in (a name already in `file` wins); musician-v1: AI musician creators (music.*).
+  archetypes: {file: archetypes-v1.yaml, extra: [musician-v1.yaml]}
   # The aesthetics library (policy/aesthetics): shot vocabulary, consistency and variety rules, grades, carousel templates.
   aesthetics: {file: aesthetics-v1.yaml}
   # The style director (brain/agents/style_director.py): each creator's style, world (anchor sets, travel, carousel
@@ -760,7 +770,7 @@ brain:
   style_director: {enabled: true, role: style_director, effort: medium, season_days: 30, min_faceless_families: 4}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
                     creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0,
-                    comment_themes: 0.5, idea_reviser: 0.5}   # director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    comment_themes: 0.5, idea_reviser: 0.5, lyricist: 0.5}   # lyricist: original lyrics for song posts (music, off); director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -1003,6 +1013,7 @@ capabilities:
     outfit_change: {description: "a different outfit in the next shot of the same set and framing", how: [photo, story_clip, talk], requires: [], limits: "never the change itself; the cut hides it", write: "a new wardrobe.outfit_id per shot, the same set_id and framing"}
     sit_stand: {description: "sits down, stands up, settles on the sofa", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "one movement per clip", write: "a beat 'sits down on the sofa'"}
     stairs: {description: "a few steps up or down", how: [story_clip, walk_and_talk], requires: ["production.formats:story_clip,talking_video"], limits: "short and slow; full body or from behind; feet can warp", write: "a beat 'walks down the stairs'"}
+    sing_to_camera: {description: "she sings a part of her own song to the lens, lip-synced to the song's vocal stem; the full mix plays under the video", how: [talk, song], requires: ["production.formats:music_video", music.enabled], limits: "one continuous take, at most music.video.max_seconds; the mouth reads only in medium close-up or closer; sing, don't perform choreography", write: "a music_video post: body.song (lyrics with section tags, tags, bpm, key); the shot's performance is singing, eyeline lens on the hook"}
   edits:
     text_slides: {description: "branded text slides in a carousel: a cover headline, numbered tips, steps, a quote, a comparison, a recap, a save-this ask; her photos sit inside or between them", how: [slides], requires: [slides.enabled], limits: "carousels only; 1-8 slides, short words (a cover 8 words or fewer); for instructive and list posts, never every post", write: "the idea's slides (template, heading, text, items, photo = a scene index)"}
     cut_on_motion: {description: "the cut lands inside a motion both shots share (spin, hair flip, hand over the lens)", how: [joiner], requires: ["production.formats:talking_video,narrated_edit"], limits: "only where shots are joined (talking-video takes and cutaways, narrated edits); a carousel or one clip has none; never mid-sentence", write: "edit.transition_in 'match cut on the spin' (or whip, blur, flash)"}
@@ -1020,6 +1031,11 @@ capabilities:
     voiceover: {description: "her voice over B-roll", how: [narrated_edit, talk], requires: ["production.formats:narrated_edit,talking_video"], limits: "", write: "the script (narrated edit) or a cutaway's lines"}
     room_tone: {description: "the room's own quiet sound under everything, so nothing ships dry", how: [sound_mix], requires: [sound.enabled, sound.room_tone.procedural], limits: "rooms, streets, rain, cars; no cafe murmur or crowds (noise can't fake voices)", write: "sound.room_tone in plain words that name the place ('her kitchen, fridge hum', 'rain on the window')"}
     music_bed: {description: "a quiet instrumental bed", how: [sound_mix], requires: [sound.enabled, sound.library.entries], limits: "only licensed library beds; none shipped yet, so room tone carries silent clips", write: "sound.music in a few words ('quiet lo-fi bed')"}
+  # Music (policy `music`, OFF): original songs made by ACE-Step 1.5 (music.song). Original artists only: never a real
+  # artist's name, voice or song in a prompt, tag or lyric.
+  music:
+    original_song: {description: "an original song in the creator's own artist voice: lyrics written for her, made with vocals, plus a vocal and an instrumental stem", how: [song], requires: [music.enabled], limits: "song snippets for posts (music.video.max_seconds); original lyrics only (brain/lyrics.py checks them); genre and mood words only, never 'in the style of' anyone", write: "body.song: title, lyrics with [Verse]/[Chorus] tags, tags (genre, mood, instruments, vocal), bpm, key, duration_s"}
+    instrumental_bed: {description: "an original instrumental bed (no vocals) for any creator's silent clips or edits", how: [song, sound_mix], requires: [music.enabled, sound.library.generated.enabled], limits: "quiet, no hard drops; joins the sound library only after its objective check passed", write: "sound.music in a few words ('quiet lo-fi bed'); the bed comes from the generated library"}
 
 # Moves (owner 2026-11-22, manyworlds.direction): recipes a post may draw on, composed from `capabilities` (`uses`),
 # each tagged with the archetypes it suits (`suits`, plain words matched against the creator's archetype and niche)
@@ -1638,7 +1654,7 @@ production:
 # Looks are gentle and natural: every value is clamped to `limits`, so no look can oversaturate.
 finishing:
   enabled: true
-  formats: [talking_video, narrated_edit, story_clip]
+  formats: [talking_video, narrated_edit, story_clip, music_video]
   trim_head_s: 0.4   # silent clips lose their still opening (an I2V clip starts frozen on its photo); spoken ones keep sync
   max_failures: 3
   # Top clips look like plain phone footage: bright, flat, slightly overexposed, no cinematic grade, no vignette
@@ -1838,6 +1854,11 @@ sound:
   library:
     allowed_licences: [CC0-1.0, CC-BY-4.0, Pixabay-Content-License, own-recording, own-generated]
     entries: []
+    # Generated beds (manyworlds.music.generated_beds, OFF): instrumental music.song outputs (meta role instrumental,
+    # an instrumental song) whose objective check passed join the catalogue as `own-generated` entries for the
+    # finish (production.finish_plan), at most max_entries, newest first, within `days`. Any creator's silent clip
+    # or edit can then draw one (sound.silent_beds.music, a shot's sound.music cue matching its tag).
+    generated: {enabled: false, kind: music.song, require_check: true, max_entries: 40, days: 90}
   # Effects and room tone: Stable Audio 3 Small-SFX (handlers/sound_gen.py, kind sound.sfx). Code MIT; WEIGHTS under the
   # Stability AI Community License: free commercial use only under $1M annual revenue ("less than $1M in annual
   # revenue", stability.ai/license, read 2026-11-22), an Enterprise licence above that. The HF repo is gated and its
@@ -1878,6 +1899,77 @@ sound:
     default_seconds: 30
     max_seconds: 120
     max_batch: 2
+
+# Original songs (manyworlds.music, worker/handlers/music_song.py, brain/lyrics.py): the toolbox for AI musician
+# creators. OFF (`enabled`): no capability is offered, no music_video post is made (production.formats has none) and
+# no bed joins the library until the owner turns it on after a benchmark (`mw bench music.song`, owner-approved).
+# Original artists only: lyrics are written for the creator and checked in code; prompts carry genre, mood,
+# instrument and vocal words, never a real artist, song or voice. Every post keeps the disclosure (scope.disclosure_line,
+# set at publish); a lyric never denies being AI-made.
+# Not used, on purpose: YuE2 (weights non-commercial for companies) and MiniMax Music 3 (community licence with a
+# UI-attribution condition). Owner: re-check both licences before ever adding them.
+music:
+  enabled: false
+  kind: music.song
+  engine: ace_step_1_5           # the adapter that makes the song (music_song.ENGINES): ace_step_1_5 | heartmula
+  library_licence: own-generated   # what a generated bed's catalogue entry says (sound.library.allowed_licences)
+  engines:
+    # ACE-Step 1.5 (github.com/ace-step/ACE-Step-1.5, MIT; HF card: generated music may be used commercially, read
+    # 2026-11-22) in ComfyUI core (comfy_extras/nodes_ace.py: TextEncodeAceStepAudio1.5, EmptyAceStep1.5LatentAudio;
+    # in our pin v0.45.0, checked by the smoke test against /object_info). Graph = Comfy-Org's split template
+    # (audio_ace_step_1_5_split.json, read 2026-11-23): UNETLoader + DualCLIPLoader(type ace) + VAELoader,
+    # ModelSamplingAuraFlow shift 3, KSampler 8 steps cfg 1 euler/simple, negative = ConditioningZeroOut.
+    ace_step_1_5:
+      licence: MIT
+      repo: Comfy-Org/ace_step_1.5_ComfyUI_files
+      variant: turbo
+      variants:
+        turbo: {diffusion_model: split_files/diffusion_models/acestep_v1.5_turbo.safetensors, steps: 8, cfg: 1.0,
+                shift: 3.0, sampler: euler, scheduler: simple}
+        # XL 4B DiT (needs 12-20 GB): no ComfyUI split file confirmed yet. Fill in the file after checking the
+        # Comfy-Org repo; the handler refuses a variant without one.
+        xl: {diffusion_model: null, steps: 8, cfg: 1.0, shift: 3.0, sampler: euler, scheduler: simple}
+      text_encoders: [split_files/text_encoders/qwen_0.6b_ace15.safetensors,
+                      split_files/text_encoders/qwen_1.7b_ace15.safetensors]   # text encoder, 1.7B LM planner
+      vae: split_files/vae/ace_1.5_vae.safetensors
+      lm: {generate_audio_codes: true, cfg_scale: 2.0, temperature: 0.85, top_p: 0.9, top_k: 0, min_p: 0.0}
+      timeout_s: 900
+    # HeartMuLa (github.com/HeartMuLa/heartlib, Apache-2.0): adapter slot only, no code or weights in any image yet.
+    heartmula: {licence: Apache-2.0, repo: HeartMuLa/heartlib, built: false}
+  limits: {min_seconds: 10, max_seconds: 240, bpm: [50, 200], languages: [en], time_signatures: ["2", "3", "4", "6"]}
+  defaults: {bpm: 96, key: "C major", time_signature: "4", language: en, duration_s: 30}
+  # Stems: ACE-Step makes one mix, so Demucs (github.com/facebookresearch/demucs, MIT code and weights) splits a vocal
+  # stem (what the lip sync follows) and an instrumental (vocals removed) on the same worker.
+  separation: {engine: demucs, model: htdemucs, shifts: 1, overlap: 0.25}
+  # Objective check on the worker (bench, and production while `enforce`): the vocal stem transcribed (Whisper, as
+  # the designed voices are) against the sung words (WER), the length against the asked length, the mix's loudness.
+  check: {asr_model: openai/whisper-large-v3, max_wer: 0.35, max_duration_error_share: 0.1, lufs: [-20, -7],
+          enforce: false}
+  # A music_video post (production.formats: none yet): the song first (music.song), then one sung take lip-synced
+  # to its vocal stem (production.talk_kind), the full mix laid under the video at the finish (production.mixing).
+  video: {max_seconds: 30, max_repairs_per_post: 2}
+  # Lyrics (brain/lyrics.py, llm role lyricist): written from the creator's bible and the idea, then checked here.
+  lyrics:
+    effort: medium
+    max_attempts: 2              # a refused draft is rewritten once with its problems listed
+    section_tags: [intro, verse, pre-chorus, chorus, post-chorus, bridge, hook, interlude, breakdown, outro, instrumental]
+    max_lines: 40
+    max_line_words: 16
+    min_quote_words: 4           # a quoted passage this long reads as someone else's line: refused
+    # Phrases that point at someone else's work or voice, in lyrics, titles or tags (matched at a word start).
+    banned_phrases: ["in the style of", "style of", "sounds like", "sound like", "cover of", "a cover", "feat.",
+                     "ft.", "featuring", "tribute to", "type beat", "inspired by", "in the vein of", "soundalike"]
+    # A backstop list of real artists (the instruction and the phrases above do most of the work); names, matched
+    # as whole words, case-insensitive. Extend freely.
+    banned_names: [taylor swift, beyonce, beyoncé, drake, adele, ed sheeran, billie eilish, the beatles, rihanna,
+                   ariana grande, the weeknd, bad bunny, kanye, eminem, harry styles, olivia rodrigo, dua lipa,
+                   bruno mars, lady gaga, justin bieber, bts, blackpink, sabrina carpenter, sza, kendrick lamar,
+                   michael jackson, elvis, madonna, prince, bob dylan, coldplay]
+    # Lines of real songs the owner wants caught word for word (normalised); none shipped (we never store lyrics).
+    known_lines: []
+    # A lyric or title never denies being AI-made (disclosure is non-negotiable).
+    denial_phrases: ["not ai", "not an ai", "real human", "no ai", "human voice", "not a robot"]
+  bench: {seconds: 30}
 
 # Dance and motion transfer (plan docs/superpowers/plans/2026-11-22-dance-motion-transfer.md): Wan2.2-Animate-2-14B
 # (Apache-2.0) in ComfyUI core (WanAnimate2ToVideo, WanAnimate2Cache; in our pin v0.45.0). OFF; graph only
@@ -1992,6 +2084,9 @@ llm:
     # One call per idea that scored just under a feed-QA floor (brain/agents/idea_reviser.py): the showrunner's
     # fallback writer, on Claude so it goes through Message Batches at half price; Haiku if it fails.
     idea_revise: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    # Original lyrics for a song post (brain/lyrics.py, policy music.lyrics): one or two calls per song, creative
+    # writing in the creator's voice, checked in code (no real artist names, no quoted lines).
+    lyricist: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

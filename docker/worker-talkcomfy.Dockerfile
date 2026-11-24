@@ -42,6 +42,14 @@ RUN pip install --no-cache-dir --no-deps "voxcpm==${VOXCPM}" \
  && pip install --no-cache-dir -c /tmp/constraints.txt einops librosa tqdm pydantic safetensors soundfile \
       "speechbrain==${SPEECHBRAIN}" \
  && python -c "import transformers, torch; assert transformers.__version__ == '4.57.6', transformers.__version__; print(torch.__version__)"
+# Original songs (handlers/music_song.py, job kind music.song, family music): ACE-Step 1.5 runs in ComfyUI core (no
+# extra package; weights download at the first job); Demucs (MIT code and weights) splits the vocal and instrumental
+# stems. Its pins are in docker/constraints-music.txt; torch (and torchaudio, which demucs imports) stay the base
+# image's: the image's own torchaudio version joins the constraints when it has one. Not built yet (talkcomfy v15).
+COPY docker/constraints-music.txt /tmp/constraints-music.txt
+RUN python -c "import torchaudio; print(f'torchaudio=={torchaudio.__version__.split(\"+\")[0]}')" >> /tmp/constraints.txt 2>/dev/null || true \
+ && pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/constraints-music.txt demucs julius dora-search openunmix \
+ && python -c "import demucs.apply, demucs.pretrained, julius, pyloudnorm, torch, transformers; assert transformers.__version__ == '4.57.6', transformers.__version__; print(torch.__version__)"
 # Lip-sync score (manyworlds/worker/lipsync.py) in its own environment, as in the research-script talk image.
 ARG MEDIAPIPE=0.10.21
 ARG LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task

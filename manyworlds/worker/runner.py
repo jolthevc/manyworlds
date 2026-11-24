@@ -507,6 +507,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import tts_voxcpm as mod
         elif family == "sound":          # generated effects and music beds (policy sound, off)
             from .handlers import sound_gen as mod
+        elif family == "music":          # original songs (policy music, off): ACE-Step 1.5 on the ComfyUI image
+            from .handlers import music_song as mod
         elif kind == "hosted.avatar":    # hosted talking avatar (policy hosted_avatar, off), on the control plane
             from .handlers import hosted_avatar as mod
         elif family == "hosted":         # hosted APIs, on the control plane: no GPU machine
