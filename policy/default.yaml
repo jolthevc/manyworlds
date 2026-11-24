@@ -2069,8 +2069,8 @@ music:
         licence_notes: "RVC code MIT; lj1995/VoiceConversionWebUI assets MIT + research-use clause; rmvpe.pt weights licence unstated; base models on VCTK (CC BY 4.0, primary unconfirmed)"
         repo: RVC-Project/Retrieval-based-Voice-Conversion-WebUI
         commit: 81eed5e8f68b6bed1789f682fe78cdd324495afc
-        assets: {repo: lj1995/VoiceConversionWebUI, revision: main,
-                 files: ["hubert_base/*", rmvpe.pt, pretrained_v2/f0G40k.pth, pretrained_v2/f0D40k.pth]}
+        assets: {repo: lj1995/VoiceConversionWebUI, revision: e6d0c1a17da07c33557852f9dfa2bd44cc75737d,
+                 files: [hubert_base/config.json, hubert_base/preprocessor_config.json, hubert_base/pytorch_model.bin, rmvpe.pt, pretrained_v2/f0G40k.pth, pretrained_v2/f0D40k.pth, mute.zip]}
         infer: {f0_method: rmvpe, pitch: 0, index_rate: 0.75, protect: 0.33, rms_mix_rate: 1.0}
         train: {sample_rate: 40k, version: v2, epochs: 200, batch_size: 8, save_every: 50, cache_in_gpu: false,
                 pretrained_g: pretrained_v2/f0G40k.pth, pretrained_d: pretrained_v2/f0D40k.pth, slice_db: 3.7,
