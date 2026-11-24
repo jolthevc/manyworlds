@@ -81,10 +81,12 @@ class Item:
     options: dict = field(default_factory=dict)   # talk_profile, voice_engine
     bench: dict | None = None                     # {kind, jobs, extra, profile}
     creator: str | None = None                    # else the plan's
+    take: dict | None = None                      # a long take (manyworlds.long_take): {kind, script, image, ...}
 
 
 def parse_item(raw: dict) -> Item:
-    """One plan item, checked: an id, what it exercises, and a post format with scenes or a bench kind."""
+    """One plan item, checked: an id, what it exercises, and a post format with scenes, a bench kind, or a long
+    take (manyworlds.long_take)."""
     if not isinstance(raw, dict) or not raw.get("id"):
         raise ValueError(f"a plan item needs an id: {raw!r}"[:200])
     iid = str(raw["id"])
@@ -93,9 +95,13 @@ def parse_item(raw: dict) -> Item:
         raise ValueError(f"item {iid}: `exercises` must list the capabilities it tests")
     item = Item(id=iid, exercises=[str(x) for x in exercises], format=raw.get("format"),
                 caption=str(raw.get("caption") or ""), body=dict(raw.get("body") or {}),
-                options=dict(raw.get("options") or {}), bench=raw.get("bench"), creator=raw.get("creator"))
-    if bool(item.format) == bool(item.bench):
-        raise ValueError(f"item {iid}: give either a post `format` or a `bench`, not both or neither")
+                options=dict(raw.get("options") or {}), bench=raw.get("bench"), creator=raw.get("creator"),
+                take=raw.get("take"))
+    if sum(bool(x) for x in (item.format, item.bench, item.take)) != 1:
+        raise ValueError(f"item {iid}: give one of a post `format`, a `bench` or a `take`")
+    if item.take is not None:
+        from . import long_take
+        long_take.validate(iid, item.take)
     if item.bench is not None and not (isinstance(item.bench, dict) and item.bench.get("kind")):
         raise ValueError(f"item {iid}: `bench` needs a job kind")
     if item.format:
@@ -184,6 +190,15 @@ def skip_reason(policy: Policy, item: Item, creator) -> str | None:
                     ShotSheet.model_validate(shot)
                 except Exception as e:  # noqa: BLE001 - a bad shot sheet skips its item, not the run
                     return f"shot {i} is not a valid shot sheet: {str(e)[:200]}"
+    elif item.take:
+        from . import long_take
+        reason = long_take.skip_reason(policy, item.take, creator)
+        if reason:
+            return reason
+        try:
+            _fill_anchors(item.take["image"], anchors)
+        except ValueError as e:
+            return f"take.image: {e}"
     else:
         if item.bench["kind"] not in kinds:
             return f"bench kind {item.bench['kind']} is not in job_kinds"
@@ -218,6 +233,9 @@ def expected_jobs(policy: Policy, item: Item, creator) -> list[dict]:
     """The jobs an item should make on its first try: [{kind, n, output_seconds}] (repairs come on top)."""
     if item.bench:
         return [{"kind": item.bench["kind"], "n": int(item.bench.get("jobs", 1)), "output_seconds": None}]
+    if item.take:
+        from . import long_take
+        return long_take.expected_jobs(policy, item.take)
     from . import production, voices
     from .talk_segments import estimate_seconds
     prod = policy.get("production", default={}) or {}
@@ -543,8 +561,16 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
     loop_s = float(cfg.get("loop_seconds", 60))
     errors: dict[str, str] = {}
     benches: dict[str, str] = {}
+    takes = {item.id: item for item in todo if item.take}
+    take_states: dict[str, dict] = {}
+    if takes:   # their segment jobs and the shared voice line are reviewed and counted like a bench's
+        from . import long_take
+        benches.update({i: _bench_batch(batch, takes[i]) for i in takes})
+        benches["take-voice"] = long_take.voice_batch(batch)
     for item in todo:   # created once; a restart finds them
         try:
+            if item.take:
+                continue   # a take's jobs are made step by step in the loop (_advance_take)
             if item.format:
                 create_post(conn, pol, plan_name, rid, item, creators[item.id])
             else:
@@ -569,6 +595,16 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
             except Exception as e:  # noqa: BLE001 - one post's bug must not stop the others
                 log.exception("advancing %s failed", post["id"])
                 errors[post["body"].get("breadth_item", str(post["id"]))] = f"{type(e).__name__}: {e}"[:300]
+        for iid, item in takes.items():
+            if (take_states.get(iid) or {}).get("state") in ("done", "failed"):
+                continue
+            _renew_lease(conn, rid, holder, loop_s * 3)   # joining and measuring a take can take minutes
+            try:
+                take_states[iid] = _advance_take(conn, pol, plan, plan_name, rid, batch, item, creators[iid],
+                                                 store=store, llm=llm)
+            except Exception as e:  # noqa: BLE001 - one take's bug must not stop the others
+                log.exception("advancing take %s failed", iid)
+                errors[iid] = f"{type(e).__name__}: {e}"[:300]
         adopt_jobs(conn, pol, plan, rid, batch)
         cids = sorted({str(c["id"]) for c in creators.values() if c})
         adopt_plates(conn, pol, batch, cids)
@@ -582,13 +618,13 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
                 sets.refresh(conn, pol, cid)
             except Exception as e:  # noqa: BLE001
                 errors["plates"] = f"{type(e).__name__}: {e}"[:300]
-        state = _state(conn, rid, list(benches.values()))
+        state = _state(conn, rid, list(benches.values()), takes=take_states, expected_takes=list(takes))
         spent = run_spend(conn, batch)
         log.info("breadth %s: posts %s, open bench jobs %s, spent $%.2f", rid, state["posts"],
                  state["bench_open_jobs"], spent)
         if state["done"] or once:
             break
-        cap = cfg.get("max_usd")
+        cap = plan.get("max_usd", cfg.get("max_usd"))   # a plan may set its own cap (longtake: owner-approved $3)
         if cap is not None and spent >= float(cap):
             state["spend_cap"] = {"spent_usd": round(spent, 2), "max_usd": float(cap)}
             state["cancelled_jobs"] = cancel_queued(conn, batch)
@@ -603,12 +639,30 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
     return {**state, "deadline": deadline.isoformat(), "spent_usd": round(run_spend(conn, batch), 2), "errors": errors}
 
 
-def _state(conn, rid: str, bench_batches: list[str]) -> dict:
+def _state(conn, rid: str, bench_batches: list[str], *, takes: dict | None = None,
+           expected_takes: list[str] | None = None) -> dict:
     posts = {p["body"]["breadth_item"]: p["status"] for p in _run_posts(conn, rid)}
     open_bench = {b: conn.execute("SELECT count(*) AS n FROM jobs WHERE batch = %s AND status IN ('queued', 'running')",
                                   (b,)).fetchone()["n"] for b in bench_batches}
-    done = all(s in ("ready", "dropped") for s in posts.values()) and not any(open_bench.values())
-    return {"posts": posts, "bench_open_jobs": open_bench, "done": done}
+    takes = takes or {}
+    takes_done = all((takes.get(t) or {}).get("state") in ("done", "failed") for t in expected_takes or [])
+    done = all(s in ("ready", "dropped") for s in posts.values()) and not any(open_bench.values()) and takes_done
+    out = {"posts": posts, "bench_open_jobs": open_bench, "done": done}
+    if expected_takes:
+        out["takes"] = {t: takes.get(t) or {"state": "waiting"} for t in expected_takes}
+    return out
+
+
+def _advance_take(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, item: Item, creator, *,
+                  store=None, llm=None) -> dict:
+    """One step of a long take (manyworlds.long_take) in the run's batches, pinned to the plan's pools."""
+    from . import long_take
+    meta = {"run": rid, "plan": plan_name, "item": item.id, "exercises": item.exercises,
+            "creator": creator["handle"]}
+    return long_take.advance(conn, pol, run=rid, batch=batch, item_id=item.id, take=item.take, creator=creator,
+                             item_batch=_bench_batch(batch, item),
+                             anchors_uri=_fill_anchors(item.take["image"], creator["anchors"] or {}),
+                             pins=_pools_by_family(pol, plan), meta=meta, store=store, llm=llm)
 
 
 def cancel_queued(conn, batch: str) -> int:
@@ -723,6 +777,15 @@ def report(conn, policy: Policy, run: str, *, store=None, probe: bool = True) ->
                       "exercises": meta.get("exercises") or [], "bench_batch": b["batch"],
                       "status": "running" if open_jobs else ("failed" if failed and not outputs else "done"),
                       **numbers, "outputs": [{"uri": o["uri"], "url": _url(store, o["uri"], url_s)} for o in outputs]})
+    from . import long_take
+    takes = long_take.report(conn, run, store, url_s)
+    for i in items:   # a long take: its finished video's numbers (colour drift, identity, sync per segment)
+        if i["id"] in takes:
+            i["take"] = takes[i["id"]]
+        elif i.get("bench_batch") and str(i.get("bench_batch")).endswith(f"-{_slug(str(i['id']))}") and \
+                conn.execute("SELECT 1 FROM jobs WHERE batch = %s AND payload->'breadth' ? 'take' LIMIT 1",
+                             (i["bench_batch"],)).fetchone() and i["status"] == "done":
+            i["status"] = "running"   # a chain between segments, or a take not yet joined and measured
     skipped = {}
     if plan_name:
         try:
@@ -741,6 +804,7 @@ def report(conn, policy: Policy, run: str, *, store=None, probe: bool = True) ->
                             WHERE j.batch = %s OR j.batch LIKE %s)
            ORDER BY g.started_at""", (batch, f"{batch}-%")).fetchall()
     return {"run": run, "batch": batch, "verdicts": verdicts(pol, items), "items": items, "skipped": skipped,
+            "takes": takes,
             "by_capability": by_capability(items, skipped), "machines": machines,
             "spent_usd": round(run_spend(conn, batch), 2),
             "usd": {"jobs": round(sum(i["usd"] for i in items), 4),

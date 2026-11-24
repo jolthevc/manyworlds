@@ -1,0 +1,40 @@
+# LongCat-Video-Avatar 1.6's own environment in the talk worker image (/opt/longcat, a venv over the image's
+# packages; manyworlds/worker/handlers/talk_longcat.py). Versions from the LongCat repo's requirements.txt and
+# requirements_avatar.txt at the pinned commit (LONGCAT_REF in docker/worker-talkcomfy.Dockerfile, 58eb336,
+# 2026-11-15), except:
+#   torch          the image's own (2.8, CUDA 12.8; the repo pins 2.6.0): a constraint written at build time keeps it
+#   flash-attn     2.8.3's prebuilt wheel for that torch (the repo pins 2.7.4.post1, built for torch 2.6), installed
+#                  by URL in the Dockerfile; the avatar DiT's config enables FlashAttention 2 and has no SDPA path
+#   sympy          left to torch (the repo's 1.13.1 is older than torch 2.8 accepts)
+#   left out       streamlit, tritonserverclient, openai (the web demo and prompt enhancer), libsndfile1 (a
+#                  placeholder package; the system's libsndfile comes with soundfile's wheel)
+# transformers/peft: the repo pins transformers 4.41.0, but diffusers 0.35.1 then needs peft>=0.17 (image build
+# 2026-11-24), and peft 0.17 imports transformers.EncoderDecoderCache (4.42+). So: transformers 4.46.3 (same
+# UMT5/Whisper APIs the avatar pipeline uses) with peft 0.17.0. The smoke check imports the avatar pipeline.
+transformers==4.46.3
+diffusers==0.35.1
+peft==0.17.0
+numpy==1.26.4
+loguru==0.7.2
+einops==0.8.0
+ftfy==6.2.0
+psutil==6.0.0
+av==12.0.0
+opencv-python==4.9.0.80
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
+pyarrow==20.0.0
+scikit-learn==1.6.1
+scikit-image==0.25.2
+scipy==1.15.3
+soundfile==0.13.1
+soxr==0.5.0.post1
+librosa==0.11.0
+audio-separator==0.30.2
+pyloudnorm==0.1.1
+nvidia-ml-py==13.580.65
+tzdata==2025.2
+onnx==1.18.0
+onnxruntime-gpu==1.20.2
+cffi==2.0.0
+chardet==5.2.0

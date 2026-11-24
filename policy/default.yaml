@@ -39,7 +39,10 @@ gpu_runs:
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
   max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, edit: 60, finish: 30}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
-  max_attempt_minutes_by_kind: {image.mirror: 120}  # one-time copy into our bucket; resumes across machines
+  # image.mirror: one-time copy into our bucket; resumes across machines. talk.longcat: one continuous take of up to
+  # generation.talk_profiles.longcat16.max_seconds (a 90 s line: ~47 GB of weights, then ~28 segments; estimate
+  # ~60-100 min on an L40S, unmeasured), so its render timeout_s plus the download fit inside it.
+  max_attempt_minutes_by_kind: {image.mirror: 120, talk.longcat: 180}
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
   serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
 
@@ -113,6 +116,11 @@ job_kinds:
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
   # fp8 + block swapping fits 24 GB cards: the volume L40S first (weights cached), then by price.
   talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  # One continuous talking take (worker/handlers/talk_longcat.py): LongCat-Video-Avatar 1.6 on its own repo, settings
+  # generation.talk_profiles.longcat16. INT8 on a 48 GB card, bf16 on 80 GB; ~47-63 GB of weights at the first job,
+  # onto the container disk, not the 150 GB weights volume (it holds the ComfyUI talk, story-clip and voice weights;
+  # longcat16.weights_on_volume). Only the long-take comparison (manyworlds.long_take) queues it. Not run on a GPU yet.
+  talk.longcat: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1}
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   # The finish of a made video (production.finish_mode: queue): ffmpeg on the finisher, no GPU. Its outputs are the
@@ -166,23 +174,23 @@ worker_images:
   # talk: ComfyUI + WanVideoWrapper (docker/worker-talkcomfy.Dockerfile): fp8-scaled Wan2.1-I2V-14B 480p + InfiniteTalk
   # adapter (~16 GB), UMT5 text encoder (~11 GB), VAE, lightx2v LoRA; weights cached on the pool's volume if it has one.
   # The research-script image (mw-worker-talk v8, docker/worker-talk.Dockerfile) needed ~82 GB and 48 GB+ of RAM.
-  talk: {image: mw-worker-talkcomfy, tag: v15, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
+  talk: {image: mw-worker-talkcomfy, tag: v16, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
-  comfy: {image: mw-worker-talkcomfy, tag: v15, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  comfy: {image: mw-worker-talkcomfy, tag: v16, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # dance: Wan-Animate-2 (comfy.wan_animate2, off) on the ComfyUI image; needs the image with handlers/dance_animate.py
   # (talkcomfy v11 and later). int8 model (~18 GB), UMT5 fp8 (~7 GB), CLIP vision, VAE, distill LoRA.
-  dance: {image: mw-worker-talkcomfy, tag: v15, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  dance: {image: mw-worker-talkcomfy, tag: v16, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
   # voxcpm in it (v9 and later).
-  voice: {image: mw-worker-talkcomfy, tag: v15, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+  voice: {image: mw-worker-talkcomfy, tag: v16, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1}}
   # music: original songs (music.song) on the ComfyUI image: ACE-Step 1.5 split files (~10 GB) + Demucs htdemucs
   # (~80 MB) + Whisper for the bench's lyric check. Needs a talkcomfy image with handlers/music_song.py and demucs in
   # it (v15, NOT BUILT YET: build and smoke-test it before any music job is queued).
-  music: {image: mw-worker-talkcomfy, tag: v15, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+  music: {image: mw-worker-talkcomfy, tag: v16, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   train: {image: mw-worker-train, tag: v3, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 100, download_gb: 40,
           env: {HF_HUB_DISABLE_XET: 1}}
@@ -525,6 +533,23 @@ generation:
     # (latents and attention grow with it; small cards swap more blocks) and roughly 2.2-2.5x the time per clip.
     # Same 10 steps as `talk`. Not benchmarked yet: mw bench talk.infinitetalk --profile hd720 before turning it on.
     hd720: {width: 720, height: 1280, steps: 10}
+    # LongCat-Video-Avatar 1.6 (MIT, 2026-11-15) as ONE continuous take (worker/handlers/talk_longcat.py, job kind
+    # talk.longcat, or talk.infinitetalk with this profile): WanVideoWrapper has no 1.6 support (newest commit
+    # a7439db, 2026-11-13), so it runs on LongCat's own repo (docker/worker-talkcomfy.Dockerfile, LONGCAT_REF).
+    # The README's 1.6 recipe: --use_distill (8 steps, text and audio guidance 1), loraB (OPSD) with the first
+    # mix_steps steps blending in loraA (DMD) at mix_alpha, long video by continuation re-anchored to the photo
+    # (ref_img_index 10, mask_frame_range 0). frames_per_segment, cond_frames and fps are the script's own fixed
+    # numbers (93 frames, 13 carried over, 25 fps): only used here to work out how many segments cover the line.
+    # Memory (estimate, not measured): INT8 DiT ~16 GB + UMT5 bf16 ~11 GB + Whisper fp32 ~6 GB + both LoRAs ~5 GB +
+    # VAE, ~39 GB resident before activations on one card; mixing keeps both LoRAs unmerged and turns the KV cache
+    # off. A third-party test of 1.5 (bf16) peaked at 46.8 GB on an H200. auto = int8 below bf16_min_vram_gb (an L40S),
+    # bf16 on an 80 GB H100. If an L40S runs out of memory: mix_steps 0 (loraB merged, KV cache on) or the H100.
+    # 480p is 480x832 (the script's bucket; the photo is fitted to it first). timeout_s: one render (gpu_runs
+    # max_attempt_minutes_by_kind talk.longcat, 180 min, also covers the ~47 GB download).
+    longcat16: {model: longcat_native, quantization: auto, bf16_min_vram_gb: 70, resolution: 480p, width: 480,
+                height: 832, max_seconds: 120, frames_per_segment: 93, cond_frames: 13, fps: 25, mix_steps: 4,
+                mix_alpha: 1.0, lora_path: loraB/lora.safetensors, ref_img_index: 10, mask_frame_range: 0,
+                compile: false, weights_on_volume: false, min_free_disk_gb: 10, timeout_s: 9000}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
   # 16 fps (5 s), 9:16 at 480p (the photo fitted as for talk, fit_stretch_tolerance). Cards under swap_below_gb swap

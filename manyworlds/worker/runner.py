@@ -512,6 +512,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import image_zimage as mod
         elif family == "train":
             from .handlers import train_lora as mod
+        elif kind == "talk.longcat":     # one continuous take: LongCat-Video-Avatar 1.6 on its own repo (talk image)
+            from .handlers import talk_longcat as mod
         elif family == "talk":           # the image chooses the engine: ComfyUI + WanVideoWrapper, or the research script
             if os.environ.get("MW_TALK_ENGINE") == "comfy":
                 from .handlers import talk_comfy as mod

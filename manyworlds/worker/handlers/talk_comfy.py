@@ -18,6 +18,11 @@ manyworlds.production) the clip is resampled to 25 fps and lip-synced by Infinit
 InfiniteTalk only. The resample interpolates new frames (params.motion_interpolate, media.fps_filter: minterpolate)
 instead of repeating Wan's 16 fps frames, which judder at 25.
 
+A long take's chained segments (manyworlds.long_take) share one voice line: `audio_window` [start_s, end_s] cuts
+this job's part out of it (cut_audio), and that part is the job's own audio output, so the review hears what this
+clip says. params.model `longcat_native` is LongCat-Video-Avatar 1.6 on its own repo (handlers/talk_longcat.py): no
+ComfyUI graph for it exists yet.
+
 Framing: the approved photo is fitted to the clip's frame (fit_box): a photo already at the frame's aspect, within
 params.fit_stretch_tolerance, is scaled to it whole; any other is cover-cropped, losing only the aspect difference
 (a 9:16 photo into 480x832, Wan's 480p bucket, loses 2.5% of its height; a 4:5 one lost 26% of its width).
@@ -40,6 +45,7 @@ from ..keyframes import extract_keyframes
 
 REQUIRED = ("width", "height", "steps", "timeout_s")
 MODELS = ("infinitetalk", "longcat")
+NATIVE_LONGCAT = "longcat_native"   # params.model: LongCat-Video-Avatar 1.6 on its own repo (handlers/talk_longcat.py)
 _ready: dict = {"weights": False}   # per model: "weights" (InfiniteTalk), "weights:longcat:<version>"
 
 
@@ -123,7 +129,46 @@ def at_fps(src: Path, dest: Path, fps: int, timeout: float = 600, *, interpolate
     return dest
 
 
+def cut_audio(src: Path, dest: Path, window, timeout: float = 600) -> Path:
+    """The part of a voice line between window[0] and window[1] seconds, as 16-bit wav."""
+    import subprocess
+
+    from ...media import ffmpeg
+    try:
+        start, end = (float(x) for x in window)
+    except (TypeError, ValueError):
+        raise NonRetryable(f"audio_window must be [start_s, end_s], not {window!r}") from None
+    if not 0 <= start < end:
+        raise NonRetryable(f"audio_window {window!r} must start at 0 s or later and end after it starts")
+    cmd = [ffmpeg(), "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src),
+           "-c:a", "pcm_s16le", str(dest)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"cutting the voice line failed: {proc.stderr[-800:]}")
+    return dest
+
+
+def voice_line(payload: dict, ctx: JobContext, work: Path) -> tuple[Path, float, list[OutputFile]]:
+    """The take's voice line on this machine, its length, and the audio outputs the job adds: the Kokoro line it
+    spoke itself, or the cut part of a shared line (`audio_window`), so the review hears this clip's own words."""
+    extra: list[OutputFile] = []
+    if payload.get("audio_uri"):
+        audio = ctx.fetch(payload["audio_uri"], "voice.wav")
+    else:
+        audio = _speak(payload, work)
+        if not payload.get("audio_window"):
+            extra.append(OutputFile(audio, "audio", {"seconds": audio_seconds(audio)}))
+    if payload.get("audio_window"):
+        audio = cut_audio(audio, work / "voice_window.wav", payload["audio_window"])
+        extra.append(OutputFile(audio, "audio", {"seconds": audio_seconds(audio),
+                                                 "window": [float(x) for x in payload["audio_window"]]}))
+    return audio, audio_seconds(audio), extra
+
+
 def generate(payload: dict, ctx: JobContext) -> HandlerResult:
+    if str((payload.get("params") or {}).get("model") or "") == NATIVE_LONGCAT:
+        from . import talk_longcat
+        return talk_longcat.generate(payload, ctx)
     if not payload.get("image_uri"):
         raise NonRetryable("payload needs image_uri")
     if not payload.get("audio_uri") and not (payload.get("script") or "").strip():
@@ -166,12 +211,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         _ready["weights:clip_vision"] = True
     comfy.start()
 
-    spoken = None
-    if payload.get("audio_uri"):
-        audio = ctx.fetch(payload["audio_uri"], "voice.wav")
-    else:
-        audio = spoken = _speak(payload, work)
-    seconds = audio_seconds(audio)
+    audio, seconds, audio_outputs = voice_line(payload, ctx, work)
     tag = ctx.job.id
     inp = comfy.COMFY_DIR / "input"
     inp.mkdir(parents=True, exist_ok=True)
@@ -217,8 +257,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
                                           "v2v": bool(video_uri)}),
                *extract_keyframes(clip, work, int(payload["keyframes"]))]
     outputs += crops.crops_in_venv([o for o in outputs if o.kind == "keyframe"], work, payload.get("crops"))
-    if spoken is not None:
-        outputs.append(OutputFile(spoken, "audio", {"seconds": seconds}))
+    outputs += audio_outputs
     if model == "longcat":
         names = {"model": weights["diffusion_models"][0][1], "lora": weights["loras"][0][1],
                  "adapter": f"LongCat-Video-Avatar {version}"}
@@ -226,7 +265,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         names = {"model": comfy.MODEL, "adapter": comfy.ADAPTER, "lora": comfy.LORA}
     recipe = {**names, "engine": "comfy+WanVideoWrapper", "talk_model": model, "prompt": payload.get("prompt"),
               "negative_prompt": comfy.negative_text(params, negative),
-              "image_uri": payload["image_uri"], "audio_uri": payload.get("audio_uri"), "script": payload.get("script"), "voice": payload.get("voice"), "video_uri": video_uri, "seed": seed,
+              "image_uri": payload["image_uri"], "audio_uri": payload.get("audio_uri"), "audio_window": payload.get("audio_window"), "script": payload.get("script"), "voice": payload.get("voice"), "video_uri": video_uri, "seed": seed,
               "params": params}
     return HandlerResult(outputs, recipe=recipe, meta={"output_seconds": seconds, "render_seconds": render_s,
                                                         "seconds_per_output_second": round(render_s / max(seconds, 0.1), 1)})
