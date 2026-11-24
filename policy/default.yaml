@@ -2030,6 +2030,7 @@ music:
     - {name: key_confidence, source: sound, unit: correlation margin, kind: number}
     - {name: lufs_integrated, source: sound, unit: LUFS, kind: number}
     - {name: true_peak_dbtp, source: sound, unit: dBTP, kind: number}
+    - {name: sample_peak_dbfs, source: sound, unit: dBFS, kind: number}
     - {name: loudness_range_lu, source: sound, unit: LU, kind: number}
     - {name: crest_factor_db, source: sound, unit: dB, kind: number}
     - {name: clipping_share, source: sound, unit: share of samples, kind: number}
@@ -2059,6 +2060,7 @@ music:
     - {name: rhyme_density, source: lyrics, unit: share of line pairs, kind: number}
     - {name: syllables_per_line, source: lyrics, unit: syllables, kind: number}
     - {name: title_in_hook, source: lyrics, unit: yes/no, kind: flag}
+    - {name: written_sections, source: lyrics, unit: sections, kind: number}
     - {name: written_choruses, source: lyrics, unit: sections, kind: number}
     - {name: aesthetics_pq_mix, source: aesthetics, unit: 1-10 (Audiobox production quality), kind: number}
     - {name: aesthetics_ce_mix, source: aesthetics, unit: 1-10 (Audiobox content enjoyment), kind: number}
