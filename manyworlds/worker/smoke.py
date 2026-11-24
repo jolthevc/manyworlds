@@ -509,13 +509,16 @@ def check_music_voice() -> list[str]:
     }
     import torch
     import transformers
-    want = f"{torch.__version__} {transformers.__version__}"
+    # SoulX's venv carries its own transformers (MW_SOULX_TRANSFORMERS: its llama module needs the pre-4.48 attention
+    # call); every venv keeps the image's torch.
+    own = {"SoulX-Singer": os.environ.get("MW_SOULX_TRANSFORMERS")}
     for name, (python, repo, code) in probes.items():
+        want = f"{torch.__version__} {own.get(name) or transformers.__version__}"
         p = subprocess.run([python, "-c", code], cwd=repo, env={**os.environ, "PYTHONPATH": repo}, capture_output=True,
                            text=True, timeout=600)
         if p.returncode != 0 or p.stdout.strip().splitlines()[-1:] != [want]:
             raise RuntimeError(f"{name} venv: {p.stdout[-300:]} {p.stderr[-1500:]} (want torch/transformers {want})")
-        done.append(f"{name} venv imports its path on the image's torch/transformers ({want})")
+        done.append(f"{name} venv imports its path on torch/transformers {want}")
     rvc_python, rvc_repo = probes["RVC"][0], probes["RVC"][1]
     p = subprocess.run([rvc_python, "infer/cli.py", "--help"], cwd=rvc_repo, capture_output=True, text=True,
                        timeout=600, env={**os.environ, "PYTHONPATH": rvc_repo})

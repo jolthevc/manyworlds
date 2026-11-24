@@ -87,8 +87,11 @@ RUN git clone https://github.com/meituan-longcat/LongCat-Video.git /opt/LongCat-
 #   RVC WebUI (MIT code; its assets' licences unverified, policy refuses it): infer/cli.py and train/*.py from the repo
 #     root; faiss, parselmouth, ffmpeg-python, av, tensorboard, scikit-learn.
 ARG SOULX_REF=81aeb3ae772c70093c3de74dc23c92d983801ae4
+# SoulX's llama module calls LlamaAttention the pre-4.48 way (no position_embeddings): its venv takes the repo's own
+# transformers pin, shadowing the image's 4.57.6 (first GPU run 2026-11-24: TypeError ... position_embeddings).
+ARG SOULX_TRANSFORMERS=4.41.2
 ARG RVC_REF=81eed5e8f68b6bed1789f682fe78cdd324495afc
-ENV MW_SOULX_DIR=/opt/soulx-singer MW_SOULX_PYTHON=/opt/svc-soulx/bin/python \
+ENV MW_SOULX_DIR=/opt/soulx-singer MW_SOULX_PYTHON=/opt/svc-soulx/bin/python MW_SOULX_TRANSFORMERS=${SOULX_TRANSFORMERS} \
     MW_RVC_DIR=/opt/rvc MW_RVC_PYTHON=/opt/svc-rvc/bin/python
 COPY docker/constraints-svc.txt /tmp/constraints-svc.txt
 RUN git clone https://github.com/Soul-AILab/SoulX-Singer.git /opt/soulx-singer \
@@ -98,8 +101,11 @@ RUN git clone https://github.com/Soul-AILab/SoulX-Singer.git /opt/soulx-singer \
  && for p in ToJyutping g2pM g2p_en nltk; do grep -qi "^${p}" /tmp/req-soulx.txt || echo "${p}" >> /tmp/req-soulx.txt; done \
  && cat /tmp/req-soulx.txt \
  && python -m venv --system-site-packages /opt/svc-soulx \
- && /opt/svc-soulx/bin/pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/constraints-svc.txt -r /tmp/req-soulx.txt \
- && cd /opt/soulx-singer && /opt/svc-soulx/bin/python -c "import preprocess.pipeline, soulxsinger.models.soulxsinger_svc, transformers, torch; assert transformers.__version__ == '4.57.6'; print('soulx ok', torch.__version__)"
+ && grep -v '^transformers==' /tmp/constraints.txt > /tmp/constraints-soulx-base.txt \
+ && /opt/svc-soulx/bin/pip install --no-cache-dir -c /tmp/constraints-soulx-base.txt -c /tmp/constraints-svc.txt -r /tmp/req-soulx.txt \
+      "transformers==${SOULX_TRANSFORMERS}" \
+ && cd /opt/soulx-singer && /opt/svc-soulx/bin/python -c "import preprocess.pipeline, soulxsinger.models.soulxsinger_svc, transformers, torch; assert transformers.__version__ == '${SOULX_TRANSFORMERS}', transformers.__version__; print('soulx ok', torch.__version__)" \
+ && python -c "import transformers; assert transformers.__version__ == '4.57.6', transformers.__version__"
 RUN git clone https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git /opt/rvc \
  && git -C /opt/rvc checkout ${RVC_REF} && rm -rf /opt/rvc/.git \
  && grep -iE '^(faiss-cpu|librosa|praat-parselmouth|scipy|soundfile|ffmpeg-python|av|tensorboard|scikit-learn|tqdm)([=<>~ ]|$)' \
