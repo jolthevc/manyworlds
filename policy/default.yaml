@@ -118,6 +118,9 @@ job_kinds:
   # The finish of a made video (production.finish_mode: queue): ffmpeg on the finisher, no GPU. Its outputs are the
   # post's (written by the producer), so the job itself has none.
   finish.video:    {pools: [fly_finisher], outputs_per_job: 0}
+  # The join of a long talking video's takes (production.talk.advance_join, while finish_mode is queue): normalised and
+  # joined on the finisher, not the producer's shared CPU (2026-11-23: it timed out there on every loop).
+  finish.join:     {pools: [fly_finisher], outputs_per_job: 0}
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   # min_vram_gb (any kind): a worker whose card has less total memory doesn't serve the kind (worker.runner
   # kinds_that_fit); a card that can serve none destroys its own machine at start.
@@ -541,12 +544,17 @@ generation:
   hosted_video: {host: together, model: Wan-AI/wan2.7-i2v, seconds: 5, resolution: 720P, ratio: "9:16",
                  usd_per_clip: 0.10, poll_seconds: 10, timeout_s: 900}
   # Long talking videos (manyworlds.talk_segments, production): a script longer than one segment is split at
-  # sentence boundaries, each segment rendered and judged as its own talk job, then joined by the producer.
+  # sentence boundaries, each segment rendered and judged as its own talk job, then joined (a finish.join job on the
+  # finisher while production.finish_mode is queue; in the producer when inline).
   # join: cut = every segment from the approved photo, in parallel, joined with jump cuts (talking-head style);
   #       chain = each segment starts from the last frame of the one before (continuous, one at a time).
   # 60 s (was 25, 2026-11-22): InfiniteTalk's streaming mode makes one continuous take, clean to about a minute
   # (model review); longer scripts are cut at sentences into ~60 s takes. One take, one voice line, no seams.
-  talk_long: {max_segment_seconds: 60, words_per_second: 2.5, join: cut, join_timeout_s: 600}
+  # Each ffmpeg call of the join (normalise a take, join them) may run join_seconds_per_input_second per second of its
+  # input, never under join_timeout_s (a flat 600 s killed a three-take hybrid join on the producer every loop,
+  # 2026-11-23; minterpolate to 30 fps and a 1080x1920 encode cost tens of CPU seconds per second of video).
+  talk_long: {max_segment_seconds: 60, words_per_second: 2.5, join: cut, join_timeout_s: 600,
+              join_seconds_per_input_second: 30}
   # Hybrid talking video (owner 2026-11-22): when the post has cutaway photos, the script is cut into short segments;
   # the hook, the sign-off and enough of the middle to reach on_camera_share are lip-synced, the rest are the cutaway
   # photos moving under the same voice (image.narrated). All segments are brought to `output` and joined. Only the

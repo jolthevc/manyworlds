@@ -115,7 +115,10 @@ from .takes import (  # noqa: F401
     _directed, _hybrid_cfg, _photo_per_shot, _take_index, _take_photo, _take_script, _take_shot, _talk_long_cfg,
     hybrid_modes, script_takes, shot_takes, talk_segments,
 )
-from .talk import _advance_long_talk, _cutaway_job, _talk_job, join_talk, join_transitions  # noqa: F401
+from .talk import (  # noqa: F401
+    JOIN_KIND, JOIN_SECTIONS, _advance_long_talk, _cutaway_job, _join_job, _join_state, _talk_job, _take_history,
+    advance_join, join_plan, join_talk, join_timeout, join_transitions, record_join, render_join, talk_repair,
+)
 from .voice import (  # noqa: F401
     _advance_voice, _designed_voice, _marked_voice_lines, _sentence_lines, _voice_job, _voice_state, _with_audio,
     voice_lines,

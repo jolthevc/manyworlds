@@ -44,6 +44,11 @@ STATE: dict[str, str] = {
     "motion_chain_jobs": "the one-take video's later motion clips (chain links 1..n), job ids per link",
     "motion_segment_chain_jobs": "per take (keyed by its index as text), its later motion clips' job ids per link",
     "motion_repairs": "never incremented (a motion clip is not reviewed): the motion Step's repair counter",
+    # the join of a long talking video's takes (production.talk.advance_join)
+    "join_jobs": "the finish.join job ids (production.finish_mode queue: the takes are joined on the finisher)",
+    "join_repairs": "never incremented (a join is not reviewed): the join Step's repair counter",
+    "join_failures": "finish.join jobs that failed (production.max_job_failures_per_post of them drop the post)",
+    "join_error": "the latest join job's error",
     # the finish
     "upscale_jobs": "the AI upscaler's job ids",
     "upscale_repairs": "never incremented (an upscale is not reviewed): the upscale Step's repair counter",

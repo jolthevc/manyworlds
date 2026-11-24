@@ -531,7 +531,7 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import hosted_avatar as mod
         elif family == "hosted":         # hosted APIs, on the control plane: no GPU machine
             from .handlers import hosted_video as mod
-        elif kind == "finish.video":     # the finish's encodes, on the finisher (a Fly machine of this app): no GPU
+        elif family == "finish":         # the finish's and the takes' join encodes, on the finisher: no GPU
             from .handlers import finish_video as mod
         else:
             raise ValueError(f"no handler family for {kind!r}")

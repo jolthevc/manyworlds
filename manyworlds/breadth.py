@@ -567,8 +567,10 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
             try:
                 production.advance_post(conn, pol, post, store, llm=llm)
             except Exception as e:  # noqa: BLE001 - one post's bug must not stop the others
-                log.exception("advancing %s failed", post["id"])
                 errors[post["body"].get("breadth_item", str(post["id"]))] = f"{type(e).__name__}: {e}"[:300]
+                # Counted as the producer counts it (production.max_advance_errors, then dropped with the error and
+                # the owner told): a post whose advance raised every loop hung in producing for hours (2026-11-23).
+                production._advance_failed(conn, pol, post, e)
         adopt_jobs(conn, pol, plan, rid, batch)
         cids = sorted({str(c["id"]) for c in creators.values() if c})
         adopt_plates(conn, pol, batch, cids)
