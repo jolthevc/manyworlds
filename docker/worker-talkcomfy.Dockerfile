@@ -76,7 +76,7 @@ RUN git clone https://github.com/meituan-longcat/LongCat-Video.git /opt/LongCat-
       transformers diffusers peft numpy loguru einops ftfy psutil av opencv-python imageio imageio-ffmpeg pyarrow \
       scikit-learn scikit-image scipy soundfile soxr librosa "audio-separator[gpu]" pyloudnorm nvidia-ml-py tzdata \
       onnx onnxruntime-gpu cffi chardet \
- && cd /opt/LongCat-Video && /opt/longcat/bin/python -c "import torch, torchvision, flash_attn, transformers, diffusers, audio_separator.separator, longcat_video.pipeline_longcat_video_avatar; assert transformers.__version__ == '4.41.0', transformers.__version__; print('longcat env', torch.__version__)" \
+ && cd /opt/LongCat-Video && /opt/longcat/bin/python -c "import torch, torchvision, flash_attn, transformers, diffusers, audio_separator.separator, longcat_video.pipeline_longcat_video_avatar; assert transformers.__version__ == '4.46.3', transformers.__version__; print('longcat env', torch.__version__)" \
  && python -c "import transformers; assert transformers.__version__ == '4.57.6', transformers.__version__"
 # Lip-sync score (manyworlds/worker/lipsync.py) in its own environment, as in the research-script talk image.
 ARG MEDIAPIPE=0.10.21

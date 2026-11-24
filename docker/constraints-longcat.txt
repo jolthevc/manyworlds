@@ -8,11 +8,12 @@
 #   sympy          left to torch (the repo's 1.13.1 is older than torch 2.8 accepts)
 #   left out       streamlit, tritonserverclient, openai (the web demo and prompt enhancer), libsndfile1 (a
 #                  placeholder package; the system's libsndfile comes with soundfile's wheel)
-transformers==4.41.0
+# transformers/peft: the repo pins transformers 4.41.0, but diffusers 0.35.1 then needs peft>=0.17 (image build
+# 2026-11-24), and peft 0.17 imports transformers.EncoderDecoderCache (4.42+). So: transformers 4.46.3 (same
+# UMT5/Whisper APIs the avatar pipeline uses) with peft 0.17.0. The smoke check imports the avatar pipeline.
+transformers==4.46.3
 diffusers==0.35.1
-# peft: the image's own (newer) peft imports transformers.EncoderDecoderCache (4.42+), which breaks diffusers' peft
-# loader against the repo's transformers 4.41.0 (image build 2026-11-24): the venv takes a peft of that era
-peft==0.11.1
+peft==0.17.0
 numpy==1.26.4
 loguru==0.7.2
 einops==0.8.0
