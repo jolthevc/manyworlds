@@ -133,7 +133,8 @@ def dance_payload(policy: Policy, bible: dict, scene: str, shot: dict | None, *,
     keyframes = int((dance.cfg(policy).get("identity") or {}).get(
         "keyframes", policy.get("review", "video", "keyframes", default=4)))
     payload = {"image_uri": image_uri, "reference": reference, "seed": seed, "keyframes": keyframes,
-               "params": dict(dance.cfg(policy).get("generation") or {})}
+               "params": dict(dance.cfg(policy).get("generation") or {}),
+               "reference_entry": dance.reference(reference, policy)}   # a worker's baked policy may predate it
     _with_prompts(payload, "i2v", bible, scene, shot=shot, policy=policy)
     if payload.get("negative_prompt"):
         payload["params"]["negative_prompt"] = payload["negative_prompt"]

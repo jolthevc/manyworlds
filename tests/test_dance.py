@@ -159,3 +159,18 @@ def test_the_dance_benchmark_needs_dance_on_and_a_cleared_reference(conn, policy
     p = jobs[0]["payload"]
     assert p["reference"] == "ours-1" and p["image_uri"] == "s3://b/photo.png" and p["keyframes"] == on.get("dance", "identity", "keyframes")
     assert p["params"]["frames"] == on.get("dance", "generation", "frames")
+
+
+def test_a_worker_whose_baked_policy_predates_a_clip_takes_the_entry_the_job_carries(policy):
+    # 2026-11-24: seven new licensed clips failed on a worker image built before they were listed.
+    from manyworlds.worker.handlers import dance_animate
+    from manyworlds.worker.runner import NonRetryable
+    old = _on(policy, refs=())                       # the worker's baked policy lists no clips
+    job = {"image_uri": "s3://b/photo.png", "reference": "ours-1", "reference_entry": OURS}
+    ref, _, _ = dance_animate.check(job, old)
+    assert ref["uri"] == OURS["uri"]
+    for bad in ({**job, "reference_entry": {**TREND, "id": "ours-1"}},          # same rules: a platform source
+                {**job, "reference_entry": {**OURS, "owner": "someone"}},       # not ours or licensed
+                {**job, "reference_entry": {**OURS, "id": "other"}}):           # an entry for another id
+        with pytest.raises(NonRetryable):
+            dance_animate.check(bad, old)

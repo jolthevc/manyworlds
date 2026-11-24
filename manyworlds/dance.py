@@ -40,11 +40,15 @@ def _host(source: str) -> str:
     return host.lower().removeprefix("www.")
 
 
-def reference(ref_id: str, policy: Policy | None) -> dict:
-    """The catalogue entry for a driving clip, or RefusedReference with the reason."""
+def reference(ref_id: str, policy: Policy | None, sent: dict | None = None) -> dict:
+    """The catalogue entry for a driving clip, or RefusedReference with the reason. `sent` is the entry the producer
+    put in the job (its dance.references, newer than a worker image's baked policy): used when this policy doesn't
+    list the id, and checked by the same rules (owner, licence, source), so a new clip needs no image rebuild."""
     c = cfg(policy)
     entries = {str(e.get("id")): dict(e) for e in (c.get("references") or []) if e and e.get("id")}
     entry = entries.get(str(ref_id))
+    if entry is None and sent and str(sent.get("id")) == str(ref_id):
+        entry = dict(sent)
     if entry is None:
         raise RefusedReference(f"reference {ref_id!r} is not in dance.references")
     if not str(entry.get("uri") or "").strip():

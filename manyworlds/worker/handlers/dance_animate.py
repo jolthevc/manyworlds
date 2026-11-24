@@ -43,7 +43,7 @@ def check(payload: dict, policy: Policy) -> tuple[dict, dict, int]:
     if not payload.get("image_uri") or not payload.get("reference"):
         raise NonRetryable("payload needs image_uri and reference (a dance.references id)")
     try:
-        ref = dance.reference(str(payload["reference"]), policy)
+        ref = dance.reference(str(payload["reference"]), policy, payload.get("reference_entry"))
     except dance.RefusedReference as e:
         raise NonRetryable(str(e)) from None
     params: dict[str, Any] = {**(dance.cfg(policy).get("generation") or {}), **(payload.get("params") or {})}
