@@ -2,7 +2,9 @@
 the talent manager onboarding a sandbox clone (dossier sections + first brief), and one director call that proves
 the shot-sheet schema still compiles. With --style (2026-11-24): the style director (style, world, season) and a
 director call on a carousel of aesthetic shots instead; the talent manager is skipped when a dossier exists.
-Run on the control plane: python scripts/agent_smoke.py <sandbox handle> [--style].
+Run on the control plane: python scripts/agent_smoke.py <sandbox handle> [--style] [--trial-usd N].
+With --trial-usd every call also goes to every llm.shadow candidate of its role, up to N of candidate spend
+(rows land in llm_shadow with their request, for mw llm judge and mw llm recommend).
 Prints what was built and what it cost; queues nothing for a GPU (plates the director registers are cancelled)."""
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from manyworlds.creator import profile
 from manyworlds.llm import LLM
 
 
-def main(handle: str, style: bool = False) -> None:
+def main(handle: str, style: bool = False, trial_usd: float | None = None) -> None:
     pol = policy_mod.load()
     conn = db.connect()
     c = conn.execute("SELECT id, anchors FROM creators WHERE handle = %s", (handle,)).fetchone()
@@ -28,6 +30,7 @@ def main(handle: str, style: bool = False) -> None:
     cid = c["id"]
     t0 = datetime.now(timezone.utc)
     llm = LLM(conn, pol)
+    llm.trial_usd = trial_usd
     out: dict = {"creator": handle}
     def _agent_job(kind: str, payload: dict):
         job = queue.enqueue(conn, kind, payload, creator_id=cid, batch="test-agent-smoke")
@@ -86,10 +89,13 @@ def main(handle: str, style: bool = False) -> None:
                              "WHERE creator_id = %s AND status = 'queued' AND created_at >= %s AND kind LIKE 'image.%%' "
                              "RETURNING id", (cid, t0)).fetchall()
     out["plates_cancelled"] = len(cancelled)
+    out["trial_candidate_usd"] = round(llm.trial_spent, 4)
     out["usd"] = float(conn.execute("SELECT coalesce(sum(usd), 0) u FROM cost_entries WHERE created_at >= %s "
                                     "AND category = 'llm'", (t0,)).fetchone()["u"])
     print(json.dumps(out, indent=1, default=str))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], style="--style" in sys.argv[2:])
+    rest = sys.argv[2:]
+    trial = float(rest[rest.index("--trial-usd") + 1]) if "--trial-usd" in rest else None
+    main(sys.argv[1], style="--style" in rest, trial_usd=trial)

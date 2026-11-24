@@ -1,7 +1,7 @@
 # Technical debt
 
 Known issues we chose not to fix yet, with when they must be fixed. "Before X" means the
-capability X does not go live until the item is closed. Updated 2026-11-14 (Brain M1 merge).
+capability X does not go live until the item is closed. Updated 2026-11-23 (the gap sweep before the routing trial).
 
 ## Noted 2026-11-24 (architecture review: deferred, larger items)
 
@@ -10,7 +10,7 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 | ~~production.py is ~2,000 lines; its workflow state is ~37 untyped keys in posts.body~~ (split into the production/ package; every body key declared in production/state.py and checked by a test; a lease row per post in advance) | the keys still live flat in posts.body beside the brief (live rows); moving them into a typed `body.production` needs a data migration | `manyworlds/production/` |
 | ~~The finisher can't be started yet~~ (app-scoped deploy token set as Fly secret FLY_API_TOKEN 2026-11-23; start, own-group read and the enforcer's stop checked live; finish_mode queue) | it has not finished a real video yet: the first video post is the check | `deploy/providers.FlyMachines` |
 | ~~No Message Batches API~~ (2026-11-23: brain jobs batch llm.batch.roles at half price, `llm_batch.py`) | not run against the real batch API yet; open-model hosts' own batch discounts unused; shadow calls still pay full price | `llm_batch.py` |
-| The image worker's Python deps are open ranges | a rebuild can pull a new diffusers and break Z-Image only on a rented GPU; pin with a constraints file like talkcomfy | `docker/worker.Dockerfile`, `pyproject.toml` (setup-flyctl pinned to 1.6 by SHA 2026-11-23) |
+| ~~The image worker's Python deps are open ranges~~ (pinned 2026-11-23 in docker/constraints-image.txt from the v27/v28 build logs; the next image build exercises it) | a rebuild can pull a new diffusers and break Z-Image only on a rented GPU; pin with a constraints file like talkcomfy | `docker/worker.Dockerfile`, `pyproject.toml` (setup-flyctl pinned to 1.6 by SHA 2026-11-23) |
 | No critic-revise loop for ideas near the QA floor | the evaluator's why could rewrite a borderline idea for one small call instead of dropping it | showrunner, `evaluation.py` |
 | The GPU backstop runs on GitHub Actions (free: the repo is public) | GitHub cron can be delayed or dropped; a Cloudflare Worker cron (same account as R2) plus a Healthchecks.io dead-man ping would be more independent | `.github/workflows/gpu-enforcer.yml` |
 | The RunPod key in GitHub secrets is expired (401 since 2026-11-23) | the backstop can't see RunPod machines; rotate it (owner) | GitHub secrets |
@@ -19,14 +19,14 @@ capability X does not go live until the item is closed. Updated 2026-11-14 (Brai
 
 | Item | Why it matters | Where |
 |---|---|---|
-| The director's shot schema gained `shot_type`; the grammar-size limit has not been re-checked | if the strict schema is too large again, every post goes undirected; one director call on a sandbox clone checks it | `direction.DirectedShots` |
-| The style director has never run against a real model | its style, world and season are tested with fixed answers only; read the first one before it steers production | `brain/agents/style_director.py` |
+| ~~The director's shot schema gained `shot_type`; the grammar-size limit has not been re-checked~~ (checked live 2026-11-23: the agent smoke directed a carousel of aesthetic shots on a sandbox clone) | if the strict schema is too large again, every post goes undirected; one director call on a sandbox clone checks it | `direction.DirectedShots` |
+| ~~The style director has never run against a real model~~ (ran live 2026-11-23 on a sandbox clone: style, world, season) | its style, world and season are tested with fixed answers only; read the first one before it steers production | `brain/agents/style_director.py` |
 | Anchor sets get their canonical description from the first shot that names them, not from the style director's room | the director is given the room, so they agree in practice | `creator/sets.py` |
 | Talking videos and narrated edits are still off in production.formats (breadth test only) | talk-led archetypes (storyteller, GRWM, educator) can't make their main content until they are switched on | policy `production.formats` |
 | The sound library is empty: beds and effects are synthesized noise | silent clips and edits have no music or Foley; seed licensed CC0 beds and effects | policy `sound.library` |
 | Comments never feed planning; series have no episode state | months-long continuity (callbacks, "part 2", what the audience asked) is missing | `publish/comments.py`, showrunner |
 | Within-post consistency (the room and light drifting between shots) waits for reference conditioning | `sets.reference_conditioning` is off until `image.qwen_edit` is benchmarked | `creator/sets.py` |
-| Research discovery runs only by hand (`mw discover`) | the CEO launches only from theses someone made, or accepted cohorts | `brain/discover.py` |
+| ~~Research discovery runs only by hand (`mw discover`)~~ (a brain.scouts job every research.discover.every_days while operations are live) | the CEO launches only from theses someone made, or accepted cohorts | `brain/discover.py` |
 
 Closed 2026-11-24: accepted cohort requests become proposed theses; requests waiting on the owner no longer block a
 creator; the experiment learning test is de-flaked.
@@ -37,15 +37,15 @@ creator; the experiment learning test is de-flaked.
 |---|---|---|
 | `test_a_finding_becomes_an_experiment_whose_result_is_proven` is flaky: slot assignment seeds from the experiment's random UUID, and 10 posts per arm sometimes miss the planted effect (failed once on 2026-11-21 on a policy-only commit) | `tests/test_brain_learning_trace.py`, `manyworlds/brain/experiments.py` |
 | The no-output guard counts a machine as failed when it tried work and finished none; a machine cut off by an interruptible host mid-first-job also counts | at worst it holds a family until the window passes or a new image tag ships, and tells the owner | `manyworlds/deploy/autoscale.py` |
-| The talent manager has never run against a real model | its dossier sections and weekly briefs are tested with stubs only; the first real onboarding should be read by the owner before any brief steers production | `brain/agents/talent_manager.py`, `creator/dossier.py` |
-| Market leads have no live test and no creator has a market yet (creators.market_id is never set at launch) | the lead activates only for markets with 3+ creators; set the market from the thesis at launch | `brain/launches.py`, `agents/market_lead.py` |
+| ~~The talent manager has never run against a real model~~ (onboarded a sandbox clone live 2026-11-23) | its dossier sections and weekly briefs are tested with stubs only; the first real onboarding should be read by the owner before any brief steers production | `brain/agents/talent_manager.py`, `creator/dossier.py` |
+| ~~Market leads have no live test and no creator has a market yet (creators.market_id is never set at launch)~~ (a launch now places the creator in its thesis's market (launches.place); Maren is not backfilled; market leads still have no live test) | the lead activates only for markets with 3+ creators; set the market from the thesis at launch | `brain/launches.py`, `agents/market_lead.py` |
 | Paid idle time is not yet filled with useful work (extra takes, best-of-N candidates) | a warm machine that drains its queue idles until the idle stop; filling it would turn already-paid minutes into quality | `worker/runner.py`, `deploy/autoscale.py` |
 | Memory floors (`job_kinds.<kind>.min_vram_gb`) are set only for Wan-Animate-2 | Z-Image's OOMs on 24 GB consumer cards may need a floor or a free-memory check; set others once measured | policy `job_kinds` |
-| A narrated edit's labels are timed as if photos split the video evenly | labels drift from their photo (narrated_edit is not in production.formats today) | `production.shot_spans` |
+| ~~A narrated edit's labels are timed as if photos split the video evenly~~ (the handler returns photo_spans; needs the image worker rebuilt) | labels drift from their photo (narrated_edit is not in production.formats today) | `production.shot_spans` |
 | Other test batches can share the merged breadth machine, or start a second L40S for the same kinds | run the breadth test with no other test batches open | `deploy/autoscale.py` scale_up |
 | Set and outfit plates are made only by the producer tick, which is off while paused | breadth items that test set/outfit consistency run without plates | `creator/sets.py`, `breadth.py` |
-| If the test overlay file goes missing, the autoscaler falls back to separate machines silently | three cold L40S boots instead of one | `policy.for_batches` |
-| The video clear-pass and the image clear-pass still read identity on POV/cutaway clips | a faceless clip with a low identity score is confirmed (paid) rather than cleared | `review/video.py` clear_pass, `review/gates.py` |
+| ~~If the test overlay file goes missing, the autoscaler falls back to separate machines silently~~ (now OverlayMissing: that work waits and the owner is told once a day) | three cold L40S boots instead of one | `policy.for_batches` |
+| ~~The video clear-pass and the image clear-pass still read identity on POV/cutaway clips~~ (review.common.judges_identity) | a faceless clip with a low identity score is confirmed (paid) rather than cleared | `review/video.py` clear_pass, `review/gates.py` |
 
 ## Before autonomous publishing (Brain M4)
 
@@ -68,7 +68,7 @@ ends the tick for the others.
 
 | Item | Why it matters | Where |
 |---|---|---|
-| A video rerouted to a photo keeps the caption and script written for the video | the caption may mention movement or speech the photo doesn't have; a caption rewrite (one cheap LLM call) would fix it | `manyworlds/production/core.py` reroute |
+| ~~A video rerouted to a photo keeps the caption and script written for the video~~ (one caption_rewrite call (Haiku); the old caption kept in body.caption_before_reroute) | the caption may mention movement or speech the photo doesn't have; a caption rewrite (one cheap LLM call) would fix it | `manyworlds/production/core.py` reroute |
 | Feed repetition is an exact match on free-text attributes ("cafe" vs "cozy cafe" don't match) | conservative: it misses some repeats, never blocks wrongly | `manyworlds/brain/feed_qa.py` |
 | With `review.image.min_scene: 0` the scene gate never fails, so the scene repair can't trigger | only matters if scene becomes a hard gate again | `manyworlds/review/repair.py` |
 | Flavors that need text on the image (tier list, recipe card, text-on-photo memes) aren't offered | needs a text-overlay step for photos (the narrated edit already burns captions into video) | policy `flavors` |
@@ -80,7 +80,7 @@ ends the tick for the others.
 | No differentiation check of a new creator against its siblings (spec 4.6a) | two launches could end up too alike; the strategist is told to diversify, nothing measures it | `manyworlds/brain/launches.py` bible step |
 | An event over the daily rate limit is skipped, so it can fire late the next day; `qa_surge` payload has no `mode` label | minor noise for the owner | `manyworlds/brain/events.py` |
 | Event detectors query every creator's last 60 posts each producer tick | fine at today's scale; batch it before dozens of creators | `manyworlds/brain/events.py` |
-| JPEG copies for Instagram (`public/` in the bucket) are never cleaned up | small storage growth | `manyworlds/publish/instagram.py` |
+| ~~JPEG copies for Instagram (`public/` in the bucket) are never cleaned up~~ (publish/public_copies.py purges them after publishing.public_copy_keep_days) | small storage growth | `manyworlds/publish/instagram.py` |
 | Presigned R2 URLs for Instagram are unverified against Meta's fetcher | first real publish may fail; it then holds the post for the owner | first connected account |
 | Story `is_ai_generated` support is not stated in Meta's docs | if Meta rejects it on Stories, Story posts will be held | `manyworlds/publish/instagram.py` |
 
@@ -106,7 +106,7 @@ ends the tick for the others.
 
 | Item | Why it matters | Where |
 |---|---|---|
-| `effective_policy` reads override rows and the version in two queries | under concurrent changes a decision could record a version that doesn't exactly match the settings it used | `manyworlds/brain/overrides.py` |
+| ~~`effective_policy` reads override rows and the version in two queries~~ (one statement) | under concurrent changes a decision could record a version that doesn't exactly match the settings it used | `manyworlds/brain/overrides.py` |
 | Only Brain agents read the effective policy (`brain.authority.observed_sections: [brain]`); overrides of production, review or autoscaler settings are refused | the strategist can't tune production until those services read the effective policy; then add their sections to `observed_sections` | services' policy loading |
 
 ## Later
@@ -130,23 +130,23 @@ ends the tick for the others.
 | Item | Before | Where |
 |---|---|---|
 | A dimension scored by only one of three samples reports spread 0 (looks certain) | rubric recalibration by predictive validity (M6) | `brain/evaluation.py` `score` |
-| A missing asset/idea row or a non-image asset fails retryably with a TypeError instead of a clear non-retryable reason; media type guessed from extension (png/jpeg only) | video keyframe scoring (M10) | `brain/agents/evaluator.py` |
-| `checked()` depends on how an id is written (case, braces) | — | `brain/evaluation.py` |
-| A crash between storing evaluation rows and the remembered decision can duplicate rows on rerun | M6 | `brain/agents/evaluator.py` |
-| `mw brain calibrate`/`rubric-drift` don't check the evaluator's daily budget | — | `manyworlds/cli.py` |
-| Rubric filename version not cross-checked with the file's `version:`; a stray `idea-vdraft.yaml` crashes; schema cache keyed without file hash; `register` race | — | `brain/rubrics.py`, `brain/evaluation.py` |
-| Rubrics always load from the repo/`/app` path, not from `MW_POLICY`'s directory | — | `brain/rubrics.py` |
+| ~~A missing asset/idea row or a non-image asset fails retryably with a TypeError instead of a clear non-retryable reason; media type guessed from extension (png/jpeg only)~~ (NonRetryable with a reason; video keyframe scoring still M10) | video keyframe scoring (M10) | `brain/agents/evaluator.py` |
+| ~~`checked()` depends on how an id is written (case, braces)~~ (evaluation.canonical_id) | — | `brain/evaluation.py` |
+| ~~A crash between storing evaluation rows and the remembered decision can duplicate rows on rerun~~ (rows and the remembered decision commit together) | M6 | `brain/agents/evaluator.py` |
+| ~~`mw brain calibrate`/`rubric-drift` don't check the evaluator's daily budget~~ (checked before and during the run) | — | `manyworlds/cli.py` |
+| Rubric schema cache keyed without file hash; `register` race (version mismatch and stray draft files fixed 2026-11-23) | — | `brain/rubrics.py`, `brain/evaluation.py` |
+| ~~Rubrics always load from the repo/`/app` path, not from `MW_POLICY`'s directory~~ (from MW_POLICY's directory when it has rubrics) | — | `brain/rubrics.py` |
 | Reference set and drift exist for the idea rubric only; execution and feed have none yet | M7 (feed QA) | `policy/rubrics/reference/` |
 
 ## Memory and showrunner (Brain M3), deferred minors
 
 | Item | Before | Where |
 |---|---|---|
-| Canon enters memory when a post is scheduled; a post later dropped leaves its canon in memory | M4/M5 (move to publication time) | `brain/ideas.py` `schedule_ready` |
-| Ideas dropped after max_wait leave their evaluator jobs queued (they still spend evaluator budget) | — | `brain/ideas.py` |
+| ~~Canon enters memory when a post is scheduled; a post later dropped leaves its canon in memory~~ (a dropped post's canon is retracted (memory.retract_post) and a replaced fact reopened) | M4/M5 (move to publication time) | `brain/ideas.py` `schedule_ready` |
+| ~~Ideas dropped after max_wait leave their evaluator jobs queued (they still spend evaluator budget)~~ (queue.cancel) | — | `brain/ideas.py` |
 | Low-scoring ideas are scheduled anyway (by design: no dimension is a target); revisit once scores are shown to predict performance | M6 | — |
-| Switching `brain.showrunner.enabled` off while a batch is proposed lets the planner plan the same period | — | `cli._produce` |
-| A post linked to two ideas (from `from_post` and a scheduled idea) appears twice in the showrunner's recent posts | — | `brain/agents/showrunner.py` |
+| ~~Switching `brain.showrunner.enabled` off while a batch is proposed lets the planner plan the same period~~ (planner.showrunner_period_open) | — | `cli._produce` |
+| ~~A post linked to two ideas (from `from_post` and a scheduled idea) appears twice in the showrunner's recent posts~~ (de-duplicated by post id) | — | `brain/agents/showrunner.py` |
 | Scheduled posts record the creator's profile version at scheduling time, not the version the batch was planned under | M6 | `brain/ideas.py` |
 | Only `signature` (and keyed canon) close older facts; seeded places/people have no keys, so a moved home relies on the showrunner setting `canon_key` | — | `brain/memory.py` |
 
