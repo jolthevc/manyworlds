@@ -9,7 +9,7 @@ from typing import Callable
 
 from psycopg.types.json import Jsonb
 
-from .. import logs
+from .. import direction, logs
 from ..storage import ObjectStore
 
 log = logging.getLogger("manyworlds.review")
@@ -21,6 +21,13 @@ def policy_for(policy, batch: str | None):
     breadth driver's) changes nothing."""
     from .. import policy as policy_mod
     return policy_mod.for_batch(policy, batch) if policy is not None else policy
+
+
+def judges_identity(shot: dict | None = None, *, plate: bool = False) -> bool:
+    """Whether a candidate is judged on identity at all: a set plate or outfit reference (payload `plate`,
+    manyworlds.creator.sets) has nobody in it, and a POV, cutaway or faceless aesthetic shot (direction.faceless)
+    shows no face. The one test the gates, the verdicts and both clear passes share."""
+    return not (plate or direction.faceless(shot))
 
 
 def stages(cfg: dict, role: str | None = None) -> list[tuple[str, str, str]]:

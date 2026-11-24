@@ -144,11 +144,31 @@ def face_box(frames: Callable[[], Any], *, face=None) -> tuple | None:
 def shot_spans(conn, post: dict, body: dict, video: dict, duration: float | None) -> list[tuple[int, float, float | None]]:
     """(shot index, start_s, end_s) for each shot that plays in the made video. A joined talking video: each take's
     shot over its segments (the join's measured lengths, else each piece's own). One piece: its take's shot over the
-    whole (a story clip's shot 0); a narrated edit's shots share it evenly, one photo each."""
+    whole (a story clip's shot 0); a narrated edit's shots where their photos really play (narrated_spans), evenly
+    shared only when the edit recorded no spans (older posts)."""
     if not body.get("shots"):
         return []
     row, pieces = _pieces(conn, video)
     return _spans_from(post["format"], body, row["meta"] or {}, pieces, duration)
+
+
+def narrated_spans(body: dict, meta: dict, n: int, duration: float | None) -> list[tuple[int, float, float]] | None:
+    """A narrated edit's shots over its photos' real spans: body.photo_spans (production keeps the chosen edit's),
+    else the video's own meta `photo_spans` (worker.handlers.edit_narrated), one photo per shot in order, each end
+    held inside `duration`. None when neither is there or they don't hold one span per shot."""
+    spans = body.get("photo_spans") or (meta or {}).get("photo_spans")
+    if not isinstance(spans, list) or len(spans) != n:
+        return None
+    out = []
+    try:
+        for i, s in enumerate(spans):
+            a, b = float(s["start_s"]), float(s["end_s"])
+            if duration:
+                a, b = min(a, float(duration)), min(b, float(duration))
+            out.append((i, a, b))
+    except (KeyError, TypeError, ValueError):   # a malformed record: the even share instead
+        return None
+    return out
 
 
 def _spans_from(fmt: str, body: dict, meta: dict, pieces: list[dict],
@@ -173,7 +193,10 @@ def _spans_from(fmt: str, body: dict, meta: dict, pieces: list[dict],
                 break   # later shots can't be placed
             t = end
         return [(k, a, b) for k, (a, b) in spans.items()]
-    if fmt == "narrated_edit" and len(shots) > 1 and duration:
+    real = narrated_spans(body, meta, len(shots), duration) if fmt == "narrated_edit" and len(shots) > 1 else None
+    if real:
+        return real
+    if fmt == "narrated_edit" and len(shots) > 1 and duration:   # an older edit without photo_spans: an even share
         step = float(duration) / len(shots)
         return [(i, i * step, (i + 1) * step) for i in range(len(shots))]
     return [(_take_index(body, None) if body.get("scenes") else 0, 0.0, duration)]

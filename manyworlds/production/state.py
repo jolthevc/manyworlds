@@ -18,6 +18,7 @@ STATE: dict[str, str] = {
     "slides_error": "why the carousel's text slides could not be drawn (the photos ship without them)",
     # the follow-up (one video from the chosen photos: followups.FOLLOW_UPS)
     "edit_jobs": "the narrated edit's job ids",
+    "photo_spans": "the chosen narrated edit's real per-photo spans [{start_s, end_s}] (the video's meta photo_spans)",
     "clip_jobs": "the story clip's job ids",
     "talk_jobs": "the one-take talking video's job ids",
     "clip_repairs": "follow-up video repairs used (rejected clips or takes remade)",
