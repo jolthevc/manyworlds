@@ -25,12 +25,12 @@ def _with_sync(policy, **over):
     return policy_mod.from_dict({**policy.body, "review": {**review, "sync": {**review["sync"], **over}}})
 
 
-def _envelope(seconds=4.0, seed=3):
+def _envelope(seconds=8.0, seed=3):
     """Syllable-like on/off speech, one value per video frame (0 silent, 1 voiced)."""
     rng = np.random.default_rng(seed)
     out, on = [], False
     while len(out) < int(seconds * FPS):
-        out += [1.0 if on else 0.0] * int(rng.integers(3, 9))
+        out += [1.0 if on else 0.0] * int(rng.integers(12, 30))   # phrases and pauses, longer than the lag window
         on = not on
     return np.array(out[:int(seconds * FPS)])
 
@@ -56,7 +56,7 @@ def test_a_mouth_following_the_voice_scores_high_and_out_of_step_low(policy):
     late = sync.score(np.roll(opening, 3), loud, FPS, policy)   # 120 ms late: inside the window, found
     assert late["corr"] > 0.9 and late["lag_ms"] == 120.0
 
-    far = sync.score(np.roll(opening, 15), loud, FPS, policy)   # 600 ms: past +-max_lag_ms
+    far = sync.score(_envelope(seed=11) * 0.4, loud, FPS, policy)   # the mouth says other words
     assert far["corr"] is None or far["corr"] < 0.3
     assert sync.decide(far, policy)[0] is False
 
@@ -76,9 +76,9 @@ def test_no_face_frames_are_left_out_and_counted(policy):
     assert sync.decide(s, policy)[0] is False   # face in too few frames
 
 
-def _clip(path, env, *, shift_frames=0):
+def _clip(path, env, *, mouth=None):
     """A drawn 'mouth': each frame's brightness is the mouth opening, the sound a tone shaped by `env`."""
-    frames = np.roll(env, shift_frames)
+    frames = env if mouth is None else mouth
     wav = path.with_suffix(".wav")
     t = np.arange(int(len(env) / FPS * RATE)) / RATE
     tone = 0.5 * np.sin(2 * np.pi * 220 * t) * (np.repeat(env, RATE // FPS)[:len(t)] + 1e-3)
@@ -101,7 +101,7 @@ def test_measure_reads_the_file_frames_and_sound_in_step(policy, tmp_path):
     env = _envelope()
     in_step = sync.measure(_clip(tmp_path / "in.mp4", env), policy, brightness)
     assert in_step["corr"] > 0.8 and abs(in_step["lag_ms"]) <= 80 and in_step["frames"] >= 90
-    off = sync.measure(_clip(tmp_path / "off.mp4", env, shift_frames=15), policy, brightness)
+    off = sync.measure(_clip(tmp_path / "off.mp4", env, mouth=_envelope(seed=11)), policy, brightness)
     assert off["corr"] is None or off["corr"] < 0.3
 
 
@@ -123,7 +123,7 @@ def _post(conn, cid, fmt="talking_video"):
 def test_report_only_records_the_score_and_never_drops(conn, policy, tmp_path):
     cid = creator(conn)
     post = _post(conn, cid)
-    clip = _clip(tmp_path / "off.mp4", 1 - _envelope())   # inverted: out of step
+    clip = _clip(tmp_path / "off.mp4", _envelope(), mouth=1 - _envelope())   # inverted: out of step
     out = sync.review_sync(conn, policy, post, clip, extractor=brightness)
     assert out["accepted"] is False and out["passed"] is True and out["enforced"] is False
     body = conn.execute("SELECT body FROM posts WHERE id = %s", (post["id"],)).fetchone()["body"]
