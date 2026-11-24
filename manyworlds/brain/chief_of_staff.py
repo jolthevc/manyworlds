@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from .. import notify
+from .. import notify, queue
 from ..policy import Policy
 from . import predictions, proposals
 
@@ -36,7 +36,9 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
                            dedupe_key=f"requests_expired:{now:%Y-%m-%dT%H}")
     failing = conn.execute(
         "SELECT kind, count(*) n FROM jobs WHERE kind LIKE 'brain.%%' AND status IN ('failed', 'dead') "
-        "AND updated_at > %s GROUP BY 1 HAVING count(*) >= %s", (window, int(cfg.get("failing_jobs", 3)))).fetchall()
+        "AND coalesce(error, '') NOT LIKE %s "   # a cancelled job (queue.cancel) did not fail
+        "AND updated_at > %s GROUP BY 1 HAVING count(*) >= %s",
+        (queue.CANCELLED + "%", window, int(cfg.get("failing_jobs", 3)))).fetchall()
     for r in failing:
         notify.owner_event(conn, "agent_failing", subject={"agent": r["kind"]}, payload={"failed": r["n"]},
                            dedupe_key=f"agent_failing:{r['kind']}:{day}")

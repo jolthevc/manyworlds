@@ -68,6 +68,14 @@ def _set(conn, post_id, status: str, body: dict, **cols) -> None:
     conn.execute(f"UPDATE posts SET status = %(status)s, body = %(body)s, updated_at = now()"
                  f"{', ' + sets if sets else ''} WHERE id = %(id)s",
                  {"status": status, "body": Jsonb(body), "id": post_id, **cols})
+    if status == "dropped":
+        retract_dropped(conn, [post_id])
+
+
+def retract_dropped(conn, post_ids) -> None:
+    """Every production path that drops posts calls this: their canon leaves creator memory (brain.memory)."""
+    from ..brain import memory
+    memory.retract_post(conn, post_ids)
 
 
 # Formats made from the post's chosen photos (the keys of followups.FOLLOW_UPS, named here so the scene and finish

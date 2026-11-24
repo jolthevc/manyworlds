@@ -208,3 +208,110 @@ def test_an_idea_whose_evaluation_failed_for_good_is_dropped_without_waiting(con
     out = ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
     assert out["scheduled"] == 1 and out["dropped"] == 1
     assert conn.execute("SELECT status FROM ideas WHERE id = %s", (dead,)).fetchone()["status"] == "dropped"
+
+
+# --- ideas dropped after max_wait stop spending on their evaluations ---------------------------------------------
+
+def test_dropping_unevaluated_ideas_cancels_their_queued_evaluations_only(conn, policy):
+    from manyworlds import queue
+    cid = _creator(conn)
+    old = datetime.now(timezone.utc) - timedelta(hours=float(policy.get("brain", "showrunner", "max_wait_hours")) + 1)
+    _idea(conn, cid, 0, created=old)
+    waiting = _idea(conn, cid, 1, evaluated=False, created=old)
+    busy = _idea(conn, cid, 2, evaluated=False, created=old)
+    queued = queue.enqueue(conn, "brain.evaluator", {"idea_id": str(waiting)}, creator_id=cid)
+    running = queue.enqueue(conn, "brain.evaluator", {"idea_id": str(busy)}, creator_id=cid)
+    conn.execute("UPDATE jobs SET status = 'running', worker_id = 'w', lease_until = now() + interval '5 minutes' "
+                 "WHERE id = %s", (running,))
+    other = queue.enqueue(conn, "brain.evaluator", {"idea_id": "00000000-0000-0000-0000-000000000000"}, creator_id=cid)
+    out = ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
+    assert out["scheduled"] == 1 and out["dropped"] == 2 and out["cancelled"] == 1
+    jobs = {r["id"]: r for r in conn.execute("SELECT id, status, error, worker_id FROM jobs").fetchall()}
+    assert jobs[queued]["status"] == "dead" and jobs[queued]["error"].startswith(queue.CANCELLED)
+    assert jobs[running]["status"] == "running" and jobs[running]["worker_id"] == "w"   # a leased job is never touched
+    assert jobs[other]["status"] == "queued"                                           # another batch's idea
+
+
+def test_cancel_touches_only_queued_jobs(conn):
+    from manyworlds import queue
+    a = queue.enqueue(conn, "brain.evaluator", {"idea_id": "x"})
+    b = queue.enqueue(conn, "brain.evaluator", {"idea_id": "y"})
+    conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (b,))
+    assert queue.cancel(conn, [a, b], "test") == [a] and queue.cancel(conn, [], "test") == []
+    assert conn.execute("SELECT status FROM jobs WHERE id = %s", (b,)).fetchone()["status"] == "done"
+
+
+def test_a_cancelled_evaluation_is_not_reported_as_a_failing_agent(conn, policy):
+    from manyworlds import queue
+    from manyworlds.brain import chief_of_staff
+    ids = [queue.enqueue(conn, "brain.evaluator", {"idea_id": str(i)}) for i in range(5)]
+    queue.cancel(conn, ids, "test")
+    chief_of_staff.tick(conn, policy, now=datetime.now(timezone.utc))
+    assert conn.execute("SELECT count(*) n FROM events WHERE type = 'agent_failing'").fetchone()["n"] == 0
+
+
+# --- a dropped post takes its canon back out of memory ---------------------------------------------------------
+
+def _scheduled_post(conn, policy, cid, canon, *, key=None):
+    iid = _idea(conn, cid, 0, canon=canon)
+    if key:
+        conn.execute("UPDATE ideas SET body = body || %s WHERE id = %s", (Jsonb({"canon_key": key}), iid))
+    ideas.schedule_ready(conn, policy, now=datetime.now(timezone.utc))
+    return conn.execute("SELECT post_id FROM ideas WHERE id = %s", (iid,)).fetchone()["post_id"]
+
+
+def _texts(conn, cid):
+    return [f["text"] for f in memory.facts(conn, cid, limit=10)]
+
+
+def test_a_post_dropped_in_production_retracts_its_canon(conn, policy):
+    from manyworlds import production
+    cid = _creator(conn)
+    pid = _scheduled_post(conn, policy, cid, "her downstairs neighbour is called Ines")
+    assert "her downstairs neighbour is called Ines" in _texts(conn, cid)
+    production._set(conn, pid, "dropped", {"drop_reason": "test"}, qa_status="failed")
+    assert "her downstairs neighbour is called Ines" not in _texts(conn, cid)
+    row = conn.execute("SELECT valid_until FROM creator_memory WHERE source_post = %s", (pid,)).fetchone()
+    assert row["valid_until"] is not None                                              # closed, not deleted
+
+
+def test_a_dropped_keyed_canon_gives_the_key_back_to_the_fact_it_replaced(conn, policy):
+    from manyworlds import production
+    cid = _creator(conn)
+    memory.add(conn, cid, "place", "lives in Copenhagen", key="home")
+    pid = _scheduled_post(conn, policy, cid, "she moved to Lisbon", key="home")
+    assert "lives in Copenhagen" not in _texts(conn, cid)
+    production._set(conn, pid, "dropped", {}, qa_status="failed")
+    texts = _texts(conn, cid)
+    assert "lives in Copenhagen" in texts and "she moved to Lisbon" not in texts
+
+
+def test_a_post_that_expires_unproduced_retracts_its_canon(conn, policy):
+    from manyworlds import production
+    cid = _creator(conn)
+    pid = _scheduled_post(conn, policy, cid, "she keeps a jar of sea glass")
+    conn.execute("UPDATE posts SET format = 'not_a_made_format', scheduled_for = now() - interval '1 day' "
+                 "WHERE id = %s", (pid,))
+    assert production.advance(conn, policy, now=datetime.now(timezone.utc))["expired"] == 1
+    assert "she keeps a jar of sea glass" not in _texts(conn, cid)
+
+
+def test_a_post_whose_production_keeps_failing_retracts_its_canon(conn, policy):
+    from manyworlds import production
+    cid = _creator(conn)
+    pid = _scheduled_post(conn, policy, cid, "she bakes on sundays")
+    limit = int(policy.get("production", "max_advance_errors"))
+    conn.execute("UPDATE posts SET status = 'producing', body = body || %s WHERE id = %s",
+                 (Jsonb({"advance_errors": limit - 1}), pid))
+    row = conn.execute("SELECT * FROM posts WHERE id = %s", (pid,)).fetchone()
+    assert production._advance_failed(conn, policy, row, RuntimeError("boom")) is True
+    assert "she bakes on sundays" not in _texts(conn, cid)
+
+
+def test_other_posts_canon_stays(conn, policy):
+    cid = _creator(conn)
+    memory.add(conn, cid, "canon", "she has a cat called Fig")
+    assert memory.retract_post(conn, []) == 0
+    pid = _scheduled_post(conn, policy, cid, "she sings in the shower")
+    assert memory.retract_post(conn, [pid]) == 1 and memory.retract_post(conn, [pid]) == 0
+    assert "she has a cat called Fig" in _texts(conn, cid)

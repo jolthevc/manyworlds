@@ -6,10 +6,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
+from pydantic import BaseModel, Field
 
 from .. import logs, queue
 from ..policy import Policy
-from .common import _cfg, _set, log
+from .common import _cfg, _set, log, retract_dropped
 from .finish import _advance_finish, _advance_upscale, _finish_failed, finish_mode, finish_video
 from .followups import FOLLOW_UPS, _advance_follow_up
 from .locks import post_lease
@@ -23,6 +24,50 @@ from .talk import _advance_long_talk
 def _slide_formats(policy: Policy) -> list[str]:
     cfg = policy.get("slides", default={}) or {}
     return list(cfg.get("formats") or []) if cfg.get("enabled") else []
+
+
+class RerouteCaptionAnswer(BaseModel):
+    caption: str = Field(description="the caption rewritten for the still photo")
+
+
+_REROUTE_SYSTEM = (
+    "You edit one Instagram caption. The post was planned as a {source} (a video) but ships as a {target}: one "
+    "still photo. Rewrite the caption so nothing in it implies movement, sound, speech or a video (no 'watch', "
+    "'listen', 'sound on', 'in this clip', no lines she says aloud). Change as little as you can: keep her voice, "
+    "language, length, emojis and hashtags. {disclosure}Never claim real first-hand experience of a product. "
+    "Answer with the caption only.")
+
+
+def reroute_caption(policy: Policy, llm, post: dict, body: dict, target: str) -> str | None:
+    """A video post rerouted to a photo keeps a caption written for the video. One cheap rewrite (llm role
+    caption_rewrite, production.reroute_caption) fits it to the still; the old caption is kept in
+    body.caption_before_reroute. No llm, an empty caption or a failed call: the old caption ships (a post is never
+    dropped for its wording). The policy's disclosure line, when the caption carries it, is kept."""
+    old = post.get("caption")
+    cfg = _cfg(policy).get("reroute_caption") or {}
+    if llm is None or not old or not cfg.get("enabled"):
+        return old
+    disclosure = str(policy.get("scope", "disclosure_line", default="AI-generated character"))
+    carries = disclosure.lower() in old.lower()
+    system = _REROUTE_SYSTEM.format(
+        source=post["format"], target=target,
+        disclosure=f"Keep the line '{disclosure}' word for word. " if carries else "")
+    scene = " / ".join(str(s) for s in (body.get("scenes") or [])[:1])
+    try:
+        out = llm.structured("caption_rewrite", system=system, content=f"The photo: {scene}\n\nThe caption:\n{old}",
+                             schema=RerouteCaptionAnswer, effort=str(cfg.get("effort", "low")),
+                             creator_id=post.get("creator_id"))
+        new = (out.caption or "").strip()
+    except Exception as e:  # noqa: BLE001 - wording never stops a post: the old caption ships
+        log.warning("caption rewrite for rerouted post %s failed (%s: %s)", post["id"], type(e).__name__, str(e)[:300])
+        body["reroute_caption_error"] = f"{type(e).__name__}: {str(e)[:300]}"
+        return old
+    if not new:
+        return old
+    if carries and disclosure.lower() not in new.lower():   # disclosure is non-negotiable
+        new = f"{new}\n\n{disclosure}"
+    body["caption_before_reroute"] = old
+    return new
 
 
 def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> str:
@@ -86,8 +131,9 @@ def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> s
             if state == "dropped" and target and rejected and not in_experiment:
                 # The video kept failing; its start photo passed review. Ship that instead of nothing.
                 body.update(rerouted_from=post["format"], reroute_reason=body.pop("drop_reason", ""))
+                caption = reroute_caption(policy, llm, post, body, target)
                 _set(conn, post["id"], "ready", body, qa_status="passed", asset_ids=[a["id"] for a in chosen],
-                     format=target)
+                     format=target, caption=caption)
                 return "ready"
             states = {state}
     if "dropped" in states:
@@ -146,11 +192,13 @@ def advance(conn, policy: Policy, *, now: datetime | None = None, store=None, ll
     out["reaped"] = out_reaped
     # A planned post in a format production doesn't make, whose time has passed, won't happen.
     made = list(_cfg(policy).get("formats", ["photo", "carousel"]))
-    out["expired"] = len(conn.execute(
+    expired = [r["id"] for r in conn.execute(
         """UPDATE posts SET status = 'dropped', updated_at = now(),
                   body = body || jsonb_build_object('drop_reason', 'format ' || format || ' not produced yet')
            WHERE status = 'planned' AND scheduled_for < %s AND NOT (format = ANY(%s)) RETURNING id""",
-        (now, made)).fetchall())
+        (now, made)).fetchall()]
+    retract_dropped(conn, expired)
+    out["expired"] = len(expired)
     for post in conn.execute(
             # Only creators with reference images: the reviewer judges identity against them.
             "SELECT p.* FROM posts p JOIN creators c ON c.id = p.creator_id WHERE p.status = 'planned' "
@@ -215,6 +263,7 @@ def _advance_failed(conn, policy: Policy, post: dict, error: Exception) -> bool:
         row = conn.execute(f"UPDATE posts SET body = body || %s, updated_at = now(){drop} "
                            "WHERE id = %s AND status = 'producing' RETURNING id", (Jsonb(patch), post["id"])).fetchone()
         if dropped and row:
+            retract_dropped(conn, [post["id"]])
             notify.owner_event(conn, "post_production_failed", subject={"post_id": str(post["id"])},
                                payload={"format": post["format"], "error": err, "failures": n},
                                creator_id=post["creator_id"], dedupe_key=f"post_production_failed:{post['id']}")
