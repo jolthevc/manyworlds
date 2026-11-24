@@ -390,6 +390,7 @@ class TalkLong(_Strict):
     words_per_second: Num
     join: str
     join_timeout_s: Num
+    join_seconds_per_input_second: Num | None = None
 
 
 class TalkHybrid(_Strict):
@@ -409,6 +410,7 @@ class TalkMotion(_Strict):
     kind: str | None
     keyframes: int
     v2v: Free
+    v2v_repair: Free | None = None
 
 
 class Generation(_Strict):

@@ -127,6 +127,9 @@ job_kinds:
   # The finish of a made video (production.finish_mode: queue): ffmpeg on the finisher, no GPU. Its outputs are the
   # post's (written by the producer), so the job itself has none.
   finish.video:    {pools: [fly_finisher], outputs_per_job: 0}
+  # The join of a long talking video's takes (production.talk.advance_join, while finish_mode is queue): normalised and
+  # joined on the finisher, not the producer's shared CPU (2026-11-23: it timed out there on every loop).
+  finish.join:     {pools: [fly_finisher], outputs_per_job: 0}
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   # min_vram_gb (any kind): a worker whose card has less total memory doesn't serve the kind (worker.runner
   # kinds_that_fit); a card that can serve none destroys its own machine at start.
@@ -320,7 +323,11 @@ review:
     # Talking clips: the voice line transcribed (Whisper on Together, $0.0015 a minute, 2026-11-21) must match the
     # script within max_wer (word error rate), or the clip fails before any paid review (manyworlds.speech).
     # Voices are judged automatically, never by ear (owner 2026-11-21).
+    # Script and transcript are compared after manyworlds.speech.normalise (numbers as digits, "No. 2" = "number two",
+    # "6 p.m." = "six pm", contractions expanded). A line under short_line_words words is judged by short_line_max_wer
+    # (one misheard word of two is 0.5; 2026-11-23 breadth run dropped "Look one" heard "Look ones").
     intelligibility: {enforce: true, host: together, model: openai/whisper-large-v3, language: en, max_wer: 0.15,
+                      short_line_words: 4, short_line_max_wer: 0.5,
                       usd_per_minute: 0.0015, timeout_seconds: 120}
   # Directed outputs (a job payload with a `shot`, manyworlds.direction): the judge also sees the shot's summary and
   # beats and scores `direction` 1-10 on rubric policy/rubrics/direction-v<n>.yaml; below min_score it is rejected
@@ -568,12 +575,17 @@ generation:
   hosted_video: {host: together, model: Wan-AI/wan2.7-i2v, seconds: 5, resolution: 720P, ratio: "9:16",
                  usd_per_clip: 0.10, poll_seconds: 10, timeout_s: 900}
   # Long talking videos (manyworlds.talk_segments, production): a script longer than one segment is split at
-  # sentence boundaries, each segment rendered and judged as its own talk job, then joined by the producer.
+  # sentence boundaries, each segment rendered and judged as its own talk job, then joined (a finish.join job on the
+  # finisher while production.finish_mode is queue; in the producer when inline).
   # join: cut = every segment from the approved photo, in parallel, joined with jump cuts (talking-head style);
   #       chain = each segment starts from the last frame of the one before (continuous, one at a time).
   # 60 s (was 25, 2026-11-22): InfiniteTalk's streaming mode makes one continuous take, clean to about a minute
   # (model review); longer scripts are cut at sentences into ~60 s takes. One take, one voice line, no seams.
-  talk_long: {max_segment_seconds: 60, words_per_second: 2.5, join: cut, join_timeout_s: 600}
+  # Each ffmpeg call of the join (normalise a take, join them) may run join_seconds_per_input_second per second of its
+  # input, never under join_timeout_s (a flat 600 s killed a three-take hybrid join on the producer every loop,
+  # 2026-11-23; minterpolate to 30 fps and a 1080x1920 encode cost tens of CPU seconds per second of video).
+  talk_long: {max_segment_seconds: 60, words_per_second: 2.5, join: cut, join_timeout_s: 600,
+              join_seconds_per_input_second: 30}
   # Hybrid talking video (owner 2026-11-22): when the post has cutaway photos, the script is cut into short segments;
   # the hook, the sign-off and enough of the middle to reach on_camera_share are lip-synced, the rest are the cutaway
   # photos moving under the same voice (image.narrated). All segments are brought to `output` and joined. Only the
@@ -623,6 +635,12 @@ generation:
     kind: comfy.wan_i2v
     keyframes: 1
     v2v: {steps: 4, start_step: 2, clip_vision: false}
+    # Repairs of a V2V take that failed lip_sync (production.talk.talk_repair; breadth run 2026-11-23: the mouth was
+    # never redrawn, openness ~0.001, and every reseeded repair scored the same corr): each repair lowers start_step
+    # by start_step_step (redraws more of the clip) down to start_step_floor. A knob (start_step, seed) whose repair
+    # scored the same lip-sync corr as the attempt before (within same_score_tolerance) is not tried again; with
+    # every knob spent the post is dropped with the reason instead of rendering the same clip again.
+    v2v_repair: {start_step_step: 1, start_step_floor: 0, same_score_tolerance: 0.005}
 
 # Designed voices (manyworlds/creator/voice_lab.py, worker/handlers/tts_voxcpm.py; owner 2026-11-22: a voice of
 # their own). VoxCPM2 (Apache-2.0) designs `candidates` voices from the bible's voice notes and appearance, each

@@ -44,3 +44,23 @@ def finish(payload: dict[str, Any], ctx: JobContext, *, policy: Policy | None = 
 
 
 HANDLERS = {KIND: finish}
+
+
+# finish.join: a long talking video's takes joined (normalised to one size and rate, transitions, upload) on the
+# finisher instead of the producer's small VM (production.talk: join_plan prepares the payload, record_join writes the
+# asset row from the result's `join`). Breadth run 2026-11-23: the join timed out on the producer every loop.
+JOIN_KIND = "finish.join"
+JOIN_NEEDS = ("key", "segments")
+
+
+def join(payload: dict[str, Any], ctx: JobContext, *, policy: Policy | None = None) -> HandlerResult:
+    from ...production import talk
+    missing = [k for k in JOIN_NEEDS if not payload.get(k)]
+    if missing:
+        raise NonRetryable(f"payload needs {missing} (production.talk.join_plan)")
+    made = talk.render_join(payload, policy_for(payload, policy), ctx.store, ctx.workdir / "join")
+    return HandlerResult(outputs=[], recipe={"joined": [s["uri"] for s in payload["segments"]]},
+                         meta={"join": made})
+
+
+HANDLERS[JOIN_KIND] = join
