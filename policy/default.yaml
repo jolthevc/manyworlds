@@ -817,7 +817,7 @@ brain:
   style_director: {enabled: true, role: style_director, effort: medium, season_days: 30, min_faceless_families: 4}
   llm_usd_per_day: {default: 2.0, showrunner: 3.0, evaluator: 3.0, strategist: 2.0, scouts: 3.0, sandbox: 1.0,
                     creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0,
-                    comment_themes: 0.5, idea_reviser: 0.5, lyricist: 0.5}   # lyricist: original lyrics for song posts (music, off); director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    comment_themes: 0.5, idea_reviser: 0.5, lyricist: 0.5, music_critic: 0.5}   # lyricist: original lyrics for song posts (music, off); director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -932,7 +932,7 @@ brain:
   # (the director, evaluator, reviewers and comment drafts spend without decisions by design).
   chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3,
                    decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts,
-                                     idea_reviser, comment_themes]}
+                                     idea_reviser, comment_themes, music_critic]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # Series continuity (manyworlds.brain.series): episodes enter at publication; the showrunner sees, per series (at
@@ -2017,6 +2017,124 @@ music:
     # A lyric or title never denies being AI-made (disclosure is non-negotiable).
     denial_phrases: ["not ai", "not an ai", "real human", "no ai", "human voice", "not a robot"]
   bench: {seconds: 30}
+  # Song anatomy (manyworlds.song_measure, manyworlds.songs; spec 2026-11-23-music-department.md section 1). The
+  # registry: every feature a song is described by, its source (sound | structure | vocal | lyrics | worker |
+  # aesthetics), unit and kind (number | flag | category). Direction-agnostic: analysis finds which way each goes
+  # with outcomes. A new metric is a new entry here (and its measurement); analysis and similarity pick it up.
+  features:
+    - {name: duration_s, source: sound, unit: s, kind: number}
+    - {name: tempo_bpm, source: sound, unit: bpm, kind: number}
+    - {name: tempo_stability, source: sound, unit: "1 - cv of beat intervals", kind: number}
+    - {name: key, source: sound, unit: key, kind: category}
+    - {name: mode, source: sound, unit: major|minor, kind: category}
+    - {name: key_confidence, source: sound, unit: correlation margin, kind: number}
+    - {name: lufs_integrated, source: sound, unit: LUFS, kind: number}
+    - {name: true_peak_dbtp, source: sound, unit: dBTP, kind: number}
+    - {name: loudness_range_lu, source: sound, unit: LU, kind: number}
+    - {name: crest_factor_db, source: sound, unit: dB, kind: number}
+    - {name: clipping_share, source: sound, unit: share of samples, kind: number}
+    - {name: spectral_low_share, source: sound, unit: share of energy, kind: number}
+    - {name: spectral_low_mid_share, source: sound, unit: share of energy, kind: number}
+    - {name: spectral_high_mid_share, source: sound, unit: share of energy, kind: number}
+    - {name: spectral_high_share, source: sound, unit: share of energy, kind: number}
+    - {name: spectral_centroid_hz, source: sound, unit: Hz, kind: number}
+    - {name: stereo_width, source: sound, unit: side/mid rms, kind: number}
+    - {name: stereo_correlation, source: sound, unit: L/R correlation, kind: number}
+    - {name: mono_loss_db, source: sound, unit: dB, kind: number}
+    - {name: onset_density, source: sound, unit: onsets/s, kind: number}
+    - {name: section_count, source: structure, unit: sections, kind: number}
+    - {name: chorus_repeats, source: structure, unit: repeats, kind: number}
+    - {name: repetition_share, source: structure, unit: share of blocks, kind: number}
+    - {name: self_similarity, source: structure, unit: cosine, kind: number}
+    - {name: time_to_first_chorus_s, source: structure, unit: s, kind: number}
+    - {name: chorus_energy_lift_db, source: structure, unit: dB, kind: number}
+    - {name: energy_range_db, source: structure, unit: dB, kind: number}
+    - {name: time_to_first_vocal_s, source: vocal, unit: s, kind: number}
+    - {name: vocal_presence_share, source: vocal, unit: share of time, kind: number}
+    - {name: vocal_clarity_db, source: vocal, unit: dB over the rest of the mix, kind: number}
+    - {name: syllables_per_beat, source: vocal, unit: syllables/beat, kind: number}
+    - {name: line_coverage, source: worker, unit: share of written lines sung, kind: number}
+    - {name: line_count, source: lyrics, unit: lines, kind: number}
+    - {name: repetition_ratio, source: lyrics, unit: share of lines, kind: number}
+    - {name: rhyme_density, source: lyrics, unit: share of line pairs, kind: number}
+    - {name: syllables_per_line, source: lyrics, unit: syllables, kind: number}
+    - {name: title_in_hook, source: lyrics, unit: yes/no, kind: flag}
+    - {name: written_choruses, source: lyrics, unit: sections, kind: number}
+    - {name: aesthetics_pq_mix, source: aesthetics, unit: 1-10 (Audiobox production quality), kind: number}
+    - {name: aesthetics_ce_mix, source: aesthetics, unit: 1-10 (Audiobox content enjoyment), kind: number}
+  # How the features are measured (manyworlds.song_measure, CPU on the control plane). enabled: the producer's tick
+  # measures new songs (per_tick a tick; a song that failed max_errors times is left with its error).
+  measure:
+    enabled: true
+    per_tick: 2
+    max_errors: 3
+    sample_rate: 22050
+    hop_length: 512
+    n_fft: 2048
+    n_mfcc: 13
+    true_peak_oversample: 4
+    clip_level: 0.999            # |sample| at or above this counts as clipped
+    lra: {window_s: 3.0, hop_s: 1.0, absolute_gate_lufs: -70, relative_gate_lu: -20, percentiles: [10, 95]}
+    spectral_bands: {low: [20, 250], low_mid: [250, 2000], high_mid: [2000, 6000], high: [6000, 20000]}
+    # Sections: features averaged per block_s, segmented into ~duration/section_s segments (min/max_segments);
+    # segments alike at label_similarity (cosine) share a label; the loudest label repeated (sections of at least
+    # min_section_s) is the chorus. Repetition counts recurrences at least min_lag_s apart.
+    structure: {block_s: 0.5, section_s: 6.0, min_segments: 2, max_segments: 24, label_similarity: 0.8,
+                min_section_s: 2.0, min_lag_s: 4.0}
+    # Vocal stem: a frame is sung when within active_below_peak_db of the stem's peak and above floor_dbfs; the
+    # first vocal is the first min_entry_s of sung frames.
+    vocal: {frame_s: 0.05, active_below_peak_db: 30, floor_dbfs: -50, min_entry_s: 0.5}
+    lyrics: {rhyme_min_chars: 2, hook_sections: [chorus, hook, post-chorus]}
+  # The learning loop (manyworlds.brain.music_analysis): song outcomes are the mean log-lift of the posts using the
+  # song over the creator's baseline (brain.analysis), net of the format's mean; effects graded as brain.analysis
+  # grades them (Bonferroni at alpha, min songs for tentative). mix_features: pairs tested as feature mixes
+  # (product of standardised values). max_speculative: speculative effects recorded as findings per analysis.
+  analysis:
+    min_n_any: 8
+    min_n_tentative: 16
+    min_group: 4
+    alpha: 0.1
+    bootstrap: 300
+    max_speculative: 3
+    mix_features: [time_to_first_chorus_s, chorus_repeats, lufs_integrated, vocal_clarity_db]
+    # Threshold bands (advisory; never a gate on media): from the artist's best songs once it has min_songs with
+    # outcomes (the top best_share by outcome; the band spans their quantiles), else the genre's history (min_songs
+    # in the genre), else genre_bands below.
+    bands: {min_songs: 8, best_share: 0.34, quantiles: [0.2, 0.8],
+            features: [tempo_bpm, lufs_integrated, true_peak_dbtp, time_to_first_vocal_s, time_to_first_chorus_s,
+                       chorus_repeats, chorus_energy_lift_db, vocal_clarity_db, repetition_ratio, onset_density]}
+    # Nearest songs (similarity over standardised features): the k closest among the artist's and the genre's
+    # songs, needing min_shared features in common.
+    similarity: {k: 5, min_shared: 6}
+  # Starting bands per genre (advisory, from the musician playbook's conventions; unverified): replaced by the
+  # artist's own best songs once there are enough (analysis.bands.min_songs). Keys are music.features names.
+  genre_bands:
+    pop: {tempo_bpm: [95, 130], lufs_integrated: [-11, -7], time_to_first_vocal_s: [0, 8], time_to_first_chorus_s: [0, 20], chorus_repeats: [2, 4]}
+    indie: {tempo_bpm: [80, 125], lufs_integrated: [-13, -8], time_to_first_vocal_s: [0, 12], time_to_first_chorus_s: [0, 30], chorus_repeats: [2, 4]}
+    country: {tempo_bpm: [75, 120], lufs_integrated: [-12, -8], time_to_first_vocal_s: [0, 12], time_to_first_chorus_s: [0, 30], chorus_repeats: [2, 4]}
+    rock: {tempo_bpm: [90, 150], lufs_integrated: [-11, -7], time_to_first_vocal_s: [0, 15], time_to_first_chorus_s: [0, 35], chorus_repeats: [2, 4]}
+    rap: {tempo_bpm: [70, 100], lufs_integrated: [-10, -6], time_to_first_vocal_s: [0, 6], time_to_first_chorus_s: [0, 25], chorus_repeats: [2, 4]}
+    lofi: {tempo_bpm: [60, 90], lufs_integrated: [-16, -11], chorus_repeats: [1, 4]}
+  # The critic (brain/agents/music_critic.py, llm role music_critic): describes, measures and reasons; never trusts a
+  # raw 1-10 alone (a finding must cite a measurement or the listener, not only an aesthetics score). Its inputs
+  # come through adapters: aesthetics (Audiobox Aesthetics, CC-BY-4.0) and listener (an Apache-2.0 audio LLM's
+  # factual answers). adapter: stub (nothing heard; shipped) | worker (the music.listen GPU job: listener and
+  # aesthetics in one; not built: no handler or image yet) | hosted (an OpenAI-compatible audio model through
+  # manyworlds.llm: the role named here must be added to llm.roles first, after its host and price are checked).
+  # fix_roles: the roles a fix may be addressed to (spec section 3). commission: a fix also enqueues brain.<role>
+  # when that agent exists (none yet: the roles branch). prediction: the claim it files about the song.
+  critic:
+    enabled: true
+    role: music_critic
+    effort: medium
+    max_fixes: 3
+    nearest: 3
+    fix_roles: [songwriter, lyricist, melody, producer, vocal_director, mix_master]
+    commission: false
+    aesthetics: {adapter: stub}
+    listener: {adapter: stub, hosted_role: music_listener, worker_kind: music.listen, audio_format: mp3,
+               max_audio_mb: 20}
+    prediction: {horizon_days: 14, metrics: [song_median_reach, song_reach_lift]}
 
 # Dance and motion transfer (plan docs/superpowers/plans/2026-11-22-dance-motion-transfer.md): Wan2.2-Animate-2-14B
 # (Apache-2.0) in ComfyUI core (WanAnimate2ToVideo, WanAnimate2Cache; in our pin v0.45.0). OFF; graph only
@@ -2134,6 +2252,9 @@ llm:
     # Original lyrics for a song post (brain/lyrics.py, policy music.lyrics): one or two calls per song, creative
     # writing in the creator's voice, checked in code (no real artist names, no quoted lines).
     lyricist: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    # The music critic (brain/agents/music_critic.py, music.critic): one call per song, reasoning over measurements,
+    # bands, nearest songs and what the listener heard. Judgement, not volume: Sonnet.
+    music_critic: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

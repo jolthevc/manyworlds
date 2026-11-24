@@ -181,6 +181,7 @@ def report(conn, policy: Policy, batch: str) -> dict[str, Any]:
                            "spend": ledger.totals(conn, batch=batch), "measured": []}
     if any(r["kind"] == MUSIC_KIND for r in rows):
         out["music_checks"] = music_checks(conn, batch)
+        out["song_features"] = song_features(conn, batch)
     groups: dict[tuple, list] = {}
     for r in rows:
         groups.setdefault((r["kind"], r["pool"], r["gpu_type"]), []).append(r)
@@ -224,6 +225,18 @@ def music_checks(conn, batch: str) -> dict[str, Any]:
                       **{k: c.get(k) for k in ("wer", "line_coverage", "duration_error_share", "lufs", "failed",
                                                "passed")}}
                      for r, c in zip(rows, checks)]}
+
+
+def song_features(conn, batch: str) -> list[dict]:
+    """The batch's songs as songs rows (manyworlds.songs: registered here if the producer has not yet) with their
+    measured features where measured (the producer's tick or `mw music measure --batch`)."""
+    from . import songs
+    ids = songs.register_batch(conn, batch, kind=MUSIC_KIND)
+    feats = songs.latest_features(conn, ids)
+    rows = conn.execute("SELECT id, title, measure_error FROM songs WHERE id = ANY(%s::uuid[]) ORDER BY created_at",
+                        ([str(i) for i in ids],)).fetchall()
+    return [{"song_id": str(r["id"]), "title": r["title"], "features": feats.get(str(r["id"])),
+             **({"measure_error": r["measure_error"]} if r["measure_error"] else {})} for r in rows]
 
 
 def _profile(gen: dict, section: str, profile: str | None) -> dict:

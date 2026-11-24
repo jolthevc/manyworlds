@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2
  && test -s /opt/models/face_landmarker.task
 COPY pyproject.toml ./
 COPY manyworlds ./manyworlds
-RUN pip install --no-cache-dir ".[test,sync]"
+RUN pip install --no-cache-dir ".[test,sync,music]"
 COPY policy ./policy
 COPY tests ./tests
 ENTRYPOINT ["mw"]

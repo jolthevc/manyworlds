@@ -38,6 +38,7 @@ STATE: dict[str, str] = {
     "song_jobs": "the music.song job ids (the mix, vocal and instrumental stems)",
     "song_repairs": "songs remade because their objective check failed (music.check.enforce)",
     "song_media": "the chosen song by role: {mix, vocals, instrumental: {asset_id, uri, seconds}}",
+    "song_id": "the chosen song's songs row (manyworlds.songs.for_post; posts.song_id too)",
     # walk-and-talk motion clips
     "motion_jobs": "the one-take talking video's first motion clip job ids",
     "motion_segment_jobs": "per take, its first motion clip's job ids",

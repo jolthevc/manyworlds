@@ -9,12 +9,15 @@ music.video.max_repairs_per_post."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .. import music, queue
 from ..policy import Policy
 from .common import _cfg, _seed
 from .steps import DropPost, Step, _status, advance_step
+
+log = logging.getLogger("manyworlds.production")
 
 
 def _song_state(conn, job_ids: list[str], *, enforce: bool) -> tuple[str, Any]:
@@ -66,7 +69,20 @@ def advance_song(conn, policy: Policy, post: dict, body: dict) -> tuple[str, Any
     if state == "chosen":
         body["song_media"] = {role: {"asset_id": m["asset_id"], "uri": m["uri"], "seconds": m["meta"].get("seconds")}
                               for role, m in media.items()}
+        if not body.get("song_id"):
+            _register(conn, post, body)
     return state, media
+
+
+def _register(conn, post: dict, body: dict) -> None:
+    """The chosen song as a songs row, the post linked to it (manyworlds.songs.for_post); measured later on the
+    control plane (songs.measure_pending). Bookkeeping: a failure here never holds the post up."""
+    from .. import songs
+    try:
+        with conn.transaction():
+            songs.for_post(conn, post, body, body["song_jobs"][-1])
+    except Exception:  # noqa: BLE001 - the song row is evidence, not a step of the post
+        log.exception("registering the song of post %s failed", post.get("id"))
 
 
 def sung_text(body: dict) -> str:
