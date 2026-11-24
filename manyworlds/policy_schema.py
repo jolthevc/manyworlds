@@ -201,6 +201,29 @@ class ReviewFinal(_Strict):
     timeout_seconds: Num
 
 
+class ReviewSync(_Strict):
+    enabled: bool
+    enforce: bool
+    formats: list[str]
+    sample_fps: Num
+    max_frames: int
+    frame_height: int
+    audio_rate: int
+    max_lag_ms: Num
+    min_frames: int
+    min_corr: Num
+    min_face_share: Num
+    speech_db_below_p95: Num
+    open_min: Num
+    open_relative_to_p90: Num
+    closed_max: Num
+    closed_relative_to_p90: Num
+    max_silent_mouth_moving: Num
+    max_talking_mouth_closed: Num
+    landmarker_path: str
+    timeout_seconds: Num
+
+
 class ReviewRepair(_Strict):
     lora_scale_step: Num
     lora_scale_max: Num
@@ -215,6 +238,7 @@ class Review(_Strict):
     direction: ReviewDirection
     detail: ReviewDetail
     final: ReviewFinal
+    sync: ReviewSync
     max_repairs_per_post: int
     repair: ReviewRepair
 
