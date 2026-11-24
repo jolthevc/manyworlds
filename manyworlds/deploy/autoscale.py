@@ -529,6 +529,16 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
                             "reason": recent["stop_reason"]})
             continue
         streak = no_output_streak(conn, policy, mfam, now, pools)
+        if streak:
+            # A broken weights volume (full, unreachable) fails only its own pools' machines: the family falls back to
+            # its plain pools instead of stopping, unless they are in a streak of their own.
+            vol_pools = [p for p in pools if policy.get("gpu_pools", p, "network_volume")]
+            rest = [p for p in pools if p not in vol_pools]
+            if vol_pools and rest and set(streak["pools"]) <= set(vol_pools) \
+                    and not no_output_streak(conn, policy, mfam, now, rest):
+                actions.append({"action": "volume_pools_skipped", "kind": kind, "reason": "no_output_streak",
+                                "pools": vol_pools, "machines": streak["machines"]})
+                pools, streak = rest, None
         if streak:   # pinned benchmarks too: they are what ran the talk loop of 2026-11-20
             actions.append({"action": "not_launching", "reason": "no_output_streak", "kind": kind, **streak})
             continue
