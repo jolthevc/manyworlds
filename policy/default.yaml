@@ -875,7 +875,7 @@ brain:
   # (the director, evaluator, reviewers and comment drafts spend without decisions by design).
   chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3,
                    decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts,
-                                     idea_reviser]}
+                                     idea_reviser, comment_themes]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # Series continuity (manyworlds.brain.series): episodes enter at publication; the showrunner sees, per series (at
