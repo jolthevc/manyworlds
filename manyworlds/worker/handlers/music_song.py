@@ -23,7 +23,8 @@ designed voices' transcriber, handlers/tts_voxcpm._asr) against the sung words (
 against the asked length, the mix's integrated loudness (pyloudnorm), and `passed`.
 
 Idempotent: the seed is the payload's, the graph and file names are fixed per job, a rerun overwrites the same keys.
-Weights download once into MW_MODEL_DIR/comfy (the pool's volume if it has one); Demucs's into MW_MODEL_DIR/torch.
+Weights download once into MW_MODEL_DIR/comfy (the pool's volume if it has one); Demucs's into MW_MODEL_DIR/comfy/torch
+(inside it: the ComfyUI handlers prune the folder's siblings when they download).
 """
 
 from __future__ import annotations
@@ -133,7 +134,8 @@ def _demucs(mix, sr: int, sep: dict):
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
 
-    os.environ.setdefault("TORCH_HOME", str(Path(os.environ.get("MW_MODEL_DIR", "/models/mw")) / "torch"))
+    # Inside the ComfyUI weights folder: comfy.ensure_weights(prune=True) clears that folder's siblings.
+    os.environ.setdefault("TORCH_HOME", str(_models_dir() / "torch"))
     name = str(sep.get("model") or "htdemucs")
     if _state.get("demucs_name") != name:
         model = get_model(name)
