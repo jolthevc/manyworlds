@@ -39,7 +39,7 @@ gpu_runs:
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
   max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, edit: 60, finish: 30}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
-  max_attempt_minutes_by_kind: {image.mirror: 120}  # one-time copy into our bucket; resumes across machines
+  max_attempt_minutes_by_kind: {image.mirror: 120, music.convert_voice: 45, music.train_voice: 150}   # convert: first job downloads the SVC weights; train: RVC v2, 200 epochs on ~20 min of singing  # one-time copy into our bucket; resumes across machines
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
   serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
 
@@ -132,6 +132,11 @@ job_kinds:
   # family music; then Demucs splits a vocal and an instrumental stem. turbo DiT 2B + 1.7B LM + VAE ~10 GB of weights,
   # fits 16 GB+; not benchmarked. Only `mw bench music.song` and production music_video posts (off) queue it.
   music.song:      {min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_comm_4090, vast_5090, runpod_secure_l40s], outputs_per_job: 1}
+  # One singing voice per artist (worker/handlers/music_voice.py, policy music.voice, OFF): a song's vocal stem converted
+  # into the artist's voice (SoulX-Singer-SVC zero-shot, or her RVC model) and remixed; and her RVC model trained from
+  # her sung clips. Same image and family as music.song (a machine making songs converts them). Not benchmarked.
+  music.convert_voice: {min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_comm_4090, vast_5090, runpod_secure_l40s], outputs_per_job: 1}
+  music.train_voice:   {min_vram_gb: 20, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_comm_4090, vast_5090, runpod_secure_l40s], outputs_per_job: 1}
   brain.echo:      {pools: [local], outputs_per_job: 0}   # Brain agents run on the control host (manyworlds.brain.runtime)
   brain.evaluator: {pools: [local], outputs_per_job: 0}
   brain.showrunner: {pools: [local], outputs_per_job: 0}
@@ -2017,6 +2022,100 @@ music:
     # A lyric or title never denies being AI-made (disclosure is non-negotiable).
     denial_phrases: ["not ai", "not an ai", "real human", "no ai", "human voice", "not a robot"]
   bench: {seconds: 30}
+  # One singing voice per artist (spec section 5; manyworlds.singing_voice, creator/music_voice.py,
+  # worker/handlers/music_voice.py). ACE-Step's voice changes with every seed, so a song's vocal stem is converted
+  # into the artist's voice (singing voice conversion keeps the source pitch, melody and phrasing; only the timbre
+  # changes) and remixed over the instrumental stem. OFF: production converts only while `enabled`.
+  voice:
+    enabled: false
+    kinds: {convert: music.convert_voice, train: music.train_voice}
+    adapter: auto                # soulx_svc | rvc | auto (rvc when the asset has a trained model, else soulx_svc)
+    trainer: rvc
+    # The owner's switch for an adapter whose licences were not all verified from primary sources (both the control
+    # plane and the worker refuse such an adapter while this is false). Never set by code.
+    allow_unverified_licences: false
+    adapters:
+      # SoulX-Singer (github.com/Soul-AILab/SoulX-Singer): LICENSE Apache-2.0; README: Apache 2.0 covers "codes and
+      # model weights"; HF Soul-AILab/SoulX-Singer (model-svc.pt) and Soul-AILab/SoulX-Singer-Preprocess (rmvpe/rmvpe.pt)
+      # both license: apache-2.0; content features from openai/whisper-base (apache-2.0); the vocoder ships inside
+      # model-svc.pt. Read 2026-11-23. Only RMVPE is taken from the preprocess repo: its vocal separation (becruily
+      # karaoke: no licence stated; anvuew dereverb: GPL-3.0) is never run (we separate with Demucs, vocal_sep off).
+      soulx_svc:
+        licence: Apache-2.0
+        licence_verified: true
+        licence_notes: "code + weights Apache-2.0 (README, HF cards); whisper-base Apache-2.0; RMVPE from the Apache-2.0 preprocess repo; vocal_sep (GPL dereverb) never used"
+        repo: Soul-AILab/SoulX-Singer
+        commit: 81aeb3ae772c70093c3de74dc23c92d983801ae4
+        weights: {repo: Soul-AILab/SoulX-Singer, file: model-svc.pt, config_file: config.yaml}
+        preprocess: {repo: Soul-AILab/SoulX-Singer-Preprocess, files: [rmvpe/rmvpe.pt]}
+        config: soulxsinger/config/soulxsinger.yaml      # in the repo
+        language: English
+        n_steps: 32
+        cfg: 3.0
+        fp16: true
+        auto_shift: false          # source pitch kept: never shifted toward the prompt's register
+        pitch_shift: 0
+        sample_rate: 24000         # the model's output rate (config sample_rate)
+        timeout_s: 900
+      # RVC (github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI): code MIT. NOT verified: the assets repo
+      # (HF lj1995/VoiceConversionWebUI: hubert_base, rmvpe.pt, pretrained_v2 f0G/f0D) is card-licensed MIT but its
+      # licence file adds a research-use clause; rmvpe.pt was trained by yxlllc and RVC-Boss (yxlllc/RMVPE has no
+      # licence file); hubert_base is ContentVec per RVC's credits (ContentVec code MIT; that this checkpoint is it is
+      # not stated); the base models were trained on VCTK (CC BY 4.0 per a mirror, primary record unread). Read
+      # 2026-11-23. Refused until the owner reads these and sets licence_verified (or allow_unverified_licences).
+      rvc:
+        licence: MIT
+        licence_verified: false
+        licence_notes: "RVC code MIT; lj1995/VoiceConversionWebUI assets MIT + research-use clause; rmvpe.pt weights licence unstated; base models on VCTK (CC BY 4.0, primary unconfirmed)"
+        repo: RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+        commit: 81eed5e8f68b6bed1789f682fe78cdd324495afc
+        assets: {repo: lj1995/VoiceConversionWebUI, revision: main,
+                 files: ["hubert_base/*", rmvpe.pt, pretrained_v2/f0G40k.pth, pretrained_v2/f0D40k.pth]}
+        infer: {f0_method: rmvpe, pitch: 0, index_rate: 0.75, protect: 0.33, rms_mix_rate: 1.0}
+        train: {sample_rate: 40k, version: v2, epochs: 200, batch_size: 8, save_every: 50, cache_in_gpu: false,
+                pretrained_g: pretrained_v2/f0G40k.pth, pretrained_d: pretrained_v2/f0D40k.pth, slice_db: 3.7,
+                min_seconds: 300, max_seconds: 3600}
+        timeout_s: 900
+        train_timeout_s: 8400
+    # The new mix: the converted vocal at the stem's loudness (RMS-matched), plus `vocal_gain_db`, over the
+    # instrumental; a peak ceiling so the sum never clips.
+    remix: {vocal_gain_db: 0.0, peak_ceiling: 0.98, match_loudness: true}
+    # Voice similarity (worker/handlers/music_voice.voice_similarity): SpeechBrain ECAPA-TDNN (speechbrain/spkrec-
+    # ecapa-voxceleb, Apache-2.0; the designed voices' embedder) on voiced windows of the vocal stem. A window is
+    # voiced when `min_voiced_share` of its frames are within `voiced_db` of the stem's loudest frame. WavLM-sv
+    # (microsoft/wavlm-base-plus-sv) is optional and off: its card points to UniSpeech's CC BY-SA 3.0 licence.
+    similarity:
+      model: speechbrain/spkrec-ecapa-voxceleb
+      window_s: 4.0              # within the research's 3-6 s
+      hop_s: 2.0
+      frame_s: 0.05
+      voiced_db: -30
+      min_voiced_share: 0.7
+      min_windows: 3
+      max_windows: 60
+      wavlm: {enabled: false, model: microsoft/wavlm-base-plus-sv, licence: CC-BY-SA-3.0}
+    # Report-only until calibrated (singing and stem bleed degrade speech encoders): min_similarity comes from
+    # singing_voice.calibrate on our own songs (same-artist vs other-artist spread), then the owner may enforce.
+    gate: {enforce: false, min_similarity: null}
+    # Creating a voice (creator/music_voice.py): seed candidates (ACE-Step vocals from the artist's vocal tags), one
+    # picked as far as possible from every other artist; then a sung dataset across registers, each song converted
+    # zero-shot toward the seed and the least similar dropped; then her RVC model on what is left.
+    creation:
+      seed_candidates: 8
+      seed_seconds: 30
+      min_distance: 0.35         # 1 - cosine to every other artist's centroid (creators must not sound alike)
+      prompt_seconds: 8.0        # the prompt clip: the most voiced stretch of the seed's vocal stem
+      registers:                 # how the dataset spreads her range: song keys and tags per register
+        low: {keys: ["E minor", "F major", "D minor"], tags: "low register, chest voice, intimate", bpm: [70, 90]}
+        mid: {keys: ["G major", "A minor", "C major"], tags: "mid register, warm, conversational", bpm: [90, 115]}
+        high: {keys: ["B minor", "D major", "E major"], tags: "high register, head voice, soaring", bpm: [100, 130]}
+      songs_per_register: 7
+      dataset_seconds: 60
+      dataset_keep_share: 0.8    # the most similar share of converted clips is kept for training
+      min_train_clips: 8
+      target_minutes: [10, 30]
+  # The voice-consistency bench (`mw bench music.convert_voice`): N songs for one test artist, each converted.
+  voice_bench: {seconds: 30}
 
 # Dance and motion transfer (plan docs/superpowers/plans/2026-11-22-dance-motion-transfer.md): Wan2.2-Animate-2-14B
 # (Apache-2.0) in ComfyUI core (WanAnimate2ToVideo, WanAnimate2Cache; in our pin v0.45.0). OFF; graph only
