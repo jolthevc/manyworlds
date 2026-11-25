@@ -3,6 +3,7 @@ none of that needs judgement.
 
 Each tick (the producer's Brain steps, while operations are live):
   - due predictions are resolved against outcomes (manyworlds.brain.predictions)
+  - pattern cards get their production acceptance and real outcomes (manyworlds.brain.patterns.feedback)
   - requests nobody decided by their due date expire, and the owner hears how many
   - an agent whose jobs keep failing (>= `failing_jobs` failures in `window_hours`) is reported once a day
   - an agent that spent LLM money in the window and recorded no decision is reported (spend with nothing to show)
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import notify, queue
 from ..policy import Policy
-from . import predictions, proposals
+from . import patterns, predictions, proposals
 
 
 def _cfg(policy: Policy) -> dict:
@@ -30,7 +31,9 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     day = now.date().isoformat()
     window = now - timedelta(hours=float(cfg.get("window_hours", 24)))
     out = {"predictions": predictions.resolve_due(conn, policy, now=now),
-           "expired_requests": proposals.expire_overdue(conn, now)}
+           "expired_requests": proposals.expire_overdue(conn, now),
+           # pattern cards learn from what was made with them: production acceptance, real outcomes (evidence.py)
+           "pattern_feedback": patterns.feedback(conn, policy)}
     if out["expired_requests"]:
         notify.owner_event(conn, "requests_expired", payload={"n": out["expired_requests"]},
                            dedupe_key=f"requests_expired:{now:%Y-%m-%dT%H}")

@@ -277,7 +277,7 @@ def _talk_edit(conn, policy: Policy, post: dict, body: dict) -> tuple[str | None
     if post["format"] != "talking_video":
         return None, None
     name = cuts.choose_for(conn, policy, body, post["creator_id"])
-    punch = cuts.grammar(policy, name).get("punch_in") or None
+    punch = cuts.grammar_for(policy, name, body).get("punch_in") or None   # with its pattern card's rhythm
     return name or None, (dict(punch) if punch else None)
 
 

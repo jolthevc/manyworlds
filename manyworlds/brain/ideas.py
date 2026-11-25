@@ -49,7 +49,9 @@ def from_post(conn, post_id) -> uuid.UUID:
 # Plan fields a scheduled post carries (the reasoning stays on the idea, never on the post).
 _POST_FIELDS = ("scenes", "script", "on_screen_text", "hashtags", "canon", "pillar", "tone", "series", "staging", "flavor")
 # Direction (manyworlds.direction), carried only when the idea has it: an undirected post's body stays as before.
-_DIRECTED_FIELDS = ("shots", "move", "slides")
+# pattern_cards: the pattern cards offered and applied (manyworlds.brain.patterns), for outcome attribution;
+# edit_grammar / edit_overrides: a talking post's grammar and clamped talk-edit parameters from its card.
+_DIRECTED_FIELDS = ("shots", "move", "slides", "pattern_cards", "edit_grammar", "edit_overrides")
 
 
 def direct_posts(conn, policy, llm, creator_id, posts) -> int:
@@ -81,8 +83,12 @@ def direct_posts(conn, policy, llm, creator_id, posts) -> int:
                 "'direct_failed_at', now(), 'direct_error', %s::text) WHERE id = %s AND status = 'planned'",
                 (f"{type(e).__name__}: {str(e)[:300]}", post_id))
             continue
+        update = {"shots": shots}
+        used = director.pattern_usage(conn, policy, {**body, "format": fmt}, creator_id, fmt, shots)
+        if used:   # the cards the director was offered and which its shots used (outcome attribution)
+            update["pattern_cards"] = used
         conn.execute("UPDATE posts SET body = body || %s, updated_at = now() WHERE id = %s AND status = 'planned'",
-                     (Jsonb({"shots": shots}), post_id))
+                     (Jsonb(update), post_id))
         directed += 1
     return directed
 

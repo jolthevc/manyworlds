@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from ... import queue
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import aesthetics
+from .. import aesthetics, patterns
 from ..agent import AgentContext, register, remember
 
 ROLE = "style_director"
@@ -184,7 +184,7 @@ def clean(policy, part: str, out: BaseModel) -> dict:
     return {"season": {**d, "started": datetime.now(timezone.utc).date().isoformat(), "days": days}}
 
 
-def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime) -> str:
+def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime, cards: list[dict] | None = None) -> str:
     import json
     lib = aesthetics.library(policy)
     have = {k: prof.get(k) for k in ("persona", "archetypes", "positioning", "audience_insight", "story", "style",
@@ -200,7 +200,11 @@ def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime) -> str:
                    "and seasonal notes for her hemisphere."),
     }[part]
     last = prof.get("season") or {}
-    return (f"Creator bible: {json.dumps(bible, default=str)}\n\nProfile so far: {json.dumps(have, default=str)}\n\n"
+    refs = (f"Aesthetic references from the creative pattern library (shot types, pose, camera, styling and light that "
+            f"make creators like her worth following; ILLUSTRATIVE ones are craft knowledge, researched ones carry "
+            f"evidence): let her style, families and signature items make these hers, never copy a person:\n"
+            f"{patterns.brief(cards)}\n\n" if cards else "")
+    return (refs + f"Creator bible: {json.dumps(bible, default=str)}\n\nProfile so far: {json.dumps(have, default=str)}\n\n"
             + (f"Last month's capsule (make this one different): {json.dumps(last.get('capsule'))}\n\n" if part == 'season' and last else "")
             + f"Rules: {json.dumps(lib['rules'])}\n\n{ask}")
 
@@ -211,12 +215,15 @@ def build_part(ctx: AgentContext, creator_id, part: str) -> dict:
     bible = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()["bible"] or {}
     now = datetime.now(timezone.utc)
     role = _cfg(policy).get("role", ROLE)
+    cards = patterns.retrieve(conn, policy, stage="style", who=prof or bible) if part == "style" else []
 
     def compute():
         out = ctx.llm.structured(role, system=profile_mod.persona_system(policy, SYSTEM),
-                                 content=_prompt(policy, prof, bible, part, now), schema=SCHEMAS[part],
+                                 content=_prompt(policy, prof, bible, part, now, cards), schema=SCHEMAS[part],
                                  effort=_cfg(policy).get("effort", "medium"), creator_id=creator_id)
-        return {"kind": "style_part", "creator_id": creator_id, "inputs": {"part": part},
+        used = [{"key": c["key"], "id": c.get("id"), "version": c.get("version"), "stage": "style"} for c in cards]
+        return {"kind": "style_part", "creator_id": creator_id,
+                "inputs": {"part": part, **({"pattern_cards": used} if used else {})},
                 "output": clean(policy, part, out), "rationale": f"style director: {part}",
                 "model": ctx.llm.model_for(role)}
     step = f"{part}:{now:%Y-%m}" if part == "season" else part

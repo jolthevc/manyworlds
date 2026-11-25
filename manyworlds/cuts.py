@@ -36,6 +36,17 @@ def grammar(policy, name: str | None) -> dict:
     return dict(((_cfg(policy).get("grammars") or {}).get(name or "")) or {})
 
 
+def grammar_for(policy, name: str | None, body: dict | None) -> dict:
+    """A grammar's settings with the post's pattern-card overrides (body.edit_overrides, already clamped by
+    manyworlds.brain.patterns.talk_overrides): the punch-in rhythm `every_s` when the grammar punches in at all."""
+    g = grammar(policy, name)
+    over = (body or {}).get("edit_overrides") or {}
+    every = over.get("punch_every_s")
+    if g.get("punch_in") and isinstance(every, (list, tuple)) and len(every) == 2:
+        g["punch_in"] = {**g["punch_in"], "every_s": [float(every[0]), float(every[1])]}
+    return g
+
+
 def choose(policy, body: dict | None, who: dict | None = None) -> str:
     """The grammar a talking post follows: the idea's `edit_grammar` when it names a known one, else her first
     archetype's (`by_archetype`, archetypes.for_creator on `who`: her profile or bible), else the `default`."""

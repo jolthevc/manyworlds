@@ -35,7 +35,7 @@ from typing import Any
 
 from .. import direction
 from ..direction import TEXT_KINDS, TRANSITION_KINDS, DirectedEdits, DirectedShots, ShotSheet, spoken
-from . import budget, memory, planner
+from . import budget, memory, patterns, planner
 
 log = logging.getLogger("manyworlds.director")
 AGENT = "director"
@@ -367,6 +367,19 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
     if fmt == "talking_video":   # how this talking post is cut (manyworlds.cuts): its grammar's rules
         from .. import cuts
         cut_rules = cuts.director_rules(policy, cuts.choose(policy, body, prof or bible))
+    cards = pattern_cards_for(conn, policy, body, creator_id, fmt, who=prof or bible, prof=prof)
+    card_text = ""
+    if cards:
+        card_text = ("Pattern cards for this post (from the creative pattern library: shot types, pose, camera, "
+                     "expression, styling, light, movement and edit that make posts like this work; ILLUSTRATIVE ones "
+                     "are craft knowledge, researched ones carry evidence and weigh more; the idea's own card, if any, "
+                     "is first: follow it; combine or ignore the others; adapt everything to her, never copy a "
+                     f"post):\n{patterns.brief(cards)}\n")
+        own = next((c for c in cards if c["key"] in patterns.chosen(body)), None)
+        rules = patterns.talk_rules(own, body.get("edit_overrides")) if fmt == "talking_video" and own and \
+            own.get("medium") == "video" else []
+        if rules:
+            card_text += f"Performance and edit from {own['key']}:\n" + "\n".join(f"- {r}" for r in rules) + "\n"
     styled = ""
     if look:
         styled = (f"Her style, world and this month (keep the style, vary outfits and places): {json.dumps(look, default=str)}\n"
@@ -385,6 +398,7 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
             + (f"Her talent manager's current focus and what to stop: {json.dumps(_capped(manager, items), default=str)}\n"
                if manager else "")
             + cut_rules
+            + card_text
             + f"What is known about their life: {json.dumps(facts)}\n"
             + styled
             + (f"Shot types in her recent posts, with how often (vary them: don't lean on the most used; reach for her "
@@ -393,6 +407,34 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
             f"The accepted idea (its reasoning says why it was planned; direct toward that): "
             f"{json.dumps(idea, default=str)}\n\n"
             f"Write exactly {len(scenes)} shot sheet(s), one per scene, in order.")
+
+
+def pattern_cards_for(conn, policy, body: dict, creator_id, fmt: str, *, who: dict | None = None,
+                      prof: dict | None = None) -> list[dict]:
+    """The pattern cards the director is offered for a post (manyworlds.brain.patterns.retrieve, stage director): by
+    her archetypes, the post format's media and her style's shot families; the idea's own applied card first."""
+    if who is None:
+        from ..creator import profile as profile_mod
+        cur = profile_mod.current(conn, creator_id)
+        prof = cur[1] if cur else None
+        row = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
+        who = prof or (row or {}).get("bible") or {}
+    families = ((prof or {}).get("style") or {}).get("shot_families") or None
+    return patterns.retrieve(conn, policy, stage="director", who=who, fmt=fmt, shot_types=families,
+                             pinned=patterns.chosen(body))
+
+
+def pattern_usage(conn, policy, body: dict, creator_id, fmt: str, shots: list[dict]) -> list[dict]:
+    """body.pattern_cards after direction: the showrunner's record plus the director's (each card offered and whether
+    a shot used it). Never raises: attribution must not cost a post its direction."""
+    try:
+        cards = pattern_cards_for(conn, policy, body, creator_id, fmt)
+    except Exception as e:  # noqa: BLE001
+        log.warning("pattern usage not recorded (%s: %s)", type(e).__name__, str(e)[:200])
+        return list(body.get("pattern_cards") or [])
+    if not cards:
+        return list(body.get("pattern_cards") or [])
+    return patterns.merge_usage(body.get("pattern_cards"), patterns.usage(cards, "director", shots=shots, body=body))
 
 
 def _prompt(conn, policy, body: dict, creator_id, fmt: str, scenes: list[str], move_name: str,

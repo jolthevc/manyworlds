@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import archetypes, events, evidence, experiments, exploration, memory, planner, proposals, series
+from .. import archetypes, events, evidence, experiments, exploration, memory, patterns, planner, proposals, series
 from ..agent import AgentContext, commission, record_decision, register
 from . import analyst, comment_themes, style_director, talent_manager
 
@@ -52,6 +52,7 @@ class PlannedIdea(planner.PlannedPost):
     staging: str = Field(default="", description="the name of a staging from the library, or empty (most posts)")
     flavor: str = Field(default="", description="the name of a flavor from the library, or empty (most posts)")
     move: str = Field(default="", description="the name of a move from the library, or empty (most posts)")
+    pattern: str = Field(default="", description="the name of the pattern card this idea follows, or empty")
     experiment: str = Field(default="", description="the slot id when this idea fills an experiment slot, else empty")
     slides: list[Slide] = Field(default_factory=list, description="a carousel's text slides in her brand (capability "
                                                                   "edits.text_slides), in order; empty for most posts")
@@ -187,6 +188,12 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     niche_text = (f"What is working in this niche on public TikTok and Instagram posts right now (other people's posts: "
                   f"correlation, not proof; use it for hooks, formats and pacing, never copy, and stay in the creator's "
                   f"voice): {json.dumps(niche)}\n" if niche else "")
+    cards = pattern_cards(conn, policy, prof or c["bible"], formats)
+    card_text = (f"Pattern cards from the creative pattern library (photo and video patterns that make creators like "
+                 f"her worth following; ILLUSTRATIVE ones are craft knowledge, researched ones carry evidence and "
+                 f"weigh more). An idea that follows one sets `pattern` to its name and takes its format, hook, "
+                 f"shot types and recipe (move, edit grammar) in her own voice; most ideas still need none, and none "
+                 f"is ever a copy of anyone's post:\n{patterns.brief(cards, detail='plan')}\n" if cards else "")
     breakouts = events.for_planning(conn, creator_id)
     breakout_text = (f"Recent posts that did far better than usual (a natural follow-up may suit; never a copy): "
                      f"{json.dumps(breakouts)}. " if breakouts else "")
@@ -204,7 +211,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"{continuity_text}"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
-        f"{niche_text}{play_text}{brief_text}{style_text}"
+        f"{niche_text}{play_text}{card_text}{brief_text}{style_text}"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
         f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
@@ -227,8 +234,41 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
             "talent_brief_id": str(brief["id"]) if brief else None,
             "finding_ids": [str(f["id"]) for f in evidence.findings(conn, mode=mode, creator_id=creator_id)],
             "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings, "flavors": flavors,
-            "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore}
+            "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore,
+            "cards": {c["key"]: c for c in cards}}
     return prompt, meta
+
+
+def pattern_cards(conn, policy, who: dict | None, formats) -> list[dict]:
+    """The pattern cards the showrunner is offered: by her archetypes and style's shot families, for the formats it
+    may plan (manyworlds.brain.patterns.retrieve, stage showrunner)."""
+    media = sorted({m for f in formats for m in (patterns.media_for(policy, f) or [])}) or None
+    families = ((who or {}).get("style") or {}).get("shot_families") or None
+    return patterns.retrieve(conn, policy, stage="showrunner", who=who, media=media, shot_types=families)
+
+
+def apply_pattern(policy, body: dict, fmt: str, cards: dict, chosen: str, moves: dict) -> dict:
+    """An idea's pattern card into its body: the card's move (when the idea has none and the move is offered for its
+    format), a talking post's edit grammar and its clamped talk-edit overrides, and `pattern_cards` (every card
+    offered, and which one the idea applied) for attribution. A card whose medium doesn't fit the format is ignored."""
+    card = cards.get(chosen) if chosen else None
+    if card and card.get("medium") not in (patterns.media_for(policy, fmt) or [card.get("medium")]):
+        card = None
+    recipe = (card or {}).get("recipe") or {}
+    if card:
+        move = recipe.get("move")
+        if move and not body.get("move") and fmt in ((moves.get(move) or {}).get("formats") or []):
+            body["move"] = move
+        if fmt == "talking_video" and recipe.get("grammar"):
+            body["edit_grammar"] = recipe["grammar"]
+            over = patterns.talk_overrides(policy, card)
+            if over:
+                body["edit_overrides"] = over
+    offered = [c for c in cards.values() if c.get("medium") in (patterns.media_for(policy, fmt) or [c.get("medium")])]
+    if offered:
+        body["pattern_cards"] = patterns.usage(offered, "showrunner", body=body if card else None,
+                                               chosen=[card["key"]] if card else [])
+    return body
 
 
 def _continuity_text(conn, policy, creator_id, prof) -> str:
@@ -324,6 +364,7 @@ class Showrunner:
                     body["closes_threads"] = closes
                 if move:   # the director (manyworlds.brain.director) starts that scene from the move's shot
                     body["move"] = move
+                apply_pattern(ctx.policy, body, q.format, meta["cards"], q.pattern.strip(), meta["moves"])
                 if q.slides:   # carousel text slides (manyworlds.slides), carried to the post (ideas._DIRECTED_FIELDS)
                     body["slides"] = [s.model_dump(mode="json") for s in q.slides]
                 concept = " | ".join(q.scenes) + (f" | script: {q.script}" if q.script else "") + f" | caption: {q.caption}"
@@ -342,6 +383,7 @@ class Showrunner:
                             inputs={"start": str(start), "days": days, "profile_version": meta["profile_version"],
                                     "requested": meta["counts"], "analysis_decision_id": meta["analysis_decision_id"],
                                     "talent_brief_id": meta["talent_brief_id"],
+                                    "pattern_cards": sorted(meta["cards"]),
                                     "finding_ids": meta["finding_ids"], "exploration": meta["exploration"],
                                     "experiment_slots": {"offered": len(meta["slots"]), "filled": len(used)}},
                             output=output, rationale=out.rationale)
