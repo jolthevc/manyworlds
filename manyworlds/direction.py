@@ -318,11 +318,23 @@ def faceless(shot: "ShotSheet | dict | None") -> bool:
     return s.framing.device == "pov" or bool(s.cutaway) or (s.subject or "") not in ("", "face")
 
 
+_HAND_WORDS = re.compile(r"\b(hands?|fingers?|nails?|manicure|rings?|wrists?|watch|bracelets?|bangles?|knuckles?|"
+                         r"forearms?|palms?|thumbs?|tattoos?|scars?|freckles?|veins?)\b", re.I)
+
+
+def _hand_details(details: str) -> str:
+    """Only the signature details a close-up of her hands can show (rings, nails, a watch, a scar): a garment
+    paragraph pulled hands-at-the-sink cutaways into a cosy home in its colours (2026-11-25, Maren's moss cardigan,
+    24 rejected photos in two runs)."""
+    parts = re.split(r"(?<=[.;])\s+", str(details or ""))
+    return " ".join(p for p in parts if _HAND_WORDS.search(p)).strip()
+
+
 def _hands_subject(bible: dict) -> str:
-    """The subject of a faceless shot: her hands, with what makes them hers (skin, signature details)."""
+    """The subject of a faceless shot: her hands, with what makes them hers (skin, hand-level signature details)."""
     a = bible.get("appearance") or {}
     return _join(["seen from her own eyes, her hands and forearms in frame", str(a.get("ethnicity_and_skin") or ""),
-                  str(a.get("signature_details") or "")])
+                  _hand_details(a.get("signature_details") or "")])
 
 
 def _faceless_subject(s: "ShotSheet", bible: dict, policy: Any) -> str:
@@ -331,7 +343,7 @@ def _faceless_subject(s: "ShotSheet", bible: dict, policy: Any) -> str:
     if (s.subject or "") not in ("", "face"):
         from .brain import aesthetics
         a = bible.get("appearance") or {}
-        hands = _join([str(a.get("ethnicity_and_skin") or ""), str(a.get("signature_details") or "")])
+        hands = _join([str(a.get("ethnicity_and_skin") or ""), _hand_details(a.get("signature_details") or "")])
         return aesthetics.subject_text(policy if hasattr(policy, "get") and not isinstance(policy, dict) else None,
                                        s.subject, hands)
     return _hands_subject(bible)

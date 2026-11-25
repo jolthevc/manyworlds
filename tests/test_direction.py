@@ -620,3 +620,13 @@ def test_caption_styles_by_format_name_real_formats_only(raw_policy):
     assert set(by_format) <= formats
     styles = set(raw_policy.get("burned_captions", "styles") or {}) | {"none"}
     assert set(by_format.values()) <= styles
+
+
+def test_a_hands_shot_carries_only_hand_level_signature_details():
+    # 2026-11-25: Maren's moss-cardigan paragraph pulled hands-at-the-sink cutaways into a cosy home (24 rejects).
+    from manyworlds.direction import _hand_details
+    details = ("Her oversized moss-green cardigan. It is chunky and hangs to mid-thigh. A thin silver ring on her left "
+               "index finger. Short unpainted nails; a small scar on her right wrist.")
+    kept = _hand_details(details)
+    assert "cardigan" not in kept and "mid-thigh" not in kept
+    assert "silver ring" in kept and "nails" in kept and "scar on her right wrist" in kept
