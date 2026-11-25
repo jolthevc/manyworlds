@@ -19,7 +19,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel as _PydanticModel, Field, model_validator
+
+
+class BaseModel(_PydanticModel):
+    """Annotation models read back from the strict structured-output shape (llm.strict_json_schema: every field
+    present, "" for an unset enum or string, 0 or [] for unset numbers and lists): a "" falls back to the field's
+    default ("unknown", None or empty), so a strict answer validates like a loose one."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_is_default(cls, data):
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v != ""}
+        return data
 
 ANNOTATION_SCHEMA = "iia_v1"
 NOTE_WORDS = 20            # a mechanism or speculation note: at most this many words, never a quote

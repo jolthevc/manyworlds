@@ -44,7 +44,7 @@ import re
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -93,6 +93,9 @@ class PostRead(BaseModel):
 
 
 class ReadBatch(BaseModel):
+    # The annotation's ordinary schema compiles to a grammar too large for structured outputs (HTTP 400, 2026-11-25:
+    # the resume run failed on its first call); the strict shape (llm.strict_json_schema) is sent instead.
+    strict_required: ClassVar[bool] = True
     reads: list[PostRead] = Field(default_factory=list)
 
 

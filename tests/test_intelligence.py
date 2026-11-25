@@ -367,3 +367,20 @@ def test_near_duplicates_by_difference_hash(policy, tmp_path):
     Image.open(other).rotate(90, expand=True).save(other)
     assert impersonation.near_duplicates(a2, {"cited": a}, policy)
     assert not impersonation.near_duplicates(other, {"cited": a}, policy)
+
+
+def test_an_annotation_read_back_from_the_strict_shape_validates():
+    # 2026-11-25: the annotation's own schema was too large for structured outputs; the strict shape answers every
+    # field, with "" for unset enums and strings, which must fall back to the defaults
+    from manyworlds.brain.agents.intelligence import ReadBatch
+    from manyworlds.llm import strict_json_schema
+    assert ReadBatch.strict_required and strict_json_schema(ReadBatch)["properties"]["reads"]
+    got = ReadBatch.model_validate({"reads": [{"post": 1, "annotation": {
+        "observed": {"visual": {"situation": "", "gaze": "", "framing": "close-up", "face_share": 0.4},
+                     "performance": {"format": "", "movement": ""}, "craft": {"hook": "", "sound": ""},
+                     "personality": {"disclosure": "", "relationship": ""}, "economics": {"sponsored": ""}},
+        "mechanism": [{"text": "direct gaze holds the scroll", "audience_role": ""}], "speculation": [],
+        "confidence": 0.6}}]})
+    a = got.reads[0].annotation
+    assert a.observed.visual.situation == "unknown" and a.observed.visual.framing == "close-up"
+    assert a.mechanism[0].audience_role is None and a.observed.economics.sponsored == "unknown"
