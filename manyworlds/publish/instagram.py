@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 import tempfile
 import urllib.error
@@ -369,6 +370,22 @@ def _assigned(creds: Creds) -> list[dict]:
     return out
 
 
+def _fit_bio(text: str, room: int) -> str:
+    """`text` within `room` characters: whole, else its whole sentences that fit, else cut at a word with '…'
+    (never mid-phrase: 2026-11-25 a sheet read 'into small, · AI-generated character')."""
+    if len(text) <= room:
+        return text
+    kept = ""
+    for s in re.findall(r"[^.!?]+[.!?]+", text):
+        if len(kept + s) > room:
+            break
+        kept += s
+    if kept.strip():
+        return kept.strip()
+    cut = text[:max(0, room - 2)].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{cut} …" if cut else ""
+
+
 def setup_sheet(conn, policy: Policy, creator_id, store=None) -> dict:
     """What a person needs to set up this creator's Instagram account by hand: names, the bio (with the AI
     disclosure), the profile photo, and the checklist that `connect` then verifies through the API."""
@@ -376,8 +393,8 @@ def setup_sheet(conn, policy: Policy, creator_id, store=None) -> dict:
     bible, cfg = c["bible"] or {}, _cfg(policy).get("setup", {}) or {}
     disclosure = policy.get("scope", "disclosure_line", default="AI-generated character")
     limit = int(cfg.get("bio_max_chars", 150))
-    line = (bible.get("one_line") or "").strip()
-    bio = disclosure if not line else f"{line[:max(0, limit - len(disclosure) - 3)].rstrip()} · {disclosure}"
+    line = _fit_bio((bible.get("bio") or bible.get("one_line") or "").strip(), limit - len(disclosure) - 3)
+    bio = disclosure if not line else f"{line} · {disclosure}"
     refs = (c["anchors"] or {}).get("reference_images") or []
     photo = None
     if refs:

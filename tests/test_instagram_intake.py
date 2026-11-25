@@ -228,3 +228,20 @@ def _with(policy, replies: str, **comment_cfg):
     body = {**policy.body, "autonomy": {**policy.body["autonomy"], "comment_replies": replies},
             "comments": {**policy.body["comments"], **comment_cfg}}
     return policy_mod.from_dict(body)
+
+
+def test_a_long_one_line_is_cut_at_a_sentence_or_word_never_mid_phrase(conn, policy, maren, store):
+    # 2026-11-25: Maren's sheet read "...turns the hours before sleep into small, · AI-generated character".
+    long = ("A 33-year-old night-bus dispatcher who gets home at 4am. She turns the hours before sleep into small, "
+            "quiet rituals: tea, a lamp, the radio low, and whatever the night brought in.")
+    conn.execute("UPDATE creators SET bible = %s WHERE id = %s", (Jsonb({**BIBLE, "one_line": long}), maren))
+    bio = instagram.setup_sheet(conn, policy, maren, store=store)["bio"]
+    assert bio == "A 33-year-old night-bus dispatcher who gets home at 4am. · AI-generated character"
+    conn.execute("UPDATE creators SET bible = %s WHERE id = %s",
+                 (Jsonb({**BIBLE, "one_line": long, "bio": "Night-bus dispatcher. Tea at 4am."}), maren))
+    assert instagram.setup_sheet(conn, policy, maren, store=store)["bio"] == \
+        "Night-bus dispatcher. Tea at 4am. · AI-generated character"      # a written bio wins
+    conn.execute("UPDATE creators SET bible = %s WHERE id = %s",
+                 (Jsonb({**BIBLE, "one_line": "word " * 60}), maren))
+    bio = instagram.setup_sheet(conn, policy, maren, store=store)["bio"]
+    assert len(bio) <= 150 and "word … · " in bio                          # no sentence fits: a word boundary
