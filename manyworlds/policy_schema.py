@@ -158,6 +158,7 @@ class ReviewImage(_Strict):
     min_realism: Num
     min_scene: Num
     min_brand_alignment: Num
+    body_checks: dict[str, bool]
     reference_images: int
     max_jobs_per_run: int
     loop_seconds: Num

@@ -73,6 +73,16 @@ class CandidateReview(BaseModel):
     distribution_label: str | None = Field(default=None, description="only with distribution_risk: a few words, "
                                            "e.g. 'mainstream', 'swimwear: fine for followers, boost with care'")
     detail_defects: list[str] = Field(default_factory=list, description=common.DETAIL_RULE)
+    # 2026-11-25 (maren-final-3): a photo with her hands on a phone AND two more hands holding a note passed, the judge
+    # wrote "a phone is in her other hand"; two cutaways of hands and a counter showed her face. Counted, not inferred.
+    extra_body_parts: bool = Field(default=False, description="count the hands and arms you can see for each person: "
+                                   "true when a person has more than two hands or two arms, or a hand or arm belongs "
+                                   "to nobody in the picture (for example hands holding a phone plus two more hands "
+                                   "holding something else)")
+    face_visible: bool | None = Field(default=None, description="true when any human face is in the picture, even "
+                                      "partly or out of focus")
+    person_visible: bool | None = Field(default=None, description="true when any part of a person (face, hand, arm, "
+                                        "body) is in the picture")
     notes: str = Field(description="one sentence")
 
 
@@ -99,6 +109,27 @@ def set_match(policy: Policy, shared: dict | None, r, has_references: bool) -> t
     bar = float((policy.get("sets", "shared_set", default={}) or {}).get("min_consistency", 0))
     ok = float(r.consistency) >= bar
     return ok, {"would_pass": ok, "enforced": True, "bar": bar, "shared_set": shared}
+
+
+BODY_CHECKS = ("anatomy", "framing")
+
+
+def body_checks(policy: Policy | None, r, shot: dict | None, plate: bool) -> dict[str, tuple[bool, dict]]:
+    """Defects in the picture itself, enforced (review.image.body_checks): `anatomy`, a person with extra hands or
+    arms; `framing`, a face in a shot that must show none (a cutaway, hands or object shot: it would sit silent under
+    her voice) or anyone at all in a set plate (followers are drawn into it). A field the judge left out checks
+    nothing."""
+    c = (policy.get("review", "image", "body_checks", default={}) or {}) if policy is not None else {}
+    out: dict[str, tuple[bool, dict]] = {}
+    if c.get("anatomy", True) and getattr(r, "extra_body_parts", False):   # a row only when found
+        out["anatomy"] = (False, {"would_pass": False, "enforced": True})
+    if c.get("framing", True) and not common.judges_identity(shot, plate=plate):
+        seen = getattr(r, "person_visible" if plate else "face_visible", None)
+        if seen is not None:
+            ok = not seen
+            out["framing"] = (ok, {"would_pass": ok, "enforced": True,
+                                   "expects": "nobody" if plate else "no face"})
+    return out
 
 
 def _check_score(r, gate: str):
@@ -224,6 +255,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                 same = set_match(policy, job.get("shared_set"), r, bool(extra[1]))
                 if same is not None:   # a shared set (creator.sets.shared_leader): another place rejects
                     checks["set_match"] = same
+                checks.update(body_checks(policy, r, shot, plate))   # extra hands; a face where none belongs
             details.update(model=model, stage=stage)
             rows += [(a["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
             rows += [(a["id"], g, ok, _check_score(r, g), Jsonb({**details, **info})) for g, (ok, info) in checks.items()]
@@ -235,7 +267,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                        realism_score=scores.get("realism"), scene_score=scores.get("scene"), defects=details.get("defects", []))
             res.update({g: res.get(g, True) and ok for g, (ok, _) in checks.items()})
             res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True)
-                                                                 for g in (*detail.JUDGED, "set_match", "brand"))
+                                                                 for g in (*detail.JUDGED, "set_match", "brand",
+                                                                           *BODY_CHECKS))
             if res["accepted"]:
                 still.append(a)
         # A screen pass that clears every bar by `clear_pass_margin` needs no paid confirm (as for clips): only

@@ -373,6 +373,10 @@ review:
     min_identity: 5
     min_realism: 5
     min_scene: 0
+    # Defects in the picture itself, always rejecting (review.gates.body_checks; 2026-11-25 maren-final-3 passed a
+    # photo with four hands, and two hands/counter cutaways that showed her face): anatomy = a person with extra
+    # hands or arms; framing = a face in a shot that has none (cutaway, hands, object) or anyone in a set plate.
+    body_checks: {anatomy: true, framing: true}
     # Brand alignment (owner 2026-11-25; review.common.BRAND_RULE, scored in the same call when the creator has a
     # presentation register): an image under this is a clear misfit for her register and is rejected; above it the
     # score only ranks. Distribution risk is a report (and routing) only, never a reject.
@@ -2575,7 +2579,15 @@ sets:
   # consistency score, which rejects under min_consistency (gate set_match; 5 = recognisably similar, 1 =
   # different). Qwen edits passed the image gate 8 of 8 from her anchor alone (breadth 2026-11-24, L40S); from
   # anchor + a set photo they are unmeasured: check the first shared-set post.
-  shared_set: {enabled: true, formats: [talking_video], conditioning: true, min_consistency: 4}
+  # plate (2026-11-25, maren-final-3): conditioning on the leader photo itself copied her into every follower (two
+  # hands/counter cutaways showed her face; a "holding up a note" shot kept the leader's phone hands too: four
+  # hands). With conditioning, the leader's photo is first edited into an empty plate of the same place (`prompt`;
+  # reviewed: nobody in it, the same place), and the followers are drawn into that plate; after `attempts` plate jobs
+  # with none accepted they fall back to the leader's photo.
+  shared_set: {enabled: true, formats: [talking_video], conditioning: true, min_consistency: 4,
+               plate: {enabled: true, attempts: 2,
+                       prompt: "Remove the person from picture 1 completely, together with everything they hold. Show the same place from the same camera position, with the same counter, shelves, lights, signs and colours, the space where they stood filled in naturally. A candid smartphone photo.",
+                       scene: "the same place as the set reference, with nobody in it"}}
   plate_kind: image.zimage
   plate_candidates: 4
   max_plate_attempts: 3        # plate jobs per set or outfit before giving up (it then has text only)
@@ -2601,6 +2613,8 @@ sets:
     lightning: true
     person: "Picture {n} is the person: keep their face, hair, skin and build exactly as in it."
     set: "Place them in the room from picture {n}, keeping its layout, furniture, colours and light fittings."
+    # a picture with nobody to place (a hands, object or place shot, drawn from the set plate alone)
+    set_alone: "Picture {n} is the place: make a new photo in this same place, with its surfaces, colours and light, framed as described."
     outfit: "Dress them in the clothes from picture {n}."
 
 # Production (manyworlds.production): planned posts -> image jobs -> reviewed images.

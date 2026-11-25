@@ -1,4 +1,5 @@
-"""One place per shared set (perf_compare 2026-11-25: nine shots named pub_bar; one photo was at the bar, eight in a
+"""One place per shared set (and, 2026-11-25 maren-final-3, its empty plate: followers are drawn into the leader's
+place with nobody in it, never into the leader's photo itself) (perf_compare 2026-11-25: nine shots named pub_bar; one photo was at the bar, eight in a
 living room or kitchen). Three causes, three fixes: the photo prompt lost its Set and Wardrobe sections whole to her
 long signature item (direction._fit), nothing tied the shots' photos to one place (production.scenes: the first
 face shot leads, the others are conditioned on its accepted photo), and scene fit only scores (gate set_match)."""
@@ -99,16 +100,74 @@ def test_the_shots_of_a_shared_set_wait_for_the_leader_then_take_its_photo_as_th
     leader = _accept(conn, body["scene_jobs"][0][0], cid)
     post = dict(conn.execute("SELECT * FROM posts WHERE id = %s", (post["id"],)).fetchone())
     production.advance_post(conn, policy, post)
-    made = {j["payload"]["scene"]: j for j in _jobs(conn, post["id"])}
+    # 2026-11-25 (maren-final-3): followers conditioned on the leader's photo copied her face into the cutaways and
+    # her phone hands into a shot with new hands. The leader's photo first becomes an empty plate of the place.
+    [plate_job] = [j for j in _jobs(conn, post["id"]) if (j["payload"] or {}).get("plate")]
+    assert plate_job["kind"] == "image.qwen_edit" and plate_job["payload"]["images"] == [leader]
+    assert plate_job["payload"]["prompt"].startswith("Remove the person from picture 1")
+    assert plate_job["payload"]["shared_set"] == {"set_id": "pub_bar", "leader": 0, "plate": True}
+    assert len(_jobs(conn, post["id"])) == 3                            # followers wait for the plate
+    plate = _accept(conn, plate_job["id"], cid)
+    post = dict(conn.execute("SELECT * FROM posts WHERE id = %s", (post["id"],)).fetchone())
+    production.advance_post(conn, policy, post)
+    made = {j["payload"]["scene"]: j for j in _jobs(conn, post["id"]) if not j["payload"].get("plate")}
     face, hands = made["behind the bar, shot 1"], made["behind the bar, shot 2"]
-    assert face["kind"] == "image.qwen_edit" and face["payload"]["images"] == ["s3://b/r0", leader]
+    assert face["kind"] == "image.qwen_edit" and face["payload"]["images"] == ["s3://b/r0", plate]
     assert face["payload"]["shared_set"] == {"set_id": "pub_bar", "leader": 0}
-    # 2026-11-25: text-only faceless followers drew a daylight home kitchen 12 times and the post dropped on
-    # set_match; a faceless follower is now conditioned on the set photo alone (no anchor, so no face is drawn).
-    assert hands["kind"] == "image.qwen_edit" and hands["payload"]["images"] == [leader]
-    assert hands["payload"]["references"] == [{"kind": "set", "uri": leader}]
+    # a faceless follower: the empty plate alone (no anchor, nobody in it), with words for a picture of a place
+    assert hands["kind"] == "image.qwen_edit" and hands["payload"]["images"] == [plate]
+    assert hands["payload"]["references"] == [{"kind": "set", "uri": plate}]
+    assert hands["payload"]["prompt"].startswith("Picture 1 is the place")
     assert hands["payload"]["shared_set"]["leader"] == 0
     assert "shared_set" not in made["behind the bar, shot 0"]["payload"]
+
+
+def _reject(conn, job_id, cid):
+    conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (job_id,))
+    a = conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes) VALUES (%s, %s, 'image', %s, "
+                     "'x', 1) RETURNING id", (job_id, cid, f"s3://b/{uuid.uuid4().hex}.png")).fetchone()
+    conn.execute("INSERT INTO reviews (asset_id, gate, passed, score, details) VALUES (%s, 'framing', false, NULL, %s)",
+                 (a["id"], Jsonb({"stage": "screen"})))
+
+
+def test_followers_fall_back_to_the_leaders_photo_when_no_plate_passes(conn, policy):
+    cid = creator(conn)
+    post = _post(conn, cid)
+    production.start(conn, policy, post)
+    body = conn.execute("SELECT body FROM posts WHERE id = %s", (post["id"],)).fetchone()["body"]
+    leader = _accept(conn, body["scene_jobs"][0][0], cid)
+    attempts = policy.get("sets", "shared_set", "plate", "attempts")
+    for _ in range(attempts):
+        production.advance_post(conn, policy, dict(conn.execute("SELECT * FROM posts WHERE id = %s",
+                                                                (post["id"],)).fetchone()))
+        pending = [j for j in _jobs(conn, post["id"]) if j["payload"].get("plate")
+                   and conn.execute("SELECT status FROM jobs WHERE id = %s", (j["id"],)).fetchone()["status"] == "queued"]
+        assert len(pending) == 1
+        _reject(conn, pending[0]["id"], cid)
+    production.advance_post(conn, policy, dict(conn.execute("SELECT * FROM posts WHERE id = %s", (post["id"],)).fetchone()))
+    face = next(j for j in _jobs(conn, post["id"]) if j["payload"].get("scene") == "behind the bar, shot 1")
+    assert face["payload"]["images"] == ["s3://b/r0", leader]
+    assert len([j for j in _jobs(conn, post["id"]) if j["payload"].get("plate")]) == attempts
+
+
+def test_extra_hands_reject_and_a_face_in_a_cutaway_rejects(conn, policy, store, tmp_path):
+    _, job = creator_with_job(conn, store, tmp_path, n_images=3)
+    conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"shot": SHOTS[2]}), job))   # a cutaway
+    judge = JudgeStub([ok(extra_body_parts=True, face_visible=False), ok(face_visible=True), ok(face_visible=False)])
+    results = gates.review_job(conn, policy, judge, store, job, tmp_path)
+    assert [r["accepted"] for r in results] == [False, False, True]
+    assert results[0]["anatomy"] is False and results[1]["framing"] is False
+    _, job = creator_with_job(conn, store, tmp_path, n_images=1)
+    conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"shot": SHOTS[0]}), job))   # her face belongs
+    [r] = gates.review_job(conn, policy, JudgeStub([ok(face_visible=True)]), store, job, tmp_path)
+    assert r["accepted"] and "framing" not in r
+
+
+def test_a_plate_with_anyone_in_it_is_rejected(conn, policy, store, tmp_path):
+    _, job = creator_with_job(conn, store, tmp_path, n_images=2)
+    conn.execute("UPDATE jobs SET payload = %s WHERE id = %s", (Jsonb({"plate": True, "scene": "an empty bar"}), job))
+    judge = JudgeStub([ok(person_visible=True), ok(person_visible=False)])
+    assert [r["accepted"] for r in gates.review_job(conn, policy, judge, store, job, tmp_path)] == [False, True]
 
 
 def test_without_conditioning_the_followers_are_text_photos_judged_against_the_leader(conn, policy):

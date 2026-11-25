@@ -364,8 +364,9 @@ def edit_payload(policy: Policy, payload: dict, images: list[dict]) -> dict:
     is which, the edit settings, and no LoRA (the creator's LoRA is for Z-Image)."""
     e = edit_cfg(policy)
     lead = []
+    alone = not any(im.get("kind") == "person" for im in images)   # nobody to place: a hands, object or place shot
     for n, im in enumerate(images, start=1):
-        words = e.get(im["kind"])
+        words = (e.get(f"{im['kind']}_alone") if alone else None) or e.get(im["kind"])
         if words:
             lead.append(str(words).format(n=n))
     out = {k: v for k, v in payload.items() if k not in ("lora_uri", "lora_scale", "params")}

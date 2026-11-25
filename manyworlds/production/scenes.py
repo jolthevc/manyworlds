@@ -99,8 +99,9 @@ def _leader(policy: Policy, post: dict, i: int) -> int | None:
 
 
 def _shared_reference(conn, policy: Policy, post: dict, i: int) -> dict | None:
-    """{uri, set_id, leader} of the shared set's accepted leader photo for scene i, or None (no shared set, or
-    scene i leads it, or its leader has no accepted photo yet)."""
+    """{uri, set_id, leader} of the shared set's reference for scene i: its empty plate (made from the leader's
+    accepted photo, _shared_plate) when the followers are conditioned, else (or once the plate has failed) the
+    leader's photo; None while there is none yet (no shared set, scene i leads it, the leader or its plate pending)."""
     leader = _leader(policy, post, i)
     jobs = (post["body"].get("scene_jobs") or [])
     if leader is None or leader >= len(jobs) or not jobs[leader]:
@@ -109,7 +110,54 @@ def _shared_reference(conn, policy: Policy, post: dict, i: int) -> dict | None:
     if not best:
         return None
     sid = ((post["body"]["shots"][i].get("set") or {}).get("set_id") or "").strip()
-    return {"uri": best["uri"], "set_id": sid, "leader": leader}
+    plate = _shared_plate(conn, policy, post, leader, sid, best["uri"])
+    if plate is None:
+        return None
+    return {"uri": plate or best["uri"], "set_id": sid, "leader": leader, **({"plate": True} if plate else {})}
+
+
+def _plate_cfg(policy: Policy) -> dict:
+    from ..creator import sets
+    c = sets.shared_cfg(policy)
+    return (c.get("plate") or {}) if c.get("conditioning") else {}
+
+
+def _shared_plate(conn, policy: Policy, post: dict, leader: int, set_id: str, leader_uri: str) -> str | None:
+    """The shared set's empty plate: the leader's accepted photo edited so nobody is in it (sets.shared_set.plate;
+    2026-11-25: followers conditioned on the leader's photo itself copied her face into cutaways and her phone hands
+    into a shot with new hands). The plate's uri once accepted; None while it is being made or reviewed; "" when
+    plates are off or `attempts` plate jobs were rejected or failed (the followers then use the leader's photo)."""
+    c = _plate_cfg(policy)
+    if not c.get("enabled"):
+        return ""
+    prefix = f"{piece_key(post)}:plate:{set_id or leader}:"
+    ids = [str(r["id"]) for r in conn.execute(
+        "SELECT id FROM jobs WHERE idempotency_key LIKE %s ORDER BY created_at", (prefix + "%",)).fetchall()]
+    if ids:
+        state, best = _scene_state(conn, ids)
+        if state == "chosen":
+            return best["uri"]
+        if state == "waiting":
+            return None
+        if len(ids) >= int(c.get("attempts", 1)):
+            return ""
+    _plate_job(conn, policy, post, leader, set_id, leader_uri, prefix, len(ids))
+    return None
+
+
+def _plate_job(conn, policy: Policy, post: dict, leader: int, set_id: str, leader_uri: str, prefix: str,
+               attempt: int):
+    from ..creator import sets
+    c, img = _plate_cfg(policy), scene_size(policy, post["format"])
+    payload = {"prompt": str(c.get("prompt") or ""), "scene": str(c.get("scene") or "the same place, nobody in it"),
+               "plate": True, "seed": _seed(post, 90 + leader, attempt),
+               "width": img.get("width", 896), "height": img.get("height", 1152),
+               "references": [{"kind": "set", "uri": leader_uri}],
+               "shared_set": {"set_id": set_id, "leader": leader, "plate": True}}
+    payload = sets.edit_payload(policy, payload, [{"kind": "plate_source", "uri": leader_uri}])
+    return queue.enqueue(conn, sets.edit_kind(policy), payload, creator_id=post["creator_id"],
+                         batch=f"post-{post['id']}", post_id=post["id"], pools=sets.edit_pools(policy),
+                         idempotency_key=f"{prefix}{attempt}")
 
 
 def start(conn, policy: Policy, post: dict) -> None:
