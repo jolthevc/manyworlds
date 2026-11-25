@@ -52,6 +52,7 @@ breadth:
     talk: [runpod_secure_l40s_vol, runpod_secure_l40s]
     comfy: [runpod_secure_l40s_vol, runpod_secure_l40s]
     voice: [runpod_secure_l40s_vol, runpod_secure_l40s]
+    tts: [runpod_secure_l40s, runpod_comm_4090]       # container disk for the engines' weights, never the full volume
     dance: [runpod_secure_l40s_vol, runpod_secure_l40s]
     edit: [runpod_secure_l40s, runpod_secure_h100]   # off the 150 GB weights volume: Qwen-Image-Edit is ~58 GB
     image: [runpod_comm_3090, runpod_comm_4090, vast_3090, vast_4090]   # RunPod or Vast community cards (2026-11-23: RunPod 3090s ran out mid-run)
@@ -66,10 +67,13 @@ breadth:
     #   ltx25_* on an L40S: 8. 22B distilled int8, 8 + 3 steps over two scales; no measured L40S timing found.
     #   longcat_fast (LongCat 1.0 in the wrapper, 6 steps) on a 5090: 20. longcat-avatar-fast's table: the stock 1.6
     #     demo is ~36 s per output second on a 5090 at 8 steps; 6 steps and fp8 fast matmul take some of that off.
+    #   voice.cast:<engine> (seconds of GPU per second of audio a cast speaks): generation (RTF ~0.2-0.5, the
+    #     authors) plus Whisper, UTMOS, pitch tracking and ~1 repair in 3; estimates until the bake-off measures them.
     seconds_per_output_second: {talk.infinitetalk: 50, talk.longcat: 50, comfy.graph:echomimic_v3_flash: 12,
                                 comfy.graph:ltx25_a2v: 8, comfy.graph:ltx25_i2v_av: 8,
-                                talk.infinitetalk:longcat_fast: 20}
-    boot_seconds: {default: 600, talkcomfy: 900}   # boot + image pull + model load per machine (talk weights first)
+                                talk.infinitetalk:longcat_fast: 20,
+                                voice.cast:indextts: 1.2, voice.cast:qwen3: 1.0, voice.cast:voxcpm: 1.5}
+    boot_seconds: {default: 600, talkcomfy: 900, tts: 720}   # boot + image pull + model load per machine (talk weights first)
     # A graph's or talk profile's own weights (its download_gb) on top of the boot, once per machine: ~100 MB/s, from
     # a first image job's ~30 GB downloaded within ~5-6 min on Vast (the gpu_runs max_attempt_minutes_by_family note).
     download_mb_per_second: 100
@@ -95,6 +99,7 @@ breadth:
     talking: {kinds: [talk.infinitetalk]}
     kokoro_voice: {}
     designed_voice: {kinds: [voice.speak]}
+    voice_casting: {kinds: [voice.cast]}      # automatic casting and the engine bake-off (manyworlds/voice_bakeoff.py)
     voiceover_broll: {kinds: [image.narrated]}
     cutaway_broll: {requires: [generation.talk_hybrid.enabled], kinds: [image.narrated]}
     walking: {requires: [generation.talk_motion.enabled], kinds: [comfy.wan_i2v]}
@@ -127,6 +132,31 @@ breadth:
   # call per take, ~$0.01).
   takes: {checkpoints_s: [0, 30, 60, 90], colour_sample_px: 64, identity: true}
   plans:
+    # The voice-engine bake-off (manyworlds/voice_bakeoff.py; research 2026-11-24-expressive-voice §6). One voice.cast
+    # per engine and voice: Maren's bible, and a different archetype's description (a calm man in his thirties, an
+    # educator). Each designs voice.bakeoff.candidates references and speaks the casting script plus the seven
+    # bake-off lines; the worker judges every line, nobody listens. At the end the driver records the winner
+    # (decision voice_engine), which flips voice.engine_gate. Cap $2; only with the owner's go for this run.
+    voicebake:
+      max_usd: 2.0
+      creator: maren.afterhours
+      decides: voice_engine
+      items:
+        - {id: cast_maren_indextts, exercises: [voice_casting], bench: {kind: voice.cast, jobs: 1, extra: {engine: indextts}}}
+        - {id: cast_maren_qwen3, exercises: [voice_casting], bench: {kind: voice.cast, jobs: 1, extra: {engine: qwen3}}}
+        - {id: cast_maren_voxcpm, exercises: [voice_casting], bench: {kind: voice.cast, jobs: 1, extra: {engine: voxcpm}}}
+        - id: cast_other_indextts
+          exercises: [voice_casting]
+          bench: {kind: voice.cast, jobs: 1, extra: {engine: indextts, label: other, archetype: educator,
+                  fit: {gender: male, age: 34}, description: &other_voice "A 34-year-old man speaking to a phone camera. Calm, low and unhurried, dry humour, explains things like a patient friend"}}
+        - id: cast_other_qwen3
+          exercises: [voice_casting]
+          bench: {kind: voice.cast, jobs: 1, extra: {engine: qwen3, label: other, archetype: educator,
+                  fit: {gender: male, age: 34}, description: *other_voice}}
+        - id: cast_other_voxcpm
+          exercises: [voice_casting]
+          bench: {kind: voice.cast, jobs: 1, extra: {engine: voxcpm, label: other, archetype: educator,
+                  fit: {gender: male, age: 34}, description: *other_voice}}
     # One item per capability and feature (the audit's 18, organised by what they exercise), with existing post
     # formats and handwritten shot sheets. Options: talk_profile (generation.talk_profiles, merged into the talk
     # jobs), voice_engine (kokoro | voxcpm: skipped unless the creator speaks with it). Bench extra: @anchor is the
