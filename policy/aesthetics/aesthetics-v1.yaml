@@ -104,6 +104,16 @@ rules:
     Signature elements are assets, not repeats: a pose, a set or an outfit that her style names as signature, or that
     a pattern card marks signature_ok, may recur across posts and inside a carousel; the variety and carousel rules
     above do not apply to it (owner 2026-11-25). Everything else still varies.
+  personal_style: >-
+    Personal presentation is identity (owner 2026-11-25): grooming, hair and makeup, nails, jewelry and accessories
+    (a watch, a chain, rings, earrings), eyewear, footwear and her finish (refined, glamorous, rugged, effortless) are
+    styled like a personal stylist would: a few signature elements recur subtly so she is recognised; the rest
+    follows the outfit, season, destination and activity. Rugged stays rugged and effortless stays effortless, but
+    always intentional, never sloppy or generic.
+  details: >-
+    Her world shows her taste in its details: the coffee cup, the linens, sunglasses on the table, a leather bag,
+    the books, a watch on the nightstand, flowers, furniture, restaurant light. Detail shots and props carry them;
+    each is plausible, unbranded and hers.
 
 # The photo-dump order (7-10 slides): the cover is the strongest image, never camera-roll order.
 photo_dump: [cover_face, context_wide_or_mirror, personality_candid_or_motion, details_3_to_4, tail_night_scenery_or_object]
