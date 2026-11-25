@@ -103,7 +103,8 @@ from .mixing import (  # noqa: F401
     _mix_sound, _piece_loader, _song_ref, _sound_cues_from, _sound_plan_from, _sound_ref, sound_cues, sound_plan,
 )
 from .motion import (  # noqa: F401
-    _advance_clip_edit, _advance_motion, _chain_jobs, _clip_job, _clip_params, _dance_kind, _last_frame, _motion_cfg,
+    _advance_clip_edit, _advance_motion, _borrowed_state, _chain_jobs, _clip_job, _clip_params, _dance_kind, _last_frame,
+    _motion_cfg,
     _motion_job, _motion_pattern, _needs_motion, _story_clip_kind, _take_seconds, _wan_frames, clip_edit,
     dance_payload, dance_reference, join_clips, join_motion, motion_lengths, moves, talk_v2v,
 )

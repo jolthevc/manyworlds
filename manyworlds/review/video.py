@@ -301,7 +301,37 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         out.append(res)
     if write:
         common.write_rows(conn, rows)
+        if motion_ref:
+            for res in out:
+                if res.get("dance_identity") is False:
+                    res["purged"] = purge_other_identity(conn, policy, store, job_id, res)
     return out
+
+
+def purge_other_identity(conn, policy: Policy, store: ObjectStore, job_id, res: dict) -> bool:
+    """A borrowed-motion clip that shows someone else is never kept (policy dance.identity.purge, on): perf_compare
+    2026-11-25 and the dance tests of 2026-11-24 returned the stock clip's real performer, identity 0-1 of 10. Its
+    video, keyframes and crops are deleted from the store and marked deleted, and the job records why. Only when the
+    worst keyframe is under dance.identity.min_score (the floor), not for a near miss on the mean."""
+    ident = policy.get("dance", "identity", default={}) or {}
+    if not ident.get("purge", True):
+        return False
+    worst = next((s.get("dance_identity") for s in reversed(res.get("stages") or [])
+                  if s.get("dance_identity") is not None), None)
+    if worst is not None and float(worst) >= float(ident.get("min_score", 6)):
+        return False
+    rows = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind IN ('video', 'keyframe', 'crop') "
+                        "AND deleted_at IS NULL", (job_id,)).fetchall()
+    for a in rows:
+        try:
+            store.delete(a["uri"])
+        except Exception:  # noqa: BLE001 - marked deleted below; the retention sweep retries the object
+            pass
+    conn.execute("UPDATE assets SET deleted_at = now() WHERE job_id = %s AND kind IN ('video', 'keyframe', 'crop') "
+                 "AND deleted_at IS NULL", (job_id,))
+    conn.execute("UPDATE jobs SET error = %s WHERE id = %s",
+                 (f"identity guard: the motion clip shows someone else (worst keyframe {worst}); deleted", job_id))
+    return True
 
 
 def _intelligibility(conn, policy: Policy, store: ObjectStore, job_id, payload: dict, creator_id, workdir: Path):
@@ -450,20 +480,23 @@ def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int |
     """Finished clip jobs, story clips and talking clips (with keyframes) for a creator with reference images,
     not yet reviewed. Keyframes show identity and artefacts, not whether the mouth matches the audio. An
     intermediate clip (payload.intermediate: walk-and-talk's silent motion clip) is not reviewed: the lip-synced take
-    made from it is."""
+    made from it is, except a borrowed-motion clip (Wan-Animate-2): it is judged on her identity before any lip sync
+    (production.motion._borrowed_state)."""
     limit = limit or int(policy.get("review", "video", "max_jobs_per_run", default=10))
     return [r["id"] for r in conn.execute(
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
            WHERE j.status = 'done' AND j.kind LIKE ANY(%(kinds)s::text[])
              AND j.kind NOT LIKE '%%.mirror'
-             AND coalesce(j.payload->>'intermediate', '') <> 'true'
+             AND (coalesce(j.payload->>'intermediate', '') <> 'true' OR j.kind = ANY(%(motion)s::text[])
+                  OR j.payload ? 'reference')
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0
              AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)
              AND EXISTS (SELECT 1 FROM assets k WHERE k.job_id = j.id AND k.kind = 'keyframe')
              AND EXISTS (SELECT 1 FROM assets a WHERE a.job_id = j.id AND a.kind = 'video'
                            AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = a.id))
            ORDER BY j.updated_at LIMIT %(limit)s""",
-        {"batch": batch, "limit": limit, "kinds": reviewed_kind_patterns(policy)}).fetchall()]
+        {"batch": batch, "limit": limit, "kinds": reviewed_kind_patterns(policy),
+         "motion": list(MOTION_TRANSFER_KINDS)}).fetchall()]
 
 
 def _like_literal(text: str) -> str:

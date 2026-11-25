@@ -448,6 +448,7 @@ class Generation(_Strict):
     talk_hybrid: TalkHybrid
     talk_motion: TalkMotion
     talk_edit: TalkEdit
+    borrowed_motion: bool = False
 
 
 # --- the policy ------------------------------------------------------------------------------------------------------

@@ -87,7 +87,7 @@ def _ref(policy):
 
 
 def test_a_shot_with_a_motion_reference_is_animated_only_while_dance_is_on(conn, policy):
-    on = _with(policy, dance={"enabled": True})
+    on = _with(policy, dance={"enabled": True}, generation={"borrowed_motion": True})
     shot = {**CAFE, "motion_reference": _ref(on)}
     post = _post(conn, "story_clip")
     body = {"scenes": ["a cafe"], "script": "", "shots": [shot]}
@@ -109,7 +109,7 @@ def test_a_shot_with_a_motion_reference_is_animated_only_while_dance_is_on(conn,
 
 
 def test_a_talking_take_with_a_motion_reference_lip_syncs_onto_its_animate_clip(conn, policy):
-    on = _with(policy, dance={"enabled": True})
+    on = _with(policy, dance={"enabled": True}, generation={"borrowed_motion": True})
     shot = {**CAFE, "motion_reference": _ref(on), "performance": {"lines": [{"text": "Quick one, watch this."}]}}
     post = _post(conn, "talking_video")
     body = {"scenes": ["a cafe"], "shots": [shot], "talk_shots": [0], "talk_segments": [],

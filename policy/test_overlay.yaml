@@ -17,6 +17,7 @@ review:
 generation:
   talk:
     max_take_seconds: 30   # the 720p profile times out past ~25 s at ~50 s of GPU per second of video (3000 s limit)
+  borrowed_motion: true    # Wan-Animate-2 motion references: tests only (generation.borrowed_motion in default.yaml)
 
 autonomy:
   publish: paused          # the kill switch: nothing the test makes is published
@@ -109,7 +110,8 @@ breadth:
     # The route comparison (plan perf_compare): the story_time edit grammar, and talking shots that perform a licensed
     # motion reference (Wan-Animate-2), then V2V lip sync.
     story_time: {requires: [generation.talk_edit.grammars.story_time]}
-    borrowed_motion: {requires: [dance.enabled, generation.talk_motion.enabled], kinds: [comfy.wan_animate2]}
+    borrowed_motion: {requires: [dance.enabled, generation.talk_motion.enabled, generation.borrowed_motion],
+                      kinds: [comfy.wan_animate2]}
     reference_conditioning: {kinds: [image.qwen_edit]}
     captions: {requires: [burned_captions.enabled]}
     caption_styles: {requires: [burned_captions.styles]}

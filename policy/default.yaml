@@ -657,6 +657,12 @@ generation:
   # the slower lip-synced ones by motion interpolation (finishing.interpolate), so the finish stage scales nothing.
   talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4,
                 output: {width: 1080, height: 1920, fps: 30, lufs: -14}}
+  # Borrowed motion (a shot's motion_reference rendered by Wan-Animate-2, production.motion.dance_reference): OFF in
+  # production, on in policy/test_overlay.yaml only. perf_compare 2026-11-25 (seven licensed stock clips, V2V lip
+  # sync after) and both dance tests of 2026-11-24 came back with the stock clip's performer, not her (identity
+  # 0-1 of 10). The graph matches WanAnimate2ToVideo's inputs at ComfyUI v0.45.0; the cause is unproven. A clip that
+  # does run is identity-reviewed before any lip sync, and one under dance.identity's floor is deleted.
+  borrowed_motion: false
   # Cut-based talking edits (manyworlds.cuts; owner 2026-11-24: one long take reads clunky and costs the most GPU).
   # A talking post follows a grammar: the idea's edit_grammar, else its creator's first archetype's (by_archetype),
   # else default. punch_in: the finish crops in and out of a lip-synced take at word gaps (CPU only, the voice
@@ -2616,7 +2622,8 @@ dance:
     - {id: perf-8814493-1, uri: "s3://manyworlds/references/motion/perf-8814493-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8814493/", move: talk_gesture, notes: "chest-up to camera, calm, small head movements"}
   # The video gate's dance_identity row (manyworlds.review.video): identity scored per keyframe (1-10) over `keyframes`
   # keyframes (cut from the clip when the worker stored fewer); the worst at min_score or more, the mean at min_mean.
-  identity: {min_score: 6, min_mean: 7, keyframes: 8}
+  # purge: a clip whose worst keyframe is under min_score shows someone else (a real performer): deleted, never kept
+  identity: {min_score: 6, min_mean: 7, keyframes: 8, purge: true}
 
 # Named ComfyUI graphs (job kind comfy.graph, worker/handlers/comfy_graph.py): a model slots in as a workflow file
 # (manyworlds/worker/graphs/<name>.json, API format, from the node pack's published example; its sidecar <name>.yaml
