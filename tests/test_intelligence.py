@@ -384,3 +384,11 @@ def test_an_annotation_read_back_from_the_strict_shape_validates():
     a = got.reads[0].annotation
     assert a.observed.visual.situation == "unknown" and a.observed.visual.framing == "close-up"
     assert a.mechanism[0].audience_role is None and a.observed.economics.sponsored == "unknown"
+
+
+def test_the_strict_shape_drops_constraints_structured_outputs_reject():
+    import json
+    from manyworlds.brain.agents.intelligence import ReadBatch
+    from manyworlds.llm import strict_json_schema
+    text = json.dumps(strict_json_schema(ReadBatch))
+    assert all(k not in text for k in ('"maxItems"', '"minimum"', '"maximum"'))

@@ -140,7 +140,10 @@ def _openai_content(content: Any, vision: bool, audio: bool = False) -> Any:
     return out
 
 
-_DROPPED_KEYS = ("default", "title", "$defs")
+# Constraints structured outputs reject (HTTP 400, 2026-11-25: "maxItems is not supported") are dropped from the
+# schema; the pydantic model still enforces them on the answer.
+_DROPPED_KEYS = ("default", "title", "$defs", "maxItems", "minItems", "maxLength", "minLength", "minimum", "maximum",
+                 "exclusiveMinimum", "exclusiveMaximum")
 
 
 def strict_json_schema(model: type[BaseModel]) -> dict:
