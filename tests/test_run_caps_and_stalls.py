@@ -50,3 +50,16 @@ def test_a_post_producing_with_nothing_to_run_is_dropped_and_the_owner_told(conn
     assert row["status"] == "dropped" and row["body"]["drop_kind"] == "failed"
     assert conn.execute("SELECT count(*) n FROM events WHERE type = 'posts_stalled'").fetchone()["n"] == 1
     assert conn.execute("SELECT status FROM posts WHERE id = %s", (busy,)).fetchone()["status"] == "producing"
+
+
+def test_the_weights_volume_pool_is_scored_with_its_plain_twin_and_stays_first(conn, policy):
+    # review 2026-11-25: scored alone, early volume failures left it "exhausted" behind the plain pool for good
+    from datetime import datetime, timezone
+    from manyworlds.deploy import scoring
+    now = datetime.now(timezone.utc)
+    for name, pool, outputs in (("mw-a", "runpod_secure_l40s", 30), ("mw-b", "runpod_secure_l40s_vol", 0)):
+        conn.execute("INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, "
+                     "started_at, stopped_at, billed_usd, family) VALUES (%s, 'runpod', %s, 1, '{talk.infinitetalk}', "
+                     "%s, 3, %s, %s, 2, 'talk')", (name, pool, now, now - timedelta(hours=2), now - timedelta(hours=1)))
+    rows = scoring.score_pools(conn, policy, "talk", ["runpod_secure_l40s_vol", "runpod_secure_l40s"], now)
+    assert rows[0]["pool"] == "runpod_secure_l40s_vol" and rows[0]["status"] == rows[1]["status"]

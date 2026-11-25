@@ -101,6 +101,7 @@ gpu_pools:
   # IndexTTS stays on the container disk, MW_INDEXTTS_DIR). Two volume pools for the same work are tried in order of
   # holding its weights, then free space measured (volume_order).
   runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
+                           score_as: runpod_secure_l40s,
                            network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
                                             prune: [longcat], min_free_gb: 15, recheck_hours: 6,
                                             headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10, tts: 15,
@@ -109,6 +110,7 @@ gpu_pools:
   # it is a provider resource and costs ~$10.50/month: the owner's decision. Until `id` is set the pool is skipped
   # (volume_not_created) and nothing is rented for it; then set id and data_center, and add it to fixed_costs.
   runpod_secure_l40s_vol2: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
+                            score_as: runpod_secure_l40s,
                             network_volume: {id: null, data_center: null, path: /models, size_gb: 150,
                                              prune: [longcat], min_free_gb: 15, recheck_hours: 6,
                                              headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10,

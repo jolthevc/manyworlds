@@ -707,12 +707,14 @@ breadth:
     maren_final:
       max_usd: 4                    # NOT owner-approved yet
       creator: maren.afterhours
+      # The weights volume first again (review 2026-11-25: pinned off it since it filled on 11-24, ~30 cold boots
+      # downloaded 40-90 GB each); the first machine there prunes the stray LongCat weights and records free space.
       pools:
-        talk: [runpod_secure_l40s]
-        comfy: [runpod_secure_l40s]
-        voice: [runpod_secure_l40s]
-        tts: [runpod_secure_l40s]
-        dance: [runpod_secure_l40s]
+        talk: [runpod_secure_l40s_vol, runpod_secure_l40s]
+        comfy: [runpod_secure_l40s_vol, runpod_secure_l40s]
+        voice: [runpod_secure_l40s_vol, runpod_secure_l40s]
+        tts: [runpod_secure_l40s_vol, runpod_secure_l40s]
+        dance: [runpod_secure_l40s_vol, runpod_secure_l40s]
         edit: [runpod_secure_l40s, runpod_secure_a40]   # the same 48 GB when L40S stock runs out
         image: [runpod_secure_l40s]
       items:

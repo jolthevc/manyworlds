@@ -64,13 +64,20 @@ def score_pools(conn, policy: Policy, family: str, pools: list[str], now: dateti
     trial_usd = float(_cfg(policy, family, "trial_usd", 0.30))
     fail_streak = int(_cfg(policy, family, "pause_after_failed_machines", 3))
     pause = timedelta(hours=float(_cfg(policy, family, "pause_hours", 24)))
-    by_pool: dict[str, list[dict]] = {p: [] for p in pools}
-    for m in machine_stats(conn, family, pools, now - window):
-        by_pool[m["pool"]].append(dict(m))
+    # A pool scored as another (gpu_pools.<pool>.score_as: the weights-volume pool and its plain twin are the same
+    # card) shares that pool's record, so the volume keeps its place first in the order. Review 2026-11-25: scored
+    # alone, a few early volume failures left it "exhausted" and it never got work again.
+    def key(p):
+        return str((policy.get("gpu_pools", p, default={}) or {}).get("score_as") or p)
+    twins = sorted({p for p in (policy.get("gpu_pools", default={}) or {})
+                    if key(p) in {key(q) for q in pools}} | set(pools))
+    by_key: dict[str, list[dict]] = {}
+    for m in machine_stats(conn, family, twins, now - window):
+        by_key.setdefault(key(m["pool"]), []).append(dict(m))
 
     rows = []
     for order, pool in enumerate(pools):
-        ms = by_pool[pool]
+        ms = by_key.get(key(pool), [])
         billed = sum(m["billed_usd"] for m in ms)
         outputs = sum(m["outputs"] for m in ms)
         stopped = [m for m in ms if m["stopped_at"] is not None]
