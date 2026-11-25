@@ -14,6 +14,13 @@ from manyworlds.storage import LocalStore
 
 from test_iia_direction import _ctx
 
+
+@pytest.fixture()
+def policy(policy):
+    # acquisition mechanics under test: sources approved (the shipped pauses: test_data_policy.py)
+    from conftest import approve_research_sources
+    return approve_research_sources(policy)
+
 NOW = datetime.now(timezone.utc)
 
 

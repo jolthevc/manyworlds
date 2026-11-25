@@ -14,6 +14,13 @@ from manyworlds.research import scrapecreators, trends
 from brain_helpers import StubLLM, creator
 
 
+@pytest.fixture()
+def policy(policy):
+    # acquisition mechanics under test: sources approved (the shipped pauses: test_data_policy.py)
+    from conftest import approve_research_sources
+    return approve_research_sources(policy)
+
+
 def _pol(policy, **over):
     cfg = {**policy.body["trends"], "enabled": True, "markets": [{"name": "night routine", "queries": ["night routine"],
                                                                   "platforms": ["tiktok"]}],

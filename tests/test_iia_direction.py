@@ -21,6 +21,13 @@ from brain_helpers import StubLLM, creator as bare_creator, make_ctx
 from test_brain_showrunner import START, PlanLLM, _maren, idea
 from test_director import CANAL, DirectorLLM, text
 
+
+@pytest.fixture()
+def policy(policy):
+    # acquisition mechanics under test: sources approved (the shipped pauses: test_data_policy.py)
+    from conftest import approve_research_sources
+    return approve_research_sources(policy)
+
 FASHION = {"archetype": "quiet-luxury fashion in a small city flat", "niche": "fashion",
            "one_line": "outfits that cost less than they look"}
 BEAUTY = {"archetype": "get ready with me beauty storyteller", "niche": "beauty grwm", "one_line": "stories while she gets ready"}

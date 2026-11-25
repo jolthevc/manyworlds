@@ -15,6 +15,13 @@ from manyworlds.storage import LocalStore
 
 from test_iia_direction import IG_POSTS, FakeApify, _agent, _ctx, _small
 
+
+@pytest.fixture()
+def policy(policy):
+    # acquisition mechanics under test: sources approved (the shipped pauses: test_data_policy.py)
+    from conftest import approve_research_sources
+    return approve_research_sources(policy)
+
 PROFILE = "apify~instagram-profile-scraper"
 POSTS = "apify~instagram-post-scraper"
 HASHTAG = "apify~instagram-hashtag-scraper"

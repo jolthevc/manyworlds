@@ -255,6 +255,11 @@ def store_media(conn, policy: Policy, store, download, post_id: str, p: dict, wo
     cfg = _cfg(policy)
     if store is None:
         return []
+    # The data policy first (owner 2026-11-25): no third-party media is copied while no source is approved for
+    # transient media. Metadata answers carry media URLs, so the approved metadata tasks alone must not download.
+    sources = (policy.get("data_policy", "sources", default={}) or {})
+    if not any(data_policy.media_allowed(policy, name) for name in sources):
+        return []
     have = conn.execute("SELECT media FROM reference_posts WHERE id = %s", (post_id,)).fetchone()
     media = list((have or {}).get("media") or [])
     kinds = {m.get("kind") for m in media}

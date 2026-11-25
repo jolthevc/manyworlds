@@ -109,3 +109,15 @@ def test_the_audit_cleans_bios_and_backfills_features(conn, policy):
     assert out["red"]["bios_with_contact_details"] == 1 and not out["red"]["face_or_voice_columns"]
     data_policy.audit(conn, policy, apply=True)
     assert data_policy.audit(conn, policy)["red"]["bios_with_contact_details"] == 0
+
+
+def test_no_third_party_media_is_copied_while_no_source_allows_it(conn, policy, tmp_path):
+    # 2026-11-25 audit: the media pause lived in policy only; metadata answers carry media URLs, so the monitor kept
+    # downloading. Now store_media itself refuses.
+    called = []
+    _, pid = _post(conn)
+    out = pulls.store_media(conn, policy, LocalStore(tmp_path / "s"),
+                            lambda url, dest, mx: called.append(url), pid,
+                            {"images": ["https://cdn.example/x.jpg"], "video_url": "https://cdn.example/v.mp4"},
+                            tmp_path)
+    assert out == [] and called == []

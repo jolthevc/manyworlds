@@ -92,3 +92,17 @@ def worker_credentials(monkeypatch):
 @pytest.fixture()
 def store(tmp_path):
     return LocalStore(tmp_path / "objects")
+
+
+def approve_research_sources(policy):
+    """The shipped policy with every acquisition source approved for every task and transient media (data_policy):
+    for tests of the acquisition mechanics themselves. The shipped pauses are tested in test_data_policy.py."""
+    import dataclasses
+    body = dict(policy.body)
+    dp = dict(body.get("data_policy") or {})
+    srcs = {k: dict(v) for k, v in (dp.get("sources") or {}).items()}
+    for name in ("apify", "scrapecreators", "graph"):
+        srcs[name] = {**srcs.get(name, {}), "status": "approved", "transient_media": True,
+                      "tasks": ["profiles", "posts", "posts_media", "search"]}
+    body["data_policy"] = {**dp, "sources": srcs}
+    return dataclasses.replace(policy, body=body)
