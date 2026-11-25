@@ -30,31 +30,39 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
     (`video_uri`, generation.talk_motion.v2v settings), when the talk engine is ComfyUI (`talk_v2v`)."""
     row = conn.execute("SELECT bible, anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
     voice = (row["anchors"] or {}).get("voice") or {}
-    params = dict(policy.get("generation", "talk", default={}) or {})
-    default_voice = params.pop("voice", "af_heart")
-    params.pop("max_take_seconds", None)   # production's take limit, not a render setting
+    default_voice = (policy.get("generation", "talk", default={}) or {}).get("voice", "af_heart")
     i = _take_index(body, segment)
     scene, shot = body["scenes"][i], _shot(body, i)
-    from ..direction import talk_profile_for
-    profile = talk_profile_for(shot, policy)   # 720p close-ups (direction.hd_close_ups; off as shipped)
-    if profile:
-        params.update(policy.get("generation", "talk_profiles", profile, default={}) or {})
     motion = motion if motion and talk_v2v(policy) else None   # the research-script engine has no V2V
-    if motion:
-        params.update(_motion_cfg(policy).get("v2v") or {})
-    prior = ((body.get("talk_segment_jobs") or [])[segment] if segment is not None
-             and segment < len(body.get("talk_segment_jobs") or []) else body.get("talk_jobs") or [])
+    prior = [str(j) for j in ((body.get("talk_segment_jobs") or [])[segment] if segment is not None
+             and segment < len(body.get("talk_segment_jobs") or []) else body.get("talk_jobs") or [])]
     photo = start_uri or _take_photo(body, chosen, i)["uri"]
     options = RepairOptions(
         photos=(lambda used: _other_photos(conn, body, i, used)) if not start_uri else None,
         cutaway=(lambda: _cutaway_photo(policy, body, chosen, segment)) if segment is not None else None)
-    repair = talk_repair(conn, policy, [str(j) for j in prior], params, v2v=bool(motion), options=options)
+    script = unmarked(_take_script(body, segment))
+    # The take's route (generation.talk_routes): the first that can make it, from the one it is on; a route whose
+    # repairs have run out hands the take to the next one, which starts afresh.
+    names = talk_routes(conn, policy, post, body, prior, script=script, audio=audio, motion=motion)
+    fell_back, repair = None, None
+    for k, name in enumerate(names):
+        route = _routes(policy).get(name) or {}
+        params = route_params(policy, route, shot, motion)
+        mine = [j for j in prior if _job_route(conn, policy, j) == name]
+        try:
+            repair = talk_repair(conn, policy, mine, params, v2v=bool(motion), options=options,
+                                 rcfg=route_repair_cfg(policy, route))
+        except DropPost as e:
+            if k + 1 == len(names):
+                raise
+            fell_back = {"from": name, "reason": str(e)[:300]}
+            continue
+        break
     if repair and repair.get("knob") == "cutaway":   # the line goes under a cutaway shot, in the same voice
         body["talk_modes"][segment] = "narrated"
         body.setdefault("rerouted", {})[str(segment)] = {"image_uri": repair["image_uri"],
                                                          "reason": repair.get("reason", "")}
         return _cutaway_job(conn, policy, post, body, chosen, attempt, segment=segment, audio=audio)
-    script = unmarked(_take_script(body, segment))
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": (repair or {}).get("image_uri") or photo, "script": script,
                "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),
@@ -71,10 +79,136 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
         payload["repair"] = repair
     if segment is not None:
         payload["segment"] = {"index": segment, "of": len(body["talk_segments"])}
+    if name:
+        payload["talk_route"] = name
+    if fell_back:
+        payload["route_fallback"] = fell_back
+    if route.get("graph"):   # the generic ComfyUI handler: the graph's name and spec travel with the job
+        from ..long_take import graph_fields
+        payload.update(graph_fields(policy, route["graph"]))
     key = f"post:{post['id']}:talk:{attempt}" if segment is None else f"post:{post['id']}:talk:{segment}:{attempt}"
-    return queue.enqueue(conn, _cfg(policy).get("talk_kind", "talk.infinitetalk"), payload,
+    return queue.enqueue(conn, route_kind(policy, route), payload,
                          creator_id=post["creator_id"], batch=f"post-{post['id']}", post_id=post["id"],
-                         idempotency_key=key)
+                         idempotency_key=key, pools=route.get("pools") or None)
+
+
+# --------------------------------------------------------------------------------------------- the take's route
+
+def _routes(policy: Policy) -> dict:
+    return policy.get("generation", "talk_routes", default={}) or {}
+
+
+def route_kind(policy: Policy, route: dict) -> str:
+    """The route's job kind: its own, else production.talk_kind."""
+    return str(route.get("kind") or _cfg(policy).get("talk_kind", "talk.infinitetalk"))
+
+
+def route_order(policy: Policy, body: dict) -> list[str]:
+    """The routes a post's takes try, in order: the post's own body.talk_route (a name or a list), else policy
+    generation.talk_route; a route the policy doesn't define is left out. Never empty: with none defined, the
+    talk kind's own route."""
+    want = body.get("talk_route") or policy.get("generation", "talk_route", default=None) or []
+    want = [want] if isinstance(want, str) else list(want)
+    routes = _routes(policy)
+    names = [str(n) for n in want if str(n) in routes]
+    return names or ([next(iter(routes))] if routes else [""])
+
+
+def route_unavailable(policy: Policy, name: str, *, fmt: str, seconds: float, voiced: bool, moving: bool,
+                      env=None) -> str | None:
+    """Why this route can't make the take: kind or graph missing, a gated graph's token not set here, the post's
+    format not served, no designed voice line when it needs one, a motion clip to lip-sync without V2V, or a take
+    longer than its max_seconds. None when it can."""
+    route = _routes(policy).get(name)
+    if route is None:
+        return f"no generation.talk_routes.{name}" if name else None   # "": the talk kind as it always was
+    route = route or {}
+    kind = route_kind(policy, route)
+    if kind not in (policy.get("job_kinds", default={}) or {}):
+        return f"job kind {kind} is not in job_kinds"
+    if route.get("graph"):
+        from ..long_take import graph_unavailable
+        reason = graph_unavailable(policy, route["graph"], env)
+        if reason:
+            return reason
+    if route.get("formats") and fmt not in route["formats"]:
+        return f"it makes {', '.join(route['formats'])}, not {fmt}"
+    if route.get("needs_voice_line") and not voiced:
+        return "it speaks a designed voice's line, and this take has none"
+    if moving and not route.get("v2v", True):
+        return "it can't lip-sync a motion clip (walk-and-talk)"
+    if route.get("max_seconds") is not None and seconds > float(route["max_seconds"]):
+        return f"the take is {seconds:.1f} s; it makes at most {float(route['max_seconds']):g} s"
+    return None
+
+
+def take_seconds(policy: Policy, script: str, audio: dict | None) -> float:
+    """The take's length: its voice line's, else the script at generation.talk_long.words_per_second."""
+    seconds = ((audio or {}).get("meta") or {}).get("seconds")
+    if seconds:
+        return float(seconds)
+    from ..talk_segments import estimate_seconds
+    return estimate_seconds(script, float(policy.get("generation", "talk_long", "words_per_second", default=2.5)))
+
+
+def _job_route(conn, policy: Policy, job_id: str) -> str | None:
+    """The route an earlier talk job ran on (payload.talk_route; a job from before routes: the route of its kind)."""
+    row = conn.execute("SELECT kind, payload->>'talk_route' AS route, payload->>'graph' AS graph FROM jobs "
+                       "WHERE id = %s", (job_id,)).fetchone()
+    if row is None:
+        return None
+    if row["route"] is not None:
+        return row["route"]
+    for name, route in _routes(policy).items():
+        route = route or {}
+        if route_kind(policy, route) == row["kind"] and (route.get("graph") or None) == row["graph"]:
+            return name
+    return ""
+
+
+def talk_routes(conn, policy: Policy, post: dict, body: dict, prior: list[str], *, script: str,
+                audio: dict | None, motion: dict | None) -> list[str]:
+    """The routes this take may still use, in order: those of route_order that can make it, from the one its last
+    talk job ran on (a take never goes back to a route it left). Never empty: when none can, the last in the
+    order (the baseline), so the take is made as before."""
+    order = route_order(policy, body)
+    seconds = take_seconds(policy, script, audio)
+    able = [n for n in order if route_unavailable(policy, n, fmt=post["format"], seconds=seconds,
+                                                  voiced=bool(audio), moving=bool(motion)) is None]
+    on = _job_route(conn, policy, prior[-1]) if prior else None
+    if on in able:
+        able = able[able.index(on):]
+    return able or [order[-1]]
+
+
+def route_params(policy: Policy, route: dict, shot: dict | None, motion: dict | None) -> dict:
+    """The talk job's params on this route: a graph's comfy_graphs params (long_take.talk_params, as the breadth
+    takes build them), else generation.talk with the shot's talk profile and, for a motion clip, the V2V settings;
+    the route's own params on top."""
+    if route.get("graph"):
+        from ..long_take import talk_params
+        return talk_params(policy, {"graph": route["graph"], "params": route.get("params") or {}})
+    params = dict(policy.get("generation", "talk", default={}) or {})
+    params.pop("voice", None)
+    params.pop("max_take_seconds", None)   # production's take limit, not a render setting
+    from ..direction import talk_profile_for
+    profile = talk_profile_for(shot, policy)   # 720p close-ups (direction.hd_close_ups; off as shipped)
+    if profile:
+        params.update(policy.get("generation", "talk_profiles", profile, default={}) or {})
+    if motion:
+        params.update(_motion_cfg(policy).get("v2v") or {})
+    params.update(route.get("params") or {})
+    return params
+
+
+def route_repair_cfg(policy: Policy, route: dict) -> dict:
+    """review.video.talk_repair with the route's `repair` over it: its gates replace those gates' escalations, any
+    other key replaces the shared one (an empty audio_guidance: the route has no such knob)."""
+    base = dict(_repair_cfg(policy))
+    own = route.get("repair") or {}
+    out = {**base, **{k: v for k, v in own.items() if k != "gates"}}
+    out["gates"] = {**(base.get("gates") or {}), **(own.get("gates") or {})}
+    return out
 
 
 def _take_history(conn, job_ids: list[str]) -> list[dict]:
@@ -127,7 +261,7 @@ def _cause(failed: dict, gates: dict) -> str | None:
 
 
 def talk_repair(conn, policy: Policy, prior: list[str], params: dict, *, v2v: bool,
-                options: RepairOptions | None = None) -> dict | None:
+                options: RepairOptions | None = None, rcfg: dict | None = None) -> dict | None:
     """What a take's next talk job changes, given its earlier jobs (`prior`, oldest first); sets params (start_step,
     audio guidance) and returns the record kept in the job's payload.repair: {cause, knob, start_step, dead_knobs,
     applied, image_uri}. None for a first take. Knob `cutaway` means the line goes under a faceless shot instead (the
@@ -149,7 +283,7 @@ def talk_repair(conn, policy: Policy, prior: list[str], params: dict, *, v2v: bo
     if not hist:
         return None
     options = options or RepairOptions()
-    rcfg = _repair_cfg(policy)
+    rcfg = _repair_cfg(policy) if rcfg is None else rcfg   # a talk route's own (route_repair_cfg)
     gates = rcfg.get("gates") or {}
     vcfg = _motion_cfg(policy).get("v2v_repair") or {}
     last = hist[-1]
