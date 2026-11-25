@@ -1323,6 +1323,37 @@ research:
   # Discovery on a cadence (brain.discover.ensure_due, from the Brain cycle; a brain.scouts job): every_days after the
   # last discovery (scheduled or `mw discover`); 0 = by hand only. Never while operations.mode is paused.
   discover: {every_days: 7}
+  # Provider-agnostic acquisition (manyworlds.research.providers; docs/research/2026-11-25-research-providers.md).
+  # routes: providers tried in order per task (per platform); one that is unavailable (no key, no connected account,
+  # over its hourly limit), fails, or answers without the task's required fields for min_complete_share of its items
+  # is skipped for the next. Tasks: profiles; posts (cheap metadata: ids, captions, counts); posts_media (also media
+  # URLs, for posts selected for vision); search (a hashtag or keyword page).
+  # graph (Business Discovery through our own connected professional account) is free and official but reaches only
+  # Business/Creator accounts; scrapecreators is used once the owner buys credits (SCRAPECREATORS_API_KEY); apify
+  # stays the fallback, and the default while it is the only key we hold.
+  providers:
+    routes:
+      profiles: {instagram: [graph, scrapecreators, apify], tiktok: [scrapecreators, apify]}
+      posts: {instagram: [graph, scrapecreators, apify], tiktok: [scrapecreators, apify]}
+      posts_media: {instagram: [scrapecreators, apify], tiktok: [scrapecreators, apify]}
+      search: {instagram: [scrapecreators, apify], tiktok: [scrapecreators, apify]}
+    required:
+      profiles: [handle, followers]
+      posts: [external_id, posted_at]
+      posts_media: [external_id, posted_at, images]
+      search: [external_id]
+    min_complete_share: 0.8
+    # terms: logged_out_public (the provider says so), public_unstated (public data; method not stated), official
+    # (the platform's own API), private_api (sessions on the mobile private API: conflicts with the research privacy
+    # rule in CLAUDE.md; never routed unless the owner decides otherwise).
+    catalog:
+      apify: {env: APIFY_TOKEN, platforms: [instagram, tiktok], terms: logged_out_public,
+              profile_posts: 12}          # apify~instagram-profile-scraper embeds the latest 12 posts in one item
+      scrapecreators: {env: SCRAPECREATORS_API_KEY, platforms: [instagram, tiktok], terms: public_unstated,
+                       usd_per_credit: 0.00188, max_pages: 5}   # $47 for 25,000 credits (2026-11-24); 12 posts a page
+      graph: {env: META_SYSTEM_USER_TOKEN, platforms: [instagram], terms: official, profile_posts: 12, max_pages: 5,
+              max_calls_per_hour: 180}    # platform rate limit: 200 calls/user/hour; a margin kept
+      hikerapi: {enabled: false, platforms: [instagram], terms: private_api}   # not built (see the research doc)
 
 # Trend watcher (manyworlds.research.trends; `mw trends tick|loop|brief <niche>|spend`; Fly process `trends`).
 # Owner 2026-11-22: know what is working, hot or cooling, hooks and patterns, at most $3 a day. Off until the owner
@@ -1441,6 +1472,47 @@ intelligence:
     sponsored_markers: ["#ad", "#sponsored", "#advertisement", "#werbung", "#anzeige", "paid partnership",
                         "#partner", "#gifted"]
     activity_bands: {high: 0.08, medium: 0.03}
+  # Cost-aware monitoring of the reference creator universe (manyworlds.research.monitor; migration 045; the agent's
+  # `monitor` mode, queued once a day by monitor_due on the Brain cycle while enabled and operations are live, or by
+  # `mw research monitor`). A creator's tier comes from four scores in [0, 1] weighted by `weights`: relevance (its
+  # scores.relevance, else role_relevance by role), growth (followers a month over growth_full), performance (median
+  # engagement over followers, over engagement_full), intelligence value (posts selected in 90 days plus twice the
+  # cards citing it, over intelligence_full); >= bands.hot: hot, >= bands.warm: warm, else cold; no post in
+  # dormant_after_days: dormant. Each tier: a check every every_days (spread by +-jitter/2) pulling `posts` posts of
+  # cheap metadata through research.providers (one call on most routes). `select`: the deterministic filters that
+  # pick posts for vision (see the module); only they get media and a vision read (annotate.max_posts a run).
+  # usd_per_check: the estimate the budget is checked against (Apify profile scraper $0.0023 embeds 12 posts;
+  # ScrapeCreators $0.00188 a page; Business Discovery free). mix, select_rate, usd_per_vision_post: for
+  # `mw research monitor --estimate N` ($/month at N creators). Off until the owner turns it on.
+  monitor:
+    enabled: false
+    daily_usd: 1.0
+    max_checks_per_tick: 400
+    max_enroll_per_tick: 500
+    # Batched profile checks: Apify's profile scraper takes many handles a run and embeds each one's latest 12 posts
+    # (one -e.0023 item a creator, measured 2026-11-25; no reel view counts in that answer).
+    prefetch: {platforms: [instagram], batch: 25}
+    retry_days: 1
+    jitter: 0.2
+    tiers:
+      hot: {every_days: 1, posts: 12}
+      warm: {every_days: 7, posts: 12}
+      cold: {every_days: 30, posts: 12}
+      dormant: {every_days: 90, posts: 12}
+    weights: {relevance: 0.35, growth: 0.25, performance: 0.25, intelligence: 0.15}
+    bands: {hot: 0.7, warm: 0.4}
+    dormant_after_days: 120
+    role_relevance: {other: 0.8, leader: 0.6, riser: 0.7, mid: 0.7, adjacent: 0.4, low_comparator: 0.3}
+    growth_full: 0.1               # +10% followers a month scores 1
+    engagement_full: 0.05          # median engagement 5% of followers scores 1
+    intelligence_full: 6
+    select: {outperform: 2.0, min_posts_for_baseline: 6, new_format: true, new_tags_min: 2, window_days: 45,
+             max_per_check: 3}
+    usd_per_check: {instagram: 0.0023, tiktok: 0.024, default: 0.003}   # Apify, measured 2026-11-25 (12 TikTok results)
+    annotate: {max_posts: 40}
+    mix: {hot: 0.02, warm: 0.18, cold: 0.6, dormant: 0.2}
+    select_rate: 0.15              # selected posts per check (expected)
+    usd_per_vision_post: 0.004     # a batched Haiku read, per post
   # The influencer intelligence agent (brain/agents/intelligence.py, job kind brain.intelligence; requests of kind
   # `intelligence` commission it). Modes: scout (pick creators from hashtag pulls and named handles, pull their posts),
   # annotate (finish.measure_video for videos, a batched Haiku read of images, frames and caption), distill (clusters
@@ -1474,10 +1546,16 @@ intelligence:
       instagram_profile: apify~instagram-profile-scraper
       instagram_posts: apify~instagram-post-scraper
       tiktok_profile: clockworks~tiktok-profile-scraper
-    usd_per_item: {instagram_profile: 0.0026, instagram_posts: 0.0017, tiktok_profile: 0.003,
+    # Billed on our plan (Starter) in the 2026-11-25 benchmark (docs/research/2026-11-25-research-providers.md): a
+    # profile $0.0023; the post scraper bills post + post-details on every post ($0.0023 a post, not $0.0017); a TikTok
+    # profile result $0.002; an error item (no posts, no account) is billed like a result.
+    usd_per_item: {instagram_profile: 0.0023, instagram_posts: 0.0023, tiktok_profile: 0.002,
                    tiktok_video_download: 0.0013}
-    usd_per_hashtag_item: {instagram: 0.0027, tiktok: 0.0037}   # store API 2026-11-24 (research.usd_per_1k_items is older)
+    usd_per_hashtag_item: {instagram: 0.0023, tiktok: 0.003}   # store API BRONZE (our plan, per the 2026-11-25 bill)
     download_videos: true
+    # Which posts' videos a scout copies: all, or selected (only posts the monitor's deterministic filters pick:
+    # intelligence.monitor.select). Images are small and every post's are copied for the vision read.
+    videos_for: selected
     max_media_bytes: 60000000
     images_per_post: 3            # carousel slides kept and read
     posts_newer_than_days: 120    # at least 3 months of a creator's posts (spec 3.2)

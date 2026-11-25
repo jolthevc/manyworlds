@@ -695,7 +695,6 @@ def _dry_run(conn, pol: Policy, plan: dict, rid: str, todo: list[Item], creators
 
 def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, todo: list[Item], creators: dict, *,
            store, llm, once: bool, hours: float | None, sleep, now, holder: str) -> dict:
-    from . import production
     cfg = _cfg(pol)
     loop_s = float(cfg.get("loop_seconds", 60))
     errors: dict[str, str] = {}
@@ -726,16 +725,7 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
     deadline = first + timedelta(hours=float(hours if hours is not None else cfg.get("deadline_hours", 12)))
     while True:
         queue.reap(conn)
-        for post in conn.execute("SELECT * FROM posts WHERE body->>'breadth_run' = %s AND status = 'producing'",
-                                 (rid,)).fetchall():
-            _renew_lease(conn, rid, holder, loop_s * 3)   # a finish or review can take minutes: keep the run ours
-            try:
-                production.advance_post(conn, pol, post, store, llm=llm)
-            except Exception as e:  # noqa: BLE001 - one post's bug must not stop the others
-                errors[post["body"].get("breadth_item", str(post["id"]))] = f"{type(e).__name__}: {e}"[:300]
-                # Counted as the producer counts it (production.max_advance_errors, then dropped with the error and
-                # the owner told): a post whose advance raised every loop hung in producing for hours (2026-11-23).
-                production._advance_failed(conn, pol, post, e)
+        _advance_posts(conn, pol, rid, holder, loop_s, store=store, llm=llm, errors=errors)
         for iid, item in takes.items():
             if (take_states.get(iid) or {}).get("state") in ("done", "failed"):
                 continue
@@ -759,6 +749,10 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
                 sets.refresh(conn, pol, cid)
             except Exception as e:  # noqa: BLE001
                 errors["plates"] = f"{type(e).__name__}: {e}"[:300]
+        # Again after the reviews and plates: what a photo accepted just now unblocks (a shared set's followers, the
+        # clip) starts in this pass. 2026-11-25: the queued driver's step reviewed the leader photo after its advance
+        # and deferred, and its eight followers waited for a next step that a long brain job held off.
+        _advance_posts(conn, pol, rid, holder, loop_s, store=store, llm=llm, errors=errors, count_failures=False)
         state = _state(conn, rid, list(benches.values()), takes=take_states, expected_takes=list(takes))
         spent = run_spend(conn, batch)
         log.info("breadth %s: posts %s, open bench jobs %s, spent $%.2f", rid, state["posts"],
@@ -780,6 +774,24 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
         _renew_lease(conn, rid, holder, loop_s * 3)
         sleep(loop_s)
     return {**state, "deadline": deadline.isoformat(), "spent_usd": round(run_spend(conn, batch), 2), "errors": errors}
+
+
+def _advance_posts(conn, pol: Policy, rid: str, holder: str, loop_s: float, *, store, llm, errors: dict,
+                   count_failures: bool = True) -> None:
+    """One advance pass over the run's producing posts (production.advance_post), keeping the run's lease.
+    `count_failures`: a post whose advance raised is counted as the producer counts it (production.max_advance_errors,
+    then dropped with the error and the owner told: a post whose advance raised every loop hung in producing for
+    hours, 2026-11-23). The pass after the reviews only records the error, so each loop counts a failure once."""
+    from . import production
+    for post in conn.execute("SELECT * FROM posts WHERE body->>'breadth_run' = %s AND status = 'producing'",
+                             (rid,)).fetchall():
+        _renew_lease(conn, rid, holder, loop_s * 3)   # a finish or review can take minutes: keep the run ours
+        try:
+            production.advance_post(conn, pol, post, store, llm=llm)
+        except Exception as e:  # noqa: BLE001 - one post's bug must not stop the others
+            errors[post["body"].get("breadth_item", str(post["id"]))] = f"{type(e).__name__}: {e}"[:300]
+            if count_failures:
+                production._advance_failed(conn, pol, post, e)
 
 
 def _state(conn, rid: str, bench_batches: list[str], *, takes: dict | None = None,

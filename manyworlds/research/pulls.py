@@ -19,6 +19,7 @@ asked to be forgotten (research_forget) is never pulled.
 
 from __future__ import annotations
 
+import hashlib
 import statistics
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -206,35 +207,51 @@ def upsert_creator(conn, platform: str, handle: str, **fields) -> str:
     return str(row["id"])
 
 
+def content_hash(p: dict) -> str:
+    """What a post shows that can change: its caption, with its media type. A published post's media cannot be
+    replaced, and media URLs and carousel child lists differ by provider and signature, so they are left out.
+    Annotations remember it, so unchanged content is never read again (manyworlds.research.monitor)."""
+    text = f"{p.get('media_type') or ''}|{str(p.get('caption') or '').strip()}"
+    return hashlib.sha256(text.encode()).hexdigest()[:20]
+
+
 def upsert_post(conn, policy: Policy, creator_id: str, platform: str, p: dict) -> str:
     now = datetime.now(timezone.utc)
     row = conn.execute(
         """INSERT INTO reference_posts (creator_id, platform, external_id, url, media_type, posted_at, caption, metrics,
-                                        snapshots)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                        snapshots, content_hash)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (platform, external_id) DO UPDATE SET metrics = EXCLUDED.metrics,
-               snapshots = reference_posts.snapshots || EXCLUDED.snapshots, fetched_at = now()
+               snapshots = reference_posts.snapshots || EXCLUDED.snapshots, fetched_at = now(),
+               caption = coalesce(EXCLUDED.caption, reference_posts.caption),
+               content_hash = CASE WHEN EXCLUDED.caption IS NULL THEN reference_posts.content_hash
+                                   ELSE EXCLUDED.content_hash END
            RETURNING id""",
         (creator_id, platform, p["external_id"], p.get("url"), p.get("media_type"), p.get("posted_at"),
-         p.get("caption"), Jsonb(p.get("metrics") or {}), Jsonb([{"at": now.isoformat(), **(p.get("metrics") or {})}]))
+         p.get("caption") or None, Jsonb(p.get("metrics") or {}),
+         Jsonb([{"at": now.isoformat(), **(p.get("metrics") or {})}]), content_hash(p))
     ).fetchone()
     return str(row["id"])
 
 
 def store_media(conn, policy: Policy, store, download, post_id: str, p: dict, workdir: Path) -> list[dict]:
     """Research copies of a post's images (up to images_per_post) and video in the research store, under the post's
-    retention (media_purge_after). A post that already has media is left alone."""
+    retention (media_purge_after). Each kind is copied once: a post that already has images (or its video) keeps
+    them, so a video added later for a selected post (manyworlds.research.monitor) never copies the images again."""
     cfg = _cfg(policy)
     if store is None:
         return []
     have = conn.execute("SELECT media FROM reference_posts WHERE id = %s", (post_id,)).fetchone()
-    if have and have["media"]:
-        return have["media"]
+    media = list((have or {}).get("media") or [])
+    kinds = {m.get("kind") for m in media}
     limit = int(cfg.get("max_media_bytes", 60_000_000))
-    media = []
-    wanted = [("image", u, f"img{i}.jpg") for i, u in enumerate(p.get("images", [])[:int(cfg.get("images_per_post", 3))])]
-    if p.get("video_url") and cfg.get("download_videos", True):
+    wanted = [] if "image" in kinds else [
+        ("image", u, f"img{i}.jpg") for i, u in enumerate(p.get("images", [])[:int(cfg.get("images_per_post", 3))])]
+    if p.get("video_url") and cfg.get("download_videos", True) and "video" not in kinds:
         wanted.append(("video", p["video_url"], "video.mp4"))
+    if not wanted:
+        return media
+    before = len(media)
     for kind, url, name in wanted:
         try:
             local = download(url, workdir / post_id / name, limit)
@@ -245,7 +262,7 @@ def store_media(conn, policy: Policy, store, download, post_id: str, p: dict, wo
         o = store.put_file(Path(local), references.media_key(post_id, name))
         media.append({"uri": o.uri, "kind": kind, "bytes": o.bytes})
         Path(local).unlink(missing_ok=True)
-    if media:
+    if len(media) > before:
         conn.execute("UPDATE reference_posts SET media = %s, media_purge_after = %s WHERE id = %s",
                      (Jsonb(media), references.media_purge_after(policy), post_id))
     return media
@@ -278,7 +295,8 @@ def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download
                                                 "onlyPostsNewerThan": since.isoformat(), "skipPinnedPosts": True})
         cost = len(raw) * _price(policy, "instagram_posts")
     else:
-        download_videos = bool(cfg.get("download_videos", True))
+        # Apify's paid video download only when every video is kept; selected videos come from the post's own link
+        download_videos = bool(cfg.get("download_videos", True)) and cfg.get("videos_for", "all") == "all"
         raw = fetch(actors["tiktok_profile"], {"profiles": [handle], "resultsPerPage": n,
                                                "shouldDownloadVideos": download_videos})
         cost = len(raw) * (_price(policy, "tiktok_profile")
@@ -292,15 +310,23 @@ def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download
     cid = upsert_creator(conn, platform, handle, role=c.get("role"), **profile,
                          selected_because=c.get("why") or ("named in the brief" if c.get("named") else c.get("role")),
                          found_via={"tags": c.get("tags") or [], "named": bool(c.get("named"))})
-    stored = 0
+    stored, by_id = 0, {}
+    every_video = cfg.get("videos_for", "all") == "all"
     for item in raw:
         p = NORMALIZE[platform](item) if isinstance(item, dict) else None
         if not p:
             continue
         pid = upsert_post(conn, policy, cid, platform, p)
-        store_media(conn, policy, store, download, pid, p, workdir)
+        by_id[pid] = p
+        store_media(conn, policy, store, download, pid, p if every_video else {**p, "video_url": None}, workdir)
         stored += 1
     baselines(conn, cid)
+    if not every_video:      # videos only for the posts the deterministic filters pick (manyworlds.research.monitor)
+        from . import monitor
+        for x in monitor.select(conn, policy, cid, by_id, now=datetime.now(timezone.utc),
+                                 window_days=float(cfg.get("posts_newer_than_days", 120))):
+            if (by_id.get(x["id"]) or {}).get("video_url"):
+                store_media(conn, policy, store, download, x["id"], by_id[x["id"]], workdir)
     span = conn.execute("SELECT extract(epoch FROM max(posted_at) - min(posted_at)) / 86400 AS d, count(*) n, "
                         "count(*) FILTER (WHERE metrics ? 'views') v FROM reference_posts WHERE creator_id = %s",
                         (cid,)).fetchone()
