@@ -1,0 +1,27 @@
+# LTX-2.5 distilled audio-to-video (Lightricks, LTX-2.x Community License: free below US$10M annual revenue; its AUP
+# requires disclosing machine-generated content, which our disclosure rule already does): photo + our voice line ->
+# a video that speaks it. The line is encoded by the audio VAE and kept fixed (noise mask 0) while the video is
+# generated around it; the clip keeps our line, not the model's re-decoded copy (comfy_graphs mux_audio).
+source:
+  repo: https://github.com/Comfy-Org/workflow_templates
+  commit: eac646cad5e9f37a78f296da56b48f61ad94e7a4
+  example: >-
+    templates/video_ltx2_5_i2v.json (the LTX-2.5 graph, as in ltx25_i2v_av) with the audio input of
+    templates/video_ltx2_3_ia2v.json (LTX-2.3 image + audio to video: TrimAudioDuration -> LTXVAudioVAEEncode ->
+    SetLatentNoiseMask with a SolidMask of 0, in place of the empty audio latent). There is no LTX-2.5 audio-to-video
+    template yet: the combination is ours, from the two published graphs.
+  converted: By hand to API format, as ltx25_i2v_av (see its sidecar for what was left out).
+  size: 9:16 at 576x1024 (stage one at 288x512); frames are 8k + 1 at 24 fps; the line is padded to the clip's length.
+inputs:
+  image: [image.image]
+  audio: [audio.audio]
+  prompt: [positive.text]
+  negative_prompt: [negative.text]
+  seed: [noise_1.noise_seed]
+  width: [keep_audio.width]
+  height: [keep_audio.height]
+  half_width: [empty_video.width]
+  half_height: [empty_video.height]
+  frames: [empty_video.length]
+  seconds: [trim.duration]
+  fps: [conditioning.frame_rate, video.fps]

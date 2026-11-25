@@ -521,6 +521,8 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
                 from .handlers import talk_infinitetalk as mod
         elif kind == "comfy.wan_animate2":   # dance (policy dance, off): Wan-Animate-2 on the ComfyUI image, family dance
             from .handlers import dance_animate as mod
+        elif kind == "comfy.graph":     # any named ComfyUI workflow (worker/graphs, policy comfy_graphs)
+            from .handlers import comfy_graph as mod
         elif family == "comfy":          # ComfyUI + WanVideoWrapper graphs on the talk worker image (story clips)
             from .handlers import comfy_video as mod
         elif family == "voice":          # designed voices (VoxCPM2), also on the talk worker image

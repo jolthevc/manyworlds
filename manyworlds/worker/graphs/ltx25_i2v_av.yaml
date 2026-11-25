@@ -1,0 +1,25 @@
+# LTX-2.5 distilled (Lightricks, LTX-2.x Community License: free below US$10M annual revenue; its AUP requires
+# disclosing machine-generated content, which our disclosure rule already does): photo + prompt -> video WITH its
+# own audio (one model makes both). The voice is the model's, not the creator's designed voice: for comparison only.
+source:
+  repo: https://github.com/Comfy-Org/workflow_templates
+  commit: eac646cad5e9f37a78f296da56b48f61ad94e7a4
+  example: templates/video_ltx2_5_i2v.json (minComfyUIVersion 0.32.0; our image runs ComfyUI v0.45.0)
+  converted: >-
+    By hand from the template's "Image to Video (LTX-2.5)" subgraph to API format, flattened, input names from
+    ComfyUI v0.45.0's node definitions (comfy_extras/nodes_lt.py, nodes_lt_audio.py, nodes_custom_sampler.py,
+    nodes.py). Left out: the optional Gemma prompt enhancer (TextGenerateLTX2Prompt, its switch and preview), the
+    ResolutionSelector, the image resize (our photo is fitted to the frame first) and the math nodes (frames, half
+    sizes and seconds are worked out by the handler). Kept: int8 ConvRot distilled DiT and Gemma 4 12B text encoder,
+    LTXVPreprocess 18, two stages (8 then 3 manual sigmas, euler_ancestral, dual CFG 1/1) with the x2 spatial
+    latent upscaler between them, image strength 0.7 then 1.0, tiled decode, 24 fps.
+  size: 9:16 at 576x1024 (stage one at 288x512; every side a multiple of 32); frames are 8k + 1 at 24 fps.
+inputs:
+  image: [image.image]
+  prompt: [positive.text]
+  negative_prompt: [negative.text]
+  seed: [noise_1.noise_seed]
+  half_width: [empty_video.width]
+  half_height: [empty_video.height]
+  frames: [empty_video.length, empty_audio.frames_number]
+  fps: [conditioning.frame_rate, empty_audio.frame_rate, video.fps]

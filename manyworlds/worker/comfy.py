@@ -215,15 +215,82 @@ def _get(path: str, timeout: float = 10):
         return json.loads(r.read())
 
 
-def write_model_paths(models_dir: Path) -> Path:
+def write_model_paths(models_dir: Path, extra: tuple[str, ...] | list[str] = ()) -> Path:
     """ComfyUI reads model folders from extra_model_paths.yaml: point them at the weights cache (a network volume
-    where the pool has one), so weights are downloaded once."""
+    where the pool has one), so weights are downloaded once. `extra`: a named graph's folders (comfy_graphs; a
+    folder with a slash is a node pack's own directory, reached by link_models instead). ComfyUI reads the file only
+    at start, so a running server that lacks a folder now listed is restarted by start()."""
     cfg = COMFY_DIR / "extra_model_paths.yaml"
     folders = dict.fromkeys([*WEIGHTS, *I2V_WEIGHTS, *(f for w in LONGCAT_WEIGHTS.values() for f in w),
-                             *CLIP_VISION_WEIGHTS])
+                             *CLIP_VISION_WEIGHTS, *(f for f in extra if "/" not in f)])
+    _server["folders"] = set(folders)
     lines = ["mw:", f"  base_path: {models_dir}"] + [f"  {folder}: {folder}" for folder in folders]
     cfg.write_text("\n".join(lines) + "\n")
     return cfg
+
+
+def link_models(models_dir: Path, names: list[str] | tuple[str, ...]) -> list[Path]:
+    """Node packs that read their weights from ComfyUI/models/<name> itself (ComfyUI_EchoMimic: models/echo_mimic)
+    get that directory as a link into the weights cache. The pack makes an empty one when ComfyUI imports it: an empty
+    directory is replaced, one holding files is left alone (refused: the weights would be split in two places)."""
+    import shutil
+    made = []
+    for name in names:
+        target, link = Path(models_dir) / name, COMFY_DIR / "models" / name
+        target.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            if link.resolve() == target.resolve():
+                continue
+            link.unlink()
+        elif link.is_dir():
+            if any(p.is_file() for p in link.rglob("*")):
+                raise RuntimeError(f"{link} holds files; expected a link to {target}")
+            shutil.rmtree(link)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target, target_is_directory=True)
+        made.append(link)
+    return made
+
+
+class VramPeak:
+    """The most GPU memory in use while a render runs, sampled every `every_s` from ComfyUI's /system_stats (the
+    card's own free figure, so other processes on it count too). For benchmarks: {peak_gb, total_gb, samples}."""
+
+    def __init__(self, every_s: float, stats=None):
+        import threading
+        self.every_s, self._stats = float(every_s), stats or (lambda: _get("/system_stats", timeout=5))
+        self._stop, self._thread = threading.Event(), None
+        self.peak_gb, self.total_gb, self.samples = None, None, 0
+
+    def sample(self) -> None:
+        try:
+            dev = (self._stats().get("devices") or [{}])[0]
+            total, free = float(dev["vram_total"]), float(dev["vram_free"])
+        except Exception:  # noqa: BLE001 - a missed sample only makes the peak a lower bound
+            return
+        used = round((total - free) / 1e9, 2)
+        self.peak_gb = used if self.peak_gb is None else max(self.peak_gb, used)
+        self.total_gb, self.samples = round(total / 1e9, 1), self.samples + 1
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.every_s):
+            self.sample()
+
+    def __enter__(self) -> "VramPeak":
+        import threading
+        self.sample()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="vram-peak")
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.every_s + 5)
+        self.sample()
+
+    def result(self) -> dict:
+        return {"peak_gb": self.peak_gb, "total_gb": self.total_gb, "samples": self.samples}
 
 
 def _remote_size(repo: str, name: str, token) -> int | None:
@@ -333,10 +400,14 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
 
 
 def start(*, args: tuple[str, ...] = (), wait_s: float = 600) -> None:
-    """Start ComfyUI once per worker and wait until it answers."""
+    """Start ComfyUI once per worker and wait until it answers (again, when write_model_paths has listed a model
+    folder since it started: it reads them only at start)."""
     proc = _server["proc"]
     if proc is not None and proc.poll() is None:
-        return
+        if not set(_server.get("folders") or ()) - set(_server.get("started_with") or ()):
+            return
+        stop()
+    _server["started_with"] = set(_server.get("folders") or ())
     log_path = Path(os.environ.get("MW_COMFY_LOG", "/tmp/comfyui.log"))
     log = open(log_path, "ab")
     _server["proc"] = subprocess.Popen(
@@ -593,11 +664,15 @@ def _longcat_graph(*, image: str, audio: str, prompt: str, frames: int, seed: in
     fps = LONGCAT_FPS[v]
     n = longcat_windows(int(frames), window, overlap)
     tiles = {"enable_vae_tiling": False, "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128}
+    # vae_file: another Wan 2.1 VAE in the vae folder (talk profile longcat_fast: lightx2v's 75%-pruned LightVAE,
+    # which WanVideoVAELoader detects by its width); merge_loras: the distill LoRA merged into the weights;
+    # text_device cpu: UMT5 encodes on the CPU, leaving the card to the DiT.
     g = {
-        "vae": {"class_type": "WanVideoVAELoader", "inputs": {"model_name": VAE, "precision": "bf16"}},
+        "vae": {"class_type": "WanVideoVAELoader", "inputs": {"model_name": p.get("vae_file") or VAE,
+                                                              "precision": "bf16"}},
         "lora": {"class_type": "WanVideoLoraSelect",
                  "inputs": {"lora": weights["loras"][0][1], "strength": float(p.get("lora_strength", 0.9)),
-                            "low_mem_load": False, "merge_loras": False}},
+                            "low_mem_load": False, "merge_loras": bool(p.get("merge_loras", False))}},
         "swap": {"class_type": "WanVideoBlockSwap",
                  "inputs": {"blocks_to_swap": int(blocks_to_swap), "offload_img_emb": False, "offload_txt_emb": False,
                             "use_non_blocking": True, "vace_blocks_to_swap": 0, "prefetch_blocks": 1,
@@ -610,7 +685,7 @@ def _longcat_graph(*, image: str, audio: str, prompt: str, frames: int, seed: in
         "text": {"class_type": "WanVideoTextEncodeCached",
                  "inputs": {"model_name": TEXT_ENCODER, "precision": "bf16", "positive_prompt": prompt,
                             "negative_prompt": negative_text(p, negative), "quantization": "disabled",
-                            "use_disk_cache": False, "device": "gpu"}},
+                            "use_disk_cache": False, "device": p.get("text_device", "gpu")}},
         "image": {"class_type": "LoadImage", "inputs": {"image": image}},
         "ref": {"class_type": "WanVideoEncode",
                 "inputs": {"vae": ["vae", 0], "image": ["image", 0], **tiles, "noise_aug_strength": 0.0,

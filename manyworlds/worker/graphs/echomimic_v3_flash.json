@@ -1,0 +1,11 @@
+{
+  "image": {"class_type": "LoadImage", "inputs": {"image": "mw_input.png"}},
+  "audio": {"class_type": "LoadAudio", "inputs": {"audio": "mw_input.wav"}},
+  "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "default"}},
+  "clip_vision": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": "split_files/clip_vision/clip_vision_h.safetensors"}},
+  "model": {"class_type": "Echo_LoadModel", "inputs": {"vae": "Wan2.1_VAE.pth", "lora": "None", "denoising": true, "infer_mode": "audio_drived", "lowvram": true, "teacache_offload": false, "block_offload": false, "use_mmgp": "None", "version": "V3_flash"}},
+  "predata": {"class_type": "Echo_Predata", "inputs": {"info": ["model",1], "image": ["image",0], "audio": ["audio",0], "clip": ["clip",0], "clip_vision": ["clip_vision",0], "prompt": "a person is speaking", "negative_prompt": "Gesture is bad. Gesture is unclear. Strange and twisted hands. Bad hands. Bad fingers. Unclear and blurry hands.", "pose_dir": "pose_01", "width": 512, "height": 768, "fps": 25, "facemask_ratio": 0.1, "facecrop_ratio": 0.8, "length": 251, "partial_video_length": 97, "draw_mouse": false, "motion_sync_": false}},
+  "sampler": {"class_type": "Echo_Sampler", "inputs": {"model": ["model",0], "emb": ["predata",0], "seed": 917844618, "cfg": 6, "steps": 8, "sample_rate": 16000, "context_frames": 12, "context_overlap": 3, "save_video": false}},
+  "video": {"class_type": "CreateVideo", "inputs": {"images": ["sampler",0], "audio": ["audio",0], "fps": ["sampler",1]}},
+  "save": {"class_type": "SaveVideo", "inputs": {"video": ["video",0], "filename_prefix": "mw_graph_echomimic", "format": "mp4", "codec": "h264"}}
+}
