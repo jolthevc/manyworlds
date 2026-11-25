@@ -13,9 +13,13 @@ from brain_helpers import StubLLM
 from test_breadth import _creator, _paused
 
 
+REAL_WINDOW = breadth_driver._window
+
+
 @pytest.fixture()
 def driver_store(monkeypatch, store):
     monkeypatch.setattr(breadth_driver, "_store", lambda: store)
+    monkeypatch.setattr(breadth_driver, "_window", lambda cfg: 0.0)   # one pass per job run (no real sleeps)
     return store
 
 
@@ -44,7 +48,8 @@ def test_a_step_advances_the_run_then_defers_the_job_without_charging_an_attempt
     handle = _creator(conn)
     out = breadth.enqueue_driver(conn, pol, "default", items=["photo_propped_pose"], creator=handle)
     res = runtime.tick(conn, pol, StubLLM(conn=conn), worker_id="brain-1")
-    assert res[0]["status"] == "deferred" and res[0]["seconds"] == breadth._cfg(breadth.test_policy(pol))["loop_seconds"]
+    defer_s = breadth._cfg(breadth.test_policy(pol))["driver_defer_seconds"]
+    assert res[0]["status"] == "deferred" and res[0]["seconds"] == defer_s
     job = _job(conn, out["driver_job"])
     assert job["status"] == "queued" and job["attempts"] == 0 and job["run_after"] is not None
     assert job["result"]["run"] == out["run"] and "posts" in job["result"]
@@ -99,6 +104,78 @@ def test_the_cli_queues_the_driver(conn, policy, capsys):
     assert cli._test(args, conn, _paused(policy)) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["queued"] and _job(conn, out["driver_job"])["kind"] == breadth.DRIVER_KIND
+
+
+def _shared_set_run(conn, raw_policy, monkeypatch):
+    """A queued maren_final run (one talking video, its shots on one shared set: the leader photo first, the
+    followers waiting for it) on a test creator."""
+    from test_talk_route import _maren
+    monkeypatch.setenv("HF_TOKEN", "test-token")
+    pol = _paused(raw_policy)
+    handle = _maren(conn)
+    cid = conn.execute("SELECT id FROM creators WHERE handle = %s", (handle,)).fetchone()["id"]
+    out = breadth.enqueue_driver(conn, pol, "maren_final", creator=handle)
+    return pol, cid, out
+
+
+def _scene_jobs(conn, run):
+    row = conn.execute("SELECT body FROM posts WHERE body->>'breadth_run' = %s", (run,)).fetchone()
+    return row["body"]["scene_jobs"]
+
+
+def test_a_photo_accepted_by_a_steps_review_starts_its_followers_in_that_step(conn, raw_policy, monkeypatch,
+                                                                                driver_store):
+    # 2026-11-25 (maren-final-1): the queued step advanced its post, then its review accepted the leader photo, then
+    # it deferred; the eight followers waited for a next step that a long brain job (intelligence) held off. A
+    # step's reviews are now followed by an advance pass in the same step.
+    from test_shared_set import _accept
+    pol, cid, out = _shared_set_run(conn, raw_policy, monkeypatch)
+    monkeypatch.setattr(breadth, "_review", lambda *a, **k: {})
+    assert runtime.tick(conn, pol, StubLLM(conn=conn), worker_id="brain-1")[0]["status"] == "deferred"
+    jobs = _scene_jobs(conn, out["run"])
+    assert len(jobs) > 2 and len(jobs[0]) == 1 and not any(jobs[1:])   # the leader first, its followers wait
+    accepted = []
+
+    def review(*a, **k):   # this step's review accepts the leader photo
+        if not accepted:
+            accepted.append(_accept(conn, jobs[0][0], cid))
+        return {}
+    monkeypatch.setattr(breadth, "_review", review)
+    conn.execute("UPDATE jobs SET run_after = NULL WHERE id = %s", (out["driver_job"],))
+    assert runtime.tick(conn, pol, StubLLM(conn=conn), worker_id="brain-1")[0]["status"] == "deferred"
+    assert accepted and all(len(j) == 1 for j in _scene_jobs(conn, out["run"]))   # the followers started at once
+
+
+def test_a_queued_step_drives_the_run_for_its_window_then_is_due_again_soon(conn, raw_policy, monkeypatch,
+                                                                         driver_store):
+    # The brain worker runs one job at a time: one claim drives several passes, loop_seconds apart, for
+    # breadth.driver_step_seconds; then the job defers for breadth.driver_defer_seconds, so at its urgent priority
+    # it is the next brain job claimed, ahead of a long one.
+    pol, _, out = _shared_set_run(conn, raw_policy, monkeypatch)
+    cfg = breadth._cfg(breadth.test_policy(pol))
+    clock = {"t": 0.0}
+    passes, sleeps = [], []
+    real = breadth.run
+
+    def counted(*a, **k):
+        passes.append(k.get("once"))
+        return real(*a, **k)
+
+    def sleep(s):
+        sleeps.append(s)
+        clock["t"] += s
+    monkeypatch.setattr(breadth, "run", counted)
+    monkeypatch.setattr(breadth_driver, "_sleep", sleep)
+    monkeypatch.setattr(breadth_driver, "_clock", lambda: clock["t"])
+    monkeypatch.setattr(breadth_driver, "_window", REAL_WINDOW)
+    res = runtime.tick(conn, pol, StubLLM(conn=conn), worker_id="brain-1")
+    window, loop_s = float(cfg["driver_step_seconds"]), float(cfg["loop_seconds"])
+    assert res[0]["status"] == "deferred" and res[0]["seconds"] == float(cfg["driver_defer_seconds"])
+    assert float(cfg["driver_defer_seconds"]) < float(pol.get("brain", "runtime", "loop_seconds"))
+    assert passes and all(passes) and len(passes) == int(window // loop_s) + 1   # each pass is one once=True step
+    assert sleeps == [loop_s] * (len(passes) - 1)
+    job = _job(conn, out["driver_job"])
+    assert job["status"] == "queued" and job["attempts"] == 0 and job["result"]["passes"] == len(passes)
 
 
 def test_a_single_step_still_checks_the_deadline_and_ends_the_run(conn, policy, store):
