@@ -4,7 +4,8 @@ production.finish_mode is queue); repairs of a take that failed lip sync (talk_r
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from psycopg.types.json import Jsonb
 
@@ -43,10 +44,19 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
         params.update(_motion_cfg(policy).get("v2v") or {})
     prior = ((body.get("talk_segment_jobs") or [])[segment] if segment is not None
              and segment < len(body.get("talk_segment_jobs") or []) else body.get("talk_jobs") or [])
-    repair = talk_repair(conn, policy, [str(j) for j in prior], params, v2v=bool(motion))
+    photo = start_uri or _take_photo(body, chosen, i)["uri"]
+    options = RepairOptions(
+        photos=(lambda used: _other_photos(conn, body, i, used)) if not start_uri else None,
+        cutaway=(lambda: _cutaway_photo(policy, body, chosen, segment)) if segment is not None else None)
+    repair = talk_repair(conn, policy, [str(j) for j in prior], params, v2v=bool(motion), options=options)
+    if repair and repair.get("knob") == "cutaway":   # the line goes under a cutaway shot, in the same voice
+        body["talk_modes"][segment] = "narrated"
+        body.setdefault("rerouted", {})[str(segment)] = {"image_uri": repair["image_uri"],
+                                                         "reason": repair.get("reason", "")}
+        return _cutaway_job(conn, policy, post, body, chosen, attempt, segment=segment, audio=audio)
     script = unmarked(_take_script(body, segment))
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
-    payload = {"image_uri": start_uri or _take_photo(body, chosen, i)["uri"], "script": script,
+    payload = {"image_uri": (repair or {}).get("image_uri") or photo, "script": script,
                "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),
                # the video judge scores against it (a music_video take sings its song's words)
                "scene": f"{scene} {'Singing' if post['format'] in SUNG else 'Speaking'} to camera: {script}",
@@ -68,12 +78,14 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
 
 
 def _take_history(conn, job_ids: list[str]) -> list[dict]:
-    """A take's earlier talk jobs, oldest first: {id, start_step, repair, passed, corr} (passed and corr from the
-    lip_sync review row of its video; None when it has none: a failed job, or the gate not enforced)."""
+    """A take's earlier talk jobs, oldest first: {id, start_step, repair, image_uri, passed, corr, failed}. passed and
+    corr come from the lip_sync review row of its video (None when it has none: a failed job, or the gate not
+    enforced); failed is {gate: score} of every gate its video failed (the latest row per gate)."""
     if not job_ids:
         return []
-    rows = {str(r["id"]): r for r in conn.execute(
+    rows = {str(r["id"]): dict(r) for r in conn.execute(
         """SELECT j.id, j.payload->'params'->>'start_step' AS start_step, j.payload->'repair' AS repair,
+                  j.payload->>'image_uri' AS image_uri,
                   (SELECT r.passed FROM assets a JOIN reviews r ON r.asset_id = a.id
                     WHERE a.job_id = j.id AND a.kind = 'video' AND r.gate = 'lip_sync' ORDER BY r.created_at DESC
                     LIMIT 1) AS passed,
@@ -81,61 +93,194 @@ def _take_history(conn, job_ids: list[str]) -> list[dict]:
                     WHERE a.job_id = j.id AND a.kind = 'video' AND r.gate = 'lip_sync' ORDER BY r.created_at DESC
                     LIMIT 1) AS corr
            FROM jobs j WHERE j.id = ANY(%s::uuid[])""", (job_ids,)).fetchall()}
-    return [dict(rows[j]) for j in job_ids if j in rows]
+    for r in rows.values():
+        r["failed"] = {}
+    for f in conn.execute(
+            """SELECT DISTINCT ON (a.job_id, r.gate) a.job_id, r.gate, r.passed, r.score
+               FROM assets a JOIN reviews r ON r.asset_id = a.id
+               WHERE a.job_id = ANY(%s::uuid[]) AND a.kind = 'video'
+               ORDER BY a.job_id, r.gate, r.created_at DESC""", (job_ids,)).fetchall():
+        if f["passed"] is False and str(f["job_id"]) in rows:
+            rows[str(f["job_id"])]["failed"][f["gate"]] = None if f["score"] is None else float(f["score"])
+    return [rows[j] for j in job_ids if j in rows]
 
 
-def talk_repair(conn, policy: Policy, prior: list[str], params: dict, *, v2v: bool) -> dict | None:
-    """What a take's next talk job changes, given its earlier jobs (`prior`, oldest first); sets params.start_step
-    and returns the record kept in the job's payload.repair: {cause, knob, start_step, dead_knobs}. None for a first
-    take.
+@dataclass
+class RepairOptions:
+    """What a take's repair may change besides the render: `photos(used)` lists the scene's other accepted photos
+    (uris not in `used`), `cutaway()` the faceless photo a line could go under instead ({image_uri, reason}, or
+    None when the post and its grammar don't allow it)."""
+    photos: Callable[[set], list[str]] | None = None
+    cutaway: Callable[[], dict | None] | None = None
+
+
+def _repair_cfg(policy: Policy) -> dict:
+    return policy.get("review", "video", "talk_repair", default={}) or {}
+
+
+def _cause(failed: dict, gates: dict) -> str | None:
+    """The gate a take's repair answers: the first failed gate with an escalation (policy order), else any."""
+    for g in gates:
+        if g in failed:
+            return g
+    return next(iter(sorted(failed)), None)
+
+
+def talk_repair(conn, policy: Policy, prior: list[str], params: dict, *, v2v: bool,
+                options: RepairOptions | None = None) -> dict | None:
+    """What a take's next talk job changes, given its earlier jobs (`prior`, oldest first); sets params (start_step,
+    audio guidance) and returns the record kept in the job's payload.repair: {cause, knob, start_step, dead_knobs,
+    applied, image_uri}. None for a first take. Knob `cutaway` means the line goes under a faceless shot instead (the
+    caller reroutes it; image_uri is that shot's photo).
 
     Breadth run 2026-11-23: V2V takes (walk-and-talk) failed lip_sync with the mouth never redrawn, and every repair
-    changed only the seed and scored the same. A lip_sync failure on a V2V take now redraws more: start_step one lower
-    per repair (generation.talk_motion.v2v_repair.start_step_step) down to start_step_floor; an earlier escalation
-    is kept by later repairs. A knob whose repair scored the same lip sync as the attempt before
-    (within same_score_tolerance) is dead: it is not tried again (dead_knobs says why), and when every knob is dead
-    the post is dropped with the reason (lip sync is a media defect) instead of rendering the same clip again."""
+    changed only the seed and scored the same. A lip_sync failure on a V2V take redraws more: start_step one lower
+    per repair (generation.talk_motion.v2v_repair.start_step_step) down to start_step_floor.
+
+    perf_compare 2026-11-25: segment 8 failed lip_sync three times at -0.46, -0.34, -0.43, each repair only a new
+    seed. Each gate has an escalation (policy review.video.talk_repair.gates.<gate>.steps, after start_step for a V2V
+    lip-sync take): the first knob not dead is used. A knob whose repair failed the same gate as the attempt before
+    with a score within the gate's tolerance (start_step: v2v_repair.same_score_tolerance) is dead: it is not tried
+    again (dead_knobs says why), and the next one changes something material: lip_sync raises the audio guidance
+    (talk_repair.audio_guidance), then puts the line under a cutaway when the grammar allows it; identity and realism
+    start from another accepted photo of the scene. An escalation, once applied, is kept by later repairs. When every
+    knob is dead the post is dropped with the reason instead of rendering the same clip again."""
     hist = _take_history(conn, prior)
     if not hist:
         return None
-    cfg = _motion_cfg(policy).get("v2v_repair") or {}
+    options = options or RepairOptions()
+    rcfg = _repair_cfg(policy)
+    gates = rcfg.get("gates") or {}
+    vcfg = _motion_cfg(policy).get("v2v_repair") or {}
     last = hist[-1]
     record_before = last["repair"] or {}
     dead = dict(record_before.get("dead_knobs") or {})
+    applied = list(record_before.get("applied") or [])
+    image = record_before.get("image_uri")
     start = last["start_step"] if last["start_step"] is not None else params.get("start_step")
     v2v = v2v and start is not None
     if v2v:
         params["start_step"] = int(start)
-    out = {"cause": None, "knob": "seed", "start_step": params.get("start_step"), "dead_knobs": dead}
-    if last["passed"] is not False:      # rejected by another gate, or the job failed: a new seed
+    if "audio_guidance" in applied:
+        params.update(rcfg.get("audio_guidance") or {})
+    out = {"cause": None, "knob": "seed", "start_step": params.get("start_step"), "dead_knobs": dead,
+           "applied": applied, **({"image_uri": image} if image else {})}
+    failed = _with_lip_sync(last)
+    cause = _cause(failed, gates)
+    if cause is None:      # the job failed, or its clip was rejected by no gate: a new seed
         return out
-    out["cause"] = "lip_sync"
-    tol = float(cfg.get("same_score_tolerance", 0.0))
-    if len(hist) >= 2 and hist[-2]["passed"] is False and last["corr"] is not None and hist[-2]["corr"] is not None \
-            and abs(float(last["corr"]) - float(hist[-2]["corr"])) <= tol:
-        knob = str(record_before.get("knob") or "seed")
-        dead[knob] = (f"attempt {len(hist)} changed {knob} and scored lip sync {float(last['corr']):.3f}, as attempt "
-                      f"{len(hist) - 1} did ({float(hist[-2]['corr']):.3f})")
-    for knob in (["start_step"] if v2v else []) + ["seed"]:
+    out["cause"] = cause
+    knob_before = str(record_before.get("knob") or "seed")
+    before = _with_lip_sync(hist[-2]) if len(hist) >= 2 else {}
+    tol = float(vcfg.get("same_score_tolerance", 0.0)) if knob_before == "start_step" else \
+        float((gates.get(cause) or {}).get("tolerance", 0.0))
+    if failed.get(cause) is not None and before.get(cause) is not None \
+            and abs(float(failed[cause]) - float(before[cause])) <= tol:
+        label = cause.replace("_", " ")
+        dead[knob_before] = (f"attempt {len(hist)} changed {knob_before} and scored {label} {float(failed[cause]):.3f},"
+                             f" as attempt {len(hist) - 1} did ({float(before[cause]):.3f})")
+    steps = list((gates.get(cause) or {}).get("steps") or ["seed"])
+    if v2v and cause == "lip_sync":
+        steps = ["start_step", *[s for s in steps if s != "start_step"]]
+    for knob in steps:
         if knob in dead:
             continue
         if knob == "start_step":
-            floor, step = int(cfg.get("start_step_floor", 0)), int(cfg.get("start_step_step", 1))
-            if int(start) <= floor:
+            floor, step = int(vcfg.get("start_step_floor", 0)), int(vcfg.get("start_step_step", 1))
+            if not v2v or int(start) <= floor:
                 continue
             params["start_step"] = max(floor, int(start) - step)
-        return {**out, "knob": knob, "start_step": params.get("start_step")}
-    raise DropPost("lip sync failed and no repair changes it: " + "; ".join(f"{k}: {v}" for k, v in dead.items()))
+        elif knob == "audio_guidance":
+            guidance = rcfg.get("audio_guidance") or {}
+            if not guidance:
+                continue
+            params.update(guidance)
+            if knob not in applied:
+                applied = [*applied, knob]
+        elif knob == "next_photo" and image and knob_before == "next_photo":
+            pass   # the last new photo did better than the attempt before it: keep it, with a new seed
+        elif knob == "next_photo":
+            used = {h.get("image_uri") for h in hist if h.get("image_uri")}
+            others = options.photos(used) if options.photos else []
+            if not others:
+                continue
+            out["image_uri"] = others[0]
+        elif knob == "cutaway":
+            under = options.cutaway() if options.cutaway else None
+            if not under:
+                continue
+            return {**out, "knob": knob, "image_uri": under["image_uri"], "reason": under.get("reason", ""),
+                    "applied": applied}
+        elif knob != "seed":
+            continue
+        return {**out, "knob": knob, "start_step": params.get("start_step"), "applied": applied}
+    raise DropPost(f"{cause.replace('_', ' ')} failed and no repair changes it: "
+                   + "; ".join(f"{k}: {v}" for k, v in dead.items()))
+
+
+def _with_lip_sync(h: dict) -> dict:
+    """An attempt's failed gates, with its lip_sync row's score when that row failed."""
+    failed = dict(h.get("failed") or {})
+    if h.get("passed") is False and "lip_sync" not in failed:
+        failed["lip_sync"] = None if h.get("corr") is None else float(h["corr"])
+    return failed
+
+
+def _other_photos(conn, body: dict, i: int, used: set) -> list[str]:
+    """The scene's other photos that passed every review row (best first), none a take of it has used yet."""
+    jobs = [str(j) for j in ((body.get("scene_jobs") or [])[i] if i < len(body.get("scene_jobs") or []) else [])]
+    if not jobs:
+        return []
+    rows = conn.execute(
+        """SELECT a.uri, coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm'),
+                                  sum(r.score) FILTER (WHERE r.details->>'stage' = 'screen')) AS score
+           FROM assets a JOIN reviews r ON r.asset_id = a.id
+           WHERE a.job_id = ANY(%s::uuid[]) AND a.kind = 'image'
+           GROUP BY a.uri HAVING bool_and(r.passed)
+           ORDER BY score DESC NULLS LAST, a.uri""", (jobs,)).fetchall()
+    return [r["uri"] for r in rows if r["uri"] not in used]
+
+
+def _cutaway_photo(policy: Policy, body: dict, chosen: list[dict], segment: int) -> dict | None:
+    """The faceless photo a failed on-camera line can go under ({image_uri, reason}), or None: the post's edit
+    grammar must lip-sync on camera only, the line may not be one the policy keeps on camera
+    (review.video.talk_repair.cutaway.keep_on_camera: first = the hook, last = the sign-off), another take must stay
+    on camera, and the post must have a faceless shot with its own photo (the nearest one is used)."""
+    from .. import cuts
+    from ..direction import faceless
+    if str(cuts.grammar(policy, body.get("edit_grammar")).get("lip_sync") or "all") != "on_camera":
+        return None
+    modes = list(body.get("talk_modes") or [])
+    n = len(body.get("talk_segments") or [])
+    if not modes or len(modes) != n:
+        return None
+    keep = set((_repair_cfg(policy).get("cutaway") or {}).get("keep_on_camera") or [])
+    if ("first" in keep and segment == 0) or ("last" in keep and segment == n - 1):
+        return None
+    if not any(m == "talk" and k != segment for k, m in enumerate(modes)):
+        return None
+    if not _photo_per_shot(body, chosen):
+        return None
+    here = _take_shot(body, segment)
+    shots = body.get("shots") or []
+    near = sorted((k for k, s in enumerate(shots) if faceless(s) and k < len(chosen)), key=lambda k: abs(k - here))
+    if not near:
+        return None
+    return {"image_uri": chosen[near[0]]["uri"], "reason": f"lip sync failed on camera; the line goes under shot {near[0]}"}
 
 
 def _cutaway_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], attempt: int, *, segment: int,
                  audio: dict | None = None):
     """A cutaway segment of a hybrid talking video: the post's other photos, moving gently, under the creator's
     voice saying this part of the script (the narrated-edit worker; no lip-sync render). With `audio`, the
-    designed voice's finished line instead of Kokoro."""
+    designed voice's finished line instead of Kokoro. A line rerouted by a lip-sync repair (body.rerouted) goes
+    under the faceless photo the repair chose."""
     anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
     out = _hybrid_cfg(policy).get("output", {}) or {}
-    if body.get("talk_shots") and _photo_per_shot(body, chosen):   # a directed cutaway: its own shot's photo
+    rerouted = (body.get("rerouted") or {}).get(str(segment))
+    if rerouted:
+        images = [{"uri": rerouted["image_uri"]}]
+    elif body.get("talk_shots") and _photo_per_shot(body, chosen):   # a directed cutaway: its own shot's photo
         images = [chosen[_take_shot(body, segment)]]
     else:
         images = chosen[1:] or chosen

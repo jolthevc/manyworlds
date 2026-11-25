@@ -160,6 +160,7 @@ class ReviewVideo(_Strict):
     max_review_errors: int
     review_error_spacing_seconds: Num
     lip_sync: Free
+    talk_repair: Free = {}
     intelligibility: Free
 
 

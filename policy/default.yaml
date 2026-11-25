@@ -347,6 +347,22 @@ review:
     lip_sync: {enforce: true, min_corr: 0.3, min_face_share: 0.8,
                voiced_span: {enabled: true, tail_frames: 0, min_open_std: 0.02, audio_rate: 16000, min_frames: 25,
                              max_offset_frames: 5}}
+    # Repairs of a rejected talking take (production.talk.talk_repair). perf_compare 2026-11-25: segment 8 failed
+    # lip_sync at -0.46, -0.34, -0.43, every repair a new seed. Per gate, the escalation in order (a V2V lip-sync take
+    # tries generation.talk_motion.v2v_repair's start_step first): a knob whose repair failed the same gate within
+    # `tolerance` of the attempt before is dead and the next one is used; when all are dead the post drops with the
+    # reason. seed: a new seed. audio_guidance: the params below (InfiniteTalk's audio cfg acts only with cfg > 1;
+    # s8audiocfg 2026-11-22: corr 0.70, ~2x the render time). cutaway: the line goes under the post's nearest faceless
+    # shot in the same voice, when the edit grammar lip-syncs on camera only and the line is not one kept on camera
+    # (first: the hook, last: the sign-off). next_photo: the scene's next accepted photo as the start frame.
+    # tolerance is in the gate's own score (lip_sync: correlation; identity, realism: the judge's 1-10).
+    talk_repair:
+      gates:
+        lip_sync: {tolerance: 0.15, steps: [seed, audio_guidance, cutaway]}
+        identity: {tolerance: 1, steps: [seed, next_photo]}
+        realism: {tolerance: 1, steps: [seed, next_photo]}
+      audio_guidance: {cfg: 2.0, audio_cfg: 2.0}
+      cutaway: {keep_on_camera: [first, last]}
     # Talking clips: the voice line transcribed (Whisper on Together, $0.0015 a minute, 2026-11-21) must match the
     # script within max_wer (word error rate), or the clip fails before any paid review (manyworlds.speech).
     # Voices are judged automatically, never by ear (owner 2026-11-21).
