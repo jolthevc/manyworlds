@@ -173,7 +173,8 @@ def shared_audio(conn, key: str, script: str):
                            ORDER BY uri LIMIT 1) a ON true
             WHERE j.kind = %s AND j.status = 'done' AND j.idempotency_key LIKE %s
             ORDER BY j.updated_at DESC""",
-        (VOICE_KIND, f"shared:{key}:voice:%")).fetchall()
+        # the breadth driver scopes a run's shared key (shared:<key>:<run>:voice:...), so match either form
+        (VOICE_KIND, f"shared:{key}:%voice:%")).fetchall()
     for r in rows:
         said = " ".join(" ".join(str(ln.get("text") or "") for ln in (r["payload"] or {}).get("lines") or [])
                         .lower().split())

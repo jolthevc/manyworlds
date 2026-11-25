@@ -388,3 +388,12 @@ def test_the_graphs_ship_in_the_package_and_the_image():
     assert commit == comfy_graph.load("echomimic_v3_flash")[1]["source"]["commit"]
     for name in GRAPHS:
         json.loads((comfy_graph.GRAPHS_DIR / f"{name}.json").read_text())
+
+
+def test_a_reused_line_is_found_under_the_run_scoped_shared_key(conn):
+    # 2026-11-25: the breadth driver keys a run's shared voice lines shared:<key>:<run>:voice:..., so the
+    # benchmark found none of the comparison's nine finished lines.
+    _perf_voice(conn, "Honestly? Best night of the week.", "s3://b/l8.wav",
+                key="shared:perf-compare:perf-11242157:voice:8:0")
+    found = long_take.shared_audio(conn, "perf-compare", "Honestly? Best night of the week.")
+    assert found and found["uri"] == "s3://b/l8.wav"
