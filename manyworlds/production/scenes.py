@@ -62,8 +62,10 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
     # Reference-conditioned (sets.reference_conditioning, off until benchmarked): image.qwen_edit from the anchor,
     # plate and outfit reference; the creator's LoRA (and its trigger word) is for Z-Image only.
     from ..direction import faceless
-    force = bool(shared) and bool(sets.shared_cfg(policy).get("conditioning")) and not faceless(shot)
-    images = sets.conditioning(conn, policy, post["creator_id"], references, force=force)
+    # Faceless followers are conditioned on the set too (2026-11-25: text-only hands-at-the-sink cutaways came out as
+    # a daylight home kitchen 12 times running and the post dropped on set_match), from the set alone: no face.
+    force = bool(shared) and bool(sets.shared_cfg(policy).get("conditioning"))
+    images = sets.conditioning(conn, policy, post["creator_id"], references, force=force, person=not faceless(shot))
     trigger = None if images else (lora and lora.get("trigger"))
     payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=trigger,
                                       shot=shot, policy=policy),

@@ -339,7 +339,7 @@ def shared_leader(policy: Policy, fmt: str, shots: list | None, i: int) -> int |
 
 
 def conditioning(conn, policy: Policy, creator_id, references: list[dict], *,
-                 force: bool = False) -> list[dict] | None:
+                 force: bool = False, person: bool = True) -> list[dict] | None:
     """The input images for a reference-conditioned scene, [{kind: person|set|outfit, uri}] with the creator's
     anchor first, or None (text-only Z-Image) unless `sets.reference_conditioning` is on (or `force`: a shared
     set's follower while sets.shared_set.conditioning), the edit kind is in policy job_kinds, and there are an
@@ -348,6 +348,9 @@ def conditioning(conn, policy: Policy, creator_id, references: list[dict], *,
         return None
     if edit_kind(policy) not in (policy.get("job_kinds", default={}) or {}):
         return None
+    places = [r for r in references if r.get("kind") in ("set", "outfit")]
+    if not person:   # a faceless shot (hands, objects, the place): the set alone, so no face is drawn into it
+        return places or None
     row = conn.execute("SELECT anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()
     anchors = ((row or {}).get("anchors") or {}).get("reference_images") or []
     anchor = next((a.get("uri") for a in anchors if isinstance(a, dict) and a.get("uri")), None)

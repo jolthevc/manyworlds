@@ -103,7 +103,10 @@ def test_the_shots_of_a_shared_set_wait_for_the_leader_then_take_its_photo_as_th
     face, hands = made["behind the bar, shot 1"], made["behind the bar, shot 2"]
     assert face["kind"] == "image.qwen_edit" and face["payload"]["images"] == ["s3://b/r0", leader]
     assert face["payload"]["shared_set"] == {"set_id": "pub_bar", "leader": 0}
-    assert hands["kind"] == "image.zimage" and hands["payload"]["references"] == [{"kind": "set", "uri": leader}]
+    # 2026-11-25: text-only faceless followers drew a daylight home kitchen 12 times and the post dropped on
+    # set_match; a faceless follower is now conditioned on the set photo alone (no anchor, so no face is drawn).
+    assert hands["kind"] == "image.qwen_edit" and hands["payload"]["images"] == [leader]
+    assert hands["payload"]["references"] == [{"kind": "set", "uri": leader}]
     assert hands["payload"]["shared_set"]["leader"] == 0
     assert "shared_set" not in made["behind the bar, shot 0"]["payload"]
 
