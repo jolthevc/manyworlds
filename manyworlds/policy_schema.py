@@ -102,6 +102,12 @@ class AutoscaleScoring(_Strict):
     pause_hours: Num
 
 
+class AutoscaleWarmReuse(_Strict):
+    enabled: bool
+    min_remaining_minutes: Num
+    max_spend_share: Num
+
+
 class AutoscaleCapacity(_Strict):
     report_after_minutes: Num
     fallback_after_minutes: Num
@@ -115,6 +121,7 @@ class Autoscale(_Strict):
     batch: AutoscaleBatch
     bench_machines: int
     hard_pin_batches: list[str]
+    warm_reuse: AutoscaleWarmReuse
     capacity: AutoscaleCapacity
     relaunch_cooldown_minutes: Num
     no_output_guard: NoOutputGuard

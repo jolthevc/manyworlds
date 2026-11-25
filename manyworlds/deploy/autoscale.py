@@ -501,6 +501,13 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         open_groups = conn.execute(
             "SELECT name, pool FROM gpu_groups WHERE stopped_at IS NULL AND %s = ANY(job_kinds)", (kind,)).fetchall()
         serving = [g for g in open_groups if g["pool"] in pools]
+        if pinned and not serving:
+            # A warm machine that runs this kind on the same card in another pool takes the work before anything new
+            # is rented: a test pin is a preference, a benchmark's (autoscale.hard_pin_batches) is not.
+            routed = route_to_warm(conn, policy, w, now)
+            if routed:
+                actions.append(routed)
+                continue
         if len(open_groups) >= max_groups:
             continue
         # Machines follow the backlog: one per drain-target's worth of work, one more per
@@ -605,6 +612,39 @@ def _widen(conn, policy: Policy, w: dict, extra: list[str]) -> int:
         "UPDATE jobs SET pools = pools || %s::text[], updated_at = now() WHERE kind = %s AND pools = %s::text[] "
         "AND status = 'queued' AND NOT (coalesce(batch, '') LIKE ANY(%s::text[]))",
         (extra, w["kind"], list(w["pools"]), hard)).rowcount
+
+
+def route_to_warm(conn, policy: Policy, w: dict, now: datetime) -> dict | None:
+    """Pinned test work (a test plan's pools) with no machine in its pools, while a machine that runs its kind on the
+    same card is up in another pool (another plan's, or the volume pool's twin): the work is widened to that machine's
+    pool so its worker claims it, instead of renting a second machine and paying a second boot and weights download
+    (2026-11-25 audit: ~1 in 5 boots started beside a compatible machine). Only machines with time and cap left for a
+    typical job (autoscale.warm_reuse); never for hard-pinned batches. Returns the action, or None."""
+    cfg = policy.get("autoscale", "warm_reuse", default={}) or {}
+    if not cfg.get("enabled") or not w["pools"] or _hard_pinned(policy, w):
+        return None
+    # Only test work: every worker claims test batches, paused or live, but a worker built while operations were paused
+    # takes nothing else, so production work routed to it could wait behind it.
+    prefixes = [str(p) for p in (policy.get("operations", "test_batch_prefixes", default=["bench-", "test-"]) or [])]
+    if not all(any(str(b or "").startswith(p) for p in prefixes) for b in (w.get("batches") or [""])):
+        return None
+    gpus = _gpus(policy, list(w["pools"]))
+    need = timedelta(minutes=max(float(cfg.get("min_remaining_minutes", 20)),
+                                 seconds_per_job(conn, policy, w["kind"]) / 60))
+    share = float(cfg.get("max_spend_share", 0.8))
+    for g in conn.execute(
+            """SELECT name, pool, billed_usd, est_extra_usd, max_usd FROM gpu_groups
+               WHERE stopped_at IS NULL AND %s = ANY(job_kinds) AND NOT (pool = ANY(%s::text[])) AND deadline > %s
+               ORDER BY started_at""", (w["kind"], list(w["pools"]), now + need)).fetchall():
+        if policy.get("gpu_pools", g["pool"], "gpu") not in gpus:
+            continue   # another card: the pin may be about memory or speed
+        if float(g["billed_usd"] or 0) + float(g["est_extra_usd"] or 0) >= share * float(g["max_usd"]):
+            continue
+        n = _widen(conn, policy, w, [g["pool"]])
+        if n:
+            return {"action": "routed_to_warm", "kind": w["kind"], "jobs": n, "machine": g["name"],
+                    "pool": g["pool"], "pinned": list(w["pools"])}
+    return None
 
 
 def capacity_fallback(conn, policy: Policy, w: dict, tried: list[dict], now: datetime) -> list[dict]:

@@ -270,9 +270,14 @@ autoscale:
     max_wait_minutes: {default: 180}                       # ...or once the oldest job has waited this long
     urgent_priority: 1                                     # jobs at this priority or above never wait
   bench_machines: 1              # machines for pinned benchmark work, whatever its size (it measures one machine)
-  # Batches whose pinned pools are a measurement (benchmarks), never widened by capacity. Other pins (a
+  # Batches whose pinned pools are a measurement (benchmarks), never widened by warm_reuse or capacity. Other pins (a
   # test plan's pools_by_family) are preferences: the work may run on a warm machine with the same card in another pool.
   hard_pin_batches: [bench-]
+  # Pinned test work with no machine in its pools goes to a running machine that serves its kind on the same card in
+  # another pool (deploy/autoscale.route_to_warm) before a new one is rented, if that machine has min_remaining_minutes
+  # (or one typical job, if longer) before its deadline and has spent under max_spend_share of its cap. 2026-11-25
+  # audit: ~1 boot in 5 started beside a compatible machine, each paying a 2-5 min boot and a 2-6 min weights load.
+  warm_reuse: {enabled: true, min_remaining_minutes: 20, max_spend_share: 0.8}
   # Work no pool has capacity for (deploy/autoscale.capacity_fallback): after report_after_minutes the owner is told
   # (owner event no_capacity, once a day per kind and pins); after fallback_after_minutes pinned work (not
   # hard_pin_batches) is widened to the kind's other pools with the same card. 2026-11-25: jobs pinned to vast_5090
