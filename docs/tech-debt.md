@@ -3,6 +3,15 @@
 Known issues we chose not to fix yet, with when they must be fixed. "Before X" means the
 capability X does not go live until the item is closed. Updated 2026-11-23 (the gap sweep before the routing trial).
 
+## Noted 2026-11-25 (GPU factory audit, docs/research/2026-11-25-gpu-factory-audit.md)
+
+| Item | Why it matters | Where |
+|---|---|---|
+| The daily GPU cap stops machines mid-job | 3 machines in 72 h lost their in-flight attempt; a drain (no launches at the cap, in-flight attempts finish within an overrun allowance) needs workers that stop claiming: a rebuild | `deploy/enforce.py`, `worker/runner.py` |
+| A worker's idle self-stop is demand-blind (5 min) | 6 boots in 72 h came within 15 min of the same pool's machine stopping; a keep-warm hold set by the autoscaler needs a migration and a worker rebuild | `worker/runner.Worker.self_stop_reason` |
+| Warm reuse makes test runs share machines; `breadth.run_spend` then counts a shared machine in full for each run | caps stop runs early (the safe side); split machine cost by attempt time before relaxing `refuse_beside_open_tests` | `breadth.run_spend` |
+| `gpu_groups.worker_ready_at` (provisioning time) is written only by workers built from feat/gpu-factory or later | until then provisioning and weights download are one figure (boot) | `worker/runner.mark_ready` |
+
 ## Noted 2026-11-24 (overnight: breadth test, music department, long takes)
 
 | Item | Why it matters | Where |
