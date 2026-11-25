@@ -583,7 +583,61 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
                         actions.append({"action": "provider_unfunded", "provider": info["provider"]})
         else:
             actions.append({"action": "no_capacity", "kind": kind, "waiting": w["n"], "tried": tried})
+            actions += capacity_fallback(conn, policy, w, tried, now)
     return actions
+
+
+def _hard_pinned(policy: Policy, w: dict) -> bool:
+    """Work whose pools are a measurement, not a preference (benchmarks: autoscale.hard_pin_batches)."""
+    hard = [str(p) for p in (policy.get("autoscale", "hard_pin_batches", default=["bench-"]) or [])]
+    return any(str(b or "").startswith(p) for b in (w.get("batches") or []) for p in hard)
+
+
+def _gpus(policy: Policy, pools: list[str]) -> set[str]:
+    return {str(policy.get("gpu_pools", p, "gpu")) for p in pools if policy.get("gpu_pools", p)}
+
+
+def _widen(conn, policy: Policy, w: dict, extra: list[str]) -> int:
+    """Add `extra` pools to the waiting work's queued jobs (same kind and pins, not hard-pinned batches): existing
+    workers in those pools then claim them (queue.claim takes a job whose pools name the worker's pool)."""
+    hard = [f"{p}%" for p in (policy.get("autoscale", "hard_pin_batches", default=["bench-"]) or [])]
+    return conn.execute(
+        "UPDATE jobs SET pools = pools || %s::text[], updated_at = now() WHERE kind = %s AND pools = %s::text[] "
+        "AND status = 'queued' AND NOT (coalesce(batch, '') LIKE ANY(%s::text[]))",
+        (extra, w["kind"], list(w["pools"]), hard)).rowcount
+
+
+def capacity_fallback(conn, policy: Policy, w: dict, tried: list[dict], now: datetime) -> list[dict]:
+    """Work no pool had capacity for (2026-11-25: no Vast RTX 5090 under its price left jobs queued an hour, and nobody
+    was told). Once its oldest job has waited autoscale.capacity.report_after_minutes the owner is told (once a day per
+    kind and pins); once it has waited fallback_after_minutes, pinned work (not hard-pinned batches) is widened to the
+    kind's other pools on the same card (job_kinds.<kind>.pools), so the next tick can start one there. A different
+    card is never chosen for it: a pin may be about memory or speed."""
+    cfg = policy.get("autoscale", "capacity", default={}) or {}
+    if not cfg or w.get("oldest") is None:
+        return []
+    waited = (now - w["oldest"]).total_seconds() / 60
+    if waited < float(cfg.get("report_after_minutes", 15)):
+        return []
+    from .. import notify
+    pins = list(w["pools"] or [])
+    out: list[dict] = []
+    if pins and waited >= float(cfg.get("fallback_after_minutes", 30)) and not _hard_pinned(policy, w):
+        gpus = _gpus(policy, pins)
+        extra = [p for p in (policy.get("job_kinds", w["kind"], "pools", default=[]) or [])
+                 if p not in pins and policy.get("gpu_pools", p, "gpu") in gpus]
+        if extra:
+            n = _widen(conn, policy, w, extra)
+            if n:
+                out.append({"action": "capacity_fallback", "kind": w["kind"], "jobs": n, "pinned": pins,
+                            "added": extra, "waited_minutes": round(waited)})
+    notify.owner_event(conn, "no_capacity", subject={"kind": w["kind"], "pools": pins or None},
+                       payload={"waiting": int(w["n"]), "waited_minutes": round(waited),
+                                "tried": [{"pool": t["pool"], "error": redact(str(t.get("error", "")))[:120]}
+                                          for t in tried],
+                                "fallback": out[0]["added"] if out else None},
+                       dedupe_key=f"no_capacity:{w['kind']}:{','.join(pins)}:{now:%Y-%m-%d}")
+    return out
 
 
 def no_output_streak(conn, policy: Policy, family: str, now: datetime, pools: list[str] | None = None) -> dict | None:

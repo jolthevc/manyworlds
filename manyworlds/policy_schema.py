@@ -102,6 +102,11 @@ class AutoscaleScoring(_Strict):
     pause_hours: Num
 
 
+class AutoscaleCapacity(_Strict):
+    report_after_minutes: Num
+    fallback_after_minutes: Num
+
+
 class Autoscale(_Strict):
     tick_seconds: Num
     tick_lease_seconds: Num
@@ -109,6 +114,8 @@ class Autoscale(_Strict):
     scale: AutoscaleScale
     batch: AutoscaleBatch
     bench_machines: int
+    hard_pin_batches: list[str]
+    capacity: AutoscaleCapacity
     relaunch_cooldown_minutes: Num
     no_output_guard: NoOutputGuard
     runpod_cuda_versions: list[str]
