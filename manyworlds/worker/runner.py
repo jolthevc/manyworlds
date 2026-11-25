@@ -568,6 +568,19 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
     return found
 
 
+def mark_ready(conn, group: str | None) -> None:
+    """When this machine's worker came up (gpu_groups.worker_ready_at, first time only): its boot splits into
+    provisioning (provider start, image pull) and first-job warm-up (weights download, model load), for
+    deploy/report.throughput. Best effort: a database without the column (older control plane) only loses the reading."""
+    if not group:
+        return
+    try:
+        conn.execute("UPDATE gpu_groups SET worker_ready_at = coalesce(worker_ready_at, now()) WHERE name = %s",
+                     (group,))
+    except Exception as e:  # noqa: BLE001 - a timing is never worth a machine
+        log.warning("could not record worker_ready_at for %s: %s", group, type(e).__name__)
+
+
 def start(kinds: list[str], *, pool: str, policy: Policy, store: ObjectStore, connect: Callable = db.connect,
           self_destroy: Callable[[], str | None] | None = None) -> Worker:
     """The worker `mw worker` runs (every rented machine starts this way). It refuses to run a GPU pool outside a
@@ -605,6 +618,7 @@ def start(kinds: list[str], *, pool: str, policy: Policy, store: ObjectStore, co
             from ..deploy.providers import self_destroy
         log.error("database unreachable from this host; destroyed own machine: %s", self_destroy())
         raise SystemExit(2)
+    mark_ready(worker.conn, worker.group)
     if vol is not None:
         from . import volume
         volume.record(worker.conn, worker.group, vol)

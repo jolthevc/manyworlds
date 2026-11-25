@@ -71,3 +71,49 @@ def test_per_family_and_pool_split_billed_time_and_count_accepted_work(conn):
 def test_machines_outside_the_window_are_left_out(conn):
     _machine(conn, "m-old", "vast_3090", "image", start_min=-60 * 30, stop_min=-60 * 29, usd=1)
     assert report.throughput(conn, hours=24, now=T0) == []
+
+
+def _timed_attempt(conn, job, machine, *, start_min, end_min, outcome="done"):
+    aid = _attempt(conn, job, machine, start_min=start_min, end_min=end_min, outcome=outcome)
+    conn.execute("UPDATE attempts SET gpu_seconds = %s WHERE id = %s", ((end_min - start_min) * 60, aid))
+    return aid
+
+
+def test_factory_timings_boot_provisioning_cold_start_tail_and_queue_latency(conn):
+    # The factory's clock (2026-11-25): how long a machine took to come up (provisioning: start to its worker ready;
+    # boot: start to its first job), how much longer its first job ran than a warm one of the same kind (weights
+    # download and model load, estimated), its idle tail, and how long jobs waited in the queue for it.
+    _machine(conn, "m1", "runpod_secure_l40s", "talk", start_min=0, stop_min=60, usd=1.0)
+    conn.execute("UPDATE gpu_groups SET worker_ready_at = %s WHERE name = 'm1'", (T0 + timedelta(minutes=3),))
+    jobs = [queue.enqueue(conn, "fake.video", {}) for _ in range(3)]
+    conn.execute("UPDATE jobs SET created_at = %s WHERE id = ANY(%s)", (T0 - timedelta(minutes=10), jobs))
+    _timed_attempt(conn, jobs[0], "m1", start_min=5, end_min=15)    # cold: 10 min
+    _timed_attempt(conn, jobs[1], "m1", start_min=15, end_min=19)   # warm: 4 min
+    _timed_attempt(conn, jobs[2], "m1", start_min=19, end_min=23)   # warm: 4 min; then 37 min idle tail
+    t = {(r["family"], r["pool"]): r for r in report.throughput(conn, hours=24, now=T0 + timedelta(hours=2))}[
+        ("talk", "runpod_secure_l40s")]
+    assert t["provision_minutes_p50"] == pytest.approx(3.0)
+    assert t["boot_minutes_p50"] == pytest.approx(5.0)
+    assert t["cold_start_seconds_p50"] == pytest.approx(360.0)     # 10 min first job - 4 min warm median
+    assert t["tail_minutes_p50"] == pytest.approx(37.0)
+    assert t["queue_minutes_p50"] == pytest.approx(25.0)           # waited 15, 25 and 29 min
+    assert t["queue_minutes_p90"] == pytest.approx(28.2)
+    assert t["jobs_per_machine"] == pytest.approx(3.0)
+
+
+def test_timings_not_recorded_are_none_not_zero(conn):
+    _machine(conn, "m2", "vast_3090", "image", start_min=0, stop_min=10, usd=0.1)   # never started a job
+    t = report.throughput(conn, hours=24, now=T0 + timedelta(hours=1))[0]
+    assert t["provision_minutes_p50"] is None and t["boot_minutes_p50"] is None
+    assert t["cold_start_seconds_p50"] is None and t["tail_minutes_p50"] is None and t["queue_minutes_p50"] is None
+
+
+def test_a_worker_marks_its_machine_ready_once(conn):
+    from manyworlds.worker import runner
+    _machine(conn, "m3", "vast_3090", "image", start_min=0, stop_min=10, usd=0.1)
+    runner.mark_ready(conn, "m3")
+    first = conn.execute("SELECT worker_ready_at FROM gpu_groups WHERE name = 'm3'").fetchone()["worker_ready_at"]
+    runner.mark_ready(conn, "m3")    # a restarted container on the same machine keeps the first reading
+    again = conn.execute("SELECT worker_ready_at FROM gpu_groups WHERE name = 'm3'").fetchone()["worker_ready_at"]
+    assert first is not None and again == first
+    runner.mark_ready(conn, None)    # no registered machine (local runs): nothing to write
