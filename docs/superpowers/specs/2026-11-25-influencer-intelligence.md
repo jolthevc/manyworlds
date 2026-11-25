@@ -5,11 +5,17 @@ This spec stops before any paid run. Nothing here has run on Apify, an LLM or a 
 
 Owner, 2026-11-24: "this is really helpful for the brain to give us a better sense of data — learn what's working
 with real creators, and learn from them. We are not taking any likeness or stealing."
-Owner, 2026-11-25 (two decisions, folded in below):
+Owner, 2026-11-25 (three decisions, folded in below):
 - **The pattern library is multimodal.** Photos and videos are one system. Video is studied as video: formats,
   performance, cinematography, editing and production.
 - **Research records may identify public creators.** We keep names, handles, links, annotations and provenance,
-  and media as access-controlled research references. Third-party media is never a generation input.
+  and media as access-controlled research references. Third-party media is never a generation input unless its
+  licence says so.
+- **Emulate freely.** A named real creator may be the explicit reference in a brief ("X is successful; understand
+  what makes her content work and develop a creator with comparable appeal"). One creator can be the whole
+  reference, and nothing records why a creator is original. What stays is cheap checks:
+  - no impersonation (name, handle or a near-identical face);
+  - no near-duplicate copies of specific posts.
 
 **In one paragraph.** Most of the pipe already exists:
 - collection (Apify, ScrapeCreators);
@@ -46,7 +52,7 @@ production.
 | Video formats and recipes | `moves.library` (12 moves: storytime_to_camera, outfit_change_spin, pov_day_timestamps, mirror_talk, walking_vlog…); `generation.talk_edit` grammars (story_time, commercial, long_take; calibrated 2026-11-24); `capabilities`; `dance.references` (licensed motion clips); voice delivery bank; `docs/research/2026-11-24-mannerisms.md` | covered as recipes | no evidence, no per-archetype outcomes, and no performance parameters (pace, gesture cadence, eye contact) that a planner can retrieve |
 | Archetypes | `policy/archetypes/` (9 playbooks: promise, communicates, mix, hooks, edit grammar, pitfalls) | covered | written from craft knowledge. Research should feed them, not replace them |
 | Creator lab and casting | `creator/lab.py` (bible; "never base a creator on a real person"), `brain/launches.py` (bible → references → anchors → LoRA → profile → dossier → style) | covered for one thesis → one creator | **no 3-5 candidates and no audition** before the LoRA. Nothing records which evidence inspired which trait |
-| Originality | `dossier.differentiation`: word overlap against siblings (`brain.talent_manager.max_overlap`); voice-lab ECAPA distance from other creators' voices | siblings only | **no check against the real creators we studied** (name, handle, look, bio, voice) |
+| Impersonation | `dossier.differentiation`: word overlap against siblings (`brain.talent_manager.max_overlap`); voice-lab ECAPA distance between our own creators' voices | siblings only | **no check against the real creators a brief names** (name, handle, face) and no near-duplicate check against the posts it cites |
 | Style | `agents/style_director.py`: style, world, season from the aesthetics library | covered | doesn't read evidence. The variety rules ("a new outfit most posts", "no shot type twice") force rotation that the brief rejects for signature elements |
 | Talent manager on stall | `talent_manager` review and diagnose (drop events route there); requests `research` → analyst | covered as a trigger | the `research` request reaches the analyst, which reads only our own posts. Nothing goes out to look at real creators |
 | Showrunner and director retrieval | `director.creator_brief`: persona, dossier, playbooks, style, recent shot types, known sets, trend brief (`evidence.niche_trends`). Showrunner: trend briefs, comment themes, series | covered as a channel | there are no cards to retrieve |
@@ -59,8 +65,8 @@ production.
 **Missing, in one list:** reference creators and posts as identifiable, durable research records; a per-creator
 pull; baselines against the creator's own median; the three-layer photo and video annotation; video measurement
 as code; pattern cards with evidence, acceptance and outcomes; the agent that curates, challenges, distils and
-synthesises; auditions (3-5 candidates × a 9-post mini-feed); an originality check against references; retrieval
-into the director, the showrunner and talk production.
+synthesises; auditions (3-5 candidates × a 9-post mini-feed); a cheap impersonation and near-duplicate check
+against the named references; retrieval into the director, the showrunner and talk production.
 
 ### The smallest new role and data structures
 
@@ -72,11 +78,11 @@ section 3.1. The rest is code: pulls, measurement, scoring and annotation batche
 | Brief structure | Where it lives | Why |
 |---|---|---|
 | Hypothesis | **`theses`, extended** (migration 041): `kind` (`market`, `creator_hypothesis`), `version`, `parent_id`, `owner_role`, `budget_usd`, a status set widened with `researching`, `auditioning`, `archived` (with `archive_reason`); the rest in `body` (statement, segment, audience, competing explanations, disconfirming evidence, commercial pathways, expected signals) | theses already feed launches and cohorts. A second table would split the same idea in two |
-| Reference creator | **new `reference_creators`**: platform, handle, display name, profile URL, follower count history (jsonb), why selected, role (leader, riser, mid, adjacent, low comparator), cluster, scores, coverage and confidence, selection-bias caveats, rights state, first and last seen, `forget_requested_at` | identifiable by owner decision. Kept **apart from** `research_items`: the trend watcher stays anonymous, with its 30-day purge, and is unchanged |
-| Reference post | **new `reference_posts`**: creator, platform, external id, post URL, posted_at, media type, caption (kept: public professional content), metrics at fetch plus a snapshot history, `media_uri` (private research bucket) and `media_purge_after` | one row per studied post. Media has its own retention |
+| Reference creator | **new `reference_creators`**: platform, handle, display name, profile URL, bio, follower count history (jsonb), why selected, role (leader, riser, mid, adjacent, low comparator), cluster, scores, coverage and confidence, selection-bias caveats, how found, first and last seen | identifiable by owner decision. Kept **apart from** `research_items`: the trend watcher stays anonymous, with its 30-day purge, and is unchanged. Forgetting is a delete plus a hashed blocklist (`research_forget`) |
+| Reference post | **new `reference_posts`**: creator, platform, external id, post URL, posted_at, media type, caption (kept: public professional content), metrics at fetch plus a snapshot history, `media` (research copies: video, images, frames) and `media_purge_after`, `licence` (`{name, source, uses: [research, motion_reference, generation_input]}`; absent means research only) | one row per studied post. Media has its own retention. A licence may permit more than research |
 | Post annotation | **new `reference_annotations`**: post, schema version, model, `measured` (code: cuts, pace, durations), `observed`, `mechanism`, `speculation` (three jsonb blocks, kept apart), confidence | apart from `research_features` (the trend watcher's anonymous features), so neither schema bends to the other |
-| Pattern card | **new `pattern_cards`**: key, version, status (`illustrative`, `draft`, `active`, `retired`), medium (photo, carousel, video, sequence), dimensions, mechanism, audience role, best fit, recipe, constraints, failure modes, originality guardrails, `sources` (reference post ids and links), evidence (n posts, n creators, normalised traction with interval), acceptance (our renders), outcomes (our posts); seeded from `policy/patterns/patterns-v0.yaml` | cards change at runtime (evidence, acceptance, outcomes), so they live in the database. The seed file keeps the illustrative ones reviewable in git |
-| Synthesis and audition | **new `auditions`**: thesis, arm (A, B, C), candidate design (persona, audience promise, visual identity, content behaviour, commercial thesis), `source_cards`, `inspired_by` (dimension → card or cluster), differentiators, originality report, `creator_id` (a sandbox creator), batch `test-iia-<run>`, estimated and actual cost, scores, decision (select, revise, reject) and approval | ties the candidate, its nine posts (by `creator_id` and batch) and the decision together |
+| Pattern card | **new `pattern_cards`**: key, version, status (`illustrative`, `draft`, `active`, `retired`), medium (photo, carousel, video, sequence), dimensions, mechanism, audience role, best fit, recipe, constraints, failure modes, guardrails, `sources` (reference post ids and links; one creator is enough), evidence (n posts, n creators, normalised traction with interval), acceptance (our renders), outcomes (our posts), `signature_ok`; seeded from `policy/patterns/patterns-v0.yaml` | cards change at runtime (evidence, acceptance, outcomes), so they live in the database. The seed file keeps the illustrative ones reviewable in git |
+| Synthesis and audition | **new `auditions`**: thesis, arm (A, B, C), candidate design (persona, audience promise, visual identity, content behaviour, commercial thesis), `source_cards`, `references` (the named creators the brief used), `checks` (impersonation and near-duplicate flags), `creator_id` (a sandbox creator), batch `test-iia-<run>`, estimated and actual cost, scores, decision (select, revise, reject) | ties the candidate, its nine posts (by `creator_id` and batch) and the decision together |
 
 Unchanged and reused: `proposals` (new kind `intelligence`), `predictions`, `findings` through `evidence.py`
 (card claims as `research`, `speculative` or `tentative`, never `proven`), `decisions` (every IIA call), `queue`,
@@ -94,40 +100,39 @@ is never reversed.
 
 ---
 
-## 2. Privacy and rights (revised to the owner's 2026-11-25 decision)
+## 2. Privacy and rights (revised to the owner's 2026-11-25 decisions)
 
-The CLAUDE.md rule now reads as the owner wrote it (edited in this branch):
-- Research references are used to learn from real creators, never to reproduce them.
-- Identifiable public records are allowed.
-- Third-party media is a research reference only.
-- No impersonation, confusingly similar identities or mechanical copies.
-- Data protection: a stated purpose, minimal fields, deletion on request.
+The CLAUDE.md rule, as the owner set it (edited in this branch):
+- Learn from and emulate successful creators freely; named references are allowed.
+- Never impersonate a real person, or create a confusingly similar name, handle or face.
+- Don't copy specific protected content (near-duplicates).
+- Research media stays a research reference unless licensed for more.
+- Logged-out public data, within law and provider terms.
+- Deletion on request.
 
 | Point | Design |
 |---|---|
 | **Purpose** (stated in `policy.intelligence.purpose` and in `mw research` help) | "Learn which creative and social patterns make public creators worth following, to direct original AI creators. Not profiling, contacting, or reproducing anyone." |
 | **Who** | Public creator accounts with professional content, adults only. The IIA skips accounts that look like minors (vision check plus bio) and private accounts. Logged-out data only; no logins, no circumvention, and Apify or ScrapeCreators only within their terms |
 | **Minimal fields** | Handle, display name, profile and post links, public counts, captions, transcripts of the first seconds, our annotations. **Never kept:** comments or commenters (third parties), tagged people, location tags past city level, anything about health, sexuality, religion, politics, family or children, contact details. The annotation schema has no field for them, and the vision prompt says not to describe them |
-| **Annotations are about the content** | Coded attributes (enums and numbers) plus short notes on mechanisms. No biography or life facts about the person. Prose about why a pattern works lives on **pattern cards**, which need evidence from at least `intelligence.cards.min_creators` (3) creators. A card never describes one person |
-| **Media** | Downloaded photos, videos and frames go to a **separate R2 bucket** (`manyworlds-research`, private). Its token is held only by the control plane and the Fly finisher, never by GPU workers. Retention `intelligence.retention.media_days` (recommended 180), then deleted by a daily sweep (`research.reference.purge_media`) |
-| **Hard separation from production** | Research URIs are refused as generation inputs, in code, at three points: `queue.enqueue` for image, video, talk, dance, train and voice kinds; `assets` registration; and `dance.references` (owner `ours` or `licensed` only, as now). Tests cover every handler kind. Third-party media is never a LoRA or training input, never published, and never a motion reference. What we learn from videos is descriptions and parameters (cut rhythm, pace, gesture cadence), never footage |
-| **Access** | The `mw_worker` database role gets **no** grant on the new tables (migration 041 says so, and a test checks it). Readers: the control plane, `mw research …`, and the IIA |
-| **Retention per table** | `reference_creators` and `reference_posts` metadata: while a hypothesis that cites them is open, plus `intelligence.retention.records_days` (recommended 730). Annotations: the same. Media: `media_days` (180). Pattern card `sources`: kept as links (post URLs), with no media copy once the media is gone. Trend watcher tables: unchanged (30-day raw purge, anonymous) |
-| **Delete on request** | `mw research forget <handle or url>` deletes the creator, their posts, annotations and media objects. It removes their links from card sources (and reduces the card's evidence counts). It marks auditions that cited them `inspired_by_forgotten`, and writes an `owner_event`. The creator's handle goes on a `research_forget` blocklist (stored as a salted hash: the one place a hash still fits) so they are never collected again. The command is idempotent |
-| **Originality check** (`brain/originality.py`; a launch can't pass without it) | Against every reference creator the candidate's audition cites, plus every Manyworlds sibling. (1) **Name and handle:** normalised edit distance and token overlap below `intelligence.originality.max_name_similarity`. (2) **Bio and persona:** word overlap, as in `dossier.overlap`, and the reference's stated niche and catchphrases against the candidate's bible. (3) **Look:** a vision judge (Haiku screen, Sonnet confirm) answers "same or confusingly similar person?" for the candidate's anchor images against each cited creator's stored frames. No face embedding of a real person is computed or kept. (4) **Voice:** ECAPA distance from the voice lab between the candidate's designed voice and speech from the cited creator's stored videos, computed at check time; only the distance is kept. (5) **Specific content:** no audition post may have a pattern card with a single source as its main inspiration. A failure revises the candidate once, then rejects it |
-| **No mechanical copying** | Cards describe mechanisms and recipes in our own words. A card that is one creator's signature (a catchphrase, a unique set or prop, a named series) fails the `min_creators` rule and stays a draft. Synthesis must draw each candidate dimension from at least 2 clusters, and records which |
+| **Annotations are about the content** | Coded attributes (enums and numbers) plus short notes on mechanisms. No private-life facts about the person. Named creators and creative dossiers (what makes their content work, how it evolved) are allowed. A pattern card may cite one creator |
+| **Media** | Downloaded photos, videos and frames go to the **research store**: key prefix `research-refs/`, in a separate private bucket named by `RESEARCH_STORAGE_URL`. Its token is held only by the control plane and the Fly finisher, never by GPU workers. Retention `intelligence.retention.media_days` (180), deleted by the housekeeping sweep (`research.references.purge`) |
+| **Hard separation from production** | Research URIs are refused as production inputs, in code, at three points: <br>• `queue.enqueue`: only `finish.measure_video` and `brain.intelligence` may carry them; every image, video, talk, voice, dance, train, finish and music job is refused; <br>• a database CHECK on `assets.uri` (no asset row points into `research-refs/`); <br>• `dance.reference` (never a motion input). <br>What we learn from videos is descriptions and parameters (cut rhythm, pace, gesture cadence), not footage. A post whose licence permits more (`licence.uses`: `motion_reference`, `generation_input`) becomes a production input only by a deliberate copy into production storage, recorded as a licensed asset (a later step). Never through a research URI |
+| **Access** | The `mw_worker` database role has **no** grant on the new tables (a test checks it). Readers: the control plane, `mw research …`, and the IIA |
+| **Retention per table** | <br>• **Media:** `media_days` (180) after fetch. <br>• **Creators**, with their posts and annotations: deleted `records_days` (730) after they were last seen, unless an open hypothesis's audition or an active or draft card cites them. <br>• **Pattern card `sources`:** links, kept while the card lives. <br>• **Trend watcher tables:** unchanged (30-day raw purge, anonymous) |
+| **Delete on request** | `mw research forget <handle or url>` deletes the creator, their posts, annotations and media objects. It removes their links from card sources (lowering the card's evidence counts) and their id from auditions (marked `reference_forgotten`), and writes an `owner_event`. The handle goes on the `research_forget` blocklist as a salted hash, also for someone we hold nothing on yet, so they are never collected. The command is idempotent |
+| **Impersonation and copying checks** (`brain/impersonation.py`, code only, no model call) | Against the real creators the brief names: <br>• (a) **name and handle** string similarity; <br>• (b) **face:** one appearance check at casting, using the face-identity embedding when the pipeline computes one. No new model, no extra LLM; none exists today, so until then this check reports "not run"; <br>• (c) **near-duplicate output:** a 64-bit difference hash of each audition image against the cited posts' research images. <br>Flags are warnings to the talent manager. An obvious impersonation (same or near-same name, handle or face, past `intelligence.checks.*_block`) blocks the launch. Voice: nothing beyond the existing distance between our own creators |
 
 **Owner decisions still needed:**
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | Retention numbers | Media 180 days, records and annotations 730 days while cited. Shorter (90 / 365) if you want less exposure; the pilot only needs 90 |
-| D2 | A separate R2 bucket and token for research media (create it in Cloudflare; Fly secret `RESEARCH_S3_*`) | Yes. Workers still lack a bucket-scoped token (tech debt), so research media must not share the production bucket |
-| D3 | The look and voice checks process third-party faces and voices (biometric-adjacent, transiently, with nothing stored but a distance or verdict) | Yes, transient only, as designed. The alternative (text-only originality) misses the risk you care about most |
+| D1 | Retention numbers | Set as recommended: media 180 days, records 730 days unless cited (policy `intelligence.retention`). Shorter if you want less exposure |
+| D2 | A separate R2 bucket and token for research media (create it in Cloudflare; Fly secret `RESEARCH_STORAGE_URL` plus its key) | Yes. Workers still lack a bucket-scoped token (tech debt), so research media must not share the production bucket. Until it exists, nothing downloads media |
 | D4 | A legitimate-interest note for EU-resident creators (GDPR: purpose, necessity, balance, opt-out through `forget`) | Yes. I draft one page and you sign it before the first paid pull |
 | D5 | Platform terms: Instagram and TikTok restrict automated collection; we rely on Apify and ScrapeCreators logged-out data, the same posture as the trend watcher and the calibration run | Confirm the existing posture covers per-creator pulls too, or keep the pilot to hashtag and search results only (weaker: no per-creator baseline) |
 | D6 | Comments of reference creators | Not collected (third-party data, little extra signal over saves and shares) |
-| D7 | The brief's "no artificial rotation" against `aesthetics.rules.variety` (a new outfit most posts, no shot type twice in a row) | A card may mark a pose, set or outfit as `signature`; the director may then repeat it, overriding the variety rule for that element. The rules stay priors for everything else |
+| D7 | The brief's "no artificial rotation" against `aesthetics.rules.variety` (a new outfit most posts, no shot type twice in a row) | Done in the first PR: the aesthetics rule `signature` lets a pose, set or outfit that her style names as signature, or a card marked `signature_ok`, recur. The variety rules stay for everything else |
 
 ---
 
@@ -145,7 +150,7 @@ and research cap `intelligence.daily_usd_max`). It persists everything to the ta
 | `challenge` | Argues against the hypothesis: crowding, competing explanations, what would disconfirm it, which comparators are missing. Can send `scout` back for counterexamples | `iia_curate` (Opus), 1 call |
 | `annotate` | Code queues `finish.measure_video` and batched vision reads (3.3) | `iia_annotate`: Haiku 5.5 through Message Batches |
 | `distill` | Clusters annotations (code: attribute co-occurrence over high vs low traction, relative to each creator's baseline), then writes or updates pattern cards from the numbers | `iia_distill`: Sonnet, a call per cluster; Opus for the final merge |
-| `synthesize` | 3-5 original candidates per hypothesis from cards and clusters, each dimension with its `inspired_by`; then the originality check (code plus vision) | `iia_synthesize`: Opus |
+| `synthesize` | 3-5 candidates per hypothesis from cards and named references ("comparable appeal to X" is a fine brief); then the impersonation and near-duplicate checks (code) | `iia_synthesize`: Opus |
 | `audition_review` | Reads the blind scores, acceptance and cost, decides select, revise or reject, files a `launch` approval for a winner | `iia_curate` (Opus) |
 | `answer` | A question from the talent manager or market lead ("her outfit posts stalled: what do similar creators do with outfit content?"). Retrieves cards and annotations first, and pulls new data only if coverage is below `intelligence.refresh.min_coverage` | Sonnet; Opus only when it pulls new data |
 
@@ -179,7 +184,17 @@ Pilot sample (assumptions, set in policy, not code): **40 creators × 30 posts**
 
 Each creator's 30 posts include ordinary posts and relative misses, and span at least 3 months.
 
-**Sources** (existing actors first; fields verified on each actor's page before the run):
+**Sources** (fields verified on each source's page before the run):
+0. **Preferred for Instagram, once our account is connected: the Instagram Graph API's Business Discovery.**
+   - Through our own connected professional account and its system-user token (`publish/instagram.py`), it reads
+     another business or creator account's public profile and media by username:
+     `GET /{our-ig-user-id}?fields=business_discovery.username(<handle>){username,name,biography,followers_count,media_count,media{id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count,media_url,thumbnail_url}}`.
+     Media pages through `media.after(<cursor>)`.
+   - It is official, within Meta's terms, and costs nothing per call (rate limits apply).
+   - Its limits: business and creator accounts only, no views, reach or saves, and `media_url` may be withheld for
+     some media.
+   - It answers D5 for Instagram: Apify becomes the fallback (personal accounts, video files, views), pending your
+     D5 decision.
 1. Candidate pool. Configured today:
    - `apify~instagram-hashtag-scraper` (input `hashtags`, `resultsLimit`; $2.70 / 1k);
    - `clockworks~tiktok-scraper` (`hashtags`; $1.70 / 1k);
@@ -187,8 +202,9 @@ Each creator's 30 posts include ordinary posts and relative misses, and span at 
 
    The outputs carry `ownerUsername` and `authorMeta.name`. For IIA pulls these are kept in clear in
    `reference_creators`. The trend watcher's own rows stay hashed.
-2. Per-creator posts: **not configured today.** Add `research.apify_actors.instagram_profile` (Apify's Instagram
-   scraper with profile `directUrls`, posts mode) and use `clockworks~tiktok-scraper` with `profiles`. Price and
+2. Per-creator posts: **not configured today.** On Instagram, use Business Discovery (0) when connected, else add
+   `research.apify_actors.instagram_profile` (Apify's Instagram scraper with profile `directUrls`, posts mode). On
+   TikTok, use `clockworks~tiktok-scraper` with `profiles`. Price and
    input to check on the actor pages; the estimate assumes ~$2.70 / 1k posts. Video files: IG items carry a
    `videoUrl`; TikTok needs `shouldDownloadVideos: true`. The calibration run paid $1.17 for 84 videos including
    search.
@@ -199,7 +215,7 @@ Each creator's 30 posts include ordinary posts and relative misses, and span at 
 | Score | How |
 |---|---|
 | Relevance | Haiku reads 3 covers plus bio against the hypothesis's dimensions (fashion, evening, humour, conversation…) |
-| Originality | Distance of the creator's attribute distribution from their cluster's centre: a distinct creator teaches more than a typical one |
+| Distinctness | Distance of the creator's attribute distribution from their cluster's centre: a distinct creator teaches more than a typical one |
 | Traction vs baseline | Per post, log engagement (views for video, likes + comments + shares over followers otherwise) over **the creator's own median** and over the median of their follower band in the niche. The creator's score is the band-relative median, with an interval |
 | Contrast | Greedy: how many attribute values this creator adds to the sample's coverage |
 | Consistency | Spread of their own post-to-baseline ratios, and of their style attributes over time (stable identity, varied content) |
@@ -269,7 +285,7 @@ Fields:
 - recipe (shot-sheet fragments; for video, the sequence and edit);
 - model and hardware constraints;
 - failure modes;
-- originality guardrails;
+- guardrails (no near-duplicates of specific posts, no impersonation);
 - `sources` (reference post links);
 - evidence;
 - acceptance (our renders that passed review);
@@ -328,15 +344,12 @@ Both are researched with the same sample rules. The `challenge` step must argue 
 
 ### 3.6 Worked example: H1 → 3 audition briefs → shot sheets
 
-**Inspiration map** (from the illustrative cards; in the pilot, from clusters of at least 3 creators each):
+**References.** In the pilot the brief may name real creators outright, for example "creator X's night-out carousels
+and GRWM confessions work; develop someone with comparable appeal." One creator is enough. Here the illustrative
+cards stand in for them.
 
-| Candidate dimension | Draws on (clusters) | What is ours |
-|---|---|---|
-| Night aesthetic | nightlife flash (cluster A), fashion tastemakers (C) | her own grade and wardrobe philosophy; her settings are her job's world |
-| Talking style | conversational GRWM (B) | humour and stories from her fictional job |
-| Point of view | underserved adjacent (D: an occupation or age) | the occupation, the city, the life stage |
-
-**Audition briefs** (codenames only; the creator lab names the winner, and the originality check runs on the name):
+**Audition briefs** (codenames only; the creator lab names the winner, and the impersonation check runs on the name,
+handle and, once embeddings exist, the face):
 
 | | **C1 "Closing Shift"** | **C2 "Site Visit"** | **C3 "Second Debut"** |
 |---|---|---|---|
@@ -445,7 +458,7 @@ batches under the test overlay. Nothing is published.
 |---|---|
 | **A: current Brain** | Thesis → creator lab → style director → showrunner → director, as today |
 | **B: expanded taxonomy** | A, plus the illustrative cards and dimensions in the director, showrunner and style briefs. No research. This isolates "more vocabulary" from "evidence" |
-| **C: IIA-grounded** | Researched cards, candidates synthesised from clusters with `inspired_by`, the originality check, retrieval in the director, showrunner and talk |
+| **C: IIA-grounded** | Researched cards and named references, candidates synthesised from them, the impersonation and near-duplicate checks, retrieval in the director, showrunner and talk |
 
 **Blind scoring.** Each feed is rendered and finished the same way, with arm labels removed, shown in a random order
 as a 9-tile grid plus the posts. Three judges:
@@ -462,7 +475,7 @@ as a 9-tile grid plus the posts. Three judges:
 | Identity stability | review gates' identity scores (median, worst) | objective |
 | Publishable acceptance | share of posts ready on the first attempt; drops by reason | objective |
 | Cost per accepted post | ledger: research + LLM + GPU + retries + QA, per arm | objective |
-| Originality vs references (C) and vs siblings (all) | the section 2 check passes | gate |
+| Impersonation and near-duplicates vs the named references | no block; warnings listed | gate |
 
 **Go / no-go** (set in policy `intelligence.pilot.go`, recorded with the decision):
 - **Go (scale IIA to a second market):**
@@ -471,7 +484,7 @@ as a 9-tile grid plus the posts. Three judges:
   - C wins at least 2/3 of pairwise feed preferences against A;
   - C's acceptance is no more than 5 points below A's;
   - C's cost per accepted post (research amortised over 6 months of the creator's posts) is at most 1.25× A's;
-  - no originality failure.
+  - no impersonation block.
 - **Vocabulary only:** B is within 0.5 of C and beats A by at least 1.0. Ship the cards and dimensions; run
   research only on triggers (stalls, new hypotheses), not before each launch.
 - **No-go:** C beats A by less than 0.5, or acceptance drops by more than 10 points. Archive with the reasons
@@ -509,13 +522,13 @@ to $0.40 an hour). Measured references:
 | **2 Auditions** (A/B/C) | Creator lab per candidate (bible, profile, dossier, style; **E**) | 9 × $0.50 | 4.50 |
 | | Showrunner, evaluator, director per post (**E**) | 81 posts × $0.04 | 3.25 |
 | | Review screens and confirms (Haiku per image, Sonnet on close calls; **E**) | ~1,700 images | 3.00 |
-| | Originality checks (vision and voice, transient) | 9 candidates | 0.50 |
+| | Impersonation and near-duplicate checks (code) | 9 candidates | 0.00 |
 | | GPU images: reference packs 9 × 12 × 4 = 432, plus posts 81 × ~4 scenes × 4 candidates ≈ 1,300; ~90 busy minutes, ~3 h billed (**E**) | ~1,730 images | 2.00 |
 | | LoRA for the 3 finalists (one per arm; **E** ~35 min each on a 4090) | 3 | 0.75 |
 | | Talking edit per finalist (voice design and lip sync on an L40S, plus boot share; **E**) | 3 | 2.00 |
 | | Blind judging: Opus and Qwen4-Max, feed level, two passes | 9 feeds | 3.00 |
-| | **Stage 2 subtotal / cap** | | **19.00 / cap 25** (GPU part ≤ $5, inside the $10 a day GPU cap) |
-| **Total** | | | **~$33, cap $41** |
+| | **Stage 2 subtotal / cap** | | **18.50 / cap 25** (GPU part ≤ $5, inside the $10 a day GPU cap) |
+| **Total** | | | **~$32, cap $41** (less if Business Discovery replaces the Instagram per-creator pulls: about −$2.50) |
 
 **Lean option:** A vs C only, 2 candidates each, no talking edit. About $8 of research (20 creators) plus about $9
 of auditions ≈ **$17, cap $22**. It loses the vocabulary-vs-evidence answer (B).
@@ -533,7 +546,7 @@ Each stage needs its own owner go, as for any paid run. Enforcement:
 | # | Task | Tests |
 |---|---|---|
 | 1 | **Migration 041**: theses extension (kind, version, parent_id, owner_role, budget_usd, statuses, archive_reason); `reference_creators`, `reference_posts` (+ snapshots), `reference_annotations`, `pattern_cards`, `auditions`, `research_forget`; no grant to `mw_worker` | migration applies; the worker role can't select from the new tables; theses' old statuses still valid |
-| 2 | **Policy `intelligence:`** (`enabled: false`, purpose, quotas, caps, retention, refresh, retrieval, originality thresholds, the pilot's go thresholds) + roles `iia_annotate` (Haiku), `iia_distill` (Sonnet), `iia_curate` and `iia_synthesize` (Opus), added to `llm.batch.roles` where nobody waits; the policy schema check | every path the code reads exists |
+| 2 | **Policy `intelligence:`** (`enabled: false`, purpose, quotas, caps, retention, refresh, retrieval, check thresholds, the pilot's go thresholds) + roles `iia_annotate` (Haiku), `iia_distill` (Sonnet), `iia_curate` and `iia_synthesize` (Opus), added to `llm.batch.roles` where nobody waits; the policy schema check | every path the code reads exists |
 | 3 | **`policy/patterns/patterns-v0.yaml` + `brain/patterns.py`**: the 9 illustrative cards; loader and validator (shot types against aesthetics, moves, talk_edit grammars, capabilities, motion references `owner` ours or licensed); `new:` shot types reported, not accepted | unknown names refused; every illustrative card loads; `status: illustrative` never counts as evidence |
 | 4 | **Research separation guard**: `research_uri()` and the separate research store; refusal in `queue.enqueue` for generation and training kinds, `assets`, motion references | a research URI in any generation, LoRA or voice payload raises; production still works with ours |
 | 5 | **`mw research forget <handle or url>`** + media purge sweep | forget removes rows, media keys and card sources, blocklists the handle and is idempotent; the sweep deletes past `media_days` |
@@ -541,15 +554,18 @@ Each stage needs its own owner go, as for any paid run. Enforcement:
 | 7 | **Annotation schema and batcher** (`research/annotate.py`): three layers, observed, mechanism and speculation kept apart; no fields for sensitive data; batched through `llm_batch` | a stub LLM fills it; forbidden content is scrubbed; quotes over 12 words are cut; unknown stays unknown |
 | 8 | **Reference pulls and scoring** (`research/references.py`): per-creator actor inputs (policy), baselines against the creator's median and band, quotas, coverage | fixtures for both platforms; low comparators are always sampled; coverage is reported, not imputed |
 | 9 | **The agent** (`brain/agents/intelligence.py`): modes, `intelligence` request kind and route, talent manager allowance, launch step `casting` (off) | stub LLM end to end on a sandbox hypothesis; rights and caps refuse over-budget commissions |
-| 10 | **Originality** (`brain/originality.py`): name and handle, bio and persona, look (vision judge), voice (ECAPA at check time), single-source content rule | look-alike name and bio fail; distances only are stored |
+| 10 | **Impersonation checks wired in** (`brain/impersonation.py`, built in the first PR): at casting (`auditions.checks`, a block stops the launch), near-duplicates over audition renders; face vectors once the pipeline computes a face-identity embedding | warnings reach the talent manager; a block stops the launch |
 | 11 | **Retrieval**: cards in `director.creator_brief`, showrunner context and talk dials; the `pattern` field under the grammar-ceiling test | the brief carries at most N cards and no source links; the schema stays under the ceiling |
 | 12 | **Audition runner and report**: `mw intel audition <thesis> --arms A,B,C --usd X [--dry-run]`, the blind packet, `mw intel report <run>` | a dry run prices the plan and makes no calls |
 | 13 | **Outcome loop**: acceptance from the review gates, outcomes through `evidence.py`, `research` findings, refresh triggers | acceptance counts update; simulated outcomes never touch cards |
 
-**The first PR:**
-- tasks **1-6**, plus the annotation schema models from task 7 (models only, no calls);
-- the CLAUDE.md rule edit (already in this branch);
-- the layout line for the new modules.
+**The first PR (built on this branch):**
+- tasks **1-6**;
+- the annotation schema models from task 7 (`research/annotation.py`, models only, no calls);
+- the impersonation and near-duplicate checks as functions (`brain/impersonation.py`; wiring is task 10);
+- the aesthetics `signature` rule (D7);
+- the CLAUDE.md rule and layout lines.
 
-It adds no agent and no LLM or Apify calls, runs nothing paid, and changes nothing in the trend watcher. After it
-merges, the first paid step is stage 1, with the owner's go and decisions D1-D5.
+It adds no agent, makes no LLM, Apify or GPU calls, and changes nothing in the trend watcher. `finish.measure_video`
+needs `RESEARCH_STORAGE_URL` on the finisher (D2) before it can run for real. After it merges, the first paid step is
+stage 1, with the owner's go and decisions D2, D4 and D5.

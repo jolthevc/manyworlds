@@ -53,6 +53,9 @@ def reference(ref_id: str, policy: Policy | None, sent: dict | None = None) -> d
         raise RefusedReference(f"reference {ref_id!r} is not in dance.references")
     if not str(entry.get("uri") or "").strip():
         raise RefusedReference(f"reference {ref_id!r} has no uri")
+    from .research.references import is_research_uri
+    if is_research_uri(entry["uri"]):
+        raise RefusedReference(f"reference {ref_id!r} is research media: a reference only, never a motion input")
     owner = str(entry.get("owner") or "").strip().lower()
     allowed = {str(o).strip().lower() for o in (c.get("allowed_owners") or [])}
     if owner not in allowed:

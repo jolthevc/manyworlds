@@ -34,7 +34,7 @@ primary_region = "iad"     # next to Neon us-east-2
   # machine is never created there, only by deploy) and the worker exits once its queue has been empty for
   # gpu_pools.fly_finisher.idle_exit_seconds, so the machine stops until the next finish. After a deploy (which may
   # start it), a run the autoscaler did not register is refused at start and stopped by the enforcer.
-  finisher = "worker --pool fly_finisher --kinds finish.video,finish.join,finish.measure_song"
+  finisher = "worker --pool fly_finisher --kinds finish.video,finish.join,finish.measure_song,finish.measure_video"
 
 [[vm]]
   size = "shared-cpu-1x"

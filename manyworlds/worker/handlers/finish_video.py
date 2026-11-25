@@ -85,3 +85,29 @@ def measure_song(payload: dict[str, Any], ctx: JobContext, *, policy: Policy | N
 
 
 HANDLERS[MEASURE_KIND] = measure_song
+
+
+# finish.measure_video: a research reference's video measured (manyworlds.research.video_measure: cuts, shot lengths,
+# pace, sampled frames) on the finisher. It reads and writes only the research store (RESEARCH_STORAGE_URL), which
+# rented GPU machines never hold; the measure goes back in the job's result (`video_measure`) and the control plane
+# stores it (video_measure.collect).
+VIDEO_MEASURE_KIND = "finish.measure_video"
+VIDEO_MEASURE_NEEDS = ("post_id", "media_uri")
+
+
+def measure_video(payload: dict[str, Any], ctx: JobContext, *, policy: Policy | None = None) -> HandlerResult:
+    from ...research import references, video_measure
+    missing = [k for k in VIDEO_MEASURE_NEEDS if not payload.get(k)]
+    if missing:
+        raise NonRetryable(f"payload needs {missing} (research.video_measure.payload)")
+    if not references.is_research_uri(payload["media_uri"]):
+        raise NonRetryable("finish.measure_video measures research references only")
+    store = references.research_store()
+    if store is None:
+        raise NonRetryable(f"{references.STORE_ENV} is not set on this machine")
+    out = video_measure.measure_files(payload, store, ctx.workdir / "measure_video")
+    return HandlerResult(outputs=[], recipe={"measured": payload["media_uri"], "version": out.get("version")},
+                         meta={"video_measure": out})
+
+
+HANDLERS[VIDEO_MEASURE_KIND] = measure_video

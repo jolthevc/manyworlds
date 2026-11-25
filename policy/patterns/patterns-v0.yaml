@@ -1,0 +1,204 @@
+# The creative pattern library's seed (manyworlds.brain.patterns; policy `intelligence.patterns.file`).
+#
+# ILLUSTRATIVE UNTIL RESEARCH FILLS THEM. Every card here is written from general craft knowledge (status
+# illustrative, no sources), so it never counts as evidence. Research (the influencer intelligence agent) adds cards
+# and versions in the pattern_cards table, with source links to the public posts it learned from (a card may cite
+# one creator). Photo and video are one library: a card's medium is photo, carousel, video or sequence.
+#
+# Names a card uses are checked against the libraries the pipeline renders from (manyworlds.brain.patterns.validate):
+# shot types (policy/aesthetics; a new one goes under proposed_shot_types until the aesthetics library takes it),
+# grades, archetypes, moves (policy moves.library), talking-edit grammars (generation.talk_edit.grammars), voice
+# deliveries (voice.delivery_bank.deliveries), motion-reference moves (dance.references), devices (direction).
+#
+# signature_ok: the card's element (a pose, a set, an outfit) may recur across posts and carousels; the variety
+# rules don't apply to it (aesthetics rules.signature).
+version: patterns-v0
+
+cards:
+  dinner_flash_friend:
+    medium: carousel
+    status: illustrative
+    situation: an upscale dinner with friends, late
+    dims:
+      shot_types: [flash_night, ringed_hand_glass, table_flatlay_hands, after_the_meal]
+      pose: "seated sideways, elbow on the table"
+      camera: "a friend's phone, slightly high, 26 mm"
+      expression: "a knowing smile, mid-laugh"
+      styling: "evening, one statement piece"
+      lighting: "on-camera flash, candles"
+      social_energy: "group"
+      movement: "still"
+    mechanism: "Being there: a friend took it, the flash is unflattering in a good way, and the details make the night real."
+    audience_role: [aspiration, intimacy]
+    best_fit: [fashion_style, city_explorer, lifestyle_slow]
+    recipe: {order: photo_dump, face_slides: 2, device: held, grade: flash_digicam, imperfection: off-centre crop}
+    constraints: "Hands on glasses only in hand shots; background people at most 2 and soft."
+    failure_modes: [hands on stemware, plastic skin under flash, extra faces at the table]
+    guardrails: "No real restaurant names or branded bottles."
+  street_style_crossing:
+    medium: carousel
+    status: illustrative
+    signature_ok: true
+    situation: crossing a city street in a considered outfit
+    dims:
+      shot_types: [outfit_full_body, blurred_walk, shoes_cobblestones, architecture_detail]
+      pose: "mid-stride, gaze down or away"
+      camera: "low angle, 26 mm"
+      expression: "neutral, unposed"
+      styling: "silhouette-led"
+      lighting: "daylight"
+      social_energy: "alone"
+      movement: "walking"
+    mechanism: "Silhouette and movement show the outfit; looking away reads as unposed."
+    audience_role: [aspiration, utility]
+    best_fit: [fashion_style, city_explorer]
+    recipe: {order: photo_dump, face_slides: 1, device: held, grade: clean_bright}
+    constraints: "Full-body anatomy (legs, feet) is the weak spot; keep crowds out."
+    failure_modes: [legible shop signs, extra limbs mid-stride, crowd faces]
+    guardrails: "A signature pose may recur; never a named creator's own crossing or set."
+  mirror_phone_cover:
+    medium: photo
+    status: illustrative
+    situation: the outfit in a full-length or lift mirror
+    dims:
+      shot_types: [mirror_outfit_phone, elevator_mirror]
+      pose: "hip out, phone over the face"
+      camera: "her phone in the mirror"
+      expression: "hidden"
+      styling: "the whole outfit"
+      lighting: "room light or lift flash"
+      social_energy: "alone"
+      movement: "still"
+    mechanism: "The whole outfit with the face hidden: intimacy without performance, the most native 'I took this' frame."
+    audience_role: [intimacy, utility]
+    best_fit: [fashion_style, beauty_grwm]
+    recipe: {device: mirror, per_carousel: 1}
+    constraints: "Faceless (no identity gate); her own anchor rooms."
+    failure_modes: [deformed phone or hand, double reflections]
+    guardrails: "Our own rooms only."
+  poolside_edge:
+    medium: carousel
+    status: illustrative
+    situation: a pool or sea edge on a trip
+    dims:
+      shot_types: [pool_edge_legs, beach_towel_objects, hair_motion_back, drink_against_view]
+      pose: "legs in the water, relaxed"
+      camera: "top-down or from behind"
+      expression: "unseen"
+      styling: "modest swimwear, linen"
+      lighting: "hard midday or golden hour"
+      social_energy: "alone or two"
+      movement: "still"
+    mechanism: "Aspiration without a face: holiday proof told in details."
+    audience_role: [aspiration]
+    best_fit: [lifestyle_slow, city_explorer, fashion_style]
+    recipe: {order: photo_dump, face_slides: 0, grade: warm_film}
+    constraints: "Swimwear stays modest (the safety gate); test before relying on it."
+    failure_modes: [water refraction on skin, hands holding glasses, unsafe outfit verdict]
+    guardrails: "No real hotel; modest swimwear (scope)."
+    proposed_shot_types:
+      pool_edge_legs: {category: scenery, face: "no", subject: feet, framing: "top-down at her legs in clear pool water, the tiled edge across the frame, hard sun", use: "travel, summer, the middle of a dump"}
+  night_out_dump:
+    medium: sequence
+    status: illustrative
+    situation: a whole night told from getting ready to the walk home
+    dims:
+      shot_types: [bathroom_grwm, taxi_exit, elevator_mirror, flash_night, mid_laugh_candid, street_blue_hour, after_the_meal]
+      pose: "varied"
+      camera: "mixed (selfie, mirror, friend)"
+      expression: "building to a laugh"
+      styling: "evening"
+      lighting: "vanity, flash, blue hour"
+      social_energy: "alone to group"
+      movement: "arriving, laughing"
+    mechanism: "A night with a beginning and an end; the tail frame invites 'what happened' comments."
+    audience_role: [aspiration, humour, intimacy]
+    best_fit: [fashion_style, city_explorer, storyteller]
+    recipe: {order: photo_dump, imperfect_frames: 1, caption: ends on a question, grade: flash_digicam}
+    constraints: "The carousel rules hold, except a signature outfit may recur."
+    failure_modes: [too many face slides, the same shot type twice in a row]
+    guardrails: "Never another creator's event or series name."
+  grwm_confession:
+    medium: video
+    status: illustrative
+    situation: getting ready while telling a story
+    dims:
+      shot_types: [bathroom_grwm, jewellery_closeup, vanity_tray]
+      pose: "leaning into the mirror"
+      camera: "propped at the mirror, eye level"
+      expression: "deadpan to conspiratorial"
+      styling: "halfway ready"
+      lighting: "warm vanity bulbs"
+      social_energy: "addressed to the viewer"
+      movement: "multitasking hands"
+    mechanism: "Conversational intimacy: she is busy, so the story feels unplanned; small mess and asides make it personal; the payoff lands as she finishes."
+    audience_role: [intimacy, humour]
+    best_fit: [beauty_grwm, storyteller, fashion_style]
+    recipe: {move: mirror_talk, grammar: story_time, deliveries: [confiding, deadpan, amused],
+             pace_wps: [3.8, 4.3], eye_contact: 0.65, mannerisms: [one laugh, one aside to the lens],
+             length_s: [20, 40]}
+    constraints: "Keep takes to about 8 s; makeup application only in close cutaways."
+    failure_modes: [loose lip sync on long takes, hands at the face in a talking shot]
+    guardrails: "Her own story from her bible."
+  storytime_selfie_walk:
+    medium: video
+    status: illustrative
+    situation: telling a story while walking, phone at arm's length
+    dims:
+      shot_types: [talking_anchor]
+      pose: "walking, phone held up"
+      camera: "selfie arm, handheld"
+      expression: "urgent, amused"
+      styling: "day outfit"
+      lighting: "daylight street"
+      social_energy: "addressed to the viewer"
+      movement: "walking"
+    mechanism: "Proximity and motion: she grabbed the phone because the story couldn't wait."
+    audience_role: [humour, intimacy]
+    best_fit: [storyteller, city_explorer]
+    recipe: {move: walking_vlog, grammar: story_time, deliveries: [storytelling, excited], pace_wps: [3.9, 4.4],
+             eye_contact: 0.8, length_s: [15, 35]}
+    constraints: "Walk-and-talk (V2V): motion clips of at most 5 s, chained at most 3."
+    failure_modes: [mouth not redrawn in V2V, motion drift past 5 s]
+    guardrails: "Her own story."
+  day_in_life_montage:
+    medium: video
+    status: illustrative
+    situation: a day told in many small moments
+    dims:
+      shot_types: [hand_coffee_table, window_view, hands_keyboard_topdown, street_blue_hour, car_passenger]
+      pose: "hands at work"
+      camera: "POV, close"
+      expression: "rarely seen"
+      styling: "day to evening"
+      lighting: "follows the day"
+      social_energy: "alone"
+      movement: "constant small actions"
+    mechanism: "Routine as a story: many small aspirational frames held together by one thread in the voiceover."
+    audience_role: [aspiration, utility]
+    best_fit: [lifestyle_slow, food_home, maker]
+    recipe: {move: pov_day_timestamps, grammar: commercial, face_share: 0.33, length_s: [33, 75]}
+    constraints: "Face to camera about a third at most (cost and identity risk)."
+    failure_modes: [too many face shots, hands in every frame]
+    guardrails: "A fictional routine and job."
+  outfit_check_spin:
+    medium: video
+    status: illustrative
+    signature_ok: true
+    situation: several looks in one spot
+    dims:
+      shot_types: [outfit_full_body, dress_spin]
+      pose: "half spin, hand on hip"
+      camera: "propped, full body"
+      expression: "confident, playful"
+      styling: "a different outfit per shot"
+      lighting: "the same in every shot"
+      social_energy: "addressed to the viewer"
+      movement: "spin"
+    mechanism: "One frame, many looks: easy to compare, easy to save."
+    audience_role: [utility, aspiration]
+    best_fit: [fashion_style]
+    recipe: {move: outfit_change_spin, motion_moves: [outfit_pose], caption_style: none, length_s: [9, 20]}
+    constraints: "Licensed motion references only; the same spot, framing and light every time."
+    failure_modes: [outfit details drifting between shots, spin blur on hands]
+    guardrails: "Licensed motion clips only; never a real video's choreography."

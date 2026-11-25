@@ -340,7 +340,9 @@ def test_the_autoscaler_starts_the_finisher_only_while_finish_jobs_wait(conn, po
     assert float(g["max_usd"]) == runs["max_usd_by_family"]["finish"] and g["provider"] == "fly"
     assert float(g["usd_per_hour"]) == policy.pool("fly_finisher")["usd_per_hour"] and g["provider_ref"] == "m1"
     from manyworlds import songs
-    assert sorted(g["job_kinds"]) == sorted([production.FINISH_KIND, production.JOIN_KIND, songs.MEASURE_KIND])   # the pool's kinds
+    from manyworlds.research import video_measure
+    assert sorted(g["job_kinds"]) == sorted([production.FINISH_KIND, production.JOIN_KIND, songs.MEASURE_KIND,
+                                             video_measure.KIND])   # the pool's kinds (finish.measure_video: research references)
     autoscale.tick(conn, policy, ps, now=T0 + timedelta(minutes=1))
     assert len(fly.launched) == 1                                              # one finisher at a time
     # Past its deadline the enforcer stops it like any machine, and the billed time is in the ledger.
