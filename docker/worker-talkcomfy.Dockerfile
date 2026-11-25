@@ -116,6 +116,20 @@ RUN git clone https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-We
  && /opt/svc-rvc/bin/pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/constraints-svc.txt -r /tmp/req-rvc.txt \
  && mkdir -p /opt/rvc/assets/weights /opt/rvc/assets/indices \
  && cd /opt/rvc && /opt/svc-rvc/bin/python -c "import faiss, parselmouth, av, ffmpeg, sklearn, torch.utils.tensorboard, transformers; print('rvc ok')"
+# Named graphs (job kind comfy.graph, worker/handlers/comfy_graph.py, policy comfy_graphs). LTX-2.5 needs no pack:
+# its nodes are in ComfyUI core (templates want 0.32.0+; COMFYUI_REF is v0.45.0) and its int8 ConvRot weights run on
+# comfy-kitchen, which ComfyUI's requirements pin (0.2.41). EchoMimicV3-Flash runs in smthemex/ComfyUI_EchoMimic
+# (Apache-2.0) at a pinned commit, with only the packages its V3_flash path imports (docker/constraints-comfygraphs.txt);
+# its weights download at the first job into the weights cache, reached through ComfyUI/models/echo_mimic (a link).
+# Not built yet: the smoke check (check_talkcomfy) validates every named graph against ComfyUI's node catalogue.
+ARG ECHOMIMIC_REF=9f430d9219c378505dedec6ed1749d5088745b3c
+COPY docker/constraints-comfygraphs.txt /tmp/constraints-comfygraphs.txt
+RUN git clone https://github.com/smthemex/ComfyUI_EchoMimic.git /opt/ComfyUI/custom_nodes/ComfyUI_EchoMimic \
+ && git -C /opt/ComfyUI/custom_nodes/ComfyUI_EchoMimic checkout ${ECHOMIMIC_REF} \
+ && rm -rf /opt/ComfyUI/custom_nodes/ComfyUI_EchoMimic/.git \
+ && pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/constraints-comfygraphs.txt \
+      moviepy omegaconf decord matplotlib loguru ffmpeg-python \
+ && python -c "import moviepy, omegaconf, decord, matplotlib, loguru, ffmpeg, diffusers, accelerate, cv2, librosa, pyloudnorm, transformers; assert transformers.__version__ == '4.57.6', transformers.__version__"
 # Lip-sync score (manyworlds/worker/lipsync.py) in its own environment, as in the research-script talk image.
 ARG MEDIAPIPE=0.10.21
 ARG LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task

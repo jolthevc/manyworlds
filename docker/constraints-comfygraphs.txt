@@ -1,0 +1,12 @@
+# Packages the named ComfyUI graphs' node packs need on top of ComfyUI's and WanVideoWrapper's (policy comfy_graphs,
+# worker/handlers/comfy_graph.py), installed under the image's torch/transformers constraints too.
+# ComfyUI_EchoMimic (EchoMimicV3-Flash): what its V3/V3_flash path imports when ComfyUI loads the pack
+# (EchoMimic_node.py -> utils.py, origin_infer.py, echomimic_v3/infer*.py at the pinned commit). Left out: mediapipe,
+# retinaface/tensorflow, facenet-pytorch and mmgp (V1/V2, V3-preview face masks, and the offload profiles: optional
+# since the pack's PR #171, never imported by V3_flash with use_mmgp None), ultralytics, lpips, torchmetrics, IPython.
+moviepy==2.2.1
+omegaconf==2.3.0
+decord==0.6.0
+matplotlib==3.10.3
+loguru==0.7.3
+ffmpeg-python==0.2.0
