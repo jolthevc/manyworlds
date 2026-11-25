@@ -161,7 +161,8 @@ def test_the_maren_final_plan_is_one_story_time_video_on_infinitetalk_with_ltx_b
     assert item.format == "talking_video" and item.body["edit_grammar"] == "story_time"
     assert item.body["talk_route"] == ["infinitetalk", "ltx25"] and item.body["shared_key"] == "maren-final"
     assert "voice_engine" not in item.options                     # whatever the voice gate resolves to
-    assert all(v == ["runpod_secure_l40s"] for v in plan["pools"].values())   # L40S only
+    assert all(v[0] == "runpod_secure_l40s" and set(v) <= {"runpod_secure_l40s", "runpod_secure_a40"}
+               for v in plan["pools"].values())   # 48 GB cards: L40S first, A40 behind for the edit
     words = sum(len(ln["text"].split()) for s in item.body["shots"] for ln in s["performance"]["lines"])
     seconds = words / float(pol.get("generation", "talk_long", "words_per_second"))
     assert 34 <= seconds <= 45

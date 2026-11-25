@@ -139,7 +139,7 @@ job_kinds:
   # so the 24 GB image machines never take one. Not benchmarked yet. Its own worker family (`edit`, worker_images.edit):
   # its own machine limits, and the no-output guard counts its machines apart, so failing edit machines can't stop
   # Z-Image work (and image machines don't list the kind).
-  image.qwen_edit: {pools: [runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 4, family: edit}
+  image.qwen_edit: {pools: [runpod_secure_l40s, runpod_secure_a40, runpod_secure_h100], outputs_per_job: 4, family: edit}   # A40: the same 48 GB (2026-11-25: no L40S on RunPod for an hour)
   image.mirror:    {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 0}   # copies model weights into R2 once
   image.narrated:  {pools: [vast_3090, vast_4090, runpod_comm_3090], outputs_per_job: 1}   # CPU edit (voice + ffmpeg) on image machines
   # video.wan_i2v (diffusers Wan 2.2 TI2V-5B, ~14 min a 5 s clip on a 3090; FastWan: 0 of 10 clips passed) retired
