@@ -703,10 +703,9 @@ def summary(conn, run: str) -> dict:
 
 
 def _culture(conn, policy: Policy) -> str:
-    """Culture signals for casting and commerce (manyworlds.research.culture): context from publications, not
-    evidence of what performs."""
-    from ..research import culture
-    lines = "\n".join(x for x in (culture.brief(conn, policy, use="casting"), culture.brief(conn, policy, use="commerce"))
+    """Culture signals for casting and commerce (manyworlds.research.desk): context, not evidence of what performs."""
+    from ..research import desk
+    lines = "\n".join(x for x in (desk.brief(conn, policy, use="casting"), desk.brief(conn, policy, use="commerce"))
                       if x)
-    return (f"What is moving in culture now (signals from fashion, beauty, design, travel and advertising publications; "
+    return (f"What is moving in culture now (research desk findings from current sources, with their evidence mix; "
             f"our own synthesis, context not proof):\n{lines}" if lines else "")

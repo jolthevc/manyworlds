@@ -1408,13 +1408,16 @@ trends:
 data_policy:
   sources:
     # status: approved | paused (rights unclear: nothing runs until clarified) | blocked. basis: why we may use it.
+    # Owner 2026-11-25 (later): no third-party media downloads while the just-in-time redesign and the rights audit
+    # are open (docs/research/2026-11-25-data-audit.md): posts_media is not approved; factual metadata continues.
     apify:
       status: approved
-      basis: "logged-out public data via Apify actors; Instagram Terms 4.2 (no automated collection without permission) is a known risk the owner accepted, bounded, 2026-11-25"
-      tasks: [profiles, posts, posts_media, search]
-      transient_media: true
+      basis: "logged-out public data via Apify actors; Instagram Terms 4.2 (no automated collection without permission) is a known risk the owner accepted, bounded, 2026-11-25; media downloads paused pending audit"
+      tasks: [profiles, posts, search]
+      transient_media: false
     scrapecreators:
-      status: approved
+      status: paused
+      why: "owner deferred further spending until the revised research architecture confirms its use cases and permissions (2026-11-25); free credits used"
       basis: "public data API; its terms allow commercial use of returned data; whether it uses logged-in sessions is not stated (asked; owner accepted bounded risk 2026-11-25)"
       tasks: [profiles, posts, posts_media, search]
       transient_media: true
@@ -1427,17 +1430,10 @@ data_policy:
       status: blocked
       why: "private mobile API through logged-in sessions; its terms need written permission for commercial use"
       tasks: []
-    feeds:
-      # Paused 2026-11-25: publisher feed terms often limit RSS to personal, non-commercial use (Condé Nast is listed
-      # as personal-use-only; not confirmed per publisher). Re-approve a publisher once its terms or a licence allow it.
-      status: paused
-      why: "publisher RSS terms commonly personal/non-commercial use only; confirm per publisher or license"
-      tasks: [feed]
-      transient_media: false
-    gdelt:
+    claude_web:
       status: approved
-      basis: "The GDELT Project DOC 2.0 API: GDELT releases its data free for academic, commercial or governmental use; we keep link, headline, publication and date, never article text or images"
-      tasks: [feed]
+      basis: "Anthropic web search and web fetch (server tools): fetch honours robots.txt and only reads URLs found by search or given; we keep our synthesis, classified claims and source URLs with the API's 150-character cited snippet, never page content"
+      tasks: [quick, deep]
       transient_media: false
   fields:
     creator: [display_name, profile_url, bio, followers, role, selected_because, found_via]
@@ -1543,56 +1539,32 @@ intelligence:
     sponsored_markers: ["#ad", "#sponsored", "#advertisement", "#werbung", "#anzeige", "paid partnership",
                         "#partner", "#gifted"]
     activity_bands: {high: 0.08, medium: 0.03}
-  # Culture intelligence beyond social media (manyworlds.research.culture; owner 2026-11-25): publishers' own feeds,
-  # read once a day while research runs (operations.while_paused). Kept: link, title, feed, date (source references)
-  # and our distilled signals; never article text or images (data_policy source `feeds`). A signal's kind is code's:
-  # corroborated (at least corroborated_min publications) or single_source (confidence capped). Feeds checked
-  # 2026-11-25 (all answered 200 with items).
-  culture:
+  # The research desk (manyworlds.research.desk; owner 2026-11-25): one shared research capability on Claude's own
+  # web search ($10 per 1,000 searches, failed ones free) and web fetch (tokens only; honours robots.txt), replacing
+  # GDELT and publisher RSS. A question asked again while its finding is fresh is answered from the finding. quick ~
+  # $0.03-0.05 (Haiku, <= 3 searches), deep ~ $0.3-0.5 (Sonnet, searches plus page reads). Findings keep our synthesis,
+  # classified claims and source URLs with the API's cited snippet; never pages. Topics are watched on their cadence
+  # by the daily desk run within daily_usd (with monitor.daily_usd: the owner's $1/day of research).
+  desk:
     enabled: true
-    daily_usd: 0.2                 # with monitor.daily_usd 0.8: the owner's $1/day of research
-    usd_per_call: 0.03
-    role: culture_distill
-    effort: low
-    max_items_per_call: 120
-    max_signals: 12
-    corroborated_min: 2
-    single_source_confidence_max: 0.5
-    max_item_age_days: 14
-    signal_days: 120
-    item_days: 180
+    daily_usd: 0.5
+    fresh_days: 7
+    brief_grace_days: 14
+    keep_days: 730
+    structure_role: desk_claims
     k: {style: 6, casting: 6, commerce: 5, content: 5}
-    # The GDELT Project news index (data_policy source gdelt): English headlines from the last timespan per query,
-    # one request every min_interval_s (its stated limit is one per 5 s). The publication (domain) is the source.
-    gdelt:
-      timespan: 1d
-      max_records: 75
-      min_interval_s: 6
-      retries: 3                   # on HTTP 429 (Fly's shared IP is limited at once, 2026-11-25), backing off
-      queries:
-        - {category: fashion, query: "(fashion OR runway OR designer) (trend OR collection OR season) sourcelang:english"}
-        - {category: fashion_business, query: "(luxury OR fashion) (brand OR retail OR sales) sourcelang:english"}
-        - {category: beauty, query: "(beauty OR skincare OR makeup OR fragrance) trend sourcelang:english"}
-        - {category: menswear_grooming, query: "(menswear OR grooming OR barber) sourcelang:english"}
-        - {category: interiors, query: "(interior design OR home decor) trend sourcelang:english"}
-        - {category: architecture_design, query: "(architecture OR design) (hotel OR house OR studio) sourcelang:english"}
-        - {category: travel, query: "(travel OR hotel OR destination) trend sourcelang:english"}
-        - {category: brand_campaigns, query: "(campaign OR ambassador OR collaboration) (brand OR fashion OR beauty) sourcelang:english"}
-        - {category: wellness_lifestyle, query: "(wellness OR fitness OR lifestyle) trend sourcelang:english"}
-    feeds:
-      - {name: vogue, category: fashion, url: "https://www.vogue.com/feed/rss"}
-      - {name: harpers_bazaar, category: fashion, url: "https://www.harpersbazaar.com/rss/all.xml/"}
-      - {name: elle, category: fashion, url: "https://www.elle.com/rss/all.xml/"}
-      - {name: wwd, category: fashion_business, url: "https://wwd.com/feed/"}
-      - {name: business_of_fashion, category: fashion_business, url: "https://www.businessoffashion.com/arc/outboundfeeds/rss/"}
-      - {name: allure, category: beauty, url: "https://www.allure.com/feed/rss"}
-      - {name: gq, category: menswear_grooming, url: "https://www.gq.com/feed/rss"}
-      - {name: esquire, category: menswear_grooming, url: "https://www.esquire.com/rss/all.xml/"}
-      - {name: hypebeast, category: streetwear, url: "https://hypebeast.com/feed"}
-      - {name: architectural_digest, category: interiors, url: "https://www.architecturaldigest.com/feed/rss"}
-      - {name: dezeen, category: architecture_design, url: "https://www.dezeen.com/feed/"}
-      - {name: conde_nast_traveler, category: travel, url: "https://www.cntraveler.com/feed/rss"}
-      - {name: adweek, category: brand_campaigns, url: "https://www.adweek.com/feed/"}
+    depths:
+      quick: {role: research_quick, max_searches: 3, fetch: false, effort: low, est_usd: 0.06, fresh_days: 7}
+      deep: {role: research_deep, max_searches: 8, fetch: true, max_fetches: 4, max_content_tokens: 12000,
+             effort: medium, est_usd: 0.5, fresh_days: 14}
+    topics:
+      - {name: fashion, every_days: 3, tags: [fashion], question: "What is genuinely moving in mainstream womenswear and menswear fashion right now (silhouettes, colours, fabrics, accessories), and which of it reads as aspirational rather than niche?"}
+      - {name: beauty_grooming, every_days: 4, tags: [beauty, grooming], question: "What beauty, skincare, hair and grooming looks and rituals are rising right now for women and men, and which are mainstream-desirable?"}
+      - {name: lifestyle_interiors, every_days: 5, tags: [interiors, lifestyle], question: "What interior, home and everyday lifestyle aesthetics (rooms, objects, light, rituals) are rising right now?"}
+      - {name: travel, every_days: 5, tags: [travel], question: "Which travel destinations, hotel styles and travel rituals are rising right now among aspirational lifestyle audiences?"}
+      - {name: brand_campaigns, every_days: 4, tags: [commerce], question: "Which fashion, beauty and lifestyle brand campaigns or creator partnerships launched in the last two weeks, and what creative approach and kind of talent did they use?"}
+      - {name: creator_economy, every_days: 7, tags: [commerce, platforms], question: "What changed in the last two weeks for lifestyle creators on Instagram and TikTok: platform features, ranking signals, branded content rules, AI-content labelling?"}
+      - {name: wellness_fitness, every_days: 7, tags: [wellness], question: "What wellness, fitness and food lifestyle trends are rising right now among mainstream aspirational audiences?"}
   # Cost-aware monitoring of the reference creator universe (manyworlds.research.monitor; migration 045; the agent's
   # `monitor` mode, queued once a day by monitor_due on the Brain cycle while enabled and operations are live, or by
   # `mw research monitor`). A creator's tier comes from four scores in [0, 1] weighted by `weights`: relevance (its
@@ -1607,7 +1579,7 @@ intelligence:
   # `mw research monitor --estimate N` ($/month at N creators). Off until the owner turns it on.
   monitor:
     enabled: true            # owner 2026-11-25: on at $1/day, also while paused (operations.while_paused)
-    daily_usd: 0.8                 # with culture.daily_usd 0.2: the owner's $1/day of research (2026-11-25)
+    daily_usd: 0.5                 # with desk.daily_usd 0.5: the owner's $1/day of research (2026-11-25)
     max_checks_per_tick: 400
     max_enroll_per_tick: 500
     # Batched profile checks: Apify's profile scraper takes many handles a run and embeds each one's latest 12 posts
@@ -3583,7 +3555,9 @@ llm:
     iia_annotate: claude-haiku-5-5
     iia_distill: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     iia_curate: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
-    culture_distill: claude-haiku-5-5   # publications beyond social media, once a day (research.culture)
+    research_quick: claude-haiku-5-5    # research desk, quick questions (research.desk; web search)
+    research_deep: claude-sonnet-5-5    # research desk, deep questions (web search and fetch)
+    desk_claims: claude-haiku-5-5       # sorts a researched answer into classified claims
     iia_synthesize: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
     # Casting (manyworlds.brain.casting): 3-5 concepts in one call (judgement and taste: Opus, once per launch) and one
     # judge call scoring them on the rubric (another model than the writer's, so it does not grade its own work).
@@ -3595,6 +3569,9 @@ llm:
     claude-sonnet-5-5: [2.00, 10.00, 0.10, 2.50]
     claude-haiku-5-5:  [0.10, 0.50, 0.01, 0.125]
   max_output_tokens: 16000
+  # Claude's server-side web tools (llm.web_research, research.desk): $10 per 1,000 searches (failed ones free), fetch
+  # tokens only; at most max_continuations pause_turn continuations per question.
+  web: {search_tool: web_search_20260209, fetch_tool: web_fetch_20260209, usd_per_search: 0.01, max_continuations: 3}
   # System prompts at least this long go out as a cached block (llm._system): ~1000+ tokens, the smallest prefix
   # the API caches. Shorter ones are sent as plain text (caching would not apply anyway).
   cache_system_min_chars: 4000

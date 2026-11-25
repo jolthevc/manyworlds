@@ -198,9 +198,10 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
                   f"correlation, not proof; use it for hooks, formats and pacing, never copy, and stay in the creator's "
                   f"voice): {json.dumps(niche)}\n" if niche else "")
     cards = pattern_cards(conn, policy, prof or c["bible"], formats)
-    from ...research import culture
-    culture_lines = culture.brief(conn, policy, use="content")
-    culture_text = (f"Culture now (signals from publications; ideas may ride one when it suits her, never forced):\n"
+    from ...research import desk
+    culture_lines = desk.brief(conn, policy, use="content")
+    culture_text = (f"Research desk now (findings from current sources, with their evidence mix; ideas may ride one "
+                    f"when it suits her, never forced):\n"
                     f"{culture_lines}\n" if culture_lines else "")
     card_text = (f"Pattern cards from the creative pattern library (photo and video patterns that make creators like "
                  f"her worth following; ILLUSTRATIVE ones are craft knowledge, researched ones carry evidence and "

@@ -322,6 +322,69 @@ class LLM:
         finally:
             self._tag = before
 
+    # --- web research (manyworlds.research.desk) -------------------------------------------------------------
+    def web_research(self, role: str, *, system: str, question: str, max_searches: int = 3, fetch: bool = False,
+                     max_fetches: int = 3, allowed_domains: list[str] | None = None,
+                     blocked_domains: list[str] | None = None, max_content_tokens: int = 15000,
+                     effort: str = "low", creator_id=None) -> dict:
+        """A researched answer from Claude's server-side web search (and web fetch when `fetch`): {text, sources,
+        searches, fetches, model}. Sources are the cited URLs with their titles and the cited snippet (at most 150
+        characters, the API's own limit); the pages themselves are never returned to the caller. Tokens are charged
+        as any call; each search at llm.web.usd_per_search (a failed search is not billed). Claude models only."""
+        if self._tag.get("before_call"):
+            self._tag["before_call"]()
+        model = self.model_for(role)
+        if self.is_open(model):
+            raise ValueError(f"web research runs on Claude models only, not {model}")
+        web = self.policy.get("llm", "web", default={}) or {}
+        domains = ({"allowed_domains": list(allowed_domains)} if allowed_domains else
+                   {"blocked_domains": list(blocked_domains)} if blocked_domains else {})
+        tools: list[dict] = [{"type": str(web.get("search_tool", "web_search_20260209")), "name": "web_search",
+                              "max_uses": int(max_searches), **domains}]
+        if fetch:
+            tools.append({"type": str(web.get("fetch_tool", "web_fetch_20260209")), "name": "web_fetch",
+                          "max_uses": int(max_fetches), "citations": {"enabled": True},
+                          "max_content_tokens": int(max_content_tokens), **domains})
+        messages: list[dict] = [{"role": "user", "content": question}]
+        texts, sources, seen = [], [], set()
+        searches = fetches = 0
+        per_search = float(web.get("usd_per_search", 0.01))
+        for _ in range(int(web.get("max_continuations", 3))):
+            r = self.client.messages.create(
+                model=model, max_tokens=int(self.policy.get("llm", "max_output_tokens", default=16000)),
+                system=self._system(system), messages=messages, tools=tools, output_config={"effort": effort})
+            self._charge(r.model, r.usage, creator_id)
+            stu = getattr(r.usage, "server_tool_use", None)
+            s, f = int(getattr(stu, "web_search_requests", 0) or 0), int(getattr(stu, "web_fetch_requests", 0) or 0)
+            searches, fetches = searches + s, fetches + f
+            if s:
+                ledger.record(self.conn, category="llm", provider=f"{r.model}:web_search", quantity=s, unit="search",
+                              usd=s * per_search, creator_id=creator_id, policy_version=self.policy.version,
+                              agent=self._tag.get("agent"), job_id=self._tag.get("job_id"))
+            self._raise_if_refused(model, r)
+            for b in r.content:
+                if getattr(b, "type", None) == "web_fetch_tool_result":
+                    url = getattr(getattr(b, "content", None), "url", None)
+                    if url and url not in seen:
+                        seen.add(url)
+                        sources.append({"url": url, "title": None, "cited_text": "", "via": "fetch"})
+                if getattr(b, "type", None) != "text":
+                    continue
+                texts.append(b.text)
+                for c in getattr(b, "citations", None) or []:
+                    url = getattr(c, "url", None)
+                    title = getattr(c, "title", None) or getattr(c, "document_title", None)
+                    snippet = str(getattr(c, "cited_text", "") or "")[:150]
+                    key = url or title
+                    if key and key not in seen:
+                        seen.add(key)
+                        sources.append({"url": url, "title": title, "cited_text": snippet, "via": "search"})
+            if r.stop_reason != "pause_turn":
+                break
+            messages = [*messages, {"role": "assistant", "content": r.content}]
+        return {"text": "".join(texts).strip(), "sources": sources, "searches": searches, "fetches": fetches,
+                "model": model}
+
     # --- calls ---------------------------------------------------------------------------------------------
     def structured(self, role: str, *, system: str, content: Any, schema: type[T],
                    effort: str = "high", creator_id=None) -> T:

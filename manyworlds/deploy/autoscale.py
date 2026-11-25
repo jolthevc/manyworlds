@@ -995,10 +995,10 @@ def housekeeping(conn, policy: Policy | None = None, store=None, now: datetime |
             out += [{"action": "purged_research_references", **r}] if any(r.values()) else []
         except Exception as e:  # noqa: BLE001 - as above: retried next tick
             out.append({"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]})
-        try:   # culture feed items past intelligence.culture.item_days, expired signals
-            from ..research import culture
-            r = culture.purge(conn, policy)
-            out += [{"action": "purged_culture", **r}] if any(r.values()) else []
+        try:   # research desk findings past intelligence.desk.keep_days
+            from ..research import desk
+            r = desk.purge(conn, policy)
+            out += [{"action": "purged_research_findings", **r}] if any(r.values()) else []
         except Exception as e:  # noqa: BLE001 - as above: retried next tick
             out.append({"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]})
     return out

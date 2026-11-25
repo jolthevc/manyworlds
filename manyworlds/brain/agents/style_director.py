@@ -205,7 +205,7 @@ def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime, cards: li
             f"make creators like her worth following; ILLUSTRATIVE ones are craft knowledge, researched ones carry "
             f"evidence): let her style, families and signature items make these hers, never copy a person:\n"
             f"{patterns.brief(cards)}\n\n" if cards else "")
-    refs += (f"What is moving in fashion, beauty, grooming, interiors and travel now (culture signals from publications, "
+    refs += (f"What is moving in fashion, beauty, grooming, interiors and travel now (research desk findings with their evidence mix, "
              f"our own synthesis; cultural context, not evidence of what performs; take what suits her and follow no "
              f"trend she would not):\n{culture_text}\n\n" if culture_text else "")
     return (refs +f"Creator bible: {json.dumps(bible, default=str)}\n\nProfile so far: {json.dumps(have, default=str)}\n\n"
@@ -222,8 +222,8 @@ def build_part(ctx: AgentContext, creator_id, part: str) -> dict:
     now = datetime.now(timezone.utc)
     role = _cfg(policy).get("role", ROLE)
     cards = patterns.retrieve(conn, policy, stage="style", who=prof or bible) if part == "style" else []
-    from ...research import culture
-    culture_text = culture.brief(conn, policy, use="style") if part in ("style", "season") else ""
+    from ...research import desk
+    culture_text = desk.brief(conn, policy, use="style") if part in ("style", "season") else ""
 
     def compute():
         out = ctx.llm.structured(role, system=profile_mod.persona_system(policy, SYSTEM),

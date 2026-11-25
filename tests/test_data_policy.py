@@ -26,8 +26,8 @@ def test_only_approved_sources_and_tasks_run(policy):
     assert data_policy.refused(policy, "apify", "posts") is None
     assert "blocked" in data_policy.refused(policy, "hikerapi", "posts")
     assert "not in data_policy.sources" in data_policy.refused(policy, "someapi", "posts")
-    assert "task posts not approved" in data_policy.refused(policy, "gdelt", "posts")
-    assert "paused" in data_policy.refused(policy, "feeds", "feed")             # publisher feed terms unconfirmed
+    assert "task posts not approved" in data_policy.refused(policy, "claude_web", "posts")
+    assert "not in data_policy.sources" in data_policy.refused(policy, "feeds", "feed")   # publisher RSS removed
     paused = _source(policy, "apify", status="paused", why="terms under review")
     assert "terms under review" in data_policy.refused(paused, "apify", "posts")
     with pytest.raises(data_policy.SourcePaused):
