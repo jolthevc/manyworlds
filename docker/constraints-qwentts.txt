@@ -1,0 +1,7 @@
+# Qwen3-TTS's own environment in the talk worker image (/opt/qwentts, a venv over the image's packages): qwen-tts
+# 0.1.1 (Apache-2.0) pins transformers 4.57.3 and accelerate 1.12.0 (its pyproject.toml, checked 2026-11-25), which
+# shadow the image's 4.57.6 in this venv only; torch and torchaudio are the image's own (constraints written at build
+# time). gradio (its demo) is left out: qwen-tts goes in with --no-deps and the packages below.
+qwen-tts==0.1.1
+transformers==4.57.3
+accelerate==1.12.0

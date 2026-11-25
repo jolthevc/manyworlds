@@ -392,7 +392,7 @@ assert out.hidden_states is not None and len(out.hidden_states) == 3, out.hidden
         raise RuntimeError(f"lip-sync score failed: {s}")
     done.append("lip-sync score")
     done.append(_check_crops(d))
-    return done + check_longcat() + check_voice() + check_music()
+    return done + check_longcat() + check_voice() + check_tts() + check_music()
 
 
 # What the LongCat environment must import: the avatar script's own imports (pipeline, INT8 loader, audio encoders,
@@ -658,8 +658,132 @@ def check_voice() -> list[str]:
     return done
 
 
+def _venv_probe(python: str, code: str, what: str) -> dict:
+    import json
+    import subprocess
+    proc = subprocess.run([python, "-c", code], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"the {what} environment fails: {(proc.stderr or proc.stdout)[-1500:]}")
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+INDEXTTS_PROBE = (
+    "import inspect, json, torch, transformers; from indextts.infer_v2_5 import IndexTTS2; "
+    "a = set(inspect.signature(IndexTTS2.infer).parameters); b = set(inspect.signature(IndexTTS2.__init__).parameters); "
+    "need = {'spk_audio_prompt', 'text', 'output_path', 'lang', 'emo_vector', 'emo_alpha'}; "
+    "print(json.dumps({'torch': torch.__version__, 'transformers': transformers.__version__, "
+    "'missing': sorted(need - a) + sorted({'cfg_path', 'model_dir', 'use_bf16', 'use_cuda_kernel'} - b)}))")
+QWEN_PROBE = (
+    "import inspect, json, torch, transformers; from qwen_tts import Qwen3TTSModel; "
+    "m = [n for n in ('from_pretrained', 'generate_voice_clone', 'generate_voice_design') "
+    "if not hasattr(Qwen3TTSModel, n)]; "
+    "c = set(inspect.signature(Qwen3TTSModel.generate_voice_clone).parameters) if not m else set(); "
+    "m += sorted({'text', 'language', 'ref_audio', 'ref_text'} - c) if c else []; "
+    "print(json.dumps({'torch': torch.__version__, 'transformers': transformers.__version__, 'missing': m}))")
+
+
+def check_tts() -> list[str]:
+    """Expressive voices and casting on the talk image (handlers/tts_engines.py, family tts): each engine's venv imports
+    its model class with the arguments the server passes, on the image's own torch; the server script starts in each;
+    the UTMOS22 checkpoint is in the image; and a stand-in line and cast run through the handlers on the CPU (real
+    pitch tracking and loudness, the line check's repairs, the cast's scores and outputs). Real speech needs the
+    weights and a GPU: the first owner-approved voice.cast job (the bake-off)."""
+    import subprocess
+
+    import numpy as np
+    import torch
+
+    from .handlers import tts_engines as te
+    from .handlers import tts_voxcpm as vox
+    from .handlers import voice_judge as vj
+    from .runner import JobContext, handlers_for
+    handlers_for(["voice.speak.indextts", "voice.speak.qwen3", "voice.cast"])
+    done = ["handlers: voice.speak.indextts, voice.speak.qwen3, voice.cast"]
+    for name, env, probe, pin in (("IndexTTS-2.5", "MW_INDEXTTS_PYTHON", INDEXTTS_PROBE, "4.52.1"),
+                                  ("Qwen3-TTS", "MW_QWENTTS_PYTHON", QWEN_PROBE, "4.57.3")):
+        python = os.environ.get(env)
+        if not python:
+            raise RuntimeError(f"{env} is not set in the image")
+        v = _venv_probe(python, probe, name)
+        if v["missing"]:
+            raise RuntimeError(f"{name} lacks the arguments the server passes: {v['missing']}")
+        if v["torch"] != torch.__version__ or v["transformers"] != pin:
+            raise RuntimeError(f"{name} environment: torch {v['torch']} (image {torch.__version__}), transformers "
+                               f"{v['transformers']} (want {pin})")
+        proc = subprocess.run([python, str(te.SERVER), "--help"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"tts_server.py does not start under {name}: {(proc.stderr or proc.stdout)[-800:]}")
+        done.append(f"{name} environment (torch {v['torch']}, transformers {v['transformers']}) and its server")
+
+    sr = 22050
+    t = np.arange(int(sr * 1.5)) / sr
+    tone = (0.3 * np.sin(2 * np.pi * (200 + 60 * np.sin(2 * np.pi * 1.5 * t)) * t)
+            * (0.6 + 0.4 * np.sin(2 * np.pi * 3 * t))).astype(np.float32)
+    mos = vj._mos({})(tone, sr)                     # the checkpoint baked into MW_TORCH_HUB, on the CPU
+    if not 0.5 < mos < 5.5:
+        raise RuntimeError(f"UTMOS22 gave {mos} for a tone")
+    stats = vj.pitch_stats(vj._f0(tone, sr, {"pitch_hz": [65, 500]}))
+    if not stats["f0_std_st"] > 0.5:
+        raise RuntimeError(f"pitch statistics found no movement in a vibrato tone: {stats}")
+    done.append(f"judges: UTMOS22 ({mos}), pitch and loudness statistics")
+
+    class FakeEngine:   # the engine's place: the tone for every line, so joining, judging and repairs run for real
+        sample_rate = sr
+
+        def __init__(self):
+            self.calls = []
+
+        def speak(self, *, text, ref, ref_text, emotion, strength, seed, out):
+            self.calls.append(strength)
+            return tone
+
+        def design(self, *, description, text, seed, out):
+            return vox.write_wav(out, tone, sr)
+
+    fake = FakeEngine()
+    d = Path(tempfile.mkdtemp())
+    ref = vox.write_wav(d / "ref.wav", tone, sr)
+
+    class Store:
+        def get_file(self, uri, local):
+            local.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ref, local)
+            return local
+
+    saved = (te._engine, vox._asr, vox._embedder, vj._mos, vj._gender, vj._age, dict(te.DESIGNERS))
+    te._engine = lambda name, params: fake
+    te.DESIGNERS["qwen3_design"] = lambda params: fake
+    vox._asr = lambda params: (lambda wav, rate: "hello there friend")
+    vox._embedder = lambda params: (lambda wav, rate: [1.0, 0.0, 0.0])
+    vj._gender = lambda params: (lambda wav, rate: {"female": 0.9, "male": 0.1})
+    vj._age = lambda params: (lambda wav, rate: {"20s": 0.8, "30s": 0.2})
+    params = {"line_check": {"enabled": True, "repairs": 1, "strength_steps": [1.25], "max_wer": 0.15,
+                             "min_mos": 9.0, "pace_wps": [1.0, 3.0]}, "pitch_hz": [65, 500]}
+    try:
+        res = te.speak_indextts({"ref_uri": "x://ref.wav", "ref_text": "hello there friend", "seed": 1,
+                                 "lines": [{"text": "hello there friend",
+                                            "emotion": {"name": "excited", "vector": [0.6] + [0] * 7}}],
+                                 "params": params}, JobContext(job=None, workdir=d, store=Store()))
+        cast = te.cast({"engine": "indextts", "designer": "qwen3_design", "description": "a warm young woman",
+                        "anchor_text": "hello there friend", "n": 2, "seed": 3,
+                        "script": [{"name": "neutral", "text": "hello there friend"}], "params": params},
+                       JobContext(job=None, workdir=d, store=Store()))
+    finally:
+        te._engine, vox._asr, vox._embedder, vj._mos, vj._gender, vj._age = saved[:6]
+        te.DESIGNERS.clear()
+        te.DESIGNERS.update(saved[6])
+    line = res.outputs[0].meta["lines"][0]
+    if not line.get("judge") or line["judge"]["repairs"] != 1 or fake.calls[1] != 1.25:
+        raise RuntimeError(f"the line check did not judge and repair: {line}")
+    metas = [o.meta for o in cast.outputs]
+    if len(metas) != 2 or not all(m["lines"] and m["who"]["gender_p"]["female"] == 0.9 for m in metas):
+        raise RuntimeError(f"the cast came out wrong: {metas}")
+    done.append("stand-in line (judged, one repair at the next strength) and stand-in cast (two scored candidates)")
+    return done
+
+
 CHECKS = {"image": check_image, "train": check_train, "talk": check_talk, "talkcomfy": check_talkcomfy,
-          "voice": check_voice, "music": check_music}
+          "voice": check_voice, "tts": check_tts, "music": check_music}
 
 
 def main(argv=None) -> int:
