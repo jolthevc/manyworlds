@@ -7,7 +7,8 @@ asset gets one `reviews` row per gate:
   identity  same person as the references (face, hair, signature details such as glasses); not asked of set
             plates and outfit references (payload `plate`, manyworlds.creator.sets), which have nobody in them
   realism   reads as an ordinary phone photo; no anatomical, text or rendering defects
-  safety    looks at least policy creator_min_age, not sexualized, no real brand marks
+  safety    looks at least policy creator_min_age, no explicit, nude, implied-nude, fetish or soliciting content (judged in
+            context, never by clothing alone: common.SAFETY_RULE), no real brand marks
   scene     (post images only) shows the scene the planner wrote: setting, action, styling
   direction (directed scenes: the job carries a shot sheet, manyworlds.direction) follows the shot and its first
             beat, on rubric policy/rubrics/direction-v<n>.yaml; below review.direction.min_score it is rejected
@@ -35,7 +36,8 @@ from . import common, detail
 
 SYSTEM = """You are the quality gate for an AI creator studio whose creators are openly labeled as AI.
 You compare generated photos against reference photos of one fictional person and judge each candidate
-strictly and independently. Score what you see, not what the prompt intended."""
+strictly and independently. Score what you see, not what the prompt intended.
+""" + common.SAFETY_SYSTEM
 
 GATES = ("identity", "realism", "safety")
 
@@ -50,7 +52,7 @@ class CandidateReview(BaseModel):
                          "deduct for warped hands or anatomy, garbled text, plastic skin, rendering artifacts")
     defects: list[str] = Field(description="concrete visible problems, empty if none")
     looks_under_min_age: bool = Field(description="the person could plausibly be read as younger than the stated minimum age")
-    sexualized: bool
+    sexualized: bool = Field(description=common.SAFETY_RULE)
     real_brand_marks: bool = Field(description="a legible real-world brand logo or trademark is visible")
     scene: int | None = Field(default=None, description="only when an INTENDED SCENE is given: 10 = shows it "
                               "(setting, action, clothing and props as written); 5 = right setting, details wrong; "
@@ -64,6 +66,13 @@ class CandidateReview(BaseModel):
                               "teeth; null when no teeth show")
     consistency: int | None = Field(default=None, description="only when SET / OUTFIT REFERENCE images are given: "
                                     "1-10, the same set and clothes as the references; null otherwise")
+    # owner 2026-11-25: brand alignment and distribution in the same call (common.BRAND_RULE, DISTRIBUTION_RULE), and
+    # styling/detail defects with a severity (common.DETAIL_RULE): only major ones reject (as realism)
+    brand_alignment: int | None = Field(default=None, description=common.BRAND_RULE)
+    distribution_risk: int | None = Field(default=None, description=common.DISTRIBUTION_RULE)
+    distribution_label: str | None = Field(default=None, description="only with distribution_risk: a few words, "
+                                           "e.g. 'mainstream', 'swimwear: fine for followers, boost with care'")
+    detail_defects: list[str] = Field(default_factory=list, description=common.DETAIL_RULE)
     notes: str = Field(description="one sentence")
 
 
@@ -93,13 +102,13 @@ def set_match(policy: Policy, shared: dict | None, r, has_references: bool) -> t
 
 
 def _check_score(r, gate: str):
-    return getattr(r, "consistency" if gate == "set_match" else gate, None)
+    return getattr(r, {"set_match": "consistency", **common.CONTEXT_SCORES}.get(gate, gate), None)
 
 
 def decide(r: CandidateReview, cfg: dict, scene: str | None = None, *, shot: dict | None = None,
            policy: Policy | None = None, plate: bool = False) -> dict[str, bool]:
     verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
-               "realism": r.realism >= int(cfg.get("min_realism", 6)),
+               "realism": r.realism >= int(cfg.get("min_realism", 6)) and not common.major_details(r, cfg),
                "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
     if not common.judges_identity(shot, plate=plate):
         del verdict["identity"]
@@ -112,8 +121,10 @@ def decide(r: CandidateReview, cfg: dict, scene: str | None = None, *, shot: dic
 
 def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str, creator, refs: list[bytes],
            candidates: list[bytes], scene: str | None = None,
-           shot: dict | None = None, extra: tuple[list, list[str]] = ([], [])) -> tuple[str, list[CandidateReview | None]]:
-    """One vision call: the creator's references (cached prefix), then the candidates."""
+           shot: dict | None = None, extra: tuple[list, list[str]] = ([], []),
+           presentation: dict | None = None) -> tuple[str, list[CandidateReview | None]]:
+    """One vision call: the creator's references (cached prefix), then the candidates. With her `presentation`
+    (brand_core.presentation) the same call scores brand alignment and distribution risk."""
     min_age = int(policy.get("scope", "creator_min_age", default=21))
     content: list = [{"type": "text", "text": f"The person: {appearance_prompt(creator['bible'])}. "
                                               f"Minimum age for this creator: {min_age}."}]
@@ -132,6 +143,8 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
     ask = detail.judge_prompt(policy, consistency=ref_labels, still=True)
     if ask:
         content.append({"type": "text", "text": ask})
+    if presentation:
+        content.append({"type": "text", "text": common.presentation_prompt(policy, presentation)})
     content.append({"type": "text", "text": f"Review all {len(candidates)} candidates, one entry each."})
     out = llm.structured(role, system=SYSTEM, content=content, schema=ImageReviews, effort=effort,
                          creator_id=creator["id"])
@@ -170,6 +183,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     plate = bool(job["plate"])   # a set plate or outfit reference (creator.sets): nobody in it, no identity gate
     scene, gates = job["scene"], gates_for(job["scene"], shot, plate=plate)
     creator = conn.execute("SELECT id, bible, anchors FROM creators WHERE id = %s", (job["creator_id"],)).fetchone()
+    presentation = None if plate else common.presentation_of(conn, job["creator_id"])
     assets = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind = 'image' ORDER BY uri",
                           (job_id,)).fetchall()
     if not assets:
@@ -191,7 +205,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             break
         with common.charged_to(llm, job_id):   # review counts in this output's cost
             model, reviews = _judge(llm, policy, cfg, stage_role, effort, creator, refs,
-                                    [images[a["id"]] for a in remaining], scene, shot, extra)
+                                    [images[a["id"]] for a in remaining], scene, shot, extra,
+                                    presentation=presentation)
         still = []
         for a, r in zip(remaining, reviews):
             checks = {}
@@ -205,6 +220,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                     scores["direction"] = r.direction
                 # finer checks: a row each when scored; they reject only when enforced (review.detail)
                 checks = detail.judged_verdicts(policy, r, consistency=bool(extra[1]))
+                checks.update(common.context_verdicts(cfg, r))   # brand alignment, distribution (report only)
                 same = set_match(policy, job.get("shared_set"), r, bool(extra[1]))
                 if same is not None:   # a shared set (creator.sets.shared_leader): another place rejects
                     checks["set_match"] = same
@@ -218,7 +234,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
             res.update({g: res[g] and verdict[g] for g in gates}, identity_score=scores.get("identity"),
                        realism_score=scores.get("realism"), scene_score=scores.get("scene"), defects=details.get("defects", []))
             res.update({g: res.get(g, True) and ok for g, (ok, _) in checks.items()})
-            res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True) for g in (*detail.JUDGED, "set_match"))
+            res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True)
+                                                                 for g in (*detail.JUDGED, "set_match", "brand"))
             if res["accepted"]:
                 still.append(a)
         # A screen pass that clears every bar by `clear_pass_margin` needs no paid confirm (as for clips): only
@@ -251,13 +268,14 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
 
 def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int | None = None) -> list:
     """Finished image jobs for a creator with reference images, whose images have no review yet.
-    Reference-pack jobs are skipped: they are what the references are chosen from."""
+    Reference-pack jobs are skipped: they are what the references are chosen from (a launch's refpack-<creator>
+    batch, a casting audition's <batch>.refpack)."""
     cfg = policy.get("review", "image", default={})
     limit = limit or int(cfg.get("max_jobs_per_run", 50))
     return [r["id"] for r in conn.execute(
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
            WHERE j.status = 'done' AND j.kind LIKE 'image.%%'
-             AND coalesce(j.batch, '') NOT LIKE 'refpack-%%'
+             AND coalesce(j.batch, '') NOT LIKE 'refpack-%%' AND coalesce(j.batch, '') NOT LIKE '%%.refpack'
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0
              AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)
              AND EXISTS (SELECT 1 FROM assets a WHERE a.job_id = j.id AND a.kind = 'image'

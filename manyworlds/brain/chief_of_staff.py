@@ -4,6 +4,8 @@ none of that needs judgement.
 Each tick (the producer's Brain steps, while operations are live):
   - due predictions are resolved against outcomes (manyworlds.brain.predictions)
   - pattern cards get their production acceptance and real outcomes (manyworlds.brain.patterns.feedback)
+  - the production capability card is measured again (manyworlds.brain.capability_card) and the commercial registry
+    seeded where it is empty (manyworlds.brain.commerce)
   - requests nobody decided by their due date expire, and the owner hears how many
   - an agent whose jobs keep failing (>= `failing_jobs` failures in `window_hours`) is reported once a day
   - an agent that spent LLM money in the window and recorded no decision is reported (spend with nothing to show)
@@ -16,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import notify, queue
 from ..policy import Policy
-from . import patterns, predictions, proposals
+from . import capability_card, commerce, patterns, predictions, proposals
 
 
 def _cfg(policy: Policy) -> dict:
@@ -34,6 +36,10 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
            "expired_requests": proposals.expire_overdue(conn, now),
            # pattern cards learn from what was made with them: production acceptance, real outcomes (evidence.py)
            "pattern_feedback": patterns.feedback(conn, policy)}
+    # what production does reliably and cheaply now, per format (casting, talent managers and the CEO read it)
+    card = capability_card.refresh(conn, policy, now=now)
+    out["capability_card"] = {f: c.get("source") for f, c in card.items()}
+    commerce.categories(conn, policy)   # an empty registry is seeded from strategy.commercial.seed
     if out["expired_requests"]:
         notify.owner_event(conn, "requests_expired", payload={"n": out["expired_requests"]},
                            dedupe_key=f"requests_expired:{now:%Y-%m-%dT%H}")

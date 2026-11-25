@@ -19,6 +19,11 @@ manyworlds.brain.proposals, accepted at once within the requester's allowance an
               (shot types, moves, talk-edit grammars, deliveries, motion references), validated before it is stored
               as a new card or a new version of one, status draft, with its sources (the posts) and evidence
     pilot     scout, annotate, distill in order
+    commerce  commercial research (owner 2026-11-25; manyworlds.brain.commerce): for each commercial category due a
+              refresh (intelligence.commerce.max_age_days, or the payload's `categories`), one hashtag pull per
+              category hashtag; the share of posts carrying a sponsorship marker sets its influencer-marketing activity
+              and is kept as research evidence. No model call. While intelligence.commerce.enabled is false it only
+              says what it would pull and cost (nothing is fetched or charged)
 
 Every Apify item is charged to the ledger (category data, agent intelligence:<mode>, this job); every LLM call is
 charged by the runtime to this job. Before each paid step the run's spend so far plus the step's estimate (policy
@@ -47,7 +52,7 @@ from .. import aesthetics, archetypes, patterns
 from ..agent import AgentContext, register, remember
 
 AGENT = "intelligence"
-MODES = ("scout", "annotate", "distill", "pilot")
+MODES = ("scout", "annotate", "distill", "pilot", "commerce")
 CLUSTER_FIELDS = (("visual", "situation"), ("visual", "nearest_shot_type"), ("visual", "device"), ("visual", "gaze"),
                   ("performance", "format"), ("performance", "movement"), ("craft", "hook"),
                   ("craft", "camera_movement"), ("craft", "structure"), ("personality", "relationship"))
@@ -236,12 +241,13 @@ class Intelligence:
         return out
 
     def _step(self, ctx, step: str, p: dict, spend: Spend, scope: list) -> dict:
-        res = {"scout": self.scout, "annotate": self.annotate, "distill": self.distill}[step](ctx, p, spend, scope)
+        res = {"scout": self.scout, "annotate": self.annotate, "distill": self.distill,
+               "commerce": self.commerce}[step](ctx, p, spend, scope)
         res["capped"] = bool(res.get("capped") or spend.capped)
+        role = (_cfg(ctx.policy).get("roles") or {}).get({"scout": "plan"}.get(step, step))
         return {"kind": f"intelligence_{step}", "inputs": {k: v for k, v in p.items() if k != "reason"},
                 "output": res, "rationale": f"influencer intelligence: {step}",
-                "model": ctx.llm.model_for(str((_cfg(ctx.policy).get("roles") or {}).get(
-                    {"scout": "plan"}.get(step, step), "")))}
+                "model": ctx.llm.model_for(str(role)) if role else None}   # commerce calls no model
 
     # --- scout ----------------------------------------------------------------------------------------------------
     def scout(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:
@@ -422,6 +428,55 @@ class Intelligence:
             made.append({**store_card(conn, card, c, ctx.job.id), "cluster": c["name"],
                          "dropped_names": problems[:5]})
         return {"annotations": len(rows), "clusters": len(clusters), "cards": made, "skipped": skipped}
+
+    # --- commerce -------------------------------------------------------------------------------------------------
+    def commerce(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:
+        from .. import commerce as registry
+        from ...research.apify import _actor_input
+        conn, policy = ctx.conn, ctx.policy
+        ccfg = policy.get("intelligence", "commerce", default={}) or {}
+        platform = str(ccfg.get("platform") or "instagram")
+        per = int(ccfg.get("items_per_hashtag", 30))
+        price = float((_cfg(policy).get("usd_per_hashtag_item") or {}).get(platform, 0))
+        wanted = [str(k) for k in p.get("categories") or []]
+        rows = (registry.for_keys(conn, policy, wanted) if wanted else
+                registry.stale(conn, policy, max_age_days=float(ccfg.get("max_age_days", 90)),
+                               limit=int(ccfg.get("max_categories", 6))))
+        plan = [{"key": r["key"], "hashtags": list(r.get("hashtags") or [])} for r in rows]
+        est = round(sum(len(c["hashtags"]) for c in plan) * per * price, 4)
+        if not ccfg.get("enabled"):
+            return {"ran": False, "why": "intelligence.commerce.enabled is false", "plan": plan, "estimate_usd": est}
+        markers = [str(m).lower() for m in ccfg.get("sponsored_markers") or []]
+        bands = ccfg.get("activity_bands") or {}
+        actor = policy.get("research", "apify_actors", platform)
+        done = []
+        for c in plan:
+            cost = len(c["hashtags"]) * per * price
+            if not c["hashtags"] or not spend.allow(cost):
+                continue
+            seen = sponsored = 0
+            for tag in c["hashtags"]:
+                raw = self.fetch(actor, _actor_input(platform, tag, per))
+                pulls.charge(conn, policy, provider=f"apify:{actor}", items=len(raw), usd=len(raw) * price,
+                             job_id=ctx.job.id, stage="commerce")
+                for item in raw:
+                    post = pulls.NORMALIZE[platform](item) if isinstance(item, dict) else None
+                    if not post:
+                        continue
+                    seen += 1
+                    text = str(post.get("caption") or "").lower()
+                    sponsored += any(m in text for m in markers) or bool(item.get("isSponsored")
+                                                                         or item.get("paidPartnership"))
+            if not seen:
+                continue
+            share = round(sponsored / seen, 4)
+            band = ("high" if share >= float(bands.get("high", 0.08)) else
+                    "medium" if share >= float(bands.get("medium", 0.03)) else "low")
+            registry.record_research(conn, c["key"], fields={"influencer_activity": band},
+                                     evidence={"sponsored_share": share, "posts_seen": seen, "platform": platform,
+                                               "hashtags": c["hashtags"], "job_id": str(ctx.job.id)})
+            done.append({"key": c["key"], "posts": seen, "sponsored_share": share, "influencer_activity": band})
+        return {"ran": True, "plan": plan, "estimate_usd": est, "categories": done}
 
     def _vocabulary(self, policy) -> dict:
         names = patterns._names(policy)

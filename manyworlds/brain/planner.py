@@ -54,7 +54,8 @@ it. Never plan something listed as not available."""
 
 ANALYSIS_FIELDS = ("look", "persona", "audience", "content", "arc", "places", "home_and_places", "interests",
                    "opinions_and_running_jokes", "display_name", "one_line", "niche", "archetype", "archetypes",
-                   "positioning", "audience_insight", "story", "content_system")
+                   "positioning", "audience_insight", "story", "content_system", "brand_core", "brand_world",
+                   "brand_commerce")
 BIBLE_FIELDS = ("display_name", "archetype", "niche", "one_line", "style_and_wardrobe", "home_and_places",
                 "personality", "interests", "opinions_and_running_jokes", "caption_voice", "posting_habits", "never")
 EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿]")

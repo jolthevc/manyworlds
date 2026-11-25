@@ -83,6 +83,22 @@ def _cfg(policy) -> dict:
     return policy.get("brain", "strategist", default={}) or {}
 
 
+def _strategy_text(ctx: AgentContext) -> str:
+    """The agency's thesis, the portfolio map (coverage, overlaps, gaps; code), what production does reliably (the
+    capability card) and the best commercial categories (the registry): what a launch should fill (owner 2026-11-25)."""
+    from .. import capability_card, commerce, portfolio_map
+    from ...creator import dossier
+    shown = int(ctx.policy.get("strategy", "commercial", "shown", default=8))
+    nl = "\n"
+    return (f"{dossier.strategy_text(ctx.policy)}{nl}"
+            f"Portfolio map (archetypes x audience cells x commercial categories; launch into the gaps, never a copy of "
+            f"a creator we have):{nl}{portfolio_map.text(portfolio_map.build(ctx.conn, ctx.policy))}{nl}"
+            f"What production makes reliably and cheaply now (the capability card):{nl}"
+            f"{capability_card.brief(capability_card.card(ctx.conn, ctx.policy))}{nl}"
+            f"Commercial categories (registry, best first; estimates until researched):{nl}"
+            f"{commerce.brief(commerce.categories(ctx.conn, ctx.policy), n=shown)}")
+
+
 def _apply_moves(ctx: AgentContext, snap: dict, moves: list[StageMove]) -> dict:
     cfg, conn = _cfg(ctx.policy), ctx.conn
     stages, down = list(cfg.get("stages") or []), set(cfg.get("downward_stages") or [])
@@ -179,7 +195,8 @@ class Strategist:
                 "SELECT id::text, name, conviction_mean, conviction_low, conviction_high, dossier->'thesis' thesis "
                 "FROM markets WHERE dossier ? 'thesis' ORDER BY conviction_mean DESC NULLS LAST LIMIT 10").fetchall()]
             card = predictions.scorecard(ctx.conn, role=ROLE)
-            prompt = (f"Portfolio (numbers from real outcomes only): {json.dumps(snap, default=str)}\n"
+            prompt = (f"{_strategy_text(ctx)}\n"
+                      f"Portfolio (numbers from real outcomes only): {json.dumps(snap, default=str)}\n"
                       f"Your own scored predictions so far (Brier: lower is better, 0.25 is a coin flip): "
                       f"{json.dumps(card, default=str) if card else 'none scored yet'}\n"
                       f"Market theses from the market leads: {json.dumps(markets, default=str) if markets else 'none yet'}\n"

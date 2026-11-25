@@ -12,10 +12,23 @@ series, arc and commercialization. The dossier adds what a talent manager would 
     content_system    the content mix and talk share for her archetypes, series built from capabilities, hooks,
                       what she never makes
 
+and the Talent & Brand Bible (owner 2026-11-25; spec 2026-11-25-talent-agency): why she exists as talent, what she
+represents, why people follow and how her value compounds. It complements the production bible (the creator lab's
+appearance and the style director's style and world):
+
+    brand_core        the stable core: why she exists, the desire she embodies, what she represents, values, ethos,
+                      aspirations, personality, the desirable traits of her look, her relationship with her audience,
+                      her fictional narrative; changes only with evidence (brain.talent_manager.brand)
+    brand_world       style essence, environments, hobbies, routines, visual language, creative repertoire (the content
+                      she does best, on formats production renders well: strategy.capability_card)
+    brand_commerce    her natural commercial categories (the registry: manyworlds.brain.commerce), how products
+                      would enter her world, and what she will and won't do, wear and promote
+
 Each section is its own small structured call (cheap, retried alone, versioned as its own profile change), in
 order, each seeing the ones before. Code checks what a model can't be trusted with: archetype names exist,
-capabilities exist and render now, the mix sums to 1, and positioning overlaps no sibling past policy
-`brain.talent_manager.max_overlap` (word overlap, deterministic).
+capabilities exist and render now, the mix sums to 1, repertoire formats are on the capability card, commercial
+categories are in the registry, and positioning overlaps no sibling past policy `brain.talent_manager.max_overlap`
+(word overlap, deterministic).
 """
 
 from __future__ import annotations
@@ -31,13 +44,18 @@ from ..llm import StructuredLLM
 from ..policy import Policy
 from . import profile as profile_mod
 
-SECTIONS = ("archetypes", "positioning", "audience_insight", "story", "content_system")
+SECTIONS = ("archetypes", "positioning", "brand_core", "audience_insight", "story", "brand_world", "content_system",
+            "brand_commerce")
+BRAND_SECTIONS = ("brand_core", "brand_world", "brand_commerce")
 
 SYSTEM = """You are the talent manager of a Manyworlds creator: an original fictional social media creator, openly
-labeled as AI. You own their career the way the best human talent managers do: identity first, then audience, then
-content. You are forensic and specific: every line must be something a writer, a director and a stylist can act on,
-and that a real audience would recognise. Never generic ("relatable", "authentic", "engaging" say nothing). Never
-base anything on a real person or existing creator; describe patterns, not people. Never touch excluded topics."""
+labeled as AI. Manyworlds is a talent agency and lifestyle media network that owns its talent: each creator is a
+desirable, aspirational personality and a brand that compounds. You own their career the way the best human talent
+managers do: identity first, then audience, then content, then commercial value. You are forensic and specific: every
+line must be something a writer, a director and a stylist can act on, and that a real audience would recognise. Never
+generic ("relatable", "authentic", "engaging" say nothing). Desirability is the goal: attractive, magnetic, stylish
+and aspirational in the creator's own register, judged in context, never explicit. Never base anything on a real
+person or existing creator; describe patterns, not people. Never touch excluded topics."""
 
 
 class ArchetypePick(BaseModel):
@@ -102,8 +120,90 @@ class ContentSystem(BaseModel):
     never_makes: list[str] = Field(description="content shapes she never makes, and why")
 
 
+class Presentation(BaseModel):
+    register: str = Field(description="one register name from the list given (e.g. refined, sporty, glamorous, "
+                                      "sultry_editorial)")
+    attractiveness: str = Field(description="how her attractiveness shows: beauty, ruggedness, elegance, "
+                                            "playfulness, mystery, natural sex appeal...")
+    wardrobe_range: str = Field(description="what she wears across her life, swimwear, fitness and evening "
+                                            "included where they fit her")
+    photographic_style: str = Field(description="how she is photographed: poses, gaze, framing, mood")
+    never: list[str] = Field(description="what her register never includes")
+
+
+class BrandCore(BaseModel):
+    why_exist: str = Field(description="why this talent exists: the role she plays in people's feeds and lives")
+    desire: str = Field(description="the desire or aspiration she embodies, in a viewer's words")
+    represents: str = Field(description="what she stands for, in one line")
+    why_people_follow: str
+    value_compounds: str = Field(description="how her value compounds over years: what accumulates (taste authority, "
+                                             "a world, trust, a recognisable look)")
+    values: list[str]
+    ethos: str = Field(description="her worldview, in a sentence or two")
+    aspirations: list[str] = Field(description="what she herself is reaching for")
+    personality: list[str] = Field(description="the essence of her personality, a few traits")
+    appearance_traits: list[str] = Field(description="the stable, desirable traits of her look and presence "
+                                                     "(bearing, signature features, what makes her attractive)")
+    audience_relationship: str = Field(description="who she is to her audience: muse, friend, guide, older brother...")
+    narrative: str = Field(description="her fictional narrative as a talent: where she comes from, where she is headed")
+    presentation: Presentation = Field(description="how her attractiveness is expressed: the register every post "
+                                                   "stays within (owner 2026-11-25: per creator, not a global default)")
+
+
+class Repertoire(BaseModel):
+    name: str
+    format: str = Field(description="one post format from the capability card")
+    why: str = Field(description="what it shows of her and why it works")
+
+
+class PersonalStyle(BaseModel):
+    """Personal presentation and finer details as part of identity (owner 2026-11-25): a stylist's repertoire."""
+    finish: str = Field(description="her level of refinement, glamour, ruggedness or ease: intentional, never sloppy")
+    grooming: str = Field(description="grooming and beauty conventions (skin, brows, beard, scent)")
+    hair_and_makeup: str
+    nails: str = Field(description="nail care and styles, where relevant to her")
+    jewelry_and_accessories: list[str] = Field(description="watch, chain, rings, earrings, necklace, belts, bags")
+    eyewear: str
+    footwear: str
+    silhouettes_materials_colours: str
+    possessions: list[str] = Field(description="recurring possessions that say who she is (a leather bag, a film "
+                                               "camera, a fountain pen)")
+    seasonal_and_occasion: str = Field(description="how she dresses by season, destination, activity and occasion")
+    signature_elements: list[str] = Field(description="2-4 elements that recur subtly so she is recognised")
+    varies: str = Field(description="what changes with outfit, season, destination and activity, as a stylist "
+                                    "would choose, never repetition")
+
+
+class BrandWorld(BaseModel):
+    style: str = Field(description="her style essence (the style director owns the details)")
+    environments: list[str] = Field(description="the kinds of places her world is made of")
+    hobbies: list[str]
+    routines: list[str]
+    visual_language: str = Field(description="light, palette mood, framing and composition that make a post hers")
+    repertoire: list[Repertoire] = Field(description="4-8 kinds of content she does best, on formats production "
+                                                     "renders reliably")
+    personal_style: PersonalStyle
+    world_details: list[str] = Field(description="objects and surroundings that communicate her taste: the coffee "
+                                                 "cup, linens, sunglasses on the table, books, flowers, furniture, "
+                                                 "restaurant light")
+
+
+class BrandCommerce(BaseModel):
+    categories: list[str] = Field(description="2-5 natural commercial category keys from the registry given")
+    why_categories: str
+    product_integration: str = Field(description="how products would enter her world organically, openly virtual and "
+                                                 "disclosed, never claiming first-hand experience")
+    will_do: list[str]
+    wont_do: list[str]
+    will_wear: list[str]
+    wont_wear: list[str]
+    will_promote: list[str]
+    wont_promote: list[str]
+
+
 SCHEMAS = {"archetypes": ArchetypePick, "positioning": Positioning, "audience_insight": AudienceInsight,
-           "story": Story, "content_system": ContentSystem}
+           "story": Story, "content_system": ContentSystem, "brand_core": BrandCore, "brand_world": BrandWorld,
+           "brand_commerce": BrandCommerce}
 
 ASK = {
     "archetypes": "Choose her archetypes from the library: the one her content is mostly built on, and a secondary "
@@ -117,7 +217,79 @@ ASK = {
     "content_system": "Design her content system from her archetypes' playbooks: the mix, how often she talks to "
                       "camera, 3-5 series built only from the capabilities listed, her hooks, and what she never "
                       "makes. Series serve her positioning and audience, not trends.",
+    "brand_core": "Write the core of her Talent & Brand Bible: why she exists as talent, the desire she embodies, what "
+                  "she represents, why people follow, how her value compounds over years, her values, ethos, "
+                  "aspirations, personality, the desirable traits of her look, her relationship with her audience and "
+                  "her narrative, and her presentation: the register (from the list given) her attractiveness is "
+                  "expressed in, her wardrobe range and photographic style, in her own character, neither sterile "
+                  "nor beyond her brand. This is her stable core: write what should still be true in three years.",
+    "brand_world": "Write her brand world: style essence, the environments, hobbies and routines her life is made of, "
+                   "her visual language, her creative repertoire (the content she does best, each on a format "
+                   "production renders reliably: the capability card, photography first), her personal style as a "
+                   "personal stylist would (grooming, hair and makeup, nails, jewelry and accessories, eyewear, "
+                   "footwear, silhouettes, materials and colours, possessions, seasonal and occasion dress, a few "
+                   "signature elements that recur subtly, the rest varied with judgment; rugged stays rugged, "
+                   "effortless stays effortless, always intentional), and the details of her world that show taste.",
+    "brand_commerce": "Write her commercial profile: her natural commercial categories (keys from the registry), why "
+                      "they fit, how products would enter her world organically, and what she will and won't do, "
+                      "wear and promote. She is openly virtual: never claims first-hand experience of a product.",
 }
+
+
+def strategy_text(policy: Policy) -> str:
+    """The portfolio thesis and desirability (objective, standard, context, the only restrictions, anti-drift), for
+    prompts that shape a brand or a post."""
+    s = policy.get("strategy", default={}) or {}
+    return f"The agency's thesis: {str(s.get('thesis') or '').strip()} {desirability_text(policy)}"
+
+
+def desirability_text(policy: Policy) -> str:
+    d = policy.get("strategy", "desirability", default={}) or {}
+    regs = policy.get("strategy", "presentation", "registers", default={}) or {}
+    return (f"Desirability: {str(d.get('objective') or '').strip()} Standard: {str(d.get('standard') or '').strip()} "
+            f"{str(d.get('context') or '').strip()} Restricted, and only these: {'; '.join(d.get('restrictions') or [])}. "
+            f"{str(d.get('anti_drift') or '').strip()} Presentation registers (name: sensuality level): "
+            f"{json.dumps(regs)}.")
+
+
+def register_level(policy: Policy, register: str | None) -> int | None:
+    regs = policy.get("strategy", "presentation", "registers", default={}) or {}
+    return int(regs[register]) if register in regs else None
+
+
+def styling_line(prof: dict | None) -> str:
+    """Her personal style for the director's wardrobe, look and props fields ('' without one): signature elements
+    recur subtly; everything else follows the outfit, season, place and activity."""
+    world = (prof or {}).get("brand_world") or {}
+    ps = world.get("personal_style") or {}
+    if not ps:
+        return ""
+    keep = {k: ps[k] for k in ("finish", "grooming", "hair_and_makeup", "nails", "jewelry_and_accessories",
+                               "eyewear", "footwear", "signature_elements") if ps.get(k)}
+    return (f"Her personal style (fill wardrobe.accessories, look and the set's props from it; her signature elements "
+            f"recur subtly, the rest changes with outfit, season, place and activity, as a stylist would choose; "
+            f"intentional, never sloppy or generic): {json.dumps(keep)}. Details of her world that show her taste: "
+            f"{json.dumps(world.get('world_details') or [])}. ")
+
+
+def presentation_line(prof: dict | None) -> str:
+    """Her presentation register as a bound for planning prompts ('' without one)."""
+    pres = ((prof or {}).get("brand_core") or {}).get("presentation") or {}
+    if not pres.get("register"):
+        return ""
+    return (f"Her presentation register is {pres['register']} ({pres.get('attractiveness', '')}; wears: "
+            f"{pres.get('wardrobe_range', '')}; photographed: {pres.get('photographic_style', '')}; never: "
+            f"{pres.get('never')}). Every post stays within it and lives up to it: reach and engagement never justify "
+            f"going past it, and don't sanitise below it either. ")
+
+
+def registry_keys(policy: Policy) -> list[str]:
+    """The commercial category keys (the registry's seed; research refreshes rows, never adds keys)."""
+    return [c["key"] for c in policy.get("strategy", "commercial", "seed", default=[]) or [] if c.get("key")]
+
+
+def card_formats(policy: Policy) -> list[str]:
+    return list((policy.get("strategy", "capability_card", "formats", default={}) or {}).keys())
 
 
 def missing(prof: dict | None) -> list[str]:
@@ -195,6 +367,22 @@ def clean(policy: Policy, section: str, out: BaseModel, prof: dict) -> dict:
         d["mix"] = {k: round(v / total, 3) for k, v in mix.items()} if total else mix
         d["talk_share"] = max(0.0, min(float(d.get("talk_share") or 0), 1.0))
         return {"content_system": d}
+    if section == "brand_core":
+        reg = (d.get("presentation") or {}).get("register")
+        if register_level(policy, reg) is None:
+            known = sorted((policy.get("strategy", "presentation", "registers", default={}) or {}))
+            raise ValueError(f"presentation register {reg!r} is not one of {known}")
+        return {"brand_core": d}
+    if section == "brand_world":
+        formats = set(card_formats(policy))
+        d["repertoire"] = [r for r in d.get("repertoire") or [] if not formats or r.get("format") in formats]
+        return {"brand_world": d}
+    if section == "brand_commerce":
+        known = set(registry_keys(policy))
+        d["categories"] = [c for c in dict.fromkeys(d.get("categories") or []) if not known or c in known]
+        if known and not d["categories"]:
+            raise ValueError(f"no known commercial category in {out.model_dump().get('categories')!r}")
+        return {"brand_commerce": d}
     return {section: d}
 
 
@@ -213,6 +401,21 @@ def section_prompt(conn, policy: Policy, creator_id, section: str, prof: dict, *
         usable, _ = catalogue(policy)
         parts.append(f"Capabilities the studio renders now (use only these ids, group.name): "
                      f"{json.dumps({f'{g}.{n}': e.get('description', '') for g, es in usable.items() for n, e in es.items()})}")
+    if section in BRAND_SECTIONS:
+        parts.append(strategy_text(policy))
+    if section in ("brand_world", "content_system"):
+        from ..brain import capability_card
+        parts.append(f"What production makes reliably and cheaply now, per post format (the capability card; design "
+                     f"around the reliable ones):\n{capability_card.brief(capability_card.card(conn, policy))}")
+        parts.append(f"Content guidance: {str(policy.get('strategy', 'content', default='')).strip()}")
+    if section == "brand_commerce":
+        from ..brain import commerce
+        cfg = policy.get("strategy", "commercial", default={}) or {}
+        parts.append(f"Categories her own style and world touch (adjacency): "
+                     f"{json.dumps(commerce.adjacent(policy, [prof.get('brand_world'), prof.get('style')]))}")
+        parts.append(f"The commercial category registry (keys, bands, index; estimates until researched):\n"
+                     f"{commerce.brief(commerce.categories(conn, policy))}")
+        parts.append(f"Now: {str(cfg.get('content_rule') or '').strip()} Later: {str(cfg.get('end_state') or '').strip()}")
     parts.append(f"Never touch: {policy.get('scope', 'excluded_topics')}.")
     parts.append(ASK[section] + (f"\n{extra}" if extra else ""))
     return "\n\n".join(parts)
@@ -271,4 +474,24 @@ def planning_view(prof: dict | None) -> dict:
     st = prof.get("story") or {}
     if st:
         view["story"] = {k: st[k] for k in ("routines", "small_goals", "quirks") if k in st}
+    view.update(brand_view(prof))
     return view
+
+
+def brand_view(prof: dict | None) -> dict:
+    """The brand bible as planners need it, compact: the core's essentials, her world, her commercial lines."""
+    prof = prof or {}
+    out = {}
+    core = prof.get("brand_core") or {}
+    if core:
+        out["brand_core"] = {k: core[k] for k in ("desire", "represents", "values", "ethos", "appearance_traits",
+                                                  "audience_relationship", "presentation") if core.get(k)}
+    world = prof.get("brand_world") or {}
+    if world:
+        out["brand_world"] = {k: world[k] for k in ("environments", "hobbies", "routines", "visual_language",
+                                                    "repertoire", "personal_style", "world_details") if world.get(k)}
+    com = prof.get("brand_commerce") or {}
+    if com:
+        out["brand_commerce"] = {k: com[k] for k in ("categories", "wont_do", "wont_wear", "will_promote",
+                                                     "wont_promote") if com.get(k)}
+    return out

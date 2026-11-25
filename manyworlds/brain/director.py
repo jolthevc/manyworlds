@@ -295,7 +295,11 @@ def static_brief(policy, fmt: str) -> str:
     names = _names(policy)
     refs = names.pop("motion_references")
     notes = policy.get("planner", "format_notes", default={}) or {}
+    from ..creator import dossier
+    guidelines = policy.get("strategy", "platform_guidelines", default={}) or {}
     return (f"THE STUDIO'S BRIEF (the same for every {fmt} post)\n"
+            f"{dossier.desirability_text(policy)} Platform guidelines (keep each post within its platform's): "
+            f"{json.dumps(guidelines)}\n"
             f"What the studio can render now (compose every shot from these): {json.dumps(usable)}\n"
             f"Not available now (never use): {json.dumps(missing)}\n"
             f"Allowed camera moves: {json.dumps(list(cfg.get('camera_moves') or []))}\n"
@@ -397,6 +401,8 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
                f"{json.dumps(_capped(dossier_view, items), default=str)}\n" if dossier_view else "")
             + (f"Her talent manager's current focus and what to stop: {json.dumps(_capped(manager, items), default=str)}\n"
                if manager else "")
+            + dossier.presentation_line(prof)
+            + dossier.styling_line(prof)
             + cut_rules
             + card_text
             + f"What is known about their life: {json.dumps(facts)}\n"

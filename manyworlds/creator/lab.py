@@ -31,8 +31,9 @@ creators are all openly labeled as AI. A creator must feel like a believable, sp
 an ordinary, phone-native life: mundane moments, recurring tastes, opinions and jokes, without
 forced storylines. Real creators may be references for appeal, style and content, but she is her own
 person: never a real person's name, handle, face or life story, never someone she could be mistaken
-for; never make a minor; never sexualize. Appearance descriptors must be precise and stable so an image model
-draws the same person every time."""
+for; never make a minor. Desirable and attractive in their own way (beautiful, handsome, elegant, magnetic), as in
+the best mainstream fashion and lifestyle work; never explicit, nude or fetish. Appearance descriptors must be precise
+and stable so an image model draws the same person every time."""
 
 
 class Appearance(BaseModel):
@@ -185,6 +186,13 @@ def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> Creat
         f"Write exactly {n} reference_prompts.")
     bible = llm.structured("creator", system=persona_system(policy, SYSTEM), content=prompt, schema=CreatorBible,
                            effort="high")
+    return check_bible(policy, bible)
+
+
+def check_bible(policy: Policy, bible: CreatorBible) -> CreatorBible:
+    """What code enforces on any bible (a launch's or an audition's): a clean handle, the minimum age, a known voice
+    and the disclosure line."""
+    scope = policy.get("scope", default={})
     bible.handle = _slug(bible.handle)
     if bible.appearance.apparent_age < int(scope.get("creator_min_age", 21)):
         raise ValueError(f"bible apparent_age {bible.appearance.apparent_age} below policy minimum")
@@ -196,9 +204,11 @@ def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> Creat
 
 
 def create_creator(conn, bible: CreatorBible, thesis_id, *, policy_version: str | None = None,
-                   voice_blend: dict | None = None) -> dict:
+                   voice_blend: dict | None = None, link_thesis: bool = True, anchors: dict | None = None) -> dict:
     """The creator row from a bible. With `voice_blend` (policy creator_lab.voice_blend) the creator speaks in a
-    blend of stock voices of their own, distinct from every other creator's (manyworlds.voices)."""
+    blend of stock voices of their own, distinct from every other creator's (manyworlds.voices). An audition
+    (manyworlds.brain.casting) passes link_thesis=False and its own `anchors` (the audition marker): the thesis is
+    linked, and the launch decision recorded, only when the winner is promoted (link_thesis)."""
     handle, i = bible.handle, 1
     while conn.execute("SELECT 1 FROM creators WHERE handle = %s", (handle,)).fetchone():
         i += 1
@@ -215,8 +225,17 @@ def create_creator(conn, bible: CreatorBible, thesis_id, *, policy_version: str 
                               min_distance=float(voice_blend.get("min_distance", 0.5)))
     row = conn.execute(
         "INSERT INTO creators (handle, status, bible, anchors) VALUES (%s, 'draft', %s, %s) RETURNING id, handle",
-        (handle, Jsonb(body), Jsonb({"voice": {"engine": "kokoro", "voice": voice}})),
+        (handle, Jsonb(body), Jsonb({"voice": {"engine": "kokoro", "voice": voice}, **(anchors or {})})),
     ).fetchone()
+    if not link_thesis:
+        return row
+    link(conn, row["id"], handle, thesis_id, policy_version=policy_version)
+    return row
+
+
+def link(conn, creator_id, handle: str, thesis_id, *, policy_version: str | None = None) -> None:
+    """The thesis is this creator's: launched, a music thesis makes a music creator, and the launch is a decision."""
+    row = {"id": creator_id}
     conn.execute("UPDATE theses SET creator_id = %s, status = 'launched' WHERE id = %s", (row["id"], thesis_id))
     # A thesis for a music artist (brain.proposals._artist_thesis) launches a music creator.
     conn.execute("UPDATE creators SET vertical = 'music' WHERE id = %s AND EXISTS (SELECT 1 FROM theses WHERE id = %s "
@@ -224,32 +243,38 @@ def create_creator(conn, bible: CreatorBible, thesis_id, *, policy_version: str 
     conn.execute("INSERT INTO decisions (kind, creator_id, inputs, output, policy_version) "
                  "VALUES ('creator_launch', %s, %s, %s, %s)",
                  (row["id"], Jsonb({"thesis_id": str(thesis_id)}), Jsonb({"handle": handle}), policy_version))
-    return row
 
 
-def enqueue_reference_pack(conn, policy: Policy, creator_id, *, kind: str = "image.zimage") -> str:
+def enqueue_reference_pack(conn, policy: Policy, creator_id, *, kind: str = "image.zimage", batch: str | None = None,
+                           limit: int | None = None, per_prompt: int | None = None, key: str = "ref") -> str:
+    """The reference pack: each reference prompt rendered `per_prompt` times (creator_lab.candidates_per_reference).
+    An audition (manyworlds.brain.casting) renders a smaller pack (`limit` prompts) in its own test batch, keyed apart
+    (`key`) so the launch's full pack later is a new set of jobs."""
     c = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
     look = appearance_prompt(c["bible"])
-    n = int(policy.get("creator_lab", "candidates_per_reference", default=4))
+    n = int(per_prompt or policy.get("creator_lab", "candidates_per_reference", default=4))
     img = policy.get("generation", "image", default={})
-    batch = f"refpack-{creator_id}"
-    for i, scene in enumerate(c["bible"]["reference_prompts"]):
+    batch = batch or f"refpack-{creator_id}"
+    prompts = c["bible"]["reference_prompts"]
+    for i, scene in enumerate(prompts[:limit] if limit else prompts):
         prompt = f"{scene}. The person: {look}. Candid smartphone photo, natural skin texture, realistic."
         queue.enqueue(conn, kind, {"prompt": prompt, "n": n, "seed": 7000 + i * 10,
                                    "width": img.get("width", 896), "height": img.get("height", 1152),
                                    "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}},
-                      creator_id=creator_id, batch=batch, idempotency_key=f"{creator_id}:ref:{i}")
+                      creator_id=creator_id, batch=batch, idempotency_key=f"{creator_id}:{key}:{i}")
     return batch
 
 
-def select_anchors(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, creator_id, workdir) -> dict:
+def select_anchors(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, creator_id, workdir, *,
+                   key: str = "ref") -> dict:
     """Pick one image per reference prompt that matches the first pick (the anchor face).
-    Day 4 adds a face-embedding score; for now a vision judgement does the selection."""
+    Day 4 adds a face-embedding score; for now a vision judgement does the selection. `key`: which pack (an
+    audition's is keyed apart: enqueue_reference_pack)."""
     from pathlib import Path
 
     jobs = conn.execute(
         "SELECT id, idempotency_key FROM jobs WHERE creator_id = %s AND idempotency_key LIKE %s AND status = 'done' "
-        "ORDER BY idempotency_key", (creator_id, f"{creator_id}:ref:%")).fetchall()
+        "ORDER BY idempotency_key", (creator_id, f"{creator_id}:{key}:%")).fetchall()
     jobs.sort(key=lambda j: int(j["idempotency_key"].rsplit(":", 1)[1]))
     chosen: list[dict] = []
     anchor_bytes = None

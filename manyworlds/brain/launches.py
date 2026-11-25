@@ -2,7 +2,10 @@
 
 Deterministic, run by the producer loop like production.advance. Each launch is a row in `launches`:
 
-  bible       brain.creator_lab writes the bible and creates the creator (draft, sandbox)
+  casting     (while brain.casting.enabled; manyworlds.brain.casting) 3-5 candidate concepts, a judge, auditions of the
+              best as a mini-feed through normal production, the winner picked from rubric x acceptance x cost; the
+              winner IS the creator (its bible is written), so the launch goes on at `references`
+  bible       brain.creator_lab writes the bible and creates the creator (draft, sandbox); a launch without casting
   references  the reference pack (image jobs) and a voice sample are rendered
   anchors     brain.creator_lab picks the reference images (Claude looks at the renders)
   lora        the identity LoRA is trained
@@ -45,7 +48,7 @@ def _cfg(policy: Policy) -> dict:
 UUID_RE = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 
-def start_approved(conn) -> int:
+def start_approved(conn, *, casting_on: bool = False) -> int:
     """A launch row for every approved launch request that doesn't have one yet, only for a thesis that is
     chosen and has no creator (an approval can never re-launch or touch an existing creator). A rejected
     request returns its thesis to the pool."""
@@ -54,13 +57,14 @@ def start_approved(conn) -> int:
            WHERE a.kind = 'launch' AND a.status = 'rejected' AND a.subject->>'thesis_id' ~ %s
              AND t.id = (a.subject->>'thesis_id')::uuid AND t.status = 'chosen' AND t.creator_id IS NULL""", (UUID_RE,))
     rows = conn.execute(
-        """INSERT INTO launches (approval_id, thesis_id, cohort)
-           SELECT a.id, t.id, a.subject->>'cohort' FROM approvals a
+        """INSERT INTO launches (approval_id, thesis_id, cohort, step)
+           SELECT a.id, t.id, a.subject->>'cohort', %s FROM approvals a
            JOIN theses t ON a.subject->>'thesis_id' ~ %s AND t.id = (a.subject->>'thesis_id')::uuid
            WHERE a.kind = 'launch' AND a.status = 'approved' AND t.creator_id IS NULL
              AND t.status IN ('chosen', 'proposed')
              AND NOT EXISTS (SELECT 1 FROM launches l WHERE l.approval_id = a.id)
-           ON CONFLICT (approval_id) DO NOTHING RETURNING id""", (UUID_RE,)).fetchall()
+           ON CONFLICT (approval_id) DO NOTHING RETURNING id""",
+        ("casting" if casting_on else "bible", UUID_RE)).fetchall()
     return len(rows)
 
 
@@ -206,11 +210,31 @@ def advance(conn, policy: Policy) -> dict:
 
     cfg = _cfg(policy)
     now = datetime.now(timezone.utc)
-    out = {"started": start_approved(conn), "advanced": 0, "ready": 0, "failed": 0, "waiting_budget": 0}
+    from . import casting
+    out = {"started": start_approved(conn, casting_on=casting.enabled(policy)), "advanced": 0, "ready": 0, "failed": 0,
+           "waiting_budget": 0}
     from ..creator import voice_lab
     out["casts"] = voice_lab.settle_casts(conn, policy)   # every finished cast is judged and stored by itself
     for launch in conn.execute("SELECT * FROM launches WHERE status = 'running' ORDER BY created_at").fetchall():
         step, jobs = launch["step"], dict(launch["jobs"] or {})
+        if step == "casting":   # auditions have their own deadline (brain.casting.audition.deadline_hours)
+            state, value = casting.launch_tick(conn, policy, launch)
+            if state == "failed":
+                _fail(conn, launch, step, f"casting: {value}")
+                out["failed"] += 1
+            elif state == "done":
+                launch = {**launch, "creator_id": value}
+                conn.execute("UPDATE launches SET creator_id = %s WHERE id = %s", (value, launch["id"]))
+                place(conn, launch["thesis_id"], value)
+                started = _begin(conn, policy, {**launch, "step": NEXT["bible"]}, NEXT["bible"], 0)
+                if started is None:
+                    out["failed"] += 1
+                    continue
+                jobs[NEXT["bible"]] = started
+                conn.execute("UPDATE launches SET step = %s, jobs = %s, retries = 0, updated_at = now() WHERE id = %s",
+                             (NEXT["bible"], Jsonb(jobs), launch["id"]))
+                out["advanced"] += 1
+            continue
         if jobs.get("wait_until"):
             if now < datetime.fromisoformat(jobs["wait_until"]):
                 out["waiting_budget"] += 1
