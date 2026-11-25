@@ -130,6 +130,44 @@ RUN git clone https://github.com/smthemex/ComfyUI_EchoMimic.git /opt/ComfyUI/cus
  && pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/constraints-comfygraphs.txt \
       moviepy omegaconf decord matplotlib loguru ffmpeg-python \
  && python -c "import moviepy, omegaconf, decord, matplotlib, loguru, ffmpeg, diffusers, accelerate, cv2, librosa, pyloudnorm, transformers; assert transformers.__version__ == '4.57.6', transformers.__version__"
+# Expressive voices and automatic casting (handlers/tts_engines.py, job kinds voice.speak.indextts, voice.speak.qwen3,
+# voice.cast; worker family tts, talkcomfy v21). Each engine pins transformers apart from the image's 4.57.6, so each
+# gets its own venv over the image's packages (--system-site-packages: torch and torchaudio come from the image and a
+# constraint keeps them) and runs as a small server (manyworlds/worker/tts_server.py):
+#   IndexTTS-2.5 (bilibili Model Use License: commercial use below 100M MAU / RMB 1bn revenue; its outputs must never
+#     train another model) at a pinned commit, with the repo's own pins (docker/constraints-indextts.txt). Weights
+#     (~8 GB) download at the first job into MW_INDEXTTS_DIR on the container disk; tts_server.py fetches w2v-BERT 2.0,
+#     CAMPPlus and BigVGAN itself so the repo's downloader never fetches MaskGCT's CC-BY-NC semantic codec.
+#   Qwen3-TTS 1.7B Base and VoiceDesign (Apache-2.0), qwen-tts 0.1.1 without its gradio demo
+#     (docker/constraints-qwentts.txt); weights at the first job into HF_HOME.
+# The judges run in the image's own environment: UTMOS22 strong (MIT; tarepan/SpeechMOS v1.2.0 and its checkpoint
+# fetched here into MW_TORCH_HUB, so no machine downloads code at run time), and two wav2vec2 classifiers through
+# transformers (gender, Apache-2.0; age, Apache-2.0) downloaded at the first job.
+ARG INDEXTTS_REF=d9e41aac89fd00b3d71497fddb287b7f24613712
+ARG SPEECHMOS_REF=v1.2.0
+ENV MW_INDEXTTS_REPO=/opt/index-tts MW_INDEXTTS_PYTHON=/opt/indextts/bin/python MW_INDEXTTS_DIR=/root/indextts-2.5 \
+    MW_QWENTTS_PYTHON=/opt/qwentts/bin/python MW_TORCH_HUB=/opt/torch-hub MW_INDEXTTS_COMMIT=${INDEXTTS_REF}
+COPY docker/constraints-indextts.txt /tmp/constraints-indextts.txt
+COPY docker/constraints-qwentts.txt /tmp/constraints-qwentts.txt
+RUN apt-get update && apt-get install -y --no-install-recommends sox libsox-fmt-all && rm -rf /var/lib/apt/lists/* \
+ && grep -E '^torch(audio)?==' /tmp/constraints.txt > /tmp/constraints-engines-torch.txt \
+ && git clone https://github.com/index-tts/index-tts.git /opt/index-tts \
+ && git -C /opt/index-tts checkout ${INDEXTTS_REF} \
+ && rm -rf /opt/index-tts/.git \
+ && python -m venv --system-site-packages /opt/indextts \
+ && /opt/indextts/bin/pip install --no-cache-dir -c /tmp/constraints-engines-torch.txt -c /tmp/constraints-indextts.txt \
+      /opt/index-tts "huggingface_hub[cli]" \
+ && /opt/indextts/bin/python -c "import inspect, torch, transformers; from indextts.infer_v2_5 import IndexTTS2; assert transformers.__version__ == '4.52.1', transformers.__version__; assert 'emo_vector' in inspect.signature(IndexTTS2.infer).parameters; print('indextts env', torch.__version__)" \
+ && python -m venv --system-site-packages /opt/qwentts \
+ && /opt/qwentts/bin/pip install --no-cache-dir -c /tmp/constraints-engines-torch.txt -c /tmp/constraints-qwentts.txt \
+      --no-deps qwen-tts \
+ && /opt/qwentts/bin/pip install --no-cache-dir -c /tmp/constraints-engines-torch.txt -c /tmp/constraints-qwentts.txt \
+      transformers accelerate librosa soundfile sox onnxruntime einops \
+ && /opt/qwentts/bin/python -c "import torch, transformers; from qwen_tts import Qwen3TTSModel; assert transformers.__version__ == '4.57.3', transformers.__version__; print('qwentts env', torch.__version__)" \
+ && mkdir -p /opt/torch-hub \
+ && python -c "import sys, torch; torch.hub.set_dir(sys.argv[1]); torch.hub.load(sys.argv[2], 'utmos22_strong', trust_repo=True); print('utmos22 ok')" \
+      /opt/torch-hub "tarepan/SpeechMOS:${SPEECHMOS_REF}" \
+ && python -c "import transformers; assert transformers.__version__ == '4.57.6', transformers.__version__"
 # Lip-sync score (manyworlds/worker/lipsync.py) in its own environment, as in the research-script talk image.
 ARG MEDIAPIPE=0.10.21
 ARG LANDMARKER_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task

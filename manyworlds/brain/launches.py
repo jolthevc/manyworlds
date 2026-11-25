@@ -6,6 +6,9 @@ Deterministic, run by the producer loop like production.advance. Each launch is 
   references  the reference pack (image jobs) and a voice sample are rendered
   anchors     brain.creator_lab picks the reference images (Claude looks at the renders)
   lora        the identity LoRA is trained
+  voice       her voice is cast automatically (creator/voice_lab.cast, voice.cast: candidates from the bible,
+              each judged by the worker's own ears; the best qualifying one is stored); skipped while policy
+              voice.casting.at_launch is false
   profile     brain.creator_lab builds profile v1
   ready       the creator is active (sandbox until its account exists); an account request goes to the owner
 
@@ -29,8 +32,9 @@ from ..policy import Policy
 log = logging.getLogger("manyworlds.launches")
 
 LLM_STEPS = ("bible", "anchors", "profile")
-NEXT = {"bible": "references", "references": "anchors", "anchors": "lora", "lora": "profile", "profile": "dossier",
-        "dossier": "style", "style": "ready"}
+NEXT = {"bible": "references", "references": "anchors", "anchors": "lora", "lora": "voice", "voice": "profile",
+        "profile": "dossier", "dossier": "style", "style": "ready"}
+FRESH_ON_RETRY = ("voice",)   # a cast where no candidate qualified is cast again with new seeds, not re-queued
 AGENT_STEPS = {"dossier": "talent_manager", "style": "style_director"}   # steps another Brain agent runs (a new job on retry, like LLM_STEPS)
 
 
@@ -129,7 +133,25 @@ def _start_step(conn, policy: Policy, launch: dict, step: str, attempt: int) -> 
         return ids + [str(lab.enqueue_voice_sample(conn, cid))]
     if step == "lora":
         return [str(lab.enqueue_lora_training(conn, policy, cid))]
+    if step == "voice":
+        from ..creator import voice_lab
+        return [str(voice_lab.cast(conn, policy, cid, attempt=attempt))]
     raise ValueError(f"unknown launch step {step!r}")
+
+
+def _casts_at_launch(policy: Policy) -> bool:
+    return bool(policy.get("voice", "casting", "at_launch", default=True))
+
+
+def _voice_cast(conn, policy: Policy, launch: dict, job_ids: list[str]) -> bool:
+    """Did the finished cast give her a voice? (judged here unless the producer's settle_casts already did)."""
+    from ..creator import voice_lab
+    cid = launch["creator_id"]
+    voice = (conn.execute("SELECT anchors FROM creators WHERE id = %s", (cid,)).fetchone()["anchors"] or {}).get(
+        "voice") or {}
+    if voice.get("cast_job_id") in job_ids:
+        return True
+    return voice_lab.pick_cast(conn, policy, cid, job_ids[-1]).get("picked") is not None
 
 
 def _fail(conn, launch: dict, step: str, error: str) -> None:
@@ -156,7 +178,7 @@ def _retry(conn, policy: Policy, launch: dict, step: str, jobs: dict) -> str:
         _fail(conn, launch, step, f"step {step} failed {launch['retries'] + 1} times")
         return "failed"
     # Failed jobs of a GPU step are put back (the lab's own idempotency keys are reused); a Claude step gets a new job.
-    if step in LLM_STEPS or step in AGENT_STEPS:
+    if step in LLM_STEPS or step in AGENT_STEPS or step in FRESH_ON_RETRY:
         jobs[step] = _start_step(conn, policy, launch, step, launch["retries"] + 1)
     else:
         conn.execute("UPDATE jobs SET status = 'queued', attempts = 0, worker_faults = 0, error = NULL, worker_id = NULL, "
@@ -185,6 +207,8 @@ def advance(conn, policy: Policy) -> dict:
     cfg = _cfg(policy)
     now = datetime.now(timezone.utc)
     out = {"started": start_approved(conn), "advanced": 0, "ready": 0, "failed": 0, "waiting_budget": 0}
+    from ..creator import voice_lab
+    out["casts"] = voice_lab.settle_casts(conn, policy)   # every finished cast is judged and stored by itself
     for launch in conn.execute("SELECT * FROM launches WHERE status = 'running' ORDER BY created_at").fetchall():
         step, jobs = launch["step"], dict(launch["jobs"] or {})
         if jobs.get("wait_until"):
@@ -230,7 +254,13 @@ def advance(conn, policy: Policy) -> dict:
             launch = {**launch, "creator_id": cid["creator_id"]}
             conn.execute("UPDATE launches SET creator_id = %s WHERE id = %s", (cid["creator_id"], launch["id"]))
             place(conn, launch["thesis_id"], cid["creator_id"])
+        if step == "voice" and not _voice_cast(conn, policy, launch, jobs[step]):
+            if _retry(conn, policy, launch, step, jobs) == "failed":   # no candidate qualified: cast again
+                out["failed"] += 1
+            continue
         nxt = NEXT[step]
+        if nxt == "voice" and not _casts_at_launch(policy):
+            nxt = NEXT[nxt]
         if nxt == "ready":
             _ready(conn, launch)
             conn.execute("UPDATE launches SET step = 'ready', status = 'done', retries = 0, updated_at = now() "

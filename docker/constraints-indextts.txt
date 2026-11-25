@@ -1,0 +1,27 @@
+# IndexTTS-2.5's own environment in the talk worker image (/opt/indextts, a venv over the image's packages;
+# manyworlds/worker/handlers/tts_engines.py runs manyworlds/worker/tts_server.py in it). The versions are the repo's
+# pyproject.toml pins at the commit the Dockerfile checks out (INDEXTTS_REF d9e41aa, 2026-09-29, tag v2.5.0 line);
+# torch and torchaudio are the image's own (2.8, CUDA 12.8: the repo asks for torch==2.8.*), written at build time
+# into constraints-indextts-torch.txt, so nothing replaces them. transformers 4.52.1 shadows the image's 4.57.6 in
+# this venv only. Left out: gradio (web UI), deepspeed, flash-attn ("accel"), triton-windows.
+transformers==4.52.1
+tokenizers==0.21.0
+accelerate==1.8.1
+numpy==2.2.6
+librosa==0.10.2.post1
+modelscope==1.27.0
+safetensors==0.5.2
+cn2an==0.5.22
+cython==3.0.7
+descript-audiotools==0.7.2
+ffmpeg-python==0.2.0
+g2p-en==2.1.0
+jieba==0.42.1
+json5==0.10.0
+keras==2.9.0
+matplotlib==3.10.0
+munch==4.0.0
+numba==0.63.0
+opencv-python==4.9.0.80
+pandas==2.3.2
+tensorboard==2.20.0

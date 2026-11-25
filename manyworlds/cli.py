@@ -257,6 +257,20 @@ def build_parser() -> argparse.ArgumentParser:
     vb.add_argument("--pools", help="comma-separated GPU pools to pin the jobs to")
     vbp = vsub.add_parser("bank-pick", help="review the finished bank clips and keep those that pass")
     vbp.add_argument("creator")
+    vcast = vsub.add_parser("cast", help="cast her voice automatically: candidates from the bible, judged by the "
+                                         "worker, the best stored once the job finishes (a test batch: runs while "
+                                         "paused; replaces design + pick)")
+    vcast.add_argument("creator")
+    vcast.add_argument("--engine", help="indextts | qwen3 | voxcpm (default: the bake-off's winner, else policy)")
+    vcast.add_argument("--pools", help="comma-separated GPU pools to pin the job to")
+    vcast.add_argument("--attempt", type=int, default=0, help="a new attempt draws new candidates")
+    vcs = vsub.add_parser("cast-status", help="her latest cast: each candidate's scores and which one was stored")
+    vcs.add_argument("creator")
+    vq = vsub.add_parser("quality", help="voice lines' quality per accepted minute, per engine (the line check)")
+    vq.add_argument("creator")
+    vq.add_argument("--days", type=int, default=30)
+    vbo = vsub.add_parser("bakeoff-decide", help="score a finished voice bake-off run and record the default engine")
+    vbo.add_argument("run")
     return p
 
 
@@ -480,9 +494,36 @@ def voice_candidates(conn, pol, creator_id, store=None) -> dict:
 
 
 def _voice(args, conn, pol) -> int:
-    """`mw voice design|candidates|pick|bank|bank-pick <creator>` (manyworlds.creator.voice_lab)."""
+    """`mw voice cast|cast-status|design|candidates|pick|bank|bank-pick <creator>`, `mw voice bakeoff-decide <run>`
+    (manyworlds.creator.voice_lab, manyworlds.voice_bakeoff)."""
     from .creator import voice_lab
+    if args.voice_cmd == "bakeoff-decide":
+        from . import voice_bakeoff
+        _print(voice_bakeoff.decide(conn, pol, args.run))
+        return 0
     cid = _creator_id(conn, args.creator)
+    if args.voice_cmd == "cast":
+        handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
+        pools = [p.strip() for p in args.pools.split(",") if p.strip()] if args.pools else None
+        try:
+            job = voice_lab.cast(conn, pol, cid, engine=args.engine, attempt=args.attempt,
+                                 batch=f"test-voice-{handle}", pools=pools)
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        prio = int(pol.get("autoscale", "batch", "urgent_priority", default=1))
+        conn.execute("UPDATE jobs SET priority = greatest(priority, %s) WHERE id = %s AND status = 'queued'",
+                     (prio, job))
+        row = conn.execute("SELECT status, batch, pools, payload->>'engine' AS engine FROM jobs WHERE id = %s",
+                           (job,)).fetchone()
+        _print({"job": str(job), **row, "next": "stored automatically once it finishes (the producer settles "
+                                                 f"casts); mw voice cast-status {handle}"})
+        return 0
+    if args.voice_cmd == "cast-status":
+        _print(voice_lab.cast_status(conn, pol, cid))
+        return 0
+    if args.voice_cmd == "quality":
+        _print(voice_lab.quality_stats(conn, pol, cid, days=args.days))
+        return 0
     if args.voice_cmd == "design":
         handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
         # a test batch, so it runs while operations are paused; urgent, so no machine waits to batch it

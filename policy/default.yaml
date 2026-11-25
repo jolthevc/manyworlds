@@ -38,7 +38,7 @@ gpu_runs:
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
-  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, edit: 60, finish: 30}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, tts: 75, edit: 60, finish: 30}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
   # image.mirror: one-time copy into our bucket; resumes across machines. talk.longcat: one continuous take of up to
   # generation.talk_profiles.longcat16.max_seconds (a 90 s line: ~47 GB of weights, then ~28 segments; estimate
   # ~60-100 min on an L40S, unmeasured), so its render timeout_s plus the download fit inside it.
@@ -154,6 +154,13 @@ job_kinds:
   # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
   voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
   voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  # Expressive engines and casting (worker/handlers/tts_engines.py, policy voice.engines / voice.casting): their own
+  # worker family `tts` (talkcomfy v21 and later: IndexTTS-2.5 and Qwen3-TTS venvs, the judges), so a machine on an
+  # older image is never handed a kind it has no handler for. IndexTTS-2.5 bf16 ~10 GB + Whisper large-v3 ~3 GB +
+  # the judges ~2 GB (+ Qwen3 VoiceDesign ~5 GB while casting).
+  voice.speak.indextts: {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  voice.speak.qwen3:    {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  voice.cast:           {family: tts, min_vram_gb: 22, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
   # Original songs (worker/handlers/music_song.py, policy `music`): ACE-Step 1.5 in ComfyUI core on the ComfyUI image,
   # family music; then Demucs splits a vocal and an instrumental stem. turbo DiT 2B + 1.7B LM + VAE ~10 GB of weights,
   # fits 16 GB+; not benchmarked. Only `mw bench music.song` and production music_video posts (off) queue it.
@@ -214,6 +221,13 @@ worker_images:
   # voxcpm in it (v9 and later).
   voice: {image: mw-worker-talkcomfy, tag: v22, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1}}
+  # tts: expressive voices and automatic casting (voice.speak.indextts, voice.speak.qwen3, voice.cast) on the talk
+  # image with the IndexTTS-2.5 and Qwen3-TTS venvs and the judges (UTMOS22, wav2vec2 gender, speaker age). v21 is
+  # NOT BUILT YET: build and smoke-test it (check_tts) before any of these jobs is queued. Weights on first use:
+  # IndexTTS-2.5 + sub-models ~8 GB into MW_INDEXTTS_DIR (container disk), Qwen3 Base + VoiceDesign ~9 GB, judges
+  # ~2 GB, Whisper ~3 GB.
+  tts: {image: mw-worker-talkcomfy, tag: v21, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 80, download_gb: 25,
+        env: {HF_HUB_DISABLE_XET: 1, MW_INDEXTTS_DIR: /root/indextts-2.5}}
   # music: original songs (music.song) on the ComfyUI image: ACE-Step 1.5 split files (~10 GB) + Demucs htdemucs
   # (~80 MB) + Whisper for the bench's lyric check. Needs a talkcomfy image with handlers/music_song.py and demucs in
   # it (v15, NOT BUILT YET: build and smoke-test it before any music job is queued).
@@ -757,7 +771,7 @@ generation:
 # optimize: torch.compile on load (slower start, untested here). pitch_hz: the pitch tracker's range.
 # Creators without a designed voice keep Kokoro (anchors.voice.engine: kokoro).
 voice:
-  engine: voxcpm
+  engine: indextts           # the default for new casts, behind engine_gate below (the bake-off flips it)
   model: openbmb/VoxCPM2
   candidates: 4
   takes: 2
@@ -862,6 +876,149 @@ voice:
   # EXPERIMENTAL, off: now and then (rate per clause, at most max_per_line) a filler before a clause. Changes what is
   # spoken, never the scripted words: meta.clauses keeps the script and meta.fillers lists what captions must drop.
   disfluency: {enabled: false, rate: 0.06, max_per_line: 1, fillers: [so, um, like]}
+  # --- Expressive engines, automatic casting and the line check (owner 2026-11-25: fully autonomous, no human
+  # selection gates; research docs/research/2026-11-24-expressive-voice.md §6). `engine` above is the default engine
+  # for new casts once the bake-off allows it: while engine_gate.requires_bakeoff holds and no bake-off decision
+  # (decisions.kind = decision_kind) exists, new casts use until_bakeoff. `mw test breadth --plan voicebake` (the
+  # owner's go, as for any GPU run) records the winner (manyworlds/voice_bakeoff.py); that row flips the default.
+  engine_gate: {requires_bakeoff: true, until_bakeoff: voxcpm, decision_kind: voice_engine}
+  engines:
+    voxcpm:
+      kind: voice.speak
+      licence: "Apache-2.0 code and weights (OpenBMB/VoxCPM, openbmb/VoxCPM2; checked 2026-11-25)"
+      licence_ok: true
+    # IndexTTS-2.5 (bilibili, tag v2.5.0, 2026-08-10; repo commit pinned in the Dockerfile). Licence: bilibili Model
+    # Use License, code and weights: royalty-free commercial use; a separate licence above 100M MAU or RMB 1bn
+    # revenue (§2.2); "You may not Use the bilibili indextts2 or any Derivative Work to improve any AI model" (§3.4c):
+    # its audio (a Derivative Work, §1.5) must never train or fine-tune another model (no SVC/RVC training, no
+    # distillation on it: music.voice stays on other sources); keep the LICENSE and notices (§3.4b). IndexTTS-2 is
+    # excluded: it loads amphion/MaskGCT's semantic codec (CC-BY-NC-4.0); 2.5 has its own codec, and its sub-models
+    # (w2v-BERT 2.0 MIT, CAMPPlus Apache-2.0, BigVGAN v2 MIT) are fetched by worker/tts_server.py so its downloader
+    # never fetches the MaskGCT file. Emotion vector order (infer_v2_5.py): happy, angry, sad, afraid, disgusted,
+    # melancholic, surprised, calm. The vectors are first guesses, tuned from the bake-off's scores.
+    indextts:
+      kind: voice.speak.indextts
+      repo: IndexTeam/IndexTTS-2.5
+      python_env: MW_INDEXTTS_PYTHON
+      model_dir_env: MW_INDEXTTS_DIR
+      model_dir: /root/indextts-2.5      # container disk, never the weights volume (the LongCat lesson, 2026-11-24)
+      bf16: true
+      lang: en
+      sample_rate: 22050
+      emo_alpha: 1.0
+      max_emotion: 1.0
+      takes: 1                           # the line check regenerates what fails; a second blind take rarely helps
+      timeout_s: 300
+      load_timeout_s: 1800               # first job: ~8 GB of weights
+      licence: "bilibili Model Use License (commercial under 100M MAU / RMB 1bn; outputs never train other models)"
+      licence_ok: true
+      emotions:
+        neutral: {vector: null}
+        excited: {vector: [0.65, 0, 0, 0, 0, 0, 0.3, 0]}
+        confiding: {vector: [0.1, 0, 0.1, 0, 0, 0.15, 0, 0.45]}
+        deadpan: {vector: [0, 0, 0, 0, 0.1, 0.25, 0, 0.5]}
+        amused: {vector: [0.6, 0, 0, 0, 0, 0, 0.15, 0.15]}
+        storytelling: {vector: [0.3, 0, 0, 0, 0, 0, 0.1, 0.45]}
+        questioning: {vector: [0.15, 0, 0, 0, 0, 0, 0.35, 0.35]}
+    # Qwen3-TTS (Apache-2.0 code and weights, all 12Hz models; checked 2026-11-25). Base clones a reference and takes
+    # no instruction (delivery from the script and the line check); VoiceDesign designs the casting references from
+    # the bible's description (voice.casting.designer).
+    qwen3:
+      kind: voice.speak.qwen3
+      base: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+      design: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+      python_env: MW_QWENTTS_PYTHON
+      language: English
+      attn: sdpa
+      sample_rate: 24000
+      takes: 1
+      timeout_s: 300
+      load_timeout_s: 1800
+      licence: "Apache-2.0 code and weights"
+      licence_ok: true
+  # Casting (creator/voice_lab.cast, worker voice.cast): `candidates` references designed from the bible (Qwen3-TTS
+  # VoiceDesign; `voxcpm` designs with VoxCPM2 as before), each reading anchor_text (its WER at most max_ref_wer),
+  # then speaking this script in the creator's engine, a delivery per line (the engine's emotion control). Judged by
+  # voice.judge; the best qualifying candidate becomes her voice, stored by the producer (settle_casts) and at launch
+  # (launch step `voice`, at_launch).
+  casting:
+    kind: voice.cast
+    candidates: 4
+    designer: qwen3_design
+    at_launch: true
+    max_ref_wer: 0.1
+    script:
+      - {name: neutral, delivery: "plain, natural", text: "Okay, so here's the plan for today. Coffee first, then the market, then I'll show you what I found."}
+      - {name: warm, delivery: "warm, relaxed, telling a story to a friend", text: "My grandmother made this every Sunday, and honestly, it still tastes like her kitchen."}
+      - {name: excited, delivery: "excited, bright, a little fast", text: "No, wait, this actually worked! I didn't think it would, and now I want to tell everyone."}
+      - {name: quiet, delivery: "quiet, sincere, confiding", text: "Can I tell you something? I almost quit last spring, and I never said it out loud."}
+      - {name: question, delivery: "curious, asking", text: "So what would you have done? Seriously, tell me in the comments."}
+  # The judge (manyworlds/voice_eval.py; measured on the worker by worker/handlers/voice_judge.py). Floors are first
+  # estimates from the authors' published ranges and our own clips' WER, to be tuned from the bake-off's numbers:
+  # max_wer the intelligibility gate's 0.15; min_mos UTMOS22 (~3.0 is clearly synthetic, natural TTS scores 3.8-4.3);
+  # min_f0_std_st flat speech moves under ~1 semitone; max_ref_distance ECAPA cosine distance to her reference
+  # (the delivery bank's 0.3 plus room for emotion). pace_wps: words per second of trimmed speech (calibration
+  # 2026-11-24: real creators 3.7-4.3), per archetype, tolerance either side. Weights sum to 1.
+  judge:
+    max_wer: 0.15
+    min_mos: 3.0
+    min_f0_std_st: 1.2
+    flat_min_words: 4
+    pace_min_words: 5
+    pace_tolerance_wps: 0.8
+    max_ref_distance: 0.4
+    normalise: {mos: [2.5, 4.3], f0_std_st: [1.0, 4.0], energy_std_db: [3.0, 9.0], ref_distance: [0.15, 0.45]}
+    weights: {naturalness: 0.35, expressiveness: 0.2, clarity: 0.2, consistency: 0.15, pacing: 0.1}
+    pace_wps:
+      default: [3.6, 4.4]
+      storyteller: [3.4, 4.2]
+      educator: [3.5, 4.3]
+      lifestyle_slow: [3.2, 4.0]
+      beauty_grwm: [3.8, 4.6]
+      fashion_style: [3.7, 4.5]
+      city_explorer: [3.7, 4.5]
+    fit: {min_gender_p: 0.7, age_tolerance_years: 8, age_weight: 0.3}
+    casting:
+      min_pass_share: 0.7
+      min_mean_mos: 3.3
+      min_delivery_spread_st: 0.8
+      spread_norm_st: [0.5, 2.5]
+      rate_cv_norm: [0.03, 0.15]
+      weights: {lines: 0.6, fit: 0.25, delivery_spread: 0.1, rate_variation: 0.05}
+  # Every voice line in production gets the same cheap scores; a line that fails (unclear, robotic, flat, off pace,
+  # not her voice) is spoken again with a new seed and the next emotion strength, at most `repairs` times, and the
+  # best take is kept (its scores in the asset meta: lines[].judge, quality). Needs talkcomfy v21 (older images
+  # ignore it).
+  line_check: {enabled: true, repairs: 2, strength_steps: [1.25, 0.8]}
+  # The judges' models, all on the voice job's GPU. Licences checked 2026-11-25: UTMOS22 strong (MIT code and
+  # weights, via tarepan/SpeechMOS v1.2.0); alefiury gender (Apache-2.0, LibriSpeech); empiriolabsai/speaker-age
+  # (Apache-2.0, new and unproven: soft weight only). Excluded: audeering age/gender (CC-BY-NC-SA-4.0), torchaudio
+  # SQUIM_SUBJECTIVE (CC-BY-NC-4.0).
+  judge_models:
+    mos: {repo: "tarepan/SpeechMOS:v1.2.0", name: utmos22_strong}
+    gender: alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech
+    gender_labels: {label_0: female, label_1: male}   # the card's label2id {female: 0, male: 1}; named labels pass through
+    age: empiriolabsai/speaker-age
+  # The bake-off (manyworlds/voice_bakeoff.py; plan breadth.plans.voicebake in the test overlay, cap $2): each engine
+  # casts Maren and one other archetype's voice with `candidates` references, speaking the casting script plus these
+  # lines. Winner: highest mean composite per accepted-minute cost (cost ** cost_exponent: a modest price rise never
+  # outweighs a material quality gain), licence cleared, no gender miss, pass share at least min_pass_share; the
+  # incumbent (engine_gate.until_bakeoff) stays unless beaten by min_gain.
+  bakeoff:
+    candidates: 2
+    estimate_wps: 3.8
+    cost_exponent: 0.25
+    min_gain: 0.03
+    min_pass_share: 0.7
+    min_usd_per_minute: 0.001
+    lines:
+      - {name: story, delivery: "casual, storytelling", text: "Okay so. I'm at the airport, right, and the guy next to me just... opens a whole rotisserie chicken."}
+      - {name: product, delivery: "excited, bright", text: "No, wait, this actually works? I've used it every day this week and my skin is, look at it!"}
+      - {name: deadpan, delivery: "flat, dry, deadpan", text: "Great. Love that for me."}
+      - {name: confiding, delivery: "quiet, sincere, confiding", text: "Can I tell you something I've never said on here? I almost quit last spring."}
+      - {name: ask, delivery: "curious, asking", text: "So what would you have done? Seriously, tell me."}
+      - {name: laugh, delivery: "amused, laughing", text: "I tripped. In front of everyone. I'm fine, I'm totally fine."}
+      - {name: two_am, delivery: "tired, flat", text: "Two am. I take it back. I was not ready for anything."}
 
 # What the Brain may explore. It picks creators and niches inside this scope itself.
 scope:

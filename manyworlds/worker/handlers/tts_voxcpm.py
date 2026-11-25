@@ -236,8 +236,17 @@ def validate_speak(payload: dict) -> dict:
         bank = line.get("bank")
         if bank is not None and not isinstance(bank, str):
             raise NonRetryable(f"line {i} bank must be text")
+        emotion = line.get("emotion")       # an engine's own delivery control (voice_lab.speak_payload): never text
+        if emotion is not None:
+            if not isinstance(emotion, dict) or not isinstance(emotion.get("name", ""), str):
+                raise NonRetryable(f"line {i} emotion must be {{name, vector, alpha}}")
+            vec = emotion.get("vector")
+            if vec is not None and (not isinstance(vec, list) or not all(
+                    isinstance(x, (int, float)) and not isinstance(x, bool) for x in vec)):
+                raise NonRetryable(f"line {i} emotion.vector must be a list of numbers")
         out.append({"text": words, "delivery": (delivery or "").strip() or inline,
-                    "pause_after_s": None if pause is None else float(pause), "prompt": prompt, "bank": bank})
+                    "pause_after_s": None if pause is None else float(pause), "prompt": prompt, "bank": bank,
+                    **({"emotion": emotion} if emotion is not None else {})})
     takes = _positive_int(payload.get("takes", 1), "takes")
     flags = {}
     for name in ("compare", "embed"):
@@ -533,12 +542,21 @@ def design(payload: dict, ctx: JobContext) -> HandlerResult:
     return HandlerResult(outputs, recipe=recipe, meta={"output_seconds": round(total, 2)})
 
 
+REPAIR_SEED_OFFSET = 1 << 20     # a line check's regenerations draw seeds from their own block
+
+
 def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int, *, strict: bool,
-                 prompts: dict[str, Path] | None = None) -> dict:
+                 prompts: dict[str, Path] | None = None, generate=None, judge=None) -> dict:
     """Every line spoken as `cfg` says (whole lines or clauses), the best take of each piece kept, joined with the
     planned gaps: {audio, units, lines (timings), clauses, fillers, wer, failed}. `strict`: a line over the
     line ceiling fails the job (retryable); otherwise (the comparison variant) it is recorded in `failed`.
-    `prompts`: the local clip for each prompt uri (the reference's own uri included)."""
+    `prompts`: the local clip for each prompt uri (the reference's own uri included).
+
+    `generate(unit, line, seed, strength) -> wav`: another engine's voice (handlers/tts_engines.py); absent, VoxCPM2
+    as below. `judge` (voice_judge.LineJudge, policy voice.line_check): the chosen take of each piece is measured
+    (clarity, naturalness, expressiveness, consistency, pacing); a piece that fails is regenerated with new seeds and
+    the next emotion strength, at most `judge.repairs` times, and the best take kept (voice_eval.better). Its scores
+    go into the clause's and the line's meta (`judge`)."""
     import numpy as np
 
     params, takes = p["params"], p["takes"]
@@ -546,7 +564,11 @@ def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int,
     units = plan(p["lines"], cfg, p["seed"])
     prompts = prompts or {}
 
-    def take(unit: dict, k: int, seed: int):
+    def take(unit: dict, k: int, seed: int, strength: float = 1.0):
+        if generate is not None:
+            wav = generate(unit, p["lines"][unit["line"]], seed, strength)
+            heard = asr(wav, sr)
+            return (wer(unit["spoken"], heard), k, seed, np.asarray(wav, dtype=np.float32).reshape(-1), heard)
         # A line with a delivery-bank clip continues from it (its prosody), the base reference staying the timbre.
         bank = p["lines"][unit["line"]].get("prompt")
         uri, text = (bank["ref_uri"], bank["ref_text"]) if bank else (p["ref_uri"], p["ref_text"])
@@ -569,11 +591,33 @@ def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int,
             retried = True       # every take garbled the clause: once more with new seeds
             tried += [take(unit, takes + k, base + (len(units) + ui) * takes + k) for k in range(takes)]
         score, k, seed, wav, heard = min(tried, key=lambda t: (t[0], t[1]))
-        if cfg["trim"]:
-            wav = trim(wav, sr, **cfg["trim"])
-        if cfg["fade_ms"]:
-            wav = fade(wav, sr, cfg["fade_ms"])
-        chosen.append({"wav": wav, "wer": score, "take": k, "seed": seed, "heard": heard, "retried": retried})
+
+        def finish(wav):
+            if cfg["trim"]:
+                wav = trim(wav, sr, **cfg["trim"])
+            if cfg["fade_ms"]:
+                wav = fade(wav, sr, cfg["fade_ms"])
+            return wav
+
+        wav = finish(wav)
+        pick = {"wav": wav, "wer": score, "take": k, "seed": seed, "heard": heard, "retried": retried}
+        if judge is not None:
+            from ...voice_eval import better
+            pick["judge"] = {**judge(unit["spoken"], wav, heard), "repairs": 0}
+            for r in range(judge.repairs):
+                if pick["judge"]["passed"]:
+                    break
+                strength = judge.strength(r)
+                s2 = p["seed"] + REPAIR_SEED_OFFSET + ((attempt - 1) * len(units) + ui) * judge.repairs + r
+                w2, k2, seed2, raw, heard2 = take(unit, 2 * takes + r, s2, strength)
+                raw = finish(raw)
+                v = {**judge(unit["spoken"], raw, heard2), "repairs": r + 1, "strength": strength}
+                if better(v, pick["judge"]):
+                    pick = {"wav": raw, "wer": w2, "take": k2, "seed": seed2, "heard": heard2, "retried": retried,
+                            "judge": v}
+                else:
+                    pick["judge"]["repairs"] = r + 1
+        chosen.append(pick)
 
     b = cfg["breaths"]
     inserts = [breath(sr, voices.gap_s(random.Random(f"{p['seed']}:breath:{ui}"), b["seconds"]),
@@ -591,6 +635,8 @@ def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int,
                              "take": c["take"],
                              "seed": c["seed"], "retried": c["retried"], "wer": c["wer"],
                              "transcript": c["heard"][:500]})
+        if c.get("judge") is not None:
+            clauses_meta[-1]["judge"] = {k: v for k, v in c["judge"].items() if k != "transcript"}
         if unit["filler"]:
             fillers.append({"clause": ui, "line": unit["line"], "word": unit["filler"]})
     timings, failed = [], []
@@ -601,6 +647,17 @@ def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int,
         timings.append({"index": li, "start_s": clauses_meta[mine[0]]["start_s"],
                         "end_s": clauses_meta[mine[-1]]["end_s"], "text": line["text"], "delivery": line["delivery"],
                         "bank": line.get("bank"), "clauses": mine, "wer": wer(asked, heard), "transcript": heard[:500]})
+        judged = [chosen[ui]["judge"] for ui in mine if chosen[ui].get("judge") is not None]
+        if judged:
+            timings[-1]["judge"] = {
+                "passed": all(j["passed"] for j in judged),
+                "composite": round(sum(j["composite"] for j in judged) / len(judged), 4),
+                "reasons": [r for j in judged for r in j["reasons"]],
+                "repairs": sum(int(j.get("repairs") or 0) for j in judged),
+                **{k: judged[0].get(k) for k in ("mos", "f0_std_st", "f0_range_st", "energy_std_db", "wps",
+                                                 "ref_distance") if len(judged) == 1}}
+        if line.get("emotion"):
+            timings[-1]["emotion"] = (line["emotion"] or {}).get("name")
         if cfg["line_max_wer"] is not None and timings[-1]["wer"] > cfg["line_max_wer"]:
             if strict:   # retryable: the next attempt draws new seeds (see `base`)
                 raise RuntimeError(f"line {li} came out with WER {timings[-1]['wer']} > {cfg['line_max_wer']} "
@@ -611,9 +668,26 @@ def _voice_lines(p: dict, cfg: dict, tts, asr, ref: Path, sr: int, attempt: int,
             "wer": wer(asked, " ".join(c["heard"] for c in chosen)), "failed": failed}
 
 
+def line_judge(params: dict, ref: Path, sr: int):
+    """The per-line check (params.line_check, policy voice.line_check) for a job, or None when it is off. Its
+    consistency score compares every line with the reference clip's ECAPA embedding."""
+    if not (params.get("line_check") or {}).get("enabled"):
+        return None
+    from . import voice_judge
+    wav, rate = read_wav(ref)
+    embed = _embedder(params)
+    return voice_judge.LineJudge(params, sr, ref_embedding=embed(wav, rate), embed=embed)
+
+
 def _audio_meta(v: dict, sr: int, variant: str) -> dict:
-    return {"seconds": round(len(v["audio"]) / sr, 2), "sample_rate": sr, "synthesis": variant, "lines": v["lines"],
-            "clauses": v["clauses"], "fillers": v["fillers"], "wer": v["wer"]}
+    out = {"seconds": round(len(v["audio"]) / sr, 2), "sample_rate": sr, "synthesis": variant, "lines": v["lines"],
+           "clauses": v["clauses"], "fillers": v["fillers"], "wer": v["wer"]}
+    judged = [line["judge"] for line in v["lines"] if line.get("judge")]
+    if judged:   # for quality-per-accepted-minute stats (voice_lab.quality_stats)
+        out["quality"] = {"lines": len(judged), "passed": sum(j["passed"] for j in judged),
+                          "composite": round(sum(j["composite"] for j in judged) / len(judged), 4),
+                          "repairs": sum(j["repairs"] for j in judged)}
+    return out
 
 
 def speak(payload: dict, ctx: JobContext) -> HandlerResult:
@@ -635,7 +709,8 @@ def speak(payload: dict, ctx: JobContext) -> HandlerResult:
         uri = (line.get("prompt") or {}).get("ref_uri")
         if uri and uri not in prompts:
             prompts[uri] = prompt_clip(ctx.fetch(uri, f"prompt_{len(prompts):02d}.wav"), cfg["prompt_tail"], work)
-    main = _voice_lines(p, cfg, tts, asr, ref, sr, attempt, strict=True, prompts=prompts)
+    main = _voice_lines(p, cfg, tts, asr, ref, sr, attempt, strict=True, prompts=prompts,
+                        judge=line_judge(params, ref, sr))
     meta = _audio_meta(main, sr, variant)
     if p["embed"]:                          # a delivery-bank clip: judged against her base clip (voice_lab.pick_bank)
         meta.update(embedding=_embedder(params)(main["audio"], sr),
@@ -664,8 +739,11 @@ HANDLERS = {"voice.design": design, "voice.speak": speak}
 
 
 def release() -> None:
-    """Drop VoxCPM, Whisper and the embedder before another family's job, and hand their GPU memory back."""
+    """Drop VoxCPM, Whisper, the embedder and the line judges before another family's job, and hand their GPU
+    memory back."""
     _state.clear()
+    from . import voice_judge
+    voice_judge.release()
     try:
         import torch
         torch.cuda.empty_cache()

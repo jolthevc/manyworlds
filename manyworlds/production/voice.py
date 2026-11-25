@@ -11,7 +11,8 @@ from .steps import Step, _status, advance_step
 
 
 # The designed voice (creator/voice_lab.py, worker/handlers/tts_voxcpm.py): for a creator whose voice engine is
-# voxcpm, each spoken piece is a voice.speak job first, a Step of its own (retried like any other on failure; its
+# designed (voxcpm, indextts, qwen3), each spoken piece is a voice.speak job first (voice.speak.<engine> for the
+# newer engines), a Step of its own (retried like any other on failure; its
 # takes are chosen by WER on the worker), and the piece's job takes its wav. A rejected talk clip is remade over the
 # same voice line, so a line whose worker transcript already shows the intelligibility gate would reject it is voiced
 # again first (`gate_misses`, policy voice.gate_repairs).
@@ -19,7 +20,7 @@ def _designed_voice(conn, post: dict) -> dict | None:
     """The creator's designed voice (anchors.voice), or None while they speak with Kokoro."""
     from .. import voices
     anchors = conn.execute("SELECT anchors FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()["anchors"]
-    return (anchors or {}).get("voice") if voices.engine(anchors) == "voxcpm" else None
+    return (anchors or {}).get("voice") if voices.designed(anchors) else None
 
 
 def _sentence_lines(text: str) -> list[dict]:
@@ -106,7 +107,8 @@ def _voice_job(conn, policy: Policy, post: dict, voice: dict, lines: list[dict],
     payload = voice_lab.speak_payload(policy, voice, lines, seed=_seed(post, 800 + (segment or 0) * 1000, attempt))
     base = piece_key(post)   # shared across posts with one body.shared_key: one voice line for all of them
     key = f"{base}:voice:{attempt}" if segment is None else f"{base}:voice:{segment}:{attempt}"
-    return queue.enqueue(conn, voice_lab.speak_kind(policy), payload, creator_id=post["creator_id"],
+    kind = voice_lab.speak_kind(policy, voice.get("engine"))
+    return queue.enqueue(conn, kind, payload, creator_id=post["creator_id"],
                          batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=key)
 
 

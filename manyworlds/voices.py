@@ -191,11 +191,21 @@ def gap_s(rng, span: tuple[float, float]) -> float:
     return round(lo if hi <= lo else rng.uniform(lo, hi), 4)
 
 
+DESIGNED_ENGINES = ("voxcpm", "indextts", "qwen3")   # voices cloned from a reference clip (creator/voice_lab)
+
+
 def engine(anchors: dict | None) -> str:
-    """The creator's voice engine: 'voxcpm' once a designed voice is stored (anchors.voice with a reference clip),
-    otherwise 'kokoro' (a stock voice or blend), so creators made before designed voices keep speaking."""
+    """The creator's voice engine: the stored one ('voxcpm', 'indextts', 'qwen3') once a designed voice is stored
+    (anchors.voice with a reference clip), otherwise 'kokoro' (a stock voice or blend), so creators made before
+    designed voices keep speaking."""
     v = (anchors or {}).get("voice") or {}
-    return "voxcpm" if v.get("engine") == "voxcpm" and v.get("ref_uri") and v.get("ref_text") else "kokoro"
+    e = v.get("engine")
+    return e if e in DESIGNED_ENGINES and v.get("ref_uri") and v.get("ref_text") else "kokoro"
+
+
+def designed(anchors: dict | None) -> bool:
+    """Does the creator speak in a designed (cloned) voice, whatever its engine?"""
+    return engine(anchors) in DESIGNED_ENGINES
 
 
 def cosine_distance(a: list[float], b: list[float]) -> float:
