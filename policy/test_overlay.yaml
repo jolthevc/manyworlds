@@ -721,4 +721,6 @@ breadth:
                       room_tone]
           format: talking_video
           caption: "the tea guy"
-          body: {<<: *perf_body, shared_key: maren-final, talk_route: [ltx25, infinitetalk]}
+          # 2026-11-25 maren-final-3: LTX passed lip sync on 6 of 15 takes and realism on 1 of those 6 (face drift);
+          # InfiniteTalk, the owner's baseline, leads and LTX is the fallback.
+          body: {<<: *perf_body, shared_key: maren-final, talk_route: [infinitetalk, ltx25]}

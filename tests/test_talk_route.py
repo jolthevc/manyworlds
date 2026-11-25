@@ -153,13 +153,13 @@ def _maren(conn):
     return handle
 
 
-def test_the_maren_final_plan_is_one_story_time_video_on_ltx_with_infinitetalk_behind(raw_policy):
+def test_the_maren_final_plan_is_one_story_time_video_on_infinitetalk_with_ltx_behind(raw_policy):
     pol = breadth.test_policy(raw_policy)
     plan, items = breadth.load_plan(pol, "maren_final")
     assert len(items) == 1 and float(plan["max_usd"]) == 4 and plan["creator"] == "maren.afterhours"
     item = items[0]
     assert item.format == "talking_video" and item.body["edit_grammar"] == "story_time"
-    assert item.body["talk_route"] == ROUTE and item.body["shared_key"] == "maren-final"
+    assert item.body["talk_route"] == ["infinitetalk", "ltx25"] and item.body["shared_key"] == "maren-final"
     assert "voice_engine" not in item.options                     # whatever the voice gate resolves to
     assert all(v == ["runpod_secure_l40s"] for v in plan["pools"].values())   # L40S only
     words = sum(len(ln["text"].split()) for s in item.body["shots"] for ln in s["performance"]["lines"])
@@ -168,15 +168,14 @@ def test_the_maren_final_plan_is_one_story_time_video_on_ltx_with_infinitetalk_b
     assert any(s.get("cutaway") for s in item.body["shots"])
 
 
-def test_the_maren_final_dry_run_prices_ltx_takes(conn, raw_policy, monkeypatch):
+def test_the_maren_final_dry_run_prices_infinitetalk_takes(conn, raw_policy, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "test-token")
     handle = _maren(conn)
     dry = breadth.run(conn, raw_policy, "maren_final", creator=handle, dry_run=True)
     assert not dry["skipped"], dry["skipped"]
     jobs = dry["items"][0]["estimate"]["jobs"]
     talk = [j for j in jobs if j.get("route")]
-    assert talk and all(j["kind"] == "comfy.graph" and j["pool"] == "runpod_secure_l40s" for j in talk)
-    assert all(j["source"].startswith("policy (comfy.graph:ltx25_a2v") for j in talk)
+    assert talk and all(j["kind"] == "talk.infinitetalk" and j["pool"] == "runpod_secure_l40s" for j in talk)
     assert any(j["kind"] == "image.narrated" for j in jobs)        # the cutaways
     assert 0 < dry["estimated_usd"] < 4
     assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 0
