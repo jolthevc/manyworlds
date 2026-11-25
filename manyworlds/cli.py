@@ -171,6 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--platforms", nargs="*", default=[], help="pilot: instagram, tiktok (default intelligence.agent.platforms)")
     rs.add_argument("--creators", type=int, help="pilot: creators in the sample")
     rs.add_argument("--posts", type=int, help="pilot: posts per creator")
+    rs.add_argument("--reel-views", action="store_true", help="pilot: Instagram posts from the post scraper (reel "
+                                                              "views; a billed item a post) instead of the profile's")
+    rs.add_argument("--resume-annotate", metavar="BATCH", help="pilot: annotate and distill the posts this pilot batch "
+                                                                 "already collected; pulls nothing")
     rs.add_argument("--dry-run", action="store_true", help="pilot, monitor: print the estimate, queue nothing")
     rs.add_argument("--estimate", type=int, help="monitor: $/month for a universe of N creators at the policy tier mix")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
@@ -1091,11 +1095,14 @@ def _research_pilot(args, conn, pol) -> int:
 
     from . import queue
     from .brain.agents import intelligence
-    if not args.hypothesis:
-        print("usage: mw research pilot --hypothesis <thesis id | text> --usd <cap> [--dry-run]")
-        return 2
     cfg = pol.get("intelligence", "agent", default={}) or {}
     cap = float(args.usd if args.usd is not None else cfg.get("max_usd_per_run", 0))
+    if args.resume_annotate:
+        return _research_resume(args, conn, pol, cap)
+    if not args.hypothesis:
+        print("usage: mw research pilot --hypothesis <thesis id | text> --usd <cap> [--dry-run]\n"
+              "       mw research pilot --resume-annotate <batch> [--usd <cap>] [--dry-run]")
+        return 2
     est = intelligence.estimate(pol, creators=args.creators, posts=args.posts, platforms=args.platforms or None,
                                 hashtags_per_platform=len(args.hashtags) if args.hashtags else None,
                                 plan=not args.hashtags)
@@ -1110,6 +1117,8 @@ def _research_pilot(args, conn, pol) -> int:
     for k in ("creators", "posts"):
         if getattr(args, k):
             payload[k] = getattr(args, k)
+    if args.reel_views:
+        payload["reel_views"] = True
     if args.dry_run:
         _print({"dry_run": True, "estimate": est, "payload": payload,
                 "storage": references_storage(pol)})
@@ -1118,6 +1127,37 @@ def _research_pilot(args, conn, pol) -> int:
     # test work: while operations are paused, workers claim only jobs marked test (queue.claim only_test)
     job = queue.enqueue(conn, "brain.intelligence", {**payload, "test": True}, batch=f"test-iia-{run}")
     _print({"queued": str(job), "batch": f"test-iia-{run}", "estimate": est, "storage": references_storage(pol)})
+    return 0
+
+
+def _research_resume(args, conn, pol, cap: float) -> int:
+    """mw research pilot --resume-annotate <batch> [--usd <cap>] [--dry-run]: annotate and distill the posts a pilot
+    batch already collected (its scout's creators, else those whose posts it fetched), without pulling anything, as
+    one brain.intelligence job (mode resume) in a new test-iia-<run> batch. --dry-run prints the scope and the
+    estimate only."""
+    import uuid as uuid_mod
+
+    from . import queue
+    from .brain.agents import intelligence
+    scope = intelligence.batch_scope(conn, args.resume_annotate)
+    if not scope["jobs"]:
+        print(f"no brain.intelligence job in batch {args.resume_annotate}")
+        return 2
+    if not scope["creator_ids"]:
+        print(f"batch {args.resume_annotate} collected no creators: nothing to annotate")
+        return 2
+    est = intelligence.estimate_resume(conn, pol, scope["creator_ids"])
+    est["cap_usd"] = cap
+    est["fits_cap"] = est["total_usd"] <= cap
+    payload = {"mode": "resume", "usd": cap, "creator_ids": scope["creator_ids"], "resumes": args.resume_annotate}
+    if args.dry_run:
+        _print({"dry_run": True, "resumes": args.resume_annotate, "jobs": scope["jobs"],
+                "creators": len(scope["creator_ids"]), "estimate": est})
+        return 0
+    run = uuid_mod.uuid4().hex[:8]
+    job = queue.enqueue(conn, "brain.intelligence", {**payload, "test": True}, batch=f"test-iia-{run}")
+    _print({"queued": str(job), "batch": f"test-iia-{run}", "resumes": args.resume_annotate,
+            "creators": len(scope["creator_ids"]), "estimate": est})
     return 0
 
 

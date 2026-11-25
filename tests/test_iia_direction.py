@@ -403,10 +403,13 @@ def test_forgotten_accounts_are_never_pulled(conn, policy, tmp_path):
 def test_the_estimate_adds_up_from_policy_prices(policy):
     est = intelligence.estimate(policy, creators=40, posts=30, platforms=["instagram", "tiktok"])
     price = policy.get("intelligence", "agent", "usd_per_item")
-    ig = 20 * (price["instagram_profile"] + 30 * price["instagram_posts"])
+    # 2026-11-25: Instagram posts come from the profile scraper's embedded latest posts (one item, 12 posts)
+    assert policy.get("intelligence", "agent", "instagram_posts_from") == "profile"
+    ig = 20 * price["instagram_profile"]
     tt = 20 * 30 * (price["tiktok_profile"] + price["tiktok_video_download"])
     assert est["lines"]["creator_pulls"] == round(ig + tt, 2)
-    assert est["total_usd"] == round(sum(est["lines"].values()), 2) and est["posts"] == 1200
+    assert est["total_usd"] == round(sum(est["lines"].values()), 2) and est["posts"] == 20 * 12 + 20 * 30
+    assert est["lines"]["candidate_pool"] <= policy.get("intelligence", "agent", "max_candidate_pool_usd")
 
 
 def test_mw_research_pilot_dry_run_queues_nothing(conn, policy, capsys, database_url, monkeypatch):
