@@ -77,6 +77,45 @@ def counts_as_evidence(card: dict) -> bool:
     return card.get("status") in ("draft", "active") and bool(card.get("sources"))
 
 
+def two_proportion_p(p1: float, n1: int, p2: float, n2: int) -> float | None:
+    """Two-sided p of a difference between two shares (pooled z test); None when a side is empty."""
+    if n1 <= 0 or n2 <= 0:
+        return None
+    pooled = (p1 * n1 + p2 * n2) / (n1 + n2)
+    se = math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2))
+    if se == 0:
+        return 1.0 if p1 == p2 else 0.0
+    z = abs(p1 - p2) / se
+    return round(math.erfc(z / math.sqrt(2)), 4)
+
+
+def _bcfg(policy: Policy | None) -> dict:
+    return _rcfg(policy).get("basis") or {}
+
+
+def basis(policy: Policy | None, card: dict) -> dict:
+    """What kind of knowledge a card is, from code, never from a model (owner 2026-11-25): {kind, ...}.
+    validated: our own posts' real outcomes back it; correlation: its strongest high-vs-low traction attribute
+    difference is significant (intelligence.retrieval.basis); observed: researched, not significant; judgment: craft
+    knowledge with no research behind it (illustrative)."""
+    c, w = _bcfg(policy), (_rcfg(policy).get("weights") or {})
+    out = card.get("outcomes") or {}
+    if int(out.get("n") or 0) >= int(w.get("min_outcomes", 3)) and out.get("median_ratio") is not None:
+        return {"kind": "validated", "n": int(out["n"]), "median_ratio": out["median_ratio"]}
+    if not counts_as_evidence(card):
+        return {"kind": "judgment"}
+    ev = card.get("evidence") or {}
+    best = None
+    for t in ev.get("tests") or []:
+        if (t.get("p") is not None and t["p"] <= float(c.get("max_p", 0.1))
+                and min(int(t.get("n_high") or 0), int(t.get("n_low") or 0)) >= int(c.get("min_group", 5))):
+            if best is None or t["p"] < best["p"]:
+                best = t
+    if best:
+        return {"kind": "correlation", **{k: best[k] for k in ("attribute", "high", "low", "p", "n_high", "n_low")}}
+    return {"kind": "observed", "n_posts": int(ev.get("n_posts") or len(card.get("sources") or []))}
+
+
 def _names(policy: Policy | None) -> dict[str, set[str]]:
     from .. import direction
     from . import aesthetics, archetypes
@@ -239,7 +278,8 @@ def weight(policy: Policy | None, card: dict) -> float:
     outcome = 1.0
     if int(out.get("n") or 0) >= int(w.get("min_outcomes", 3)) and out.get("median_ratio") is not None:
         outcome = max(float(lo), min(float(hi), float(out["median_ratio"])))
-    return round(ev * acceptance * outcome, 4)
+    kind = float((_bcfg(policy).get("weight") or {}).get(basis(policy, card)["kind"], 1.0))
+    return round(ev * acceptance * outcome * kind, 4)
 
 
 def fit(policy: Policy | None, card: dict, archetype_names: list[str], media: list[str] | None,
@@ -285,13 +325,22 @@ def retrieve(conn, policy: Policy | None, *, stage: str, who: dict | None = None
     return scored[:max(k, len([c for c in scored if c["key"] in pinned]))]
 
 
-def _evidence_line(card: dict) -> str:
-    if not counts_as_evidence(card):
-        line = "ILLUSTRATIVE: craft knowledge, unproven"
+def _evidence_line(card: dict, policy: Policy | None = None) -> str:
+    b = basis(policy, card)
+    if b["kind"] == "judgment":
+        line = "ILLUSTRATIVE JUDGMENT: craft knowledge, unproven"
     else:
         ev = card.get("evidence") or {}
         line = (f"researched: {ev.get('n_posts') or len(card.get('sources') or [])} posts from "
                 f"{ev.get('n_creators') or '?'} creators")
+        if b["kind"] == "correlation":
+            line = (f"CORRELATION (not proof of cause): {b['attribute']} in {round(b['high'] * 100)}% of high-traction "
+                    f"vs {round(b['low'] * 100)}% of low-traction posts (p={b['p']}, n={b['n_high']}/{b['n_low']}); "
+                    + line)
+        elif b["kind"] == "observed":
+            line = "OBSERVED (no significant difference yet): " + line
+        else:
+            line = "VALIDATED on our own posts: " + line
     acc = card.get("acceptance") or {}
     if acc.get("tried"):
         line += f"; our renders {acc.get('accepted', 0)}/{acc['tried']} accepted"

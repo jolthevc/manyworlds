@@ -745,7 +745,11 @@ def store_card(conn, card: dict, c: dict, job_id) -> dict:
     sources = [{"post_id": str(r["post_id"]), "creator_id": str(r["creator_id"]), "url": r.get("url")} for r in src]
     evidence = {"n_posts": len(sources), "n_creators": len({s["creator_id"] for s in sources}),
                 "cluster": c["name"], "cluster_posts": c["n"], "high": len(c["high"]), "low": len(c["low"]),
-                "lift": c["lift"][:5], "job_id": str(job_id)}
+                "lift": c["lift"][:5], "job_id": str(job_id),
+                # a two-proportion test per attribute (patterns.basis reads it: correlation vs observed)
+                "tests": [{**x, "n_high": len(c["high"]), "n_low": len(c["low"]),
+                           "p": patterns.two_proportion_p(x["high"], len(c["high"]), x["low"], len(c["low"]))}
+                          for x in c["lift"][:5]]}
     body = {k: v for k, v in card.items() if k not in ("key", "medium", "status", "signature_ok", "sources")}
     last = conn.execute("SELECT id, version FROM pattern_cards WHERE key = %s ORDER BY version DESC LIMIT 1",
                         (key,)).fetchone()

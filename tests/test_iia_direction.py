@@ -447,3 +447,23 @@ def test_a_queued_pilot_is_test_work_so_a_paused_brain_worker_takes_it(conn, pol
     assert cli.main(["research", "pilot", "--hypothesis", "aspirational yet relatable night-out", "--usd", "16"]) == 0
     job = conn.execute("SELECT payload FROM jobs WHERE kind = 'brain.intelligence'").fetchone()
     assert job["payload"]["test"] is True
+
+
+def test_a_cards_basis_comes_from_code_judgment_observed_correlation_validated(policy):
+    # owner 2026-11-25: keep subjective judgment, observed patterns, correlations and validated learning apart
+    from manyworlds.brain import patterns
+    p = patterns.two_proportion_p(0.7, 20, 0.2, 20)
+    assert p is not None and p < 0.01 and patterns.two_proportion_p(0.5, 10, 0.5, 10) == 1.0
+    seed = {"status": "illustrative", "sources": []}
+    assert patterns.basis(policy, seed)["kind"] == "judgment"
+    weak = {"status": "draft", "sources": [{"post_id": "a"}], "evidence": {"n_posts": 8, "tests": [
+        {"attribute": "lens=direct", "high": 0.6, "low": 0.4, "n_high": 4, "n_low": 4, "p": 0.4}]}}
+    assert patterns.basis(policy, weak)["kind"] == "observed"
+    strong = {**weak, "evidence": {"n_posts": 40, "tests": [
+        {"attribute": "lens=direct", "high": 0.7, "low": 0.2, "n_high": 20, "n_low": 20, "p": p}]}}
+    b = patterns.basis(policy, strong)
+    assert b["kind"] == "correlation" and b["attribute"] == "lens=direct"
+    assert "CORRELATION (not proof of cause)" in patterns.brief([{**strong, "key": "k", "medium": "photo"}])
+    assert patterns.weight(policy, strong) > patterns.weight(policy, weak)
+    ours = {**strong, "outcomes": {"n": 5, "median_ratio": 1.4}}
+    assert patterns.basis(policy, ours)["kind"] == "validated"

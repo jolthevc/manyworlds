@@ -1499,6 +1499,11 @@ intelligence:
     fit: {archetype: 2.0, medium: 1.0, shot_types: 1.0, min: 1.0}
     weights: {illustrative: 0.5, evidence_base: 1.0, evidence_per_log_post: 0.4, evidence_max: 3.0,
               prior_accepted: 2, prior_dropped: 1, min_outcomes: 3, outcome_clip: [0.5, 2.0]}
+    # What kind of knowledge a card is (patterns.basis; owner 2026-11-25: keep judgment, observation, correlation,
+    # hypothesis and validated learning apart): validated = our own posts' real outcomes (min_outcomes); correlation =
+    # a high-vs-low traction difference with p <= max_p and at least min_group posts each side (two-proportion test);
+    # observed = researched, not significant; judgment = craft knowledge (illustrative). Weight multiplier per basis.
+    basis: {max_p: 0.1, min_group: 5, weight: {validated: 1.5, correlation: 1.2, observed: 1.0, judgment: 1.0}}
     format_media:
       photo: [photo]
       story: [photo]
