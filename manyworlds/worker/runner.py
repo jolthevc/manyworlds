@@ -543,6 +543,9 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
             from .handlers import comfy_graph as mod
         elif family == "comfy":          # ComfyUI + WanVideoWrapper graphs on the talk worker image (story clips)
             from .handlers import comfy_video as mod
+        elif kind == "voice.cast" or kind.startswith("voice.speak."):
+            # IndexTTS-2.5 / Qwen3-TTS voices and automatic casting (worker family tts: talkcomfy v21 and later)
+            from .handlers import tts_engines as mod
         elif family == "voice":          # designed voices (VoxCPM2), also on the talk worker image
             from .handlers import tts_voxcpm as mod
         elif family == "sound":          # generated effects and music beds (policy sound, off)
