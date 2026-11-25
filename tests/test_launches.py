@@ -1,5 +1,5 @@
 """Launching creators with no bespoke code (Brain M8): an approved launch walks the creator lab's steps by
-itself (bible, reference pack, anchors, LoRA, profile, dossier) and ends with a creator ready to plan in the sandbox and
+itself (bible, reference pack, anchors, LoRA, voice, profile, dossier) and ends with a creator ready to plan in the sandbox and
 an account request for the owner. A step that keeps failing stops the launch and tells the owner."""
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from manyworlds.brain import launches
 
 from brain_helpers import StubLLM
 from test_review import BIBLE
+from voice_helpers import cast_meta, finished_cast
 
 
 def _thesis(conn, summary="cosy-chaos home cook in her 30s"):
@@ -85,7 +86,15 @@ def test_an_approved_launch_becomes_a_ready_sandbox_creator_with_an_account_requ
     launches.advance(conn, policy)                                     # -> LoRA training queued
     assert _jobs(conn, "train.lora")
     _finish(conn, "train.")
-    launches.advance(conn, policy)                                     # -> profile
+    launches.advance(conn, policy)                                     # -> voice: cast automatically
+    (cast,) = _jobs(conn, "voice.cast")
+    assert conn.execute("SELECT step FROM launches").fetchone()["step"] == "voice"
+    engine = cast["payload"]["engine"]
+    finished_cast(conn, conn.execute("SELECT creator_id FROM launches").fetchone()["creator_id"],
+                  [cast_meta(0, age=29.0, engine=engine)], job_id=cast["id"])
+    launches.advance(conn, policy)                                     # her voice is stored -> profile
+    assert conn.execute("SELECT c.anchors->'voice'->>'engine' AS e FROM launches l JOIN creators c "
+                        "ON c.id = l.creator_id").fetchone()["e"] == engine
     _run_lab(conn, policy, monkeypatch)
     launches.advance(conn, policy)                                     # -> dossier, by the talent manager
     tm = _jobs(conn, "brain.talent_manager")
@@ -168,3 +177,36 @@ def test_a_thesis_without_a_market_leaves_the_creator_unplaced(conn, policy, mon
     row = _launch_to_creator(conn, policy, monkeypatch, {"summary": "s", "market_id": "not-a-uuid"})
     assert row["market_id"] is None and row["cluster_id"] is None
     assert conn.execute("SELECT count(*) n FROM markets").fetchone()["n"] == 0
+
+
+def _to_voice_step(conn, policy, monkeypatch):
+    _approve_launch(conn, _thesis(conn))
+    launches.advance(conn, policy)
+    _run_lab(conn, policy, monkeypatch)
+    launches.advance(conn, policy)
+    _finish(conn, "image.")
+    launches.advance(conn, policy)
+    _run_lab(conn, policy, monkeypatch)
+    launches.advance(conn, policy)
+    _finish(conn, "train.")
+    launches.advance(conn, policy)
+
+
+def test_a_cast_where_no_candidate_qualifies_is_cast_again_with_new_candidates(conn, policy, monkeypatch):
+    _to_voice_step(conn, policy, monkeypatch)
+    cid = conn.execute("SELECT creator_id FROM launches").fetchone()["creator_id"]
+    (first,) = _jobs(conn, "voice.cast")
+    finished_cast(conn, cid, [cast_meta(0, gender="male")], job_id=first["id"])     # the wrong gender: no voice
+    launches.advance(conn, policy)
+    casts = _jobs(conn, "voice.cast")
+    assert len(casts) == 2 and casts[1]["payload"]["seed"] != first["payload"]["seed"]
+    row = conn.execute("SELECT step, status, retries FROM launches").fetchone()
+    assert (row["step"], row["status"], row["retries"]) == ("voice", "running", 1)
+
+
+def test_casting_at_launch_can_be_switched_off(conn, policy, monkeypatch):
+    import dataclasses
+    off = dataclasses.replace(policy, body={**policy.body, "voice": {
+        **policy.body["voice"], "casting": {**policy.body["voice"]["casting"], "at_launch": False}}})
+    _to_voice_step(conn, off, monkeypatch)
+    assert conn.execute("SELECT step FROM launches").fetchone()["step"] == "profile" and not _jobs(conn, "voice.cast")

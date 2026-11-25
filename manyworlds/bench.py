@@ -154,6 +154,14 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
     if kind == VOICE_KIND:
         return enqueue_voice_test(conn, policy, jobs, batch=batch or f"bench-{kind}-{uuid.uuid4().hex[:6]}",
                                   extra=extra, pools=pools)
+    if kind == "voice.cast":   # the voice bake-off (manyworlds.voice_bakeoff): one cast per job, never stored
+        from . import voice_bakeoff
+        batch = batch or f"bench-{kind}-{uuid.uuid4().hex[:6]}"
+        for i in range(jobs):
+            payload, cid = voice_bakeoff.bench_payload(conn, policy, dict(extra or {}), i)
+            queue.enqueue(conn, kind, payload, batch=batch, pools=pools, creator_id=cid,
+                          max_attempts=int(policy.get("queue", "max_attempts", default=3)))
+        return batch
     if kind.startswith(("talk.", "hosted.", "comfy.")) and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("this benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")

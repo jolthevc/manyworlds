@@ -238,6 +238,9 @@ def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = Fa
     `shared_done`: an earlier item of the plan carries the same body.shared_key, so its scene photos and voice lines
     are that item's jobs and are not counted again."""
     if item.bench:
+        if item.bench["kind"] == "voice.cast":   # priced by the audio it speaks (manyworlds.voice_bakeoff)
+            from . import voice_bakeoff
+            return [voice_bakeoff.expected_job(policy, item.bench)]
         return [{"kind": item.bench["kind"], "n": int(item.bench.get("jobs", 1)), "output_seconds": None}]
     if item.take:
         from . import long_take
@@ -249,7 +252,10 @@ def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = Fa
     out = [] if shared_done else [{"kind": prod.get("image_kind", "image.zimage"), "n": len(scenes),
                                    "output_seconds": None}]
     wps = float(policy.get("generation", "talk_long", "words_per_second", default=2.5))
-    designed = voices.engine((creator or {}).get("anchors") if creator else None) == "voxcpm"
+    anchors = (creator or {}).get("anchors") if creator else None
+    designed = voices.designed(anchors)
+    from .creator import voice_lab
+    speak = voice_lab.speak_kind(policy, voices.engine(anchors)) if designed else "voice.speak"
     if item.format == "story_clip":
         routing = (prod.get("routing") or {}).get("story_clip") or {}
         kind = (routing.get("kinds") or [prod.get("video_kind", "comfy.wan_i2v")])[0]
@@ -257,7 +263,7 @@ def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = Fa
     elif item.format == "narrated_edit":
         out.append({"kind": "image.narrated", "n": 1, "output_seconds": None})
         if designed:
-            out.append({"kind": "voice.speak", "n": 1, "output_seconds": None})
+            out.append({"kind": speak, "n": 1, "output_seconds": None})
     elif item.format == "talking_video":
         shots = body.get("shots") or []
         hybrid = bool(policy.get("generation", "talk_hybrid", "enabled", default=False)) and len(scenes) >= 2
@@ -282,7 +288,7 @@ def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = Fa
                     out.append({"kind": "comfy.wan_animate2" if borrowed else motion,
                                 "n": len(production.motion_lengths(policy, seconds)), "output_seconds": None})
             if designed and not shared_done:
-                out.append({"kind": "voice.speak", "n": 1, "output_seconds": None})
+                out.append({"kind": speak, "n": 1, "output_seconds": None})
     return out
 
 
@@ -565,10 +571,14 @@ def run(conn, policy: Policy, plan_name: str, *, items: list[str] | None = None,
     if holder is None:
         raise SystemExit(f"another driver is running {rid}; wait for it, or for its lease to lapse")
     try:
-        return {**head, **_drive(conn, pol, plan, plan_name, rid, batch, todo, creators, store=store, llm=llm,
-                                 once=once, hours=hours, sleep=sleep, now=now, holder=holder)}
+        out = {**head, **_drive(conn, pol, plan, plan_name, rid, batch, todo, creators, store=store, llm=llm,
+                                once=once, hours=hours, sleep=sleep, now=now, holder=holder)}
     finally:
         _release_lease(conn, rid, holder)
+    if plan.get("decides") == "voice_engine" and not once:   # the voice bake-off flips the default engine itself
+        from . import voice_bakeoff
+        out["decision"] = voice_bakeoff.decide(conn, policy, rid)
+    return out
 
 
 def _dry_run(conn, pol: Policy, plan: dict, rid: str, todo: list[Item], creators: dict) -> dict:
