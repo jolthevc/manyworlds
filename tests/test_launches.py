@@ -4,13 +4,24 @@ an account request for the owner. A step that keeps failing stops the launch and
 
 from __future__ import annotations
 
+import pytest
 from psycopg.types.json import Jsonb
 
+from manyworlds import policy as policy_mod
 from manyworlds.brain import launches
 
 from brain_helpers import StubLLM
 from test_review import BIBLE
 from voice_helpers import cast_meta, finished_cast
+
+
+@pytest.fixture
+def policy(policy):
+    """These tests walk the launch path without casting (bible first); the casting step (brain.casting.enabled, on
+    in the shipped policy) has its own tests in test_talent_agency.py."""
+    return policy_mod.from_dict({**policy.body, "brain": {**policy.body["brain"],
+                                                         "casting": {**policy.body["brain"]["casting"],
+                                                                     "enabled": False}}})
 
 
 def _thesis(conn, summary="cosy-chaos home cook in her 30s"):
