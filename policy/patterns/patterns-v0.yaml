@@ -136,7 +136,7 @@ cards:
     best_fit: [beauty_grwm, storyteller, fashion_style]
     recipe: {move: mirror_talk, grammar: story_time, deliveries: [confiding, deadpan, amused],
              pace_wps: [3.8, 4.3], eye_contact: 0.65, mannerisms: [one laugh, one aside to the lens],
-             length_s: [20, 40]}
+             length_s: [20, 40], edit: {punch_every_s: [2.0, 3.5], cutaway_share: 0.25, hook: text_and_line}}
     constraints: "Keep takes to about 8 s; makeup application only in close cutaways."
     failure_modes: [loose lip sync on long takes, hands at the face in a talking shot]
     guardrails: "Her own story from her bible."
@@ -157,7 +157,7 @@ cards:
     audience_role: [humour, intimacy]
     best_fit: [storyteller, city_explorer]
     recipe: {move: walking_vlog, grammar: story_time, deliveries: [storytelling, excited], pace_wps: [3.9, 4.4],
-             eye_contact: 0.8, length_s: [15, 35]}
+             eye_contact: 0.8, length_s: [15, 35], edit: {punch_every_s: [2.5, 4.0], cutaway_share: 0.1, hook: line}}
     constraints: "Walk-and-talk (V2V): motion clips of at most 5 s, chained at most 3."
     failure_modes: [mouth not redrawn in V2V, motion drift past 5 s]
     guardrails: "Her own story."

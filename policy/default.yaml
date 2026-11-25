@@ -921,6 +921,92 @@ intelligence:
   # or a face at least face_block similar (the face-identity embedding, when one is computed; no new model). A
   # generated image within near_duplicate_bits (64-bit difference hash) of a cited post is a near-duplicate warning.
   checks: {name_warn: 0.75, name_block: 0.92, face_warn: 0.75, face_block: 0.9, near_duplicate_bits: 6}
+  # Where research media goes (manyworlds.research.references.research_store). RESEARCH_STORAGE_URL (a separate private
+  # bucket) wins; while it is unset, fallback main_bucket keeps research media in the main bucket (STORAGE_URL) under
+  # the key prefix research-refs/. Research URIs are recognised by that prefix in either place and refused in every
+  # production job and asset row. Caveat: until workers get a bucket-scoped token, rented GPU machines hold the main
+  # bucket's key, so a separate bucket is the stronger setting. fallback none: no store, nothing downloads.
+  storage: {fallback: main_bucket, prefix: research-refs/}
+  # Retrieval into creative direction (manyworlds.brain.patterns.retrieve). Cards are chosen by fit (her archetypes in
+  # a card's best_fit, the post format's media, her style's shot families against the card's shot types) times weight:
+  #   evidence: illustrative cards (seed craft knowledge) weigh `illustrative`; researched cards (draft/active, with
+  #             sources) evidence_base + evidence_per_log_post * ln(1 + n_posts), capped at evidence_max;
+  #   acceptance: (accepted + prior_accepted) / (tried + prior_accepted + prior_dropped), over the prior's mean;
+  #   outcomes: the median reach over the creator's own median, once min_outcomes real posts used the card, clipped
+  #             to outcome_clip.
+  # Top-k per stage: showrunner (formats, hooks, series patterns), director (shot sheets), casting (the creator lab's
+  # bible), style (the style director's look). format_media: which card media fit a post format.
+  retrieval:
+    enabled: true
+    k: {showrunner: 4, director: 3, casting: 4, style: 4}
+    fit: {archetype: 2.0, medium: 1.0, shot_types: 1.0, min: 1.0}
+    weights: {illustrative: 0.5, evidence_base: 1.0, evidence_per_log_post: 0.4, evidence_max: 3.0,
+              prior_accepted: 2, prior_dropped: 1, min_outcomes: 3, outcome_clip: [0.5, 2.0]}
+    format_media:
+      photo: [photo]
+      story: [photo]
+      carousel: [carousel, sequence, photo]
+      narrated_edit: [video, sequence]
+      story_clip: [video, sequence]
+      talking_video: [video]
+      music_video: [video]
+    # A card's talk-edit overrides (recipe.edit) are clamped to these before the finish and the director use them.
+    talk_bounds: {punch_every_s: [1.5, 5.0], cutaway_share: [0.0, 0.5]}
+  # Outcome feedback (manyworlds.brain.patterns.feedback, in the chief of staff's tick): every card's production
+  # acceptance (posts that used it, by status) and real outcomes (evidence.post_outcomes, real creators only; simulated
+  # outcomes never touch a card), recomputed from the posts each time (idempotent).
+  feedback:
+    enabled: true
+    accepted_statuses: [ready, approved, scheduled, published]
+    dropped_statuses: [dropped]
+    recent_posts: 200            # per real creator, the posts whose outcomes are read
+  # The influencer intelligence agent (brain/agents/intelligence.py, job kind brain.intelligence; requests of kind
+  # `intelligence` commission it). Modes: scout (pick creators from hashtag pulls and named handles, pull their posts),
+  # annotate (finish.measure_video for videos, a batched Haiku read of images, frames and caption), distill (clusters
+  # of high vs low traction attributes into pattern cards, one iia_distill call per cluster), pilot (all three).
+  # Every Apify item and LLM call lands in the ledger (the job's id; Apify under agent intelligence:<mode>); a run
+  # stops at its cap.
+  agent:
+    max_usd_per_run: 16.0         # the default cap of a run (mw research pilot --usd, or a commission's usd)
+    max_usd_per_commission: 5.0   # an `intelligence` request is accepted at once (no owner gate), capped at this
+    roles: {plan: iia_curate, annotate: iia_annotate, distill: iia_distill}
+    effort: {plan: medium, annotate: low, distill: medium}
+    # The sample (spec 3.2): creators per run, posts per creator, and quotas by role (shares of the creators;
+    # low comparators are always sampled); candidates from hashtag pulls (hashtags per platform, items each).
+    creators: 40
+    posts_per_creator: 30
+    quotas: {leader: 0.2, riser: 0.2, mid: 0.25, adjacent: 0.15, low_comparator: 0.2}
+    mid_band: [10000, 150000]     # followers
+    hashtags_per_platform: 4
+    items_per_hashtag: 50
+    platforms: [instagram, tiktok]
+    min_posts_per_creator: 6      # fewer: coverage too low, kept but not scored
+    # Apify actors (logged-out public data), verified on the Apify store API 2026-11-24 (FREE-tier per-event prices;
+    # paid plans are lower; check the invoice):
+    #   apify~instagram-profile-scraper   input usernames[]                                        $0.0026 a profile
+    #   apify~instagram-post-scraper      input username[], resultsLimit, onlyPostsNewerThan, skipPinnedPosts
+    #                                     $0.0017 a post (detailed data +$0.001, not used)
+    #   clockworks~tiktok-profile-scraper input profiles[], resultsPerPage, shouldDownloadVideos
+    #                                     $0.003 a result, video download +$0.0013 each (date filters +$0.0013, not used)
+    # Candidate pools reuse research.apify_actors (hashtags), priced at usd_per_hashtag_item.
+    actors:
+      instagram_profile: apify~instagram-profile-scraper
+      instagram_posts: apify~instagram-post-scraper
+      tiktok_profile: clockworks~tiktok-profile-scraper
+    usd_per_item: {instagram_profile: 0.0026, instagram_posts: 0.0017, tiktok_profile: 0.003,
+                   tiktok_video_download: 0.0013}
+    usd_per_hashtag_item: {instagram: 0.0027, tiktok: 0.0037}   # store API 2026-11-24 (research.usd_per_1k_items is older)
+    download_videos: true
+    max_media_bytes: 60000000
+    images_per_post: 3            # carousel slides kept and read
+    posts_newer_than_days: 120    # at least 3 months of a creator's posts (spec 3.2)
+    # annotate: posts per vision call; each image capped at image_max_bytes.
+    annotate: {posts_per_call: 4, image_max_bytes: 400000, caption_chars: 600}
+    # distill: a cluster is posts sharing a medium and a format or situation; it needs min_posts posts from at least
+    # min_creators creators; high and low traction are over_own_median >= high and <= low; at most max_cards calls.
+    distill: {min_posts: 6, min_creators: 1, high: 1.5, low: 0.8, max_cards: 12, examples: 6}
+    # Estimates (USD) the cap checks before each step and the dry run adds up.
+    estimate: {plan_call: 0.25, annotate_call: 0.004, distill_call: 0.06, measure_video: 0.001}
 
 creator_lab:
   # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
@@ -1028,7 +1114,7 @@ brain:
                     creator_lab: 5.0, director: 2.0, talent_manager: 2.0, market_lead: 1.0, style_director: 1.0,
                     comment_themes: 0.5, idea_reviser: 0.5, lyricist: 0.5, music_critic: 0.5,
                     head_of_music: 0.5, a_and_r: 0.5, music_talent_manager: 1.0, songwriter: 1.0, producer: 0.3,
-                    vocal_director: 0.3, melody: 0.3, mix_master: 0.3, curator: 0.3}   # lyricist: original lyrics for song posts (music, off); director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
+                    vocal_director: 0.3, melody: 0.3, mix_master: 0.3, curator: 0.3, intelligence: 5.0}   # intelligence: the IIA (scout plan, annotate, distill; its runs have their own cap too); lyricist: original lyrics for song posts (music, off); director: one shot-sheet call per scheduled post; creator_lab: bible + vision anchor picks + profile per launch   # sandbox: all test runs together
   # Added per active real creator per day, for agents whose work grows with the portfolio (budget.daily_cap).
   # Measured 2026-11-21 (Claude): showrunner ~$0.06 a creator a day; evaluator ~$0.11 at 3 samples an idea, about a
   # third of that at one.
@@ -1116,14 +1202,15 @@ brain:
   # rights goes to the owner.
   rights:
     routes: {tier_change: strategist, production_upgrade: strategist, budget: strategist, cohort: strategist,
-             research: analyst, experiment: talent_manager, escalate: owner, artist_concept: head_of_music}
+             research: analyst, experiment: talent_manager, escalate: owner, artist_concept: head_of_music,
+             intelligence: intelligence}
     # kinds accepted as filed (within the requester's weekly allowance below): research runs the analyst at once,
     # an experiment is the manager's own call
-    auto_accept: [research, experiment]
+    auto_accept: [research, experiment, intelligence]   # intelligence: capped at intelligence.agent.max_usd_per_commission
     cooldown_days: 14              # a rejected request comes back only with new evidence or after this
     due_days: 3                    # undecided past this, it expires (the chief of staff reports it)
     max_open_per_creator: 3
-    talent_manager: {research_per_week: 2, budget_per_week: 1, tier_change_per_week: 1}
+    talent_manager: {research_per_week: 2, budget_per_week: 1, tier_change_per_week: 1, intelligence_per_week: 1}
     strategist: {max_usd_per_request: 20, tier_changes_per_day: 5}
     head_of_music: {tier_change_per_week: 3}
     music_talent_manager: {tier_change_per_week: 1}
@@ -1153,7 +1240,7 @@ brain:
   chief_of_staff: {enabled: true, window_hours: 24, failing_jobs: 3, idle_spend_usd: 0.5, owner_wait_days: 3,
                    decision_agents: [strategist, talent_manager, market_lead, showrunner, analyst, creator_lab, style_director, scouts,
                                      idea_reviser, comment_themes, music_critic, head_of_music, a_and_r,
-                                     music_talent_manager, curator]}
+                                     music_talent_manager, curator, intelligence]}
   # The showrunner (brain/agents/showrunner.py) plans `days` ahead from memory, recent scores and findings.
   showrunner: {role: showrunner, enabled: true, days: 3, recent_posts: 30, memory_facts: 60, max_wait_hours: 6, max_period_attempts: 3, retry_after_hours: 12, effort: medium}
   # Series continuity (manyworlds.brain.series): episodes enter at publication; the showrunner sees, per series (at
@@ -2804,7 +2891,7 @@ llm:
   # second: never the director, review or comment replies (those run outside brain jobs anyway).
   batch:
     enabled: true
-    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes, idea_revise, head_of_music, a_and_r, music_curator]   # music: nobody waits on the slate, pitches or a release
+    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes, idea_revise, head_of_music, a_and_r, music_curator, iia_annotate, iia_distill]   # iia: research runs, nobody waits; music: nobody waits on the slate, pitches or a release
     discount: 0.5              # the batch price as a share of the standard one (Anthropic pricing, checked 2026-11-23)
     gather_seconds: 30         # wait this long for other jobs' calls so they share a batch
     max_requests: 1000         # per batch (the API takes up to 100,000)
