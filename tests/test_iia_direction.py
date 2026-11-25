@@ -25,8 +25,13 @@ from test_director import CANAL, DirectorLLM, text
 @pytest.fixture()
 def policy(policy):
     # acquisition mechanics under test: sources approved (the shipped pauses: test_data_policy.py)
+    import dataclasses
     from conftest import approve_research_sources
-    return approve_research_sources(policy)
+    pol = approve_research_sources(policy)
+    intel = pol.body["intelligence"]
+    # the mechanics run on two creators; the shipped floor (min_creators 3) is tested in test_review_fixes.py
+    return dataclasses.replace(pol, body={**pol.body, "intelligence": {**intel, "distill": {**intel["distill"],
+                                                                                         "min_creators": 1}}})
 
 FASHION = {"archetype": "quiet-luxury fashion in a small city flat", "niche": "fashion",
            "one_line": "outfits that cost less than they look"}
@@ -58,7 +63,7 @@ def test_researched_cards_and_accepted_ones_outrank_illustrative(conn, policy):
     good = {**illus, "acceptance": {"tried": 10, "accepted": 10}}
     bad = {**illus, "acceptance": {"tried": 10, "accepted": 1}}
     assert patterns.weight(policy, good) > patterns.weight(policy, illus) > patterns.weight(policy, bad)
-    won = {**illus, "outcomes": {"n": 5, "median_ratio": 1.8}}
+    won = {**illus, "outcomes": {"n": 12, "median_ratio": 1.8}}   # min_outcomes 10
     assert patterns.weight(policy, won) > patterns.weight(policy, illus)
     # a researched card of the same fit leads the retrieval
     conn.execute("UPDATE pattern_cards SET status = 'draft', sources = %s, evidence = %s WHERE key = 'mirror_phone_cover'",
@@ -472,5 +477,5 @@ def test_a_cards_basis_comes_from_code_judgment_observed_correlation_validated(p
     assert b["kind"] == "correlation" and b["attribute"] == "lens=direct"
     assert "CORRELATION (not proof of cause)" in patterns.brief([{**strong, "key": "k", "medium": "photo"}])
     assert patterns.weight(policy, strong) > patterns.weight(policy, weak)
-    ours = {**strong, "outcomes": {"n": 5, "median_ratio": 1.4}}
+    ours = {**strong, "outcomes": {"n": 12, "median_ratio": 1.4}}   # min_outcomes 10
     assert patterns.basis(policy, ours)["kind"] == "validated"

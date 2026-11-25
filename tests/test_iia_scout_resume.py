@@ -19,8 +19,13 @@ from test_iia_direction import IG_POSTS, FakeApify, _agent, _ctx, _small
 @pytest.fixture()
 def policy(policy):
     # acquisition mechanics under test: sources approved (the shipped pauses: test_data_policy.py)
+    import dataclasses
     from conftest import approve_research_sources
-    return approve_research_sources(policy)
+    pol = approve_research_sources(policy)
+    intel = pol.body["intelligence"]
+    # the mechanics run on two creators; the shipped floor (min_creators 3) is tested in test_review_fixes.py
+    return dataclasses.replace(pol, body={**pol.body, "intelligence": {**intel, "distill": {**intel["distill"],
+                                                                                         "min_creators": 1}}})
 
 PROFILE = "apify~instagram-profile-scraper"
 POSTS = "apify~instagram-post-scraper"
