@@ -487,7 +487,7 @@ def open_test_work(conn, policy: Policy, batch: str) -> dict:
     or start a second one. {batch: open jobs}. Kinds that never rent a GPU (breadth.open_work_ignores_kinds: the
     brain's own jobs, the Fly finisher's) don't count: 2026-11-25 a research pilot held the voice bake-off an hour."""
     prefixes = policy.get("operations", "test_batch_prefixes", default=["bench-", "test-"]) or []
-    ignored = list(policy.get("breadth", "open_work_ignores_kinds", default=[]) or [])
+    ignored = list(_cfg(policy).get("open_work_ignores_kinds") or [])
     rows = conn.execute(
         "SELECT batch, count(*) AS n FROM jobs WHERE status IN ('queued', 'running') AND batch LIKE ANY(%s) "
         "AND batch <> %s AND batch NOT LIKE %s AND batch <> %s AND NOT (kind LIKE ANY(%s)) "
