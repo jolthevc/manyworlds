@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import signal
 import socket
 import tempfile
@@ -99,13 +100,30 @@ def is_worker_fault(exc: BaseException) -> bool:
         "OutOfMemoryError", "AcceleratorError")
 
 
+# An exception named inside a message: the tail of a subprocess's traceback ("InfiniteTalk exited 1: ...\nTypeError:
+# ...") or a ComfyUI node's error ("node x (Y): ImportError: ..."). Dotted names count by their last part.
+_QUOTED_EXC = re.compile(r"(?:^|[\s:(])(?:[A-Za-z_]\w*\.)*([A-Z]\w*(?:Error|Exception)): ", re.M)
+
+
+def _quoted_code_fault(message: str) -> bool:
+    """The last exception a wrapped program named is a code fault (it fails the same on any machine). The last one
+    decides: a program that hit a TypeError and then lost its connection failed for another reason."""
+    names = _QUOTED_EXC.findall(message)
+    if not names or names[-1] not in CODE_FAULT_TYPES:
+        return False
+    line = message[message.rfind(names[-1] + ": "):].split("\n", 1)[0]
+    return "'NoneType'" not in line
+
+
 def is_code_fault(exc: BaseException) -> bool:
     """A machine's fault wins (ComfyUI exiting at start because the card is broken is retried elsewhere), and an
-    attribute of None is a transient empty answer, not wrong code."""
+    attribute of None is a transient empty answer, not wrong code. A wrapped program's own traceback counts: its
+    last exception is read from the message (2026-11-22..24: InfiniteTalk and SVC TypeErrors ran three times each)."""
     text = f"{type(exc).__name__}: {exc}"
     if is_worker_fault(exc) or (type(exc).__name__ == "AttributeError" and "'NoneType'" in str(exc)):
         return False
-    return type(exc).__name__ in CODE_FAULT_TYPES or any(m.lower() in text.lower() for m in CODE_FAULT_MARKERS)
+    return (type(exc).__name__ in CODE_FAULT_TYPES or any(m.lower() in text.lower() for m in CODE_FAULT_MARKERS)
+            or _quoted_code_fault(str(exc)))
 
 
 def family_of(policy: Policy, kind: str) -> str:

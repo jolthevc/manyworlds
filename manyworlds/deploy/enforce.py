@@ -54,6 +54,39 @@ def boot_grace_minutes(policy: Policy, provider: str | None) -> float:
     return float(by.get(provider, cfg.get("boot_grace_minutes", 45)))
 
 
+def gone_reason(conn, policy: Policy, g: dict, now: datetime) -> str:
+    """Why a registered machine is missing from its provider's list, which we did not stop. Its worker destroys its
+    own machine when idle, past its deadline, or after machine faults in a row (moving its deadline to now); else the
+    provider took it or it crashed. Read from its attempts:
+      gone:retired           the last worker_max_consecutive_faults attempts were machine faults
+      gone:mid_job           an attempt was still open: reclaimed or crashed while working
+      gone:deadline          past its deadline
+      gone:before_first_job  never started an attempt (never came up, or taken before it did)
+      gone:idle              nothing started or finished for its idle window (less one tick): its worker idled out
+      gone                   none of these (vanished soon after a job)"""
+    rows = conn.execute("SELECT started_at, finished_at, outcome FROM attempts WHERE gpu_group = %s "
+                        "ORDER BY started_at DESC", (g["name"],)).fetchall()
+    n = int(policy.get("queue", "worker_max_consecutive_faults", default=3))
+    if len(rows) >= n and all(r["outcome"] == "worker_fault" for r in rows[:n]):
+        return "gone:retired"
+    if any(r["finished_at"] is None and r["outcome"] is None for r in rows):
+        return "gone:mid_job"
+    if now >= g["deadline"]:
+        return "gone:deadline"
+    if not rows:
+        return "gone:before_first_job"
+    idle_min = idle_stop_minutes(policy, g.get("provider"))
+    try:   # a pool whose worker exits sooner (the Fly finisher's idle_exit_seconds)
+        exit_s = policy.pool(g["pool"]).get("idle_exit_seconds")
+        if exit_s is not None:
+            idle_min = min(idle_min, float(exit_s) / 60)
+    except KeyError:
+        pass
+    tick_s = float(policy.get("autoscale", "tick_seconds", default=60))
+    last = max(max(r["started_at"], r["finished_at"]) for r in rows)
+    return "gone:idle" if (now - last).total_seconds() >= idle_min * 60 - tick_s else "gone"
+
+
 def billed_today(conn) -> float:
     """Machine spend today: metered and reconciled charges, plus the expected download cost of machines
     started today that are not reconciled yet (it is spent as soon as they boot)."""
@@ -91,10 +124,12 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
                          (now, usd, g["name"]))
         g["billed_usd"] = float(g["billed_usd"]) + usd
         if g["name"] not in live:
+            why = gone_reason(conn, policy, g, now)
             if not dry_run:
-                conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = 'gone' WHERE name = %s",
-                             (now, g["name"]))
-            actions.append({"group": g["name"], "action": "marked gone", "billed_usd": round(g["billed_usd"], 4)})
+                conn.execute("UPDATE gpu_groups SET stopped_at = %s, stop_reason = %s WHERE name = %s",
+                             (now, why, g["name"]))
+            actions.append({"group": g["name"], "action": "marked gone", "reason": why,
+                            "billed_usd": round(g["billed_usd"], 4)})
 
     spent_today = billed_today(conn) if not dry_run else None
     # No post producing and none due soon: nothing real can come, so an idle machine stops after the short
