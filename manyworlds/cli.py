@@ -1017,7 +1017,8 @@ def _research_pilot(args, conn, pol) -> int:
                 "storage": references_storage(pol)})
         return 0
     run = uuid_mod.uuid4().hex[:8]
-    job = queue.enqueue(conn, "brain.intelligence", payload, batch=f"test-iia-{run}")
+    # test work: while operations are paused, workers claim only jobs marked test (queue.claim only_test)
+    job = queue.enqueue(conn, "brain.intelligence", {**payload, "test": True}, batch=f"test-iia-{run}")
     _print({"queued": str(job), "batch": f"test-iia-{run}", "estimate": est, "storage": references_storage(pol)})
     return 0
 

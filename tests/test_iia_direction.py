@@ -434,3 +434,12 @@ def test_research_media_defaults_to_the_main_bucket_under_its_prefix(policy, mon
     off = dataclasses.replace(policy, body={**policy.body, "intelligence": {**policy.body["intelligence"],
                                                                             "storage": {"fallback": "none"}}})
     assert references.research_store(off) is None
+
+
+def test_a_queued_pilot_is_test_work_so_a_paused_brain_worker_takes_it(conn, policy, capsys, database_url, monkeypatch):
+    # 2026-11-25: the first pilot sat queued: while paused, workers claim only payload.test jobs.
+    from manyworlds import cli
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    assert cli.main(["research", "pilot", "--hypothesis", "aspirational yet relatable night-out", "--usd", "16"]) == 0
+    job = conn.execute("SELECT payload FROM jobs WHERE kind = 'brain.intelligence'").fetchone()
+    assert job["payload"]["test"] is True
