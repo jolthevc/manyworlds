@@ -89,25 +89,39 @@ def graph_spec(policy: Policy, take: dict) -> dict | None:
     return policy.get("comfy_graphs", take["graph"], default=None) if take.get("graph") else None
 
 
+def graph_unavailable(policy: Policy, graph: str, env=None) -> str | None:
+    """Why the named graph can't run from here: not in comfy_graphs, or a gated repo's token missing in this
+    environment (a worker gets this environment's). Shared with production's talk routes (production.talk)."""
+    import os
+    spec = graph_spec(policy, {"graph": graph})
+    if not spec:
+        return f"graph {graph} is not in comfy_graphs"
+    env = os.environ if env is None else env
+    missing = [k for k in spec.get("requires_env") or [] if not env.get(k)]
+    if missing:
+        return (f"graph {graph} downloads from a gated repo: {', '.join(missing)} is not set here, so "
+                f"no worker would get it")
+    return None
+
+
+def graph_fields(policy: Policy, graph: str) -> dict:
+    """What a comfy.graph job carries besides its inputs: the graph's name and its spec (a worker's baked policy may
+    predate the graph). Shared with production's talk routes (production.talk)."""
+    return {"graph": graph, "graph_spec": graph_spec(policy, {"graph": graph})}
+
+
 def skip_reason(policy: Policy, take: dict, creator, env=None) -> str | None:
     """Why this take can't run: its kinds, graph or profile missing, a gated graph's token missing here (a worker
     gets this environment's), or a creator without a designed voice when the take voices its own line."""
-    import os
-
     from . import voices
     kinds = policy.get("job_kinds", default={}) or {}
     for kind in (take["kind"], *([VOICE_KIND] if voiced_here(take) else [])):
         if kind not in kinds:
             return f"job kind {kind} is not in job_kinds"
     if take.get("graph"):
-        spec = graph_spec(policy, take)
-        if not spec:
-            return f"graph {take['graph']} is not in comfy_graphs"
-        env = os.environ if env is None else env
-        missing = [k for k in spec.get("requires_env") or [] if not env.get(k)]
-        if missing:
-            return (f"graph {take['graph']} downloads from a gated repo: {', '.join(missing)} is not set here, so "
-                    f"no worker would get it")
+        reason = graph_unavailable(policy, take["graph"], env)
+        if reason:
+            return reason
     profile = take.get("profile")
     if profile and profile not in (policy.get("generation", "talk_profiles", default={}) or {}):
         return f"talk profile {profile} is not in generation.talk_profiles"
@@ -353,7 +367,7 @@ def segment_job(conn, policy: Policy, *, run: str, item_id: str, take: dict, cre
         payload.pop("audio_uri")
         payload["params"] = {**params, "seconds": round(float(part["end_s"]) - float(part["start_s"]), 2)}
     if take.get("graph"):   # its spec travels with the job (a worker's baked policy may predate the graph)
-        payload.update(graph=take["graph"], graph_spec=graph_spec(policy, take))
+        payload.update(graph_fields(policy, take["graph"]))
     _with_crops(payload, policy)
     return queue.enqueue(conn, take["kind"], payload, batch=item_batch, pools=pools, creator_id=creator["id"],
                          idempotency_key=segment_key(run, item_id, k),
