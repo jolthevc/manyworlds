@@ -255,20 +255,37 @@ class Worker:
         if not self.group:
             return None
         now = now or datetime.now(timezone.utc)
-        g = (conn or self.conn).execute("SELECT deadline, stopped_at FROM gpu_groups WHERE name = %s",
-                              (self.group,)).fetchone()
+        g = (conn or self.conn).execute(
+            "SELECT deadline, stopped_at, keep_warm_until, draining_since FROM gpu_groups WHERE name = %s",
+            (self.group,)).fetchone()
         if g is None:
             return None
         if g["stopped_at"] is not None:
             return "stopped_by_autoscaler"
         if now >= g["deadline"]:
             return "deadline"
+        if g["draining_since"] is not None and not self._busy:
+            return "draining"   # the day's GPU budget is reached (enforce.drain) and this machine's last job is done
         from ..deploy.enforce import idle_stop_minutes
 
         idle_min = idle_stop_minutes(self.policy, self.pool_info.get("provider"))
-        if not self._busy and time.monotonic() - self._idle_since > idle_min * 60:
+        # A warm hold (autoscale.warm_holds: work for this machine's kinds is due soon) keeps it past its idle window.
+        held = g["keep_warm_until"] is not None and now < g["keep_warm_until"]
+        if not self._busy and not held and time.monotonic() - self._idle_since > idle_min * 60:
             return "idle"
         return None
+
+    def draining(self) -> bool:
+        """The day's GPU budget is reached (enforce.drain): claim nothing new; the machine stops after its job."""
+        if not self.group:
+            return False
+        try:
+            g = self.conn.execute("SELECT draining_since FROM gpu_groups WHERE name = %s", (self.group,)).fetchone()
+        except Exception as e:  # noqa: BLE001 - unknown: go on claiming; the enforcer still holds the ceiling
+            log.warning("could not read the drain flag: %s", e)
+            self._ensure_conn()
+            return False
+        return bool(g and g["draining_since"] is not None)
 
     def _retire_machine(self) -> None:
         """A machine whose GPU keeps faulting is broken: give it up rather than restart on it.
@@ -317,9 +334,10 @@ class Worker:
         while not self._stop.is_set() and (max_jobs is None or handled < max_jobs):
             prefer = [k for k in self.handlers if self.last_kind and
                       family_of(self.policy, k) == family_of(self.policy, self.last_kind)]
-            job = queue.claim(self.conn, list(self.handlers), self.worker_id, self.lease, self.pool,
-                              batches=operations.test_batch_patterns(self.policy), prefer=prefer,
-                              need_links=self.need_links)
+            # Draining (the day's GPU budget is reached): nothing new is claimed; the watchdog stops the machine.
+            job = None if self.draining() else queue.claim(
+                self.conn, list(self.handlers), self.worker_id, self.lease, self.pool,
+                batches=operations.test_batch_patterns(self.policy), prefer=prefer, need_links=self.need_links)
             if job is None:
                 if idle_exit_seconds is not None and time.monotonic() - idle_since > idle_exit_seconds:
                     break

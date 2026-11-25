@@ -60,6 +60,8 @@ class GpuRuns(_Strict):
     max_attempt_minutes_by_family: NumMap
     max_attempt_minutes_by_kind: NumMap
     daily_gpu_usd: Num
+    daily_drain_grace_minutes: Num | None = None
+    daily_drain_max_overshoot_usd: Num | None = None
     serverless_idle_exit_seconds: Num
 
 
@@ -113,6 +115,12 @@ class AutoscaleCapacity(_Strict):
     fallback_after_minutes: Num
 
 
+class AutoscaleWarmHold(_Strict):
+    enabled: bool
+    max_hold_minutes: NumMap
+    format_families: dict[str, list[str]]
+
+
 class Autoscale(_Strict):
     tick_seconds: Num
     tick_lease_seconds: Num
@@ -123,6 +131,7 @@ class Autoscale(_Strict):
     hard_pin_batches: list[str]
     warm_reuse: AutoscaleWarmReuse
     capacity: AutoscaleCapacity
+    warm_hold: AutoscaleWarmHold | None = None
     relaunch_cooldown_minutes: Num
     no_output_guard: NoOutputGuard
     runpod_cuda_versions: list[str]

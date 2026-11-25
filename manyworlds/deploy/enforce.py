@@ -6,7 +6,8 @@ Each tick, for every registered group that is still up:
   2. stop it if it is past its deadline, over its own spend cap, idle (no open jobs
      for its kinds) after its boot grace, stuck (jobs waiting but no sign of life from
      its worker for gpu_runs.stuck_minutes), or if all groups together are over the
-     day's GPU budget.
+     day's GPU budget (a machine with a job in flight drains first: `drain`). An idle machine
+     with a warm hold (gpu_groups.keep_warm_until, set by autoscale.warm_holds) is kept until it passes.
 Any provider group named mw-* that was never registered (so has no deadline) is
 stopped immediately. API or database failures exit non-zero so the run shows red.
 
@@ -100,6 +101,28 @@ def billed_today(conn) -> float:
     return float(row["u"]) + float(est["u"])
 
 
+def drain(conn, cfg: dict, g: dict, in_flight: list, spent_today: float, daily_cap: float, now: datetime,
+          dry_run: bool) -> str | None:
+    """The day's GPU budget is reached. A machine with no job in flight stops now; one with a job in flight drains
+    (gpu_groups.draining_since: its worker claims nothing new, its warm hold ends) and is stopped once that job ends,
+    or at the ceiling: gpu_runs.daily_drain_grace_minutes after draining began, or once today's spend passes the cap
+    by gpu_runs.daily_drain_max_overshoot_usd. Stopping it mid-job threw the attempt away (2026-11-22..24: three
+    machines, $3.72), so the cap stays a cap, overrun by at most the overshoot. The stop reason, or None while it
+    drains (g["draining_since"] then set)."""
+    grace = cfg.get("daily_drain_grace_minutes")
+    if grace is None or not in_flight:
+        return "daily_gpu_budget"
+    if g.get("draining_since") is None:
+        g["draining_since"] = now
+        if not dry_run:
+            conn.execute("UPDATE gpu_groups SET draining_since = %s, keep_warm_until = NULL WHERE name = %s",
+                         (now, g["name"]))
+    overshoot = float(cfg.get("daily_drain_max_overshoot_usd", 0))
+    if (now - g["draining_since"]).total_seconds() >= float(grace) * 60 or spent_today >= daily_cap + overshoot:
+        return "daily_gpu_budget"
+    return None
+
+
 def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dry_run: bool = False) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     cfg = policy.get("gpu_runs", default={})
@@ -144,6 +167,11 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
     else:
         has_demand = True
 
+    if spent_today is not None and spent_today < daily_cap and not dry_run:   # a new UTC day: draining ends
+        conn.execute("UPDATE gpu_groups SET draining_since = NULL WHERE stopped_at IS NULL AND draining_since IS NOT NULL")
+        for g in groups:
+            g["draining_since"] = None
+
     for g in groups:
         if g["name"] not in live:
             continue
@@ -165,16 +193,19 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
         # backstop runs main's) must not cut a new family's long first job short.
         family_limit = (float(g["max_attempt_minutes"]) if g.get("max_attempt_minutes") is not None
                         else float(by_family.get(g.get("family"), by_family.get("default", 20))))
+        in_flight = conn.execute("SELECT a.started_at, j.kind FROM attempts a JOIN jobs j ON j.id = a.job_id "
+                                 "WHERE a.gpu_group = %s AND a.finished_at IS NULL AND a.outcome IS NULL",
+                                 (g["name"],)).fetchall()
         overdue = any(
             (now - a["started_at"]).total_seconds() > float(by_kind.get(a["kind"], family_limit)) * 60
-            for a in conn.execute("SELECT a.started_at, j.kind FROM attempts a JOIN jobs j ON j.id = a.job_id "
-                                  "WHERE a.gpu_group = %s AND a.finished_at IS NULL AND a.outcome IS NULL",
-                                  (g["name"],)).fetchall())
+            for a in in_flight)
         booting = (not started_work and
                    (now - g["started_at"]).total_seconds() <= boot_grace_minutes(policy, g["provider"]) * 60)
         idle_min = idle_stop_minutes(policy, g["provider"])
         if not has_demand:
             idle_min = min(idle_min, float(no_demand_min))
+        # Work for its loaded kinds is due soon (autoscale.warm_holds): idle, but kept until the hold has passed.
+        held = g.get("keep_warm_until") is not None and now < g["keep_warm_until"]
         reason = None
         if now >= g["deadline"]:
             reason = "deadline"
@@ -182,8 +213,12 @@ def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dr
         elif g["billed_usd"] + float(g.get("est_extra_usd") or 0) >= float(g["max_usd"]):
             reason = "max_usd"
         elif spent_today is not None and spent_today >= daily_cap:
-            reason = "daily_gpu_budget"
-        elif not booting and (now - last_busy).total_seconds() > idle_min * 60:
+            reason = drain(conn, cfg, g, in_flight, spent_today, daily_cap, now, dry_run)
+            if reason is None:
+                actions.append({"group": g["name"], "action": "draining", "reason": "daily_gpu_budget",
+                                "since": g["draining_since"].isoformat(), "billed_usd": round(g["billed_usd"], 4)})
+                continue
+        elif not booting and not held and (now - last_busy).total_seconds() > idle_min * 60:
             reason = "idle"
         elif busy and not booting and not started_work:
             # Past boot grace without a single job started while work waits: the container never

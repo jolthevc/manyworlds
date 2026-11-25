@@ -1,8 +1,11 @@
 """Autoscaler: GPU machines follow the job queue, with no one starting or stopping them.
 
 Each tick:
+  0. warm holds: a running machine for which work is due soon is kept past its idle window
+     (gpu_groups.keep_warm_until, `warm_holds`);
   1. enforce: meter billed time, stop machines past their deadline, over their spend
-     cap, idle, over the day's GPU budget, or unregistered (manyworlds.deploy.enforce);
+     cap, idle, over the day's GPU budget (draining a job in flight first), or unregistered
+     (manyworlds.deploy.enforce);
   2. scale up: for each job kind with waiting jobs and no machine serving it, start one
      in the first pool (policy job_kinds.<kind>.pools, or the job's own pinned pools)
      whose provider is configured and has capacity. Every machine is registered with a
@@ -275,6 +278,8 @@ def launch_one(conn, policy: Policy, providers: dict[str, Provider], kind: str, 
                       min_cuda=float(img["min_cuda"]) if img.get("min_cuda") else None,
                       cloud=str(p.get("cloud", "COMMUNITY")), download_gb=float(img.get("download_gb", 0)),
                       network_volume=p.get("network_volume") or None)
+    if spec.network_volume and not spec.network_volume.get("id"):
+        raise ProviderError(f"pool {pool}'s network volume is not created (no id in the policy)")
     if spec.network_volume:   # weights cached on the volume: downloaded once, not by every machine
         spec.env.update(MW_MODEL_DIR=f"{spec.network_volume['path']}/mw", HF_HOME=f"{spec.network_volume['path']}/hf")
         spec.env.update(volume_env(spec.network_volume))
@@ -318,10 +323,9 @@ def volume_low(conn, policy: Policy, pool: str, now: datetime) -> dict | None:
     network_volume.recheck_hours: a machine there would die at its first download, so the pool is skipped. After the
     window one machine may try again (its boot prunes and measures anew)."""
     vol = policy.get("gpu_pools", pool, "network_volume") or {}
-    if not vol or vol.get("min_free_gb") is None:
+    if not vol or not vol.get("id") or vol.get("min_free_gb") is None:
         return None
-    sharing = [name for name, p in (policy.get("gpu_pools", default={}) or {}).items()
-               if (p.get("network_volume") or {}).get("id") == vol.get("id")]
+    sharing = _sharing(policy, vol)
     last = conn.execute(
         """SELECT name, volume_free_gb, volume_low, volume_checked_at FROM gpu_groups
            WHERE pool = ANY(%s) AND volume_checked_at > %s ORDER BY volume_checked_at DESC LIMIT 1""",
@@ -560,6 +564,8 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             actions.append({"action": "no_pool", "kind": kind, "reason": "every pool is paused",
                             "scores": _brief(scores)})
             continue
+        fams = sorted({mfam, *(merge_groups(mpol).get(mfam, {}).get("families") or [])})
+        order = volume_order(conn, policy, order, fams)
         tried = []
         for pool in order:
             info = policy.get("gpu_pools", pool)
@@ -571,6 +577,10 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             if low:   # its machines would die at their first download: the next pool (the plain one) instead
                 tried.append({"pool": pool, "error": f"volume_low: {low['free_gb']} GB free < {low['min_free_gb']}"})
                 _report_volume_low(conn, pool, low, now)
+                continue
+            skip = volume_skip(conn, policy, pool, fams)
+            if skip:   # a volume not created yet, or too full for this family's weights: the next pool instead
+                tried.append({"pool": pool, "error": skip})
                 continue
             try:
                 launched = (launch_one(conn, mpol, providers, kind, pool, now, family=merged) if merged
@@ -635,6 +645,7 @@ def route_to_warm(conn, policy: Policy, w: dict, now: datetime) -> dict | None:
     for g in conn.execute(
             """SELECT name, pool, billed_usd, est_extra_usd, max_usd FROM gpu_groups
                WHERE stopped_at IS NULL AND %s = ANY(job_kinds) AND NOT (pool = ANY(%s::text[])) AND deadline > %s
+                 AND draining_since IS NULL
                ORDER BY started_at""", (w["kind"], list(w["pools"]), now + need)).fetchall():
         if policy.get("gpu_pools", g["pool"], "gpu") not in gpus:
             continue   # another card: the pin may be about memory or speed
@@ -665,7 +676,8 @@ def capacity_fallback(conn, policy: Policy, w: dict, tried: list[dict], now: dat
     if pins and waited >= float(cfg.get("fallback_after_minutes", 30)) and not _hard_pinned(policy, w):
         gpus = _gpus(policy, pins)
         extra = [p for p in (policy.get("job_kinds", w["kind"], "pools", default=[]) or [])
-                 if p not in pins and policy.get("gpu_pools", p, "gpu") in gpus]
+                 if p not in pins and policy.get("gpu_pools", p, "gpu") in gpus
+                 and not (_volume(policy, p) and not _volume(policy, p).get("id"))]   # not a volume not yet created
         if extra:
             n = _widen(conn, policy, w, extra)
             if n:
@@ -677,6 +689,146 @@ def capacity_fallback(conn, policy: Policy, w: dict, tried: list[dict], now: dat
                                           for t in tried],
                                 "fallback": out[0]["added"] if out else None},
                        dedupe_key=f"no_capacity:{w['kind']}:{','.join(pins)}:{now:%Y-%m-%d}")
+    return out
+
+
+# --- Warm hold (2026-11-25 audit, item e) -----------------------------------------------------------------------------
+# A worker destroys its machine after its idle window whatever comes next; 6 boots in 72 h came within 15 min after a
+# same-pool, same-image machine stopped. Each tick the autoscaler sets gpu_groups.keep_warm_until on every running
+# machine for which work is due soon; its worker's idle self-stop and the enforcer's idle stop wait until it passes.
+
+def _hold_minutes(policy: Policy, families: set[str]) -> float:
+    by = policy.get("autoscale", "warm_hold", "max_hold_minutes", default={}) or {}
+    vals = [float(by[f]) for f in families if f in by]
+    return max(vals) if vals else float(by.get("default", 0))
+
+
+def warm_demand(conn, policy: Policy, g: dict, now: datetime, hold_minutes: float) -> str | None:
+    """Why work this machine could serve is due soon, or None:
+      queued_jobs  a queued job of its kinds it may claim (its pool or unpinned; while paused, a test batch);
+      producing    a post in production whose format needs one of its families (autoscale.warm_hold.format_families):
+                   its next stage may come to this machine; while operations are paused, test (breadth) posts only;
+      planned      live only, a machine serving the scene kind: a planned post starts (scheduled_for less
+                   production.lead_hours) within the hold, or within production.pull_forward's horizon while it is on."""
+    from .. import operations
+    kinds = list(g["job_kinds"])
+    pats = operations.test_batch_patterns(policy)
+    if conn.execute(
+            "SELECT 1 FROM jobs WHERE status = 'queued' AND kind = ANY(%s) AND (pools IS NULL OR %s::text = ANY(pools)) "
+            "AND (%s::text[] IS NULL OR batch LIKE ANY(%s::text[])) LIMIT 1",
+            (kinds, g["pool"], pats, pats)).fetchone():
+        return "queued_jobs"
+    live = pats is None
+    fams = {_family(policy, k) for k in kinds}
+    need = policy.get("autoscale", "warm_hold", "format_families", default={}) or {}
+    formats = [f for f, fs in need.items() if fams & {str(x) for x in (fs or [])}]
+    if formats and conn.execute(
+            "SELECT 1 FROM posts WHERE status = 'producing' AND format = ANY(%s) AND (%s OR body ? 'breadth_run') LIMIT 1",
+            (formats, live)).fetchone():
+        return "producing"
+    prod = policy.get("production", default={}) or {}
+    if live and str(prod.get("image_kind", "image.zimage")) in kinds:
+        reach = now + timedelta(hours=float(prod.get("lead_hours", 48)), minutes=hold_minutes)
+        pf = prod.get("pull_forward") or {}
+        if pf.get("enabled"):
+            reach = max(reach, now + timedelta(hours=float(pf.get("horizon_hours", 0))))
+        if conn.execute("SELECT 1 FROM posts WHERE status = 'planned' AND coalesce(scheduled_for, now()) <= %s "
+                        "AND NOT body ? 'breadth_run' LIMIT 1", (reach,)).fetchone():
+            return "planned"
+    return None
+
+
+def warm_holds(conn, policy: Policy, now: datetime) -> list[dict]:
+    """Set keep_warm_until on every running machine: while work it could serve is due soon (warm_demand), its last job's
+    end plus autoscale.warm_hold.max_hold_minutes for its families, never past its deadline nor past the time its
+    spend cap runs out at its hourly price. NULL (no hold) when there is no such work, before its first job (boot grace
+    covers that), while it drains, with holds off, or when today's GPU budget is reached. Returns the holds that began."""
+    enabled = bool(policy.get("autoscale", "warm_hold", "enabled", default=False))
+    blocked = not enabled or over_budget(conn, policy) is not None
+    actions: list[dict] = []
+    for g in conn.execute(
+            """SELECT g.*, (SELECT max(greatest(a.started_at, a.finished_at)) FROM attempts a
+                            WHERE a.gpu_group = g.name) AS last_job,
+                      EXISTS (SELECT 1 FROM attempts a WHERE a.gpu_group = g.name AND a.finished_at IS NULL
+                              AND a.outcome IS NULL) AS in_flight
+               FROM gpu_groups g WHERE g.stopped_at IS NULL""").fetchall():
+        until, why = None, None
+        hold = 0.0 if blocked else _hold_minutes(policy, {_family(policy, k) for k in g["job_kinds"]})
+        if hold > 0 and g["draining_since"] is None and g["last_job"] is not None:
+            why = warm_demand(conn, policy, g, now, hold)
+        if why:
+            last = now if g["in_flight"] else g["last_job"]
+            until = min(last + timedelta(minutes=hold), g["deadline"])
+            left = float(g["max_usd"]) - float(g["billed_usd"] or 0) - float(g["est_extra_usd"] or 0)
+            if float(g["usd_per_hour"] or 0) > 0:
+                until = min(until, now + timedelta(hours=max(left, 0) / float(g["usd_per_hour"])))
+            if until <= now:
+                until = None
+        if until != g["keep_warm_until"]:
+            conn.execute("UPDATE gpu_groups SET keep_warm_until = %s WHERE name = %s", (until, g["name"]))
+            if until is not None and g["keep_warm_until"] is None:
+                actions.append({"action": "warm_hold", "group": g["name"], "until": until.isoformat(), "why": why})
+    return actions
+
+
+# --- Weights volumes (2026-11-25 audit, item d) -----------------------------------------------------------------------
+
+def _volume(policy: Policy, pool: str) -> dict:
+    return policy.get("gpu_pools", pool, "network_volume", default=None) or {}
+
+
+def _sharing(policy: Policy, vol: dict) -> list[str]:
+    return [name for name, p in (policy.get("gpu_pools", default={}) or {}).items()
+            if vol.get("id") and (p.get("network_volume") or {}).get("id") == vol["id"]]
+
+
+def volume_state(conn, policy: Policy, pool: str, families: list[str]) -> dict:
+    """The pool's volume as last measured by a worker (free_gb: None before any reading) and whether one of these
+    families has finished a job on it (its weights are then cached there)."""
+    pools = _sharing(policy, _volume(policy, pool))
+    last = conn.execute("SELECT volume_free_gb FROM gpu_groups WHERE pool = ANY(%s) AND volume_checked_at IS NOT NULL "
+                        "ORDER BY volume_checked_at DESC LIMIT 1", (pools,)).fetchone()
+    cached = conn.execute(
+        "SELECT 1 FROM gpu_groups g WHERE g.pool = ANY(%s) AND g.family = ANY(%s) AND EXISTS "
+        "(SELECT 1 FROM attempts a WHERE a.gpu_group = g.name AND a.outcome = 'done') LIMIT 1",
+        (pools, families)).fetchone() is not None
+    return {"free_gb": float(last["volume_free_gb"]) if last and last["volume_free_gb"] is not None else None,
+            "cached": cached}
+
+
+def volume_skip(conn, policy: Policy, pool: str, families: list[str]) -> str | None:
+    """Why a weights-volume pool should not get this family's machine, or None: the volume is only a policy entry (no
+    id: creating one is the owner's), or its latest reading leaves less than min_free_gb plus the family's weights
+    (network_volume.headroom_gb_by_family) and the family has never finished a job there (its weights are not on it)."""
+    vol = _volume(policy, pool)
+    if not vol:
+        return None
+    if not vol.get("id"):
+        return "volume_not_created"
+    by = vol.get("headroom_gb_by_family") or {}
+    headroom = max([float(by[f]) for f in families if f in by] or [0.0])
+    if not headroom:
+        return None
+    st = volume_state(conn, policy, pool, families)
+    need = float(vol.get("min_free_gb") or 0) + headroom
+    if st["free_gb"] is not None and not st["cached"] and st["free_gb"] < need:
+        return f"volume_headroom: {st['free_gb']} GB free < {need} GB for {','.join(families)}"
+    return None
+
+
+def volume_order(conn, policy: Policy, order: list[str], families: list[str]) -> list[str]:
+    """Volume pools keep their places in the order but swap among themselves: a volume already holding the family's
+    weights first, then the one with the most free space measured, unmeasured last."""
+    slots = [i for i, p in enumerate(order) if _volume(policy, p).get("id")]
+    if len(slots) < 2:
+        return order
+    def key(p):
+        st = volume_state(conn, policy, p, families)
+        return (not st["cached"], st["free_gb"] is None, -(st["free_gb"] or 0))
+    ranked = sorted((order[i] for i in slots), key=key)
+    out = list(order)
+    for i, p in zip(slots, ranked):
+        out[i] = p
     return out
 
 
@@ -753,6 +905,7 @@ def tick(conn, policy: Policy, providers: dict[str, Provider], *, now: datetime 
         actions = [{"action": "provider_error", "provider": k, "error": v} for k, v in api.errors.items()]
         if not dry_run:
             update_prices(conn, api.prices)
+            actions += warm_holds(conn, policy, now)   # before enforcing: an idle machine with work due soon is kept
         actions += enforce.tick(conn, policy, api, now=now, dry_run=dry_run)
         if not dry_run and presign.enabled(policy):   # before launching: a machine claims only jobs with links
             actions += refresh_links(conn, policy, store)
