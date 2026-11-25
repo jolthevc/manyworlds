@@ -93,9 +93,10 @@ class PostRead(BaseModel):
 
 
 class ReadBatch(BaseModel):
-    # The annotation's ordinary schema compiles to a grammar too large for structured outputs (HTTP 400, 2026-11-25:
-    # the resume run failed on its first call); the strict shape (llm.strict_json_schema) is sent instead.
-    strict_required: ClassVar[bool] = True
+    # The annotation's schema compiles to a grammar too large for structured outputs, in its own shape and in the strict
+    # one (HTTP 400, 2026-11-25: the resume run failed on its first call): it rides in the prompt and the answer is
+    # validated (llm.json_prompt; "" falls back to defaults, research.annotation.BaseModel).
+    json_in_prompt: ClassVar[bool] = True
     reads: list[PostRead] = Field(default_factory=list)
 
 

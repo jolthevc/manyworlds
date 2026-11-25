@@ -218,7 +218,21 @@ def _json_text(text: str) -> str:
     if t.startswith("```"):
         t = t.split("\n", 1)[1] if "\n" in t else ""
         t = t.rsplit("```", 1)[0]
-    return t.strip()
+    t = t.strip()
+    if t and not t.startswith(("{", "[")) and "{" in t:   # prose around the object (no grammar holds it)
+        t = t[t.index("{"):t.rindex("}") + 1]
+    return t
+
+
+def json_prompt(content, schema) -> list | str:
+    """The user content with the answer's JSON schema appended (schemas with `json_in_prompt`: too large for any
+    output grammar). Keeps image blocks; adds one text block."""
+    import json as _json
+    ask = ("\n\nAnswer with one JSON object only, no prose and no code fence, that validates against this JSON "
+           f"schema (omit a field to leave it at its default):\n{_json.dumps(strict_json_schema(schema))}")
+    if isinstance(content, str):
+        return content + ask
+    return [*content, {"type": "text", "text": ask}]
 
 
 class LLM:
@@ -367,6 +381,22 @@ class LLM:
         fallback = {}
         if model in (self.policy.get("llm", "server_fallback_models", default=[]) or []):
             fallback = {"extra_headers": {"anthropic-beta": FALLBACK_BETA}, "extra_body": {"fallbacks": "default"}}
+        if getattr(schema, "json_in_prompt", False):
+            # A schema too large even in the strict shape (manyworlds.brain.agents.intelligence.ReadBatch, 2026-11-25):
+            # no grammar; the schema goes in the prompt, the answer is validated here, one retry on an invalid one.
+            last = None
+            for _ in range(2):
+                response = self.client.messages.create(
+                    model=model, max_tokens=int(self.policy.get("llm", "max_output_tokens", default=16000)),
+                    system=system, messages=[{"role": "user", "content": json_prompt(content, schema)}],
+                    output_config={"effort": effort}, **fallback)
+                self._charge(response.model, response.usage, creator_id, agent)
+                self._raise_if_refused(model, response)
+                try:
+                    return schema.model_validate_json(_json_text(_first_text(response)))
+                except ValidationError as e:
+                    last = e
+            raise RuntimeError(f"{model} returned no valid {schema.__name__}: {str(last)[:300]}")
         if getattr(schema, "strict_required", False):
             # A schema too large for messages.parse (manyworlds.direction.DirectedShots): the strict shape, sent as
             # a JSON-schema output format, validated here.
@@ -405,6 +435,10 @@ class LLM:
         """A Claude call's Messages parameters for the Message Batches API: the same model, prompt (cached system
         block included), effort and output schema as `_claude` sends (messages.parse's own schema transform), less
         the server-side refusal fallback, which a batch request can't carry."""
+        if getattr(schema, "json_in_prompt", False):   # no output format: the schema rides in the prompt
+            return {"model": model, "max_tokens": int(self.policy.get("llm", "max_output_tokens", default=16000)),
+                    "system": self._system(system), "messages": [{"role": "user", "content": json_prompt(content, schema)}],
+                    "output_config": {"effort": effort}}
         if getattr(schema, "strict_required", False):
             fmt = {"type": "json_schema", "schema": strict_json_schema(schema)}
         else:

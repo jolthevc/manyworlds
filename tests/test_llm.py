@@ -278,3 +278,28 @@ def test_a_long_system_prompt_is_sent_as_a_cached_block(conn, policy):
     long_call, short_call = client.calls[-2], client.calls[-1]
     assert long_call["system"] == [{"type": "text", "text": "x" * floor, "cache_control": {"type": "ephemeral"}}]
     assert short_call["system"] == "short"
+
+
+class BigVerdict(Verdict):
+    """A schema too large for any output grammar (2026-11-25: research reads): no format, schema in the prompt."""
+    json_in_prompt = True
+
+
+def test_a_schema_in_the_prompt_is_validated_and_retried_once(conn, policy):
+    usage = type("U", (), {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0,
+                           "cache_creation_input_tokens": 0})
+    answers = iter(['not json', 'Here: {"score": 6, "passed": true, "label": "warm"} done'])
+    calls = []
+
+    class Client:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                calls.append(kw)
+                block = type("B", (), {"type": "text", "text": next(answers)})
+                return type("R", (), {"model": kw["model"], "usage": usage, "stop_reason": "end_turn",
+                                      "content": [block]})
+    llm = LLM(conn, policy, client=Client())
+    out = llm.structured("judge", system="s", content="rate it", schema=BigVerdict)
+    assert out.label == "warm" and len(calls) == 2
+    assert "format" not in calls[0]["output_config"] and '"label"' in calls[0]["messages"][0]["content"]

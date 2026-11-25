@@ -374,7 +374,7 @@ def test_an_annotation_read_back_from_the_strict_shape_validates():
     # field, with "" for unset enums and strings, which must fall back to the defaults
     from manyworlds.brain.agents.intelligence import ReadBatch
     from manyworlds.llm import strict_json_schema
-    assert ReadBatch.strict_required and strict_json_schema(ReadBatch)["properties"]["reads"]
+    assert ReadBatch.json_in_prompt and strict_json_schema(ReadBatch)["properties"]["reads"]
     got = ReadBatch.model_validate({"reads": [{"post": 1, "annotation": {
         "observed": {"visual": {"situation": "", "gaze": "", "framing": "close-up", "face_share": 0.4},
                      "performance": {"format": "", "movement": ""}, "craft": {"hook": "", "sound": ""},
