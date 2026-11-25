@@ -230,13 +230,15 @@ def purge(conn, policy: Policy, store, *, now: datetime | None = None) -> dict:
                          (Jsonb(drop_media(p)), p["id"]))
             out["read_media_purged"] = out.get("read_media_purged", 0) + 1
     if r.get("caption_days") is not None:
-        out["captions_cleared"] = len(conn.execute(
+        cleared = len(conn.execute(
             """UPDATE reference_posts p SET caption = NULL WHERE p.caption IS NOT NULL AND p.fetched_at < %(t)s
                AND (EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %(s)s)
                     OR p.fetched_at < %(hard)s)
                RETURNING p.id""",
             {"t": now - timedelta(days=float(r["caption_days"])), "s": ANNOTATION_SCHEMA,
              "hard": now - timedelta(days=float(r.get("caption_max_days", r["caption_days"])))}).fetchall())
+        if cleared:
+            out["captions_cleared"] = cleared
 
     cutoff = now - timedelta(days=float(cfg.get("records_days", 730)))
     stale = conn.execute(

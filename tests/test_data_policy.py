@@ -61,11 +61,11 @@ def _post(conn, *, media=None, annotated_hours_ago=None, fetched_days_ago=0.0, c
     pid = pulls.upsert_post(conn, None, cid, "tiktok", {"external_id": f"p{datetime.now().timestamp()}",
                                                          "media_type": "photo", "caption": caption})
     conn.execute("UPDATE reference_posts SET media = %s, media_purge_after = now() + interval '10 days', "
-                 "fetched_at = now() - make_interval(days => %s) WHERE id = %s",
+                 "fetched_at = now() - %s * interval '1 day' WHERE id = %s",
                  (Jsonb(media or []), fetched_days_ago, pid))
     if annotated_hours_ago is not None:
         conn.execute("INSERT INTO reference_annotations (post_id, schema, updated_at) VALUES "
-                     "(%s, 'iia_v1', now() - make_interval(hours => %s))", (pid, annotated_hours_ago))
+                     "(%s, 'iia_v1', now() - %s * interval '1 hour')", (pid, annotated_hours_ago))
     return cid, pid
 
 
@@ -84,7 +84,7 @@ def test_read_media_and_old_captions_are_purged_and_what_was_learned_stays(conn,
     _, read = _post(conn, media=[{"uri": uri, "kind": "image"}], annotated_hours_ago=48, fetched_days_ago=45)
     _, unread = _post(conn, media=[{"uri": uri, "kind": "image"}], fetched_days_ago=1)
     out = references.purge(conn, policy, store)
-    rows = {r["id"]: r for r in conn.execute("SELECT id, media, caption, caption_features FROM reference_posts")}
+    rows = {str(r["id"]): r for r in conn.execute("SELECT id, media, caption, caption_features FROM reference_posts")}
     assert rows[read]["media"] == [] and rows[read]["caption"] is None and rows[read]["caption_features"]["words"]
     assert rows[unread]["media"] and rows[unread]["caption"]           # not read yet: kept, within its 14 days
     assert out["read_media_purged"] == 1 and out["captions_cleared"] == 1
