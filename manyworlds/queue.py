@@ -41,7 +41,10 @@ def enqueue(
     post_id=None,
 ):
     """Add a job. With an idempotency key, re-enqueueing returns the existing job's id.
-    `pools` pins the job to those GPU pools (e.g. benchmarking one provider)."""
+    `pools` pins the job to those GPU pools (e.g. benchmarking one provider).
+    Research media never travels in a production job (manyworlds.research.references.check_job)."""
+    from .research.references import check_job
+    check_job(kind, payload)
     row = conn.execute(
         """
         INSERT INTO jobs (kind, payload, priority, max_attempts, idempotency_key,

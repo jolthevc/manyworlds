@@ -158,6 +158,10 @@ def build_parser() -> argparse.ArgumentParser:
     mu.add_argument("--genre", help="analyse: one genre")
     mu.add_argument("--record", action="store_true", help="analyse: record the findings (domain music)")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
+    rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, patterns")
+    rs.add_argument("action", choices=["forget", "purge", "patterns"])
+    rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
+    rs.add_argument("--seed", action="store_true", help="patterns: also add the seed file's cards to pattern_cards")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
     rv.add_argument("--batch")
@@ -410,6 +414,8 @@ def main(argv: list[str] | None = None) -> int:
         return _test(args, conn, pol)
     elif args.cmd == "voice":
         return _voice(args, conn, pol)
+    elif args.cmd == "research":
+        return _research(args, conn, pol)
     elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce", "trends"):
         return _brain(args, conn, pol)
     return 0
@@ -900,6 +906,26 @@ def _brain(args, conn, pol) -> int:
                 "llm_usd": llm.spent})
     elif args.cmd == "train-lora":
         _print({"job": lab.enqueue_lora_training(conn, pol, _creator_id(conn, args.creator))})
+    return 0
+
+
+def _research(args, conn, pol) -> int:
+    """mw research forget|purge|patterns (manyworlds.research.references, manyworlds.brain.patterns)."""
+    from .brain import patterns
+    from .research import references
+    if args.action == "forget":
+        if not args.who:
+            print("usage: mw research forget <handle | profile url | post url>")
+            return 2
+        _print(references.forget(conn, references.research_store(), args.who))
+    elif args.action == "purge":
+        _print(references.purge(conn, pol, references.research_store()))
+    else:
+        out = patterns.validate(pol)
+        if args.seed and not out["problems"]:
+            out["seeded"] = patterns.seed(conn, pol)
+        _print({"cards": sorted(patterns.library(pol)["cards"]), **out})
+        return 1 if out["problems"] else 0
     return 0
 
 

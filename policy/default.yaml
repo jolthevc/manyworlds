@@ -140,6 +140,7 @@ job_kinds:
   # A song's measurements (manyworlds.songs, music.measure.mode queue): librosa on the finisher's 4 GB, not the producer's
   # 512 MB (2026-11-24: a 2-minute 48 kHz stereo song was OOM-killed there).
   finish.measure_song: {pools: [fly_finisher], outputs_per_job: 0}
+  finish.measure_video: {pools: [fly_finisher], outputs_per_job: 0}   # research references only (manyworlds.research.video_measure)
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   # min_vram_gb (any kind): a worker whose card has less total memory doesn't serve the kind (worker.runner
   # kinds_that_fit); a card that can serve none destroys its own machine at start.
@@ -892,6 +893,34 @@ trends:
     - {name: night routine, queries: [night routine, 4am routine, cozy night in], platforms: [tiktok, instagram]}
     - {name: talking to camera, queries: [storytime, honest rant, things nobody tells you], platforms: [tiktok, instagram]}
     - {name: ai creators, queries: [ai influencer, ai generated character], platforms: [tiktok, instagram]}
+
+# Influencer intelligence (docs/superpowers/specs/2026-11-25-influencer-intelligence.md): learn from and emulate
+# successful public creators, named references allowed. Research references (tables reference_*, the research store
+# RESEARCH_STORAGE_URL, key prefix research-refs/) are kept apart from production inputs (manyworlds.research.references
+# refuses them in any production job). Off until the owner turns it on; the pilot needs the owner's go for each paid
+# stage. Nothing here runs while operations are paused except retention.
+intelligence:
+  enabled: false
+  purpose: >-
+    Learn which creative and social patterns make public creators worth following, to direct original AI creators.
+    Not contacting, impersonating or copying anyone. Logged-out public data within law and provider terms; deletion
+    on request (mw research forget).
+  # Per-table retention (owner D1 recommendation): research media (videos, images, frames) media_days after it was
+  # fetched; a creator unseen for records_days whom no open hypothesis, audition or active card cites is deleted with
+  # its posts and annotations. housekeeping runs it every tick (deploy/autoscale.housekeeping).
+  retention: {media_days: 180, records_days: 730, max_deletes_per_run: 2000}
+  # finish.measure_video (manyworlds.research.video_measure), from the 2026-11-24 calibration: scene scores above
+  # scene_floor on a scale_width copy; hard cuts above hard_cut, soft (punch-ins) above soft_cut, at least min_gap_s
+  # apart; shots under short_shot_s count as short; words in the first hook_window_s; `frames` stills in a grid.
+  measure: {scene_floor: 0.08, hard_cut: 0.30, soft_cut: 0.15, min_gap_s: 0.25, short_shot_s: 1.0, hook_window_s: 2.0,
+            scale_width: 192, frames: 8, frame_size: [180, 320], grid_cols: 4, timeout_s: 600}
+  # The creative pattern library's seed file (policy/patterns; manyworlds.brain.patterns).
+  patterns: {file: patterns-v0.yaml}
+  # Cheap checks of a candidate against the real creators its brief names (manyworlds.brain.impersonation). Flags are
+  # warnings to the talent manager; an obvious impersonation blocks: a name or handle at least name_block similar,
+  # or a face at least face_block similar (the face-identity embedding, when one is computed; no new model). A
+  # generated image within near_duplicate_bits (64-bit difference hash) of a cited post is a near-duplicate warning.
+  checks: {name_warn: 0.75, name_block: 0.92, face_warn: 0.75, face_block: 0.9, near_duplicate_bits: 6}
 
 creator_lab:
   # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
@@ -2712,6 +2741,12 @@ llm:
     music_melody: claude-haiku-5-5
     music_mix_master: claude-haiku-5-5
     music_curator: claude-haiku-5-5
+    # Influencer intelligence (brain/agents/intelligence.py, not built yet): annotation at volume on Haiku, batched;
+    # judgement (curation, hypothesis challenge, synthesis, audition decisions) on Opus; pattern drafting on Sonnet.
+    iia_annotate: claude-haiku-5-5
+    iia_distill: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
+    iia_curate: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
+    iia_synthesize: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]

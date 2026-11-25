@@ -716,6 +716,14 @@ def housekeeping(conn, policy: Policy | None = None, store=None, now: datetime |
             out += [{"action": "purged_public_copies", **r}] if r["posts"] or r["failed"] else []
         except Exception as e:  # noqa: BLE001 - as above: retried next tick
             out.append({"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]})
+        # Research references (manyworlds.research.references): media past intelligence.retention.media_days and
+        # creators nothing cites past records_days, whatever the master switch says.
+        from ..research import references
+        try:
+            r = references.purge(conn, policy, references.research_store(), now=now)
+            out += [{"action": "purged_research_references", **r}] if any(r.values()) else []
+        except Exception as e:  # noqa: BLE001 - as above: retried next tick
+            out.append({"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]})
     return out
 
 
