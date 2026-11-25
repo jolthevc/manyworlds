@@ -130,7 +130,8 @@ def test_the_new_kinds_run_on_their_own_worker_family(policy):
     """Never on an image older than their handlers: talkcomfy v20 would crash on a kind it has no handler for."""
     for kind in ("voice.speak.indextts", "voice.speak.qwen3", "voice.cast"):
         assert policy.family(kind) == "tts"
-    assert policy.get("worker_images", "tts", "tag") != policy.get("worker_images", "voice", "tag")
+    # talkcomfy v23 is the first image with these handlers (built 2026-11-25 from the merged release)
+    assert int(str(policy.get("worker_images", "tts", "tag")).lstrip("v")) >= 23
 
 
 def test_every_engine_records_its_licence(policy):
