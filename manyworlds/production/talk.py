@@ -114,6 +114,14 @@ def route_order(policy: Policy, body: dict) -> list[str]:
     return names or ([next(iter(routes))] if routes else [""])
 
 
+def take_repair_limit(policy: Policy, body: dict) -> int:
+    """A talking take's repairs: review.video.max_repairs_per_post on each route it may use (route_order). Each route
+    escalates its own repairs and hands the take on when they run out (talk_repair); a cap of one route's repairs for
+    the whole take dropped maren-final-3 (2026-11-25) after LTX's, before InfiniteTalk was ever tried."""
+    per = int(policy.get("review", "video", "max_repairs_per_post", default=2))
+    return (per + 1) * len(route_order(policy, body)) - 1
+
+
 def route_unavailable(policy: Policy, name: str, *, fmt: str, seconds: float, voiced: bool, moving: bool,
                       env=None) -> str | None:
     """Why this route can't make the take: kind or graph missing, a gated graph's token not set here, the post's
@@ -589,7 +597,7 @@ def _advance_long_talk(conn, policy: Policy, post: dict, body: dict, chosen: lis
     last frame of the one before. Once all are chosen they are joined into the post's video."""
     chain = _talk_long_cfg(policy).get("join", "cut") == "chain"
     jobs = body.setdefault("talk_segment_jobs", [[] for _ in body["talk_segments"]])
-    repairs = int(policy.get("review", "video", "max_repairs_per_post", default=2))
+    repairs = take_repair_limit(policy, body)
     failures = int(_cfg(policy).get("max_job_failures_per_post", 6))
     results: list[tuple[str, Any]] = []
     modes = body.get("talk_modes") or ["talk"] * len(body["talk_segments"])

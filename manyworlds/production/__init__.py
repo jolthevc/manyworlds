@@ -123,7 +123,8 @@ from .takes import (  # noqa: F401
 from .talk import (  # noqa: F401
     JOIN_KIND, JOIN_SECTIONS, _advance_long_talk, _cutaway_job, _existing_join, _join_job, _join_key, _join_state,
     RepairOptions, _cause, _cutaway_photo, _job_route, _other_photos, _repair_cfg, _routes, _talk_job, _take_history,
-    _with_lip_sync, route_kind, route_order, route_params, route_repair_cfg, route_unavailable, take_seconds,
+    _with_lip_sync, route_kind, route_order, route_params, route_repair_cfg, route_unavailable, take_repair_limit,
+    take_seconds,
     talk_routes,
     advance_join, join_plan, join_talk, join_timeout, join_transitions, record_join, render_join, talk_repair,
 )

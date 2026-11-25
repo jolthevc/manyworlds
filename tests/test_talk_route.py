@@ -180,3 +180,11 @@ def test_the_maren_final_dry_run_prices_ltx_takes(conn, raw_policy, monkeypatch)
     assert any(j["kind"] == "image.narrated" for j in jobs)        # the cutaways
     assert 0 < dry["estimated_usd"] < 4
     assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 0
+
+
+def test_each_route_gets_its_own_repairs_under_the_takes_cap(policy):
+    # 2026-11-25 maren-final-3: three LTX takes per on-camera line failed lip sync, then the take's step dropped the
+    # post at max_repairs_per_post (2) before InfiniteTalk was ever tried. The step's cap now covers every route.
+    per = policy.get("review", "video", "max_repairs_per_post")
+    assert production.take_repair_limit(policy, {"talk_route": ROUTE}) == (per + 1) * 2 - 1
+    assert production.take_repair_limit(policy, {"talk_route": "infinitetalk"}) == per

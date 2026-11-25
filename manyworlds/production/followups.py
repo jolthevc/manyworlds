@@ -11,7 +11,7 @@ from .common import SPOKEN, SUNG, _cfg, unmarked
 from .finish import captions_burned
 from .motion import _advance_motion, _clip_job, _needs_motion
 from .steps import Step, _clip_state, _edit_state, advance_step
-from .talk import _talk_job
+from .talk import _talk_job, take_repair_limit
 from .voice import _advance_voice, _designed_voice, _with_audio, voice_lines
 
 
@@ -47,7 +47,8 @@ def _follow_up(conn, policy: Policy, post: dict, body: dict, chosen: list[dict],
         voiced["motion"] = motion
     return Step(body.setdefault(key, []), lambda j: state(conn, j),
                 lambda attempt: make(conn, policy, post, body, chosen, attempt, **voiced),
-                ("clip_repairs", int(policy.get("review", "video", "max_repairs_per_post", default=2))),
+                ("clip_repairs", take_repair_limit(policy, body) if make is _talk_job
+                 else int(policy.get("review", "video", "max_repairs_per_post", default=2))),
                 ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6))), thing)
 
 
