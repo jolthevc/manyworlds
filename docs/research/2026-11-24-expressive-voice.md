@@ -164,3 +164,82 @@ accepts the cap), Higgs v3, Fish S2, Voxtral, F5 (non-commercial); CosyVoice3 un
 - **Winner rule:** among engines passing 1-4, the best median of (naturalness + delivery). It replaces the
   baseline only if it wins on at least 5 of 7 lines and passes the licence check. Otherwise the bank stays and the
   bank's keywords and `max_distance` are tuned from the scores (they are guesses today).
+
+## 6. Engine upgrade, automatic casting and judging (2026-11-25)
+
+Owner direction (2026-11-25): stay fully autonomous, with no auditioning and no human selection gates. Upgrade the default TTS to the best commercially usable, economical self-hosted model, starting with IndexTTS2.5. Cast automatically, judge automatically, regenerate what fails, and optimise quality per accepted minute. On the current voice: "really stiff and bad, doesn't even sound female".
+
+### Licences (checked 2026-11-25 from the LICENSE files, HF model cards and the HF API; none of the repos is gated)
+
+| Model | Code | Weights | Key clause | Verdict |
+|---|---|---|---|---|
+| **IndexTTS-2.5** (exists: tag v2.5.0, 2026-08-10; HF `IndexTeam/IndexTTS-2.5`) | bilibili Model Use License | same | §2.2: a separate licence above "100 million monthly active users … or … annual revenue … exceeded RMB 1 billion". §3.4c: "You may not Use the bilibili indextts2 or any Derivative Work to improve any AI model, except … non-commercial AI models." Outputs count as Derivative Works (§1.5). §3.4b: keep the notices. PRC law, Shanghai arbitration | **Conditional: chosen.** Our outputs must never train or improve another model (no SVC or RVC training on them, no distillation) |
+| IndexTTS-2 | bilibili | bilibili, but it loads `amphion/MaskGCT` `semantic_codec/model.safetensors` (`license: cc-by-nc-4.0`; `infer_v2.py` lines 139-140) | – | **Blocked** |
+| ↳ IndexTTS-2.5 sub-models | | w2v-BERT 2.0 MIT; CAMPPlus Apache-2.0; BigVGAN v2 MIT; its own `codec.pth` (bilibili). The Qwen emotion model is bilibili-licensed and only loaded with `use_qwen_emo`, which we do not use | the repo's downloader also fetches MaskGCT's NC codec when `hf_cache` is empty | Clear when `worker/tts_server.py` pre-fetches `hf_cache`, so the NC file never lands. Unverified: whether `codec.pth` was initialised from MaskGCT weights |
+| Step-Audio-EditX | Apache-2.0 | **no licence stated** (HF and ModelScope) | "The code … is licensed under the Apache 2.0 License" (code only) | Not cleared |
+| Chatterbox Turbo / Multilingual | MIT | MIT | "retired research" (2026-08), archived | Clear, but unmaintained; Turbo ignores `exaggeration` |
+| CosyVoice 3 (Fun-CosyVoice3-0.5B-2512) | Apache-2.0 | Apache-2.0 | `license: apache-2.0` | Clear |
+| **Qwen3-TTS** (12Hz 0.6B/1.7B Base, VoiceDesign, CustomVoice) | Apache-2.0 | Apache-2.0 | `license: apache-2.0` | **Clear: the alternative, and the casting designer.** Base takes no instruction |
+| Higgs Audio v2 | Apache-2.0 | Boson community licence | must request a licence above "100,000 annual active users"; "Built with Higgs" notice; Llama 3 AUP | Excluded (risky) |
+| VoxCPM2 (baseline) | Apache-2.0 | Apache-2.0 | "free for commercial use" | Clear |
+| UTMOS22 strong (SpeechMOS v1.2.0) | MIT | MIT | weights "derived from official sarulab-speech/UTMOS22 … under MIT" | **Clear: the naturalness judge** |
+| UTMOSv2 / Distill-MOS | MIT | MIT | – | Clear (offline calibration) |
+| DNSMOS | MIT | CC-BY-4.0 (repo content) | attribution | Conditional; not used |
+| torchaudio SQUIM_SUBJECTIVE | BSD-2 | CC-BY-NC-4.0 | "Non Commercial" | Blocked |
+| alefiury wav2vec2-xlsr-53 gender (LibriSpeech) | – | Apache-2.0 | `license: apache-2.0` | **Clear: the gender judge** |
+| empiriolabsai/speaker-age | Apache-2.0 | Apache-2.0 | "may be used commercially" | Clear, but new and unproven: **soft weight only** |
+| audeering wav2vec2 age-gender; Vox-Profile wavlm age-sex | – | CC-BY-NC-SA-4.0; "No commercial use" | – | Blocked |
+| Whisper large-v3; SpeechBrain ECAPA | MIT / Apache-2.0 | Apache-2.0 | – | Clear |
+
+Training-data provenance is a caveat, not a licence term: the MOS judges are trained on BVCC (Blizzard samples may not be redistributed), and ECAPA on VoxCeleb (YouTube audio). We only use their scores and never redistribute their data.
+
+### What was built (branch `feat/voice-engine-upgrade`; nothing run on a GPU)
+
+- **Engines** (`worker/handlers/tts_engines.py`, worker family `tts`):
+  - Kinds: `voice.speak.indextts` and `voice.speak.qwen3`. They keep voice.speak's payload and output contract. Planning, takes, trimming and joining are tts_voxcpm's; only `generate` differs per engine.
+  - IndexTTS-2.5 takes timbre from her reference clip and delivery from its 8-value emotion vector (policy `voice.engines.indextts.emotions`). The vector is chosen per line from the delivery's keywords, so no delivery word ever reaches the text.
+  - Each engine runs in its own venv as a JSON-lines server (`worker/tts_server.py`).
+- **Casting** (`voice.cast`, `creator/voice_lab.cast`/`pick_cast`/`settle_casts`):
+  - Qwen3-TTS VoiceDesign designs N references from the bible (age, gender, voice notes). Each reference speaks a fixed casting script (neutral, warm, excited, quiet, question) in the engine, and every line is measured on the worker.
+  - The producer stores the best qualifying candidate with no one in between.
+  - A launch casts as its own step (`voice`). `mw voice cast <handle>` re-casts; `mw voice cast-status` shows the scores.
+- **Judging** (`manyworlds/voice_eval.py`, measured by `worker/handlers/voice_judge.py` inside the voice job):
+  - **Fit:** gender is a hard gate; age is soft.
+  - **Naturalness:** UTMOS22.
+  - **Expressiveness:** F0 std and range, loudness movement, and across lines the spread of median pitch and the speaking-rate variation.
+  - **Clarity:** WER.
+  - **Consistency:** ECAPA distance to her reference.
+  - **Pacing:** words per second inside her archetype's band (`voice.judge.pace_wps`, from the 3.7-4.3 w/s calibration).
+  - **Other creators:** distance from them is only a floor (`voice.min_distance`). The old pick rewarded oddness.
+- **Per-line production check** (`voice.line_check`):
+  - Every voice line, on every engine VoxCPM2 included, is measured.
+  - A flat, robotic, unclear, off-pace or inconsistent line is regenerated with a new seed and the next emotion strength, up to `repairs` times. The best take is kept.
+  - Scores go into `lines[].judge` and `quality` (`mw voice quality <handle>`: quality per accepted minute).
+
+### The bake-off (plan `breadth.plans.voicebake`; cap $2; the owner's go for the run)
+
+- **Engines:** VoxCPM2, IndexTTS-2.5 and Qwen3-TTS.
+- **Voices:** Maren's bible, and one other archetype (a calm male educator, 34).
+- **Per cast:** two candidates, the same Qwen3-designed references for every engine (same description and seed), the casting script plus the seven §5 lines, "Two am. I take it back." among them. 6 casts on one `tts` machine.
+- **Note on the baseline:** VoxCPM2 runs without its delivery bank here. The bank is made after a voice is cast, and casting judges the engine's raw delivery.
+- **Winner rule:** highest mean composite ÷ (GPU $ per accepted minute)^0.25, licence cleared, no gender miss, pass share ≥ 0.7. The incumbent stays unless the winner beats it by 0.03. The driver records the result as decision `voice_engine`, which flips `voice.engine_gate`. Until then new casts use VoxCPM2.
+- **Estimate** (`mw test breadth --plan voicebake --dry-run`, run locally on 2026-11-25): **$0.52**. That is six casts of ~110 s of audio each (2 candidates × (anchor + 12 lines) at 3.8 words/s), at the policy rates of 1.0-1.5 GPU s per audio second (estimates: the authors give RTF 0.21 for IndexTTS-2.5 bf16 on a 4090, plus Whisper and the judges): 110-164 s per cast, $0.03-0.05 each, plus $0.01 of review allowance per item. One `tts` machine on runpod_secure_l40s (~$1.09/h), whose 12 min boot costs $0.22. The first-job weights (~25 GB at ~100 MB/s, ~4 min, ~$0.08) come on top: **about $0.60 all in**, under the $2 cap.
+
+### Risks for the first GPU run
+
+- The talkcomfy v21 image is not built yet.
+  - The two venvs are untested: the IndexTTS pins (numpy 2.2.6, WeTextProcessing/pynini) on top of the image, and qwen-tts installed with `--no-deps`.
+  - The smoke check (`check_tts`) is the first test.
+- IndexTTS-2.5:
+  - The `lang="en"` value and the emotion vectors are untested. The vectors are first guesses.
+  - High emotion strength lowers speaker similarity, which the consistency score should catch.
+- The judges are uncalibrated:
+  - The UTMOS floor (3.0), the flatness floor (1.2 semitones) and the pacing band are estimates.
+  - The age model is one day old.
+  - The gender model's labels may be `LABEL_0`/`LABEL_1`; a policy mapping covers this, and the worker refuses unnamed labels.
+- Qwen3 VoiceDesign must actually produce the bible's gender. The gender gate rejects it if not, and casting retries with new seeds.
+- The UTMOS checkpoint is fetched at build time from GitHub. The first job downloads ~25 GB of HF weights onto the container disk.
+- Licence obligations of IndexTTS-2.5:
+  - Never feed its outputs to `music.train_voice` or any training.
+  - Keep its LICENSE in the image (the repo copy).
+  - Whether published clips need §4.1a's notice is a question for counsel.
