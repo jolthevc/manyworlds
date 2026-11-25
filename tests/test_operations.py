@@ -48,3 +48,14 @@ def test_paused_producer_does_nothing(conn, policy, monkeypatch):
     monkeypatch.setattr(production, "advance", lambda *a, **k: called.append("advance") or {})
     out = cli.produce_tick(conn, _paused(policy))
     assert out == {"operations": "paused"} and called == []
+
+
+def test_paused_producer_still_stores_finished_casts(conn, policy, monkeypatch):
+    # 2026-11-25: Maren's recast finished but sat unjudged while paused, so she kept her old voice.
+    from manyworlds import cli, production
+    from manyworlds.creator import voice_lab
+    called = []
+    monkeypatch.setattr(production, "advance", lambda *a, **k: called.append("advance") or {})
+    monkeypatch.setattr(voice_lab, "settle_casts", lambda conn, pol: {"judged": 1, "picked": 1})
+    out = cli.produce_tick(conn, _paused(policy))
+    assert out == {"operations": "paused", "casts": {"judged": 1, "picked": 1}} and called == []

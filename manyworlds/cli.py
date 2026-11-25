@@ -852,7 +852,14 @@ def produce_tick(conn, pol, llm=None) -> dict:
     from .worker import models
 
     if not operations.is_live(pol):
-        return {"operations": "paused"}
+        # A finished cast (a sandbox recast, a test) is still judged and stored while paused: no model call, and a
+        # creator must not keep her old voice because operations are paused (2026-11-25: Maren's recast sat unjudged).
+        from .creator import voice_lab
+        try:
+            casts = voice_lab.settle_casts(conn, pol)
+        except Exception as e:  # noqa: BLE001 - reported, retried next tick
+            casts = {"error": f"{type(e).__name__}: {e}"[:300]}
+        return {"operations": "paused", **({"casts": casts} if casts and any(casts.values()) else {})}
     if pol.get("brain", "showrunner", "enabled", default=False):
         # The showrunner plans (brain worker); here: ask for batches, schedule evaluated ones, events, launches.
         steps = brain_steps(conn, pol, llm)
