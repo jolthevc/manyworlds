@@ -178,7 +178,7 @@ def test_the_maren_final_dry_run_prices_infinitetalk_takes(conn, raw_policy, mon
     assert not dry["skipped"], dry["skipped"]
     jobs = dry["items"][0]["estimate"]["jobs"]
     talk = [j for j in jobs if j.get("route")]
-    assert talk and all(j["kind"] == "talk.infinitetalk" and j["pool"] == "runpod_secure_l40s" for j in talk)
+    assert talk and all(j["kind"] == "talk.infinitetalk" and j["pool"] == "runpod_secure_l40s_vol" for j in talk)
     assert any(j["kind"] == "image.narrated" for j in jobs)        # the cutaways
     assert 0 < dry["estimated_usd"] < 4
     assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 0
