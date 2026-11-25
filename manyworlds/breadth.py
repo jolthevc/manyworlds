@@ -190,6 +190,11 @@ def skip_reason(policy: Policy, item: Item, creator) -> str | None:
                     ShotSheet.model_validate(shot)
                 except Exception as e:  # noqa: BLE001 - a bad shot sheet skips its item, not the run
                     return f"shot {i} is not a valid shot sheet: {str(e)[:200]}"
+        want = item.body.get("talk_route")
+        routes = policy.get("generation", "talk_routes", default={}) or {}
+        unknown = [str(n) for n in ([want] if isinstance(want, str) else want or []) if str(n) not in routes]
+        if unknown:
+            return f"talk route {', '.join(unknown)} is not in generation.talk_routes"
     elif item.take:
         from . import long_take
         reason = long_take.skip_reason(policy, item.take, creator)
@@ -280,16 +285,37 @@ def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = Fa
             if mode == "narrated":
                 out.append({"kind": "image.narrated", "n": 1, "output_seconds": seconds})
             else:
-                out.append({"kind": prod.get("talk_kind", "talk.infinitetalk"), "n": 1, "output_seconds": seconds})
                 shot = shots[i] if i < len(shots) else None
                 borrowed = production.dance_reference(policy, shot) if production.talk_v2v(policy) else None
-                if borrowed or (production.moves(policy, shot) and production.talk_v2v(policy)):
+                moving = bool(borrowed or (production.moves(policy, shot) and production.talk_v2v(policy)))
+                out.append(talk_estimate(policy, item.format, body, seconds, voiced=designed, moving=moving))
+                if moving:
                     # a shot with a motion reference moves with it (Wan-Animate-2), else a story-clip motion clip
                     out.append({"kind": "comfy.wan_animate2" if borrowed else motion,
                                 "n": len(production.motion_lengths(policy, seconds)), "output_seconds": None})
             if designed and not shared_done:
                 out.append({"kind": speak, "n": 1, "output_seconds": None})
     return out
+
+
+def talk_estimate(policy: Policy, fmt: str, body: dict, seconds: float, *, voiced: bool, moving: bool) -> dict:
+    """A talking take's render job on its first try: the first talk route that can make it (production.talk_routes),
+    priced at its own rate (<kind>:<graph>) and pinned to its pools, with what its machine downloads first."""
+    from . import production
+    order = production.route_order(policy, body)
+    name = next((n for n in order if production.route_unavailable(
+        policy, n, fmt=fmt, seconds=seconds, voiced=voiced, moving=moving) is None), order[-1])
+    route = production._routes(policy).get(name) or {}
+    kind = production.route_kind(policy, route)
+    job: dict = {"kind": kind, "n": 1, "output_seconds": seconds, "route": name}
+    if route.get("graph"):
+        spec = policy.get("comfy_graphs", route["graph"], default={}) or {}
+        job["rate"] = f"{kind}:{route['graph']}"
+        if spec.get("download_gb"):
+            job.update(weights=spec.get("weights_set") or route["graph"], download_gb=float(spec["download_gb"]))
+    if route.get("pools"):
+        job["pools"] = list(route["pools"])
+    return job
 
 
 def estimate(conn, policy: Policy, plan: dict, item: Item, creator, *, shared_done: bool = False) -> dict:

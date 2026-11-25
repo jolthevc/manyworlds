@@ -148,8 +148,9 @@ job_kinds:
   # Dance (handlers/dance_animate.py, policy `dance`, OFF: the handler refuses): Wan-Animate-2 14B int8 on the same ComfyUI
   # image, its own family so story-clip machines never load it. 48 GB+ cards until benchmarked; only `mw bench` queues it.
   comfy.wan_animate2: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1, family: dance}
-  # Any named ComfyUI workflow (worker/handlers/comfy_graph.py, policy comfy_graphs; benchmarks only: breadth plan
-  # candidates pins each graph to its own pools). min_vram_gb is the smallest graph floor; each graph has its own.
+  # Any named ComfyUI workflow (worker/handlers/comfy_graph.py, policy comfy_graphs; breadth plan
+  # candidates and the talk route ltx25 pin each graph to its own pools). min_vram_gb is the smallest graph floor;
+  # each graph has its own.
   comfy.graph:     {min_vram_gb: 20, pools: [runpod_secure_l40s, vast_4090, runpod_comm_4090, vast_5090], outputs_per_job: 1}
   # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
   voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
@@ -636,6 +637,40 @@ generation:
                 height: 832, max_seconds: 120, frames_per_segment: 93, cond_frames: 13, fps: 25, mix_steps: 4,
                 mix_alpha: 1.0, lora_path: loraB/lora.safetensors, ref_img_index: 10, mask_frame_range: 0,
                 compile: false, weights_on_volume: false, min_free_disk_gb: 10, timeout_s: 9000}
+  # Which model renders a lip-synced talking take (production.talk.talk_routes). Owner 2026-11-25: InfiniteTalk with
+  # cuts is the baseline; another route replaces it only once it measurably improves quality, reliability or cost
+  # per accepted output (mw machines / the throughput report: accepted video seconds per dollar). A take renders with
+  # the first route of talk_route (or the post's own body.talk_route) that can make it, and stays on it; a route
+  # whose repairs run out (review.video.talk_repair, with the route's own `repair` over it) hands the take to the
+  # next one in the order. A route can't make a take whose job kind or graph is missing, whose gated weights' token
+  # is not set here, that has no designed voice line when it needs one, that is a walk-and-talk take (a motion clip
+  # to lip-sync) when it has no V2V, or that is longer than its max_seconds.
+  #   kind: the job kind (none: production.talk_kind with generation.talk and the shot's talk profile);
+  #   graph: a comfy_graphs entry (kind comfy.graph): the job's params are the graph's, plus the route's `params`;
+  #   pools: where its jobs may run (a graph's min_vram_gb is above job_kinds.comfy.graph's floor);
+  #   formats: the post formats it serves (none: all).
+  talk_route: [infinitetalk]
+  talk_routes:
+    infinitetalk: {}
+    # LTX-2.5 audio-to-video (comfy_graphs.ltx25_a2v): photo + our voice line, the line kept unchanged (mux_audio).
+    # Breadth run cand-1125 (L40S): 3 of 4 takes passed lip sync (0.46-0.66), identity 6-7, 36-72 s per 2-4 s take
+    # (13-22 s of GPU per output second, against InfiniteTalk's ~50), peak VRAM ~44 GB, natural gestures. Not the
+    # default until a full post shows it beats InfiniteTalk (breadth plan maren_final). max_seconds 6: measured on
+    # 2-4 s takes only, ~44 of 48 GB at 4 s; a longer take goes to the next route. No V2V (a walk-and-talk take goes
+    # to InfiniteTalk). Repairs: the graph's sidecar maps no guidance input in talkcomfy v24 (its LTXVDualCFGGuider
+    # runs the distilled model at cfg 1), so lip sync escalates seed -> cutaway -> the next route; identity and
+    # realism keep seed -> next_photo.
+    ltx25:
+      kind: comfy.graph
+      graph: ltx25_a2v
+      pools: [runpod_secure_l40s]
+      formats: [talking_video]
+      needs_voice_line: true
+      v2v: false
+      max_seconds: 6
+      repair:
+        gates: {lip_sync: {tolerance: 0.15, steps: [seed, cutaway]}}
+        audio_guidance: {}
   # Story clips on the ComfyUI worker (comfy.wan_i2v): Kijai's Wan 2.2 I2V A14B example (6 steps, 3 on the high-noise
   # expert with cfg 2 on its first step, 3 on the low-noise one; lightx2v LoRA 3 / 1; dpm++_sde; shift 8), 81 frames at
   # 16 fps (5 s), 9:16 at 480p (the photo fitted as for talk, fit_stretch_tolerance). Cards under swap_below_gb swap
@@ -2875,7 +2910,8 @@ dance:
 #     before the graph reads it (LTX encodes audio as long as the video).
 #   params: defaults (a job's params override them). fps and frame_multiple / frame_offset set the clip's frames
 #     (LTX: 8k + 1); vram_sample_s: how often peak VRAM is sampled while it renders; timeout_s: one render.
-# Benchmarks only (breadth plan `candidates`): nothing in production queues comfy.graph. None run on a GPU yet.
+# Benchmarked by breadth plan `candidates` (cand-1125: ltx25_a2v on an L40S). Production queues comfy.graph only through a
+# talk route (generation.talk_routes.ltx25), which no post uses unless its body.talk_route or generation.talk_route names it.
 comfy_graphs:
   # EchoMimicV3-Flash (antgroup, Apache-2.0; chinese-wav2vec2-base MIT; Wan2.1-Fun 1.3B base Apache-2.0) through
   # smthemex/ComfyUI_EchoMimic (Apache-2.0, pinned in docker/worker-talkcomfy.Dockerfile). 1.3B: expect weaker

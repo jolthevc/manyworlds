@@ -66,13 +66,14 @@ breadth:
     # Candidates (plan candidates), unmeasured guesses until the first run replaces them:
     #   echomimic_v3_flash on a 4090: 12. Its node's PR #171 made a 512x512 8-step clip in ~121 s end to end on a
     #     12 GB 4070 SUPER (length not stated); a 4090 is ~2x that card, our 576x1024 is ~2.25x the pixels.
-    #   ltx25_* on an L40S: 8. 22B distilled int8, 8 + 3 steps over two scales; no measured L40S timing found.
+    #   ltx25_a2v on an L40S: 22, measured (run cand-1125: 36-72 s per 2-4 s take, 13-22 s per output second; the
+    #     worst kept so a cold first render is covered). ltx25_i2v_av: 8, a guess (not measured).
     #   longcat_fast (LongCat 1.0 in the wrapper, 6 steps) on a 5090: 20. longcat-avatar-fast's table: the stock 1.6
     #     demo is ~36 s per output second on a 5090 at 8 steps; 6 steps and fp8 fast matmul take some of that off.
     #   voice.cast:<engine> (seconds of GPU per second of audio a cast speaks): generation (RTF ~0.2-0.5, the
     #     authors) plus Whisper, UTMOS, pitch tracking and ~1 repair in 3; estimates until the bake-off measures them.
     seconds_per_output_second: {talk.infinitetalk: 50, talk.longcat: 50, comfy.graph:echomimic_v3_flash: 12,
-                                comfy.graph:ltx25_a2v: 8, comfy.graph:ltx25_i2v_av: 8,
+                                comfy.graph:ltx25_a2v: 22, comfy.graph:ltx25_i2v_av: 8,
                                 talk.infinitetalk:longcat_fast: 20,
                                 voice.cast:indextts: 1.2, voice.cast:qwen3: 1.0, voice.cast:voxcpm: 1.5}
     boot_seconds: {default: 600, talkcomfy: 900, tts: 720}   # boot + image pull + model load per machine (talk weights first)
@@ -111,6 +112,8 @@ breadth:
     longcat16: {requires: [generation.talk_profiles.longcat16], kinds: [talk.longcat]}
     longcat_fast: {requires: [generation.talk_profiles.longcat_fast]}
     comfy_graph: {kinds: [comfy.graph]}   # any named ComfyUI workflow (policy comfy_graphs)
+    ltx25_talk: {requires: [generation.talk_routes.ltx25, comfy_graphs.ltx25_a2v], kinds: [comfy.graph]}   # talk route
+    shared_set: {requires: [sets.shared_set.enabled]}
     hd720: {requires: [generation.talk_profiles.hd720]}
     dancing: {requires: [dance.enabled], kinds: [comfy.wan_animate2]}
     # The route comparison (plan perf_compare): the story_time edit grammar, and talking shots that perform a licensed
@@ -653,3 +656,30 @@ breadth:
         - id: longcat_fast_lifestyle
           exercises: [talking, longcat_fast]
           take: {<<: *cand_longcat, prompt: *lifestyle_prompt, script: *lifestyle_line}
+    # The finished Maren video (owner 2026-11-25): one fully edited story-time talking video (~35-40 s: perf_compare's
+    # nine lines, the tea guy at the pub at closing time) made the way production would make it, with LTX-2.5
+    # (generation.talk_routes.ltx25) rendering the on-camera takes and InfiniteTalk taking any take LTX can't make or
+    # whose repairs run out (body.talk_route). story_time grammar (punch-ins between words, cutaways under the same
+    # voice), shared set (one pub for every shot of set pub_bar), the creator's designed voice in whatever engine the
+    # voice gate resolves to (no voice_engine option), full finish: captions, hook text, grade, room tone. Its own
+    # photos and voice lines (shared_key maren-final), nothing reused from perf_compare. Everything on L40S cards.
+    # Run: mw test breadth --plan maren_final --dry-run, then (owner's go) mw test breadth --plan maren_final;
+    # cost per accepted output: mw machines (the throughput report, accepted video seconds) and mw test breadth-report.
+    maren_final:
+      max_usd: 4                    # NOT owner-approved yet
+      creator: maren.afterhours
+      pools:
+        talk: [runpod_secure_l40s]
+        comfy: [runpod_secure_l40s]
+        voice: [runpod_secure_l40s]
+        tts: [runpod_secure_l40s]
+        dance: [runpod_secure_l40s]
+        edit: [runpod_secure_l40s]
+        image: [runpod_secure_l40s]
+      items:
+        - id: maren_final_tea_guy
+          exercises: [talking, ltx25_talk, story_time, cutaway_broll, designed_voice, shared_set, captions, hooks,
+                      room_tone]
+          format: talking_video
+          caption: "the tea guy"
+          body: {<<: *perf_body, shared_key: maren-final, talk_route: [ltx25, infinitetalk]}

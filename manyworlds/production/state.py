@@ -102,6 +102,7 @@ BRIEF: dict[str, str] = {
     "template": "the shot-sheet archetype the caption style is looked up by",
     "breadth_run": "marks a breadth-test post, advanced only by its own driver",
     "shared_key": "posts with the same key share scene photos, voice lines and seeds (a route comparison)",
+    "talk_route": "the talk routes this post's takes try, in order (generation.talk_routes; else generation.talk_route)",
 }
 
 STATE_KEYS = frozenset(STATE)

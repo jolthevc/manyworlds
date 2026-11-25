@@ -435,6 +435,19 @@ class TalkEdit(_Strict):
     grammars: dict[str, TalkGrammar]
 
 
+class TalkRoute(_Strict):
+    """One way of rendering a talking take (production.talk.talk_routes)."""
+    kind: str | None = None              # none: production.talk_kind
+    graph: str | None = None             # a comfy_graphs entry (kind comfy.graph)
+    params: Free = {}
+    pools: list[str] | None = None
+    formats: list[str] | None = None
+    needs_voice_line: bool = False
+    v2v: bool = True
+    max_seconds: Num | None = None
+    repair: Free = {}                    # over review.video.talk_repair (gates per gate, audio_guidance whole)
+
+
 class Generation(_Strict):
     image: Free
     clip_edit: ClipEdit
@@ -448,6 +461,8 @@ class Generation(_Strict):
     talk_hybrid: TalkHybrid
     talk_motion: TalkMotion
     talk_edit: TalkEdit
+    talk_route: list[str] = []
+    talk_routes: dict[str, TalkRoute] = {}
     borrowed_motion: bool = False
 
 
