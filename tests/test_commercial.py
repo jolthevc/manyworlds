@@ -11,7 +11,7 @@ from manyworlds.creator import dossier
 
 def test_every_strategy_prompt_carries_the_value_chain_and_economics(raw_policy):
     text = dossier.strategy_text(raw_policy)
-    for words in ("owned products", "distribution platform", "marginal return", "photo-led",
+    for words in ("consumer brands", "distribution platform", "marginal return", "photo-led",
                   "Repeating a commercially proven archetype", "never in every image"):
         assert words in text
 
