@@ -323,3 +323,14 @@ def test_a_scout_copies_videos_only_for_selected_posts_and_enrolls_its_creators(
     assert 0 < len(copied) < len(videos) and all(r["selected"] for r in copied)
     assert all(any(m["kind"] == "image" for m in r["media"]) for r in rows)      # every post's images, for the read
     assert conn.execute("SELECT count(*) n FROM reference_creators WHERE next_check_at IS NULL").fetchone()["n"] == 0
+
+
+def test_scrapecreators_tiktok_items_keep_their_video_and_cover_links():
+    # 2026-11-25 benchmark: 113 TikTok posts came back with 0% video and image links: the field paths index url_list
+    item = {"aweme_id": "1", "desc": "a day #vlog", "create_time": 1764000000, "author": {"unique_id": "reba"},
+            "statistics": {"play_count": 10, "digg_count": 2},
+            "video": {"duration": 15000, "play_addr": {"url_list": ["https://v.example/1.mp4"]},
+                      "cover": {"url_list": ["https://p.example/1.heic"]}}}
+    p = providers.sc_tt_post(item)
+    assert p["video_url"] == "https://v.example/1.mp4" and p["images"] == ["https://p.example/1.heic"]
+    assert p["metrics"]["duration_s"] == 15

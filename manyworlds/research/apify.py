@@ -27,7 +27,10 @@ def _first(d: dict, *keys, default=None):
     for k in keys:
         cur: Any = d
         for part in k.split("."):
-            cur = cur.get(part) if isinstance(cur, dict) else None
+            if isinstance(cur, list) and part.isdigit():   # "url_list.0": a list index (2026-11-25: TikTok media urls)
+                cur = cur[int(part)] if int(part) < len(cur) else None
+            else:
+                cur = cur.get(part) if isinstance(cur, dict) else None
         if cur not in (None, ""):
             return cur
     return default
