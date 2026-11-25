@@ -80,7 +80,9 @@ def test_the_three_posts_share_one_set_of_photos_and_one_voice_line(conn, policy
     keys = {p["body"]["shared_key"] for p in posts}
     assert keys == {f"perf-compare:{out['run']}"}                            # scoped to the run
     assert len({str(p["body"]["scene_jobs"]) for p in posts}) == 1           # the same scene jobs
-    assert conn.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'image.zimage' AND post_id IS NOT NULL").fetchone()["n"] == 9
+    # one place for all nine shots (sets.shared_set): the leader is made first, the rest wait for its photo
+    assert conn.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'image.zimage' AND post_id IS NOT NULL").fetchone()["n"] == 1
+    assert [len(j) for j in posts[0]["body"]["scene_jobs"]] == [1] + [0] * 8
     tpol = breadth.test_policy(pol)
     voice = DESIGNED["voice"]
     ids = {production.voice._voice_job(conn, tpol, dict(p), voice, [{"text": "Okay, story time."}], 0, segment=0)

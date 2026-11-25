@@ -41,7 +41,7 @@ def diagnose(conn, job_id) -> dict:
         if r["gate"] == "safety":
             failed["safety" if (d.get("looks_under_min_age") or d.get("sexualized")) else "realism"] += 1
         else:
-            failed[r["gate"]] += 1
+            failed["scene" if r["gate"] == "set_match" else r["gate"]] += 1   # another place: lead with the scene
     if not failed:
         return {"cause": None, "failed": {}, "defects": []}
     cause = "safety" if failed.get("safety") else max(

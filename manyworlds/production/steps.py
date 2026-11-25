@@ -43,11 +43,14 @@ class Step:
     failures: tuple[str, int]                          # body counter and limit for failed jobs
     thing: str                                         # "image", "edit", "clip": for the drop reason
     label: str = ""                                    # e.g. "scene 1: "
+    hold: Callable[[], bool] | None = None             # true while the first job must wait (a shared set's leader)
 
 
 def advance_step(body: dict, step: Step) -> tuple[str, Any]:
     """('chosen', result), ('waiting', None) or ('dropped', None), starting a retry when needed."""
     if not step.jobs:
+        if step.hold is not None and step.hold():
+            return "waiting", None
         step.jobs.append(str(step.make(0)))
         return "waiting", None
     state, result = step.state(step.jobs)

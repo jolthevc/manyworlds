@@ -1883,6 +1883,15 @@ sets:
   # Scene images made by sets.edit.kind from [creator anchor, set plate, outfit reference] instead of text-only
   # Z-Image. Off until `mw bench image.qwen_edit` passes the image gate (owner rule: no unbenchmarked switch-over).
   reference_conditioning: false
+  # One place per shared set (production.scenes, creator.sets.shared_leader). perf_compare 2026-11-25: nine shots
+  # named pub_bar; one photo was at the bar, eight in a living room or kitchen, all passed (scene fit only scores:
+  # 0-5 of 10). In a post of these formats, shots naming the same set_id share one place: the first with her face
+  # leads (made from text), the rest wait for its accepted photo, which becomes their SET reference: conditioning
+  # (image.qwen_edit from [her anchor, that photo]; faces only: a faceless shot stays Z-Image) and the judge's
+  # consistency score, which rejects under min_consistency (gate set_match; 5 = recognisably similar, 1 =
+  # different). Qwen edits passed the image gate 8 of 8 from her anchor alone (breadth 2026-11-24, L40S); from
+  # anchor + a set photo they are unmeasured: check the first shared-set post.
+  shared_set: {enabled: true, formats: [talking_video], conditioning: true, min_consistency: 4}
   plate_kind: image.zimage
   plate_candidates: 4
   max_plate_attempts: 3        # plate jobs per set or outfit before giving up (it then has text only)

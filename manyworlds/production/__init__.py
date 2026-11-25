@@ -107,7 +107,9 @@ from .motion import (  # noqa: F401
     _motion_job, _motion_pattern, _needs_motion, _story_clip_kind, _take_seconds, _wan_frames, clip_edit,
     dance_payload, dance_reference, join_clips, join_motion, motion_lengths, moves, talk_v2v,
 )
-from .scenes import _scene_job, _scene_steps, ensure_lora, is_video_format, scene_size, start  # noqa: F401
+from .scenes import (  # noqa: F401
+    _leader, _scene_job, _scene_steps, _shared_reference, ensure_lora, is_video_format, scene_size, start,
+)
 from .state import BRIEF, BRIEF_KEYS, STATE, STATE_KEYS, STATE_PREFIXES, declared  # noqa: F401
 from .steps import (  # noqa: F401
     DropPost, Step, _best_confirmed, _clip_state, _edit_state, _scene_state, _status, advance_step,
