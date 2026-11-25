@@ -7,6 +7,10 @@ budgets:
   # (manyworlds.deploy.autoscale). GPU alone is capped by gpu_runs.daily_gpu_usd; Brain LLM calls by
   # brain.llm_usd_per_day per agent. Machines already running keep their own deadline and spend cap.
   daily_usd: 25.0
+  # Once a cap is reached, work that finishes a post already in production (one with a finished job) may still
+  # start machines, up to this much above the cap; nothing new starts. One-day owner exceptions: `mw budget grant`
+  # (table budget_grants; manyworlds.budget). The owner hears once a day when the headroom is used.
+  completion_usd: 5.0
 
 # Storage retention (manyworlds.retention): rejected media (and a rejected clip's keyframes and voice line) older than
 # retention_days is deleted once a day; anything a post or creator names is kept. ~60 MB a creator a day otherwise.
@@ -1485,7 +1489,7 @@ intelligence:
   # ScrapeCreators $0.00188 a page; Business Discovery free). mix, select_rate, usd_per_vision_post: for
   # `mw research monitor --estimate N` ($/month at N creators). Off until the owner turns it on.
   monitor:
-    enabled: false
+    enabled: true            # owner 2026-11-25: on at $1/day, also while paused (operations.while_paused)
     daily_usd: 1.0
     max_checks_per_tick: 400
     max_enroll_per_tick: 500
@@ -1629,7 +1633,9 @@ creators:
 # test_overlay: the breadth test's settings (policy/test_overlay.yaml, `mw test breadth`), deep-merged over this policy
 # for work in batches starting with `batches` only: the driver's own posts, and the autoscaler's choice of machine for
 # them (autoscale.merge_families there). Production never reads it.
-operations: {mode: paused, test_batch_prefixes: [bench-, test-],
+# while_paused: what the owner lets run on its own while paused (2026-11-25: research monitoring keeps learning during
+# the build, at intelligence.monitor.daily_usd); its jobs are in `research-` batches.
+operations: {mode: paused, test_batch_prefixes: [bench-, test-, research-], while_paused: [research_monitor],
              test_overlay: {path: policy/test_overlay.yaml, batches: [test-breadth-]}}
 
 # What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).

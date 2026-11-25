@@ -365,11 +365,18 @@ def monthly_estimate(policy: Policy, creators: int, *, usd_per_check: float | No
 
 def ensure_due(conn, policy: Policy, *, now: datetime | None = None):
     """One monitor run a day (a brain.intelligence job, mode monitor), from the Brain's cycle (cli.brain_steps), while
-    intelligence.monitor.enabled and operations are live. Returns the job id, or None."""
+    intelligence.monitor.enabled and operations are live, or paused with `research_monitor` in
+    operations.while_paused (owner 2026-11-25: research keeps learning during the build). While paused the job is
+    marked so the Brain worker claims it, in a `research-` batch so its video measurements get the finisher.
+    Returns the job id, or None."""
     from .. import operations, queue
-    if not cfg(policy).get("enabled") or not operations.is_live(policy):
+    if not cfg(policy).get("enabled"):
+        return None
+    live = operations.is_live(policy)
+    if not live and "research_monitor" not in (policy.get("operations", "while_paused", default=[]) or []):
         return None
     now = now or datetime.now(timezone.utc)
     day = now.date().isoformat()
-    return queue.enqueue(conn, "brain.intelligence", {"mode": "monitor", "day": day},
+    payload = {"mode": "monitor", "day": day, **({} if live else {"test": True})}
+    return queue.enqueue(conn, "brain.intelligence", payload, batch=f"research-monitor-{day}",
                          idempotency_key=f"intelligence-monitor:{day}")

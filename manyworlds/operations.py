@@ -5,6 +5,8 @@ policy `operations.mode`:
           as tests (payload `test: true`); the autoscaler starts GPU machines only for test batches
           (`operations.test_batch_prefixes`, e.g. benchmarks). Safety enforcement (deadlines, caps, idle stops,
           the GitHub backstop) always runs.
+          `operations.while_paused` lists what the owner lets run on its own anyway (`research_monitor`: the daily
+          research monitor, in `research-` batches).
   live    everything runs as designed (production, showrunner, strategist, launches within their own gates).
 Only the owner sets `live`.
 

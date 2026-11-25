@@ -250,10 +250,24 @@ def test_the_monthly_estimate_scales_with_the_universe(policy):
 
 
 def test_monitor_is_queued_once_a_day_only_when_enabled(conn, policy):
-    assert monitor.ensure_due(conn, policy, now=NOW) is None                        # shipped off
+    assert monitor.ensure_due(conn, _monitor_cfg(policy, enabled=False), now=NOW) is None
     on = _monitor_cfg(policy, enabled=True)
     assert monitor.ensure_due(conn, on, now=NOW) and monitor.ensure_due(conn, on, now=NOW + timedelta(minutes=5))
     assert conn.execute("SELECT count(*) n FROM jobs WHERE kind = 'brain.intelligence'").fetchone()["n"] == 1
+
+
+def test_monitor_runs_while_paused_only_with_the_owners_leave(conn, raw_policy):
+    # owner 2026-11-25: on at $1/day during the build; a test job so the paused Brain worker claims it, in a research-
+    # batch the paused autoscaler admits (its video measurements need the finisher)
+    assert raw_policy.get("intelligence", "monitor", "enabled") is True
+    job = monitor.ensure_due(conn, raw_policy, now=NOW)
+    row = conn.execute("SELECT payload, batch FROM jobs WHERE id = %s", (job,)).fetchone()
+    assert row["payload"]["test"] is True and row["batch"].startswith("research-")
+    assert any(row["batch"].startswith(p) for p in raw_policy.get("operations", "test_batch_prefixes"))
+    no_leave = dataclasses.replace(raw_policy, body={**raw_policy.body, "operations": {
+        **raw_policy.body["operations"], "while_paused": []}})
+    conn.execute("DELETE FROM jobs")
+    assert monitor.ensure_due(conn, no_leave, now=NOW) is None
 
 
 # --- the agent's monitor mode: vision only for selected posts, never twice for unchanged content --------------------

@@ -126,7 +126,11 @@ def drain(conn, cfg: dict, g: dict, in_flight: list, spent_today: float, daily_c
 def tick(conn, policy: Policy, api: GroupAPI, *, now: datetime | None = None, dry_run: bool = False) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     cfg = policy.get("gpu_runs", default={})
-    daily_cap = float(cfg.get("daily_gpu_usd", 10))
+    # Today's GPU cap with owner grants; while started posts are being finished, plus the completion headroom
+    # (manyworlds.budget), so a machine finishing them is not drained at the plain cap.
+    from .. import budget
+    c = budget.caps(conn, policy)
+    daily_cap = c["gpu"] + (c["completion_usd"] if not dry_run and budget.completion_open(conn, policy) else 0.0)
     stuck_min = float(cfg.get("stuck_minutes", 10))
     actions: list[dict] = []
 

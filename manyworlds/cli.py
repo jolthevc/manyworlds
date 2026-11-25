@@ -128,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
     ib.add_argument("--done", nargs="*", type=int, metavar="ID", help="mark these alert ids done (no ids: all of them)")
     ib.add_argument("--type", help="with --done: only alerts of this type")
     ib.add_argument("--limit", type=int, default=50)
+    bg = sub.add_parser("budget", help="today's caps, spend and grants; `grant --usd X --reason R`: a one-day owner exception")
+    bgs = bg.add_subparsers(dest="budget_cmd")
+    bgg = bgs.add_parser("grant", help="raise today's caps (UTC day) by --usd; the policy is unchanged")
+    bgg.add_argument("--usd", type=float, required=True)
+    bgg.add_argument("--reason", required=True)
     mc = sub.add_parser("machines", help="each GPU machine: billed vs finished work; per family and pool: boot/busy/idle $, "
                                          "first-pass rate, $ per accepted output and video second, accepted per GPU-hour")
     mc.add_argument("--hours", type=float, default=72)
@@ -419,6 +424,11 @@ def main(argv: list[str] | None = None) -> int:
             _print({"marked_done": n, **notify.counts(conn)})
         else:
             _print(notify.inbox(conn, limit=args.limit))
+    elif args.cmd == "budget":
+        from . import budget
+        if args.budget_cmd == "grant":
+            _print(budget.grant(conn, args.usd, args.reason))
+        _print(budget.status(conn, pol))
     elif args.cmd == "machines":
         from .deploy import report
         rows = report.machines(conn, hours=args.hours)

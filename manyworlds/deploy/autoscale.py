@@ -379,9 +379,14 @@ def ensure_finisher(conn, policy: Policy, providers: dict[str, Provider], *, now
             continue   # already up (or starting): it serves the queue
         over = over_budget(conn, policy)
         if over:
-            actions.append({"action": "not_launching", "reason": over, "pool": pool,
-                            "waiting": {w["kind"]: w["n"] for w in waiting}})
-            continue
+            keep, note = finishing_only(conn, policy, over, waiting, operations.test_batch_patterns(policy))
+            if not keep:
+                actions.append({"action": "not_launching", "reason": over, "pool": pool,
+                                "waiting": {w["kind"]: w["n"] for w in waiting}})
+                continue
+            waiting = keep
+            kinds = sorted({w["kind"] for w in waiting})
+            actions.append({**note, "pool": pool})
         # A run that finished no job (it crashed at start, or failed everything) waits out the relaunch cooldown, so
         # a broken release can't start the finisher in a loop. A run that did work may stop for any reason: its worker
         # exits once the queue is empty, and the machine is then marked gone.
@@ -438,12 +443,24 @@ def launch_fly(conn, policy: Policy, provider: Provider, pool: str, family: str,
 
 
 def over_budget(conn, policy: Policy) -> str | None:
-    """Why no machine may start now (today's GPU spend or today's whole bill at its cap), or None."""
-    from .. import ledger
-    daily_cap = float(policy.get("gpu_runs", "daily_gpu_usd", default=10))
-    total_cap = policy.get("budgets", "daily_usd")
-    return ("daily_gpu_budget" if enforce.billed_today(conn) >= daily_cap else
-            "daily_total_budget" if total_cap is not None and ledger.bill_today(conn) >= float(total_cap) else None)
+    """Why no new machine may start now (today's GPU spend or today's whole bill at its cap, owner grants included:
+    manyworlds.budget), or None."""
+    from .. import budget
+    return budget.over(conn, policy)
+
+
+def finishing_only(conn, policy: Policy, over: str, work: list[dict], batches) -> tuple[list[dict], dict | None]:
+    """At a cap: the work that finishes posts already in production, while budgets.completion_usd of headroom is
+    left (manyworlds.budget), and the action saying so; else ([], None)."""
+    from .. import budget
+    if not work or not budget.completion_open(conn, policy, batches):
+        return [], None
+    kinds = budget.completion_kinds(conn, batches)
+    keep = [w for w in work if w["kind"] in kinds]
+    if not keep:
+        return [], None
+    budget.note_completion(conn, over, sorted(kinds))
+    return keep, {"action": "finishing_started_posts", "reason": over, "kinds": sorted(kinds)}
 
 
 def overlay_missing(conn, kind: str, error: "policy_mod.OverlayMissing", now: datetime) -> dict:
@@ -468,13 +485,20 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
     allowed = operations.test_batch_patterns(policy)   # None when live; else tests and benchmarks only
     over = over_budget(conn, policy)
     if over:
-        work = waiting_work(conn, allowed)
-        if work:
-            actions.append({"action": "not_launching", "reason": over,
-                            "waiting": {w["kind"]: w["n"] for w in work}})
-        return actions
-    # Work for a machine of this Fly app (the finisher) is ensure_finisher's: no rented machine, no worker credentials.
-    work = [w for w in waiting_work(conn, allowed) if not fly_work(policy, w)]
+        everything = waiting_work(conn, allowed)
+        # Work for the finisher is ensure_finisher's, which applies the same rule.
+        keep, note = finishing_only(conn, policy, over, [w for w in everything if not fly_work(policy, w)], allowed)
+        if not keep:
+            if everything:
+                actions.append({"action": "not_launching", "reason": over,
+                                "waiting": {w["kind"]: w["n"] for w in everything}})
+            return actions
+        actions.append(note)
+        work = keep
+    else:
+        # Work for a machine of this Fly app (the finisher) is ensure_finisher's: no rented machine, no worker
+        # credentials.
+        work = [w for w in waiting_work(conn, allowed) if not fly_work(policy, w)]
     gaps = credentials.missing(policy)
     if gaps and work:   # say it once, plainly, instead of as every pool's launch error
         actions.append({"action": "not_launching", "reason": "worker_credentials", "missing": gaps,
