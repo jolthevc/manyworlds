@@ -45,14 +45,14 @@ from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
 from ...llm import image_block
-from ...research import annotation as ann, pulls, references, video_measure
+from ...research import annotation as ann, monitor as watch, providers, pulls, references, video_measure
 from ...research.apify import run_actor
 from ...worker.runner import NonRetryable
 from .. import aesthetics, archetypes, patterns
 from ..agent import AgentContext, register, remember
 
 AGENT = "intelligence"
-MODES = ("scout", "annotate", "distill", "pilot", "commerce")
+MODES = ("scout", "annotate", "distill", "pilot", "commerce", "monitor")
 CLUSTER_FIELDS = (("visual", "situation"), ("visual", "nearest_shot_type"), ("visual", "device"), ("visual", "gaze"),
                   ("performance", "format"), ("performance", "movement"), ("craft", "hook"),
                   ("craft", "camera_movement"), ("craft", "structure"), ("personality", "relationship"))
@@ -219,13 +219,20 @@ class Intelligence:
     def store(self, policy):                                         # replaced in tests
         return references.research_store(policy)
 
+    def adapters(self, ctx) -> dict:                                 # replaced in tests
+        """The acquisition adapters (manyworlds.research.providers); Apify goes through `fetch`."""
+        return {"apify": providers.ApifyProvider(ctx.policy, fetch=self.fetch),
+                "scrapecreators": providers.ScrapeCreatorsProvider(ctx.policy),
+                "graph": providers.GraphProvider(ctx.policy, conn=ctx.conn)}
+
     def run(self, ctx: AgentContext) -> dict:
         p = ctx.job.payload or {}
         mode = p.get("mode") or "pilot"
         if mode not in MODES:
             raise NonRetryable(f"intelligence mode must be one of {MODES}")
         cfg = _cfg(ctx.policy)
-        spend = Spend(ctx.conn, ctx.job.id, float(p.get("usd") or cfg.get("max_usd_per_run", 0)))
+        default_cap = watch.cfg(ctx.policy).get("daily_usd", 0) if mode == "monitor" else cfg.get("max_usd_per_run", 0)
+        spend = Spend(ctx.conn, ctx.job.id, float(p.get("usd") or default_cap))
         steps = ["scout", "annotate", "distill"] if mode == "pilot" else [mode]
         out: dict = {"mode": mode, "cap_usd": spend.cap}
         scope = list(p.get("creator_ids") or [])
@@ -242,7 +249,7 @@ class Intelligence:
 
     def _step(self, ctx, step: str, p: dict, spend: Spend, scope: list) -> dict:
         res = {"scout": self.scout, "annotate": self.annotate, "distill": self.distill,
-               "commerce": self.commerce}[step](ctx, p, spend, scope)
+               "commerce": self.commerce, "monitor": self.monitor}[step](ctx, p, spend, scope)
         res["capped"] = bool(res.get("capped") or spend.capped)
         role = (_cfg(ctx.policy).get("roles") or {}).get({"scout": "plan"}.get(step, step))
         return {"kind": f"intelligence_{step}", "inputs": {k: v for k, v in p.items() if k != "reason"},
@@ -295,6 +302,8 @@ class Intelligence:
                     continue
                 (skipped if r.get("skipped") else done).append({**r, "role": c.get("role"),
                                                                "platform": c["platform"]})
+        for r in done:          # every scouted creator joins the monitored universe (manyworlds.research.monitor)
+            r["tier"] = watch.enroll(conn, policy, r["creator_id"])
         return {"hypothesis": h["text"][:300], "hashtags": hashtags, "plan": plan, "pool": len(pool),
                 "creators": done, "skipped": skipped, "storage": "research" if references._research_bucket()
                 else ("main_bucket:" + references.PREFIX if store is not None else "none")}
@@ -307,10 +316,16 @@ class Intelligence:
         est = cfg.get("estimate") or {}
         collected = video_measure.collect(conn, policy)
         posts = [dict(r) for r in conn.execute(
+            # A post is read again only when its content changed (content_hash; an annotation or post without one
+            # counts as unchanged). selected_only: only posts the monitor's deterministic filters picked.
             """SELECT p.* FROM reference_posts p WHERE (%s::uuid[] IS NULL OR p.creator_id = ANY(%s::uuid[]))
-               AND NOT EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %s)
+               AND (NOT %s OR p.selected IS NOT NULL)
+               AND NOT EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %s
+                               AND (a.content_hash IS NULL OR p.content_hash IS NULL
+                                    OR a.content_hash = p.content_hash))
                ORDER BY p.creator_id, p.posted_at DESC NULLS LAST LIMIT %s""",
-            (scope or None, scope or None, ann.ANNOTATION_SCHEMA, int(p.get("max_posts") or 5000))).fetchall()]
+            (scope or None, scope or None, bool(p.get("selected_only")), ann.ANNOTATION_SCHEMA,
+             int(p.get("max_posts") or 5000))).fetchall()]
         queued = 0
         for post in posts:
             if post["media_type"] == "video" and any(m.get("kind") == "video" for m in post["media"] or []) \
@@ -380,11 +395,16 @@ class Intelligence:
                             for n in xs]
         conn.execute(
             """INSERT INTO reference_annotations (post_id, schema, model, measured, observed, mechanism, speculation,
-                                                  evidence, confidence)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (post_id, schema) DO NOTHING""",
+                                                  evidence, confidence, content_hash)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (post_id, schema) DO UPDATE SET
+                   model = EXCLUDED.model, measured = EXCLUDED.measured, observed = EXCLUDED.observed,
+                   mechanism = EXCLUDED.mechanism, speculation = EXCLUDED.speculation, evidence = EXCLUDED.evidence,
+                   confidence = EXCLUDED.confidence, content_hash = EXCLUDED.content_hash, updated_at = now()
+               WHERE reference_annotations.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                 AND EXCLUDED.content_hash IS NOT NULL AND reference_annotations.content_hash IS NOT NULL""",
             (post["id"], ann.ANNOTATION_SCHEMA, model, Jsonb(self._measured(conn, post["id"]) or {}),
              Jsonb(a.observed.model_dump(mode="json")), Jsonb(notes(a.mechanism)), Jsonb(notes(a.speculation)),
-             Jsonb(ev.model_dump(mode="json")), float(a.confidence)))
+             Jsonb(ev.model_dump(mode="json")), float(a.confidence), post.get("content_hash")))
 
     # --- distill --------------------------------------------------------------------------------------------------
     def distill(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:
@@ -477,6 +497,29 @@ class Intelligence:
                                                "hashtags": c["hashtags"], "job_id": str(ctx.job.id)})
             done.append({"key": c["key"], "posts": seen, "sponsored_share": share, "influencer_activity": band})
         return {"ran": True, "plan": plan, "estimate_usd": est, "categories": done}
+
+    # --- monitor --------------------------------------------------------------------------------------------------
+    def monitor(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:
+        """The universe's due checks (manyworlds.research.monitor: cheap metadata through research.providers, dedupe,
+        deterministic selection, media only for the selected), then a vision read of the selected posts not yet read
+        (annotate, selected_only), all within the run's cap (payload usd, else intelligence.monitor.daily_usd)."""
+        conn, policy = ctx.conn, ctx.policy
+        mcfg = watch.cfg(policy)
+        router = providers.Router(conn, policy, adapters=self.adapters(ctx), agent="intelligence:monitor",
+                                  job_id=ctx.job.id)
+        with tempfile.TemporaryDirectory(prefix="mw-iia-mon-") as tmp:
+            res = watch.tick(conn, policy, router, budget_usd=max(spend.cap - spend.spent(), 0.0),
+                             store=self.store(policy), download=self.download, workdir=Path(tmp))
+        res["calls"] = router.log[-50:]
+        pending = conn.execute(
+            "SELECT count(*) n FROM reference_posts p WHERE p.selected IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %s AND (a.content_hash IS NULL "
+            "OR p.content_hash IS NULL OR a.content_hash = p.content_hash))", (ann.ANNOTATION_SCHEMA,)).fetchone()["n"]
+        if pending and p.get("annotate", True):
+            res["annotate"] = self.annotate(ctx, {"selected_only": True,
+                                                  "max_posts": int((mcfg.get("annotate") or {}).get("max_posts", 40))},
+                                            spend, [])
+        return res
 
     def _vocabulary(self, policy) -> dict:
         names = patterns._names(policy)

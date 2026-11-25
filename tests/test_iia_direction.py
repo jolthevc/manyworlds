@@ -316,9 +316,10 @@ def _agent(store):
 
 
 def _small(policy):
-    """Clusters of three posts are enough for the fixtures (policy: six)."""
+    """Clusters of three posts are enough for the fixtures (policy: six). Every video is copied here (policy: only
+    selected posts'; test_research_providers covers that), so each video is measured."""
     import dataclasses
-    agent = {**policy.body["intelligence"]["agent"],
+    agent = {**policy.body["intelligence"]["agent"], "videos_for": "all",
              "distill": {**policy.body["intelligence"]["agent"]["distill"], "min_posts": 3}}
     return dataclasses.replace(policy, body={**policy.body, "intelligence": {**policy.body["intelligence"],
                                                                              "agent": agent}})

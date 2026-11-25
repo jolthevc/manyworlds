@@ -160,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, "
                                          "patterns, pilot (the influencer intelligence agent: scout, annotate, distill)")
-    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot"])
+    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor"])
     rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
     rs.add_argument("--seed", action="store_true", help="patterns: also add the seed file's cards to pattern_cards")
     rs.add_argument("--hypothesis", help="pilot: a thesis id or the hypothesis in words")
@@ -171,7 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--platforms", nargs="*", default=[], help="pilot: instagram, tiktok (default intelligence.agent.platforms)")
     rs.add_argument("--creators", type=int, help="pilot: creators in the sample")
     rs.add_argument("--posts", type=int, help="pilot: posts per creator")
-    rs.add_argument("--dry-run", action="store_true", help="pilot: print the estimate, queue nothing")
+    rs.add_argument("--dry-run", action="store_true", help="pilot, monitor: print the estimate, queue nothing")
+    rs.add_argument("--estimate", type=int, help="monitor: $/month for a universe of N creators at the policy tier mix")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
     rv.add_argument("--batch")
@@ -798,6 +799,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
     from . import notify
     from .brain import discover, events, ideas, launches, portfolio, showrunner_loop
     from .brain import chief_of_staff
+    from .research import monitor
     from .brain.agents import comment_themes, market_lead, style_director, talent_manager
     from .deploy.providers import redact
 
@@ -822,6 +824,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
         market_lead.ensure_reviews(conn, pol, now=now)      # each market that warrants a lead
         comment_themes.ensure(conn, pol, now=now)           # what each audience keeps saying, for the showrunner
         discover.ensure_due(conn, pol, now=now)             # research discovery on its cadence (live only)
+        monitor.ensure_due(conn, pol, now=now)              # the reference universe's daily checks (live, enabled)
         chief_of_staff.tick(conn, pol, now=now)             # predictions resolved, stalled requests and agents reported
         r = launches.advance(conn, pol)            # approved launches walk the creator lab's steps
         return [{"launches": r}] if any(r.values()) else []
@@ -1068,6 +1071,8 @@ def _research(args, conn, pol) -> int:
         _print(patterns.feedback(conn, pol))
     elif args.action == "pilot":
         return _research_pilot(args, conn, pol)
+    elif args.action == "monitor":
+        return _research_monitor(args, conn, pol)
     else:
         out = patterns.validate(pol)
         if args.seed and not out["problems"]:
@@ -1113,6 +1118,29 @@ def _research_pilot(args, conn, pol) -> int:
     # test work: while operations are paused, workers claim only jobs marked test (queue.claim only_test)
     job = queue.enqueue(conn, "brain.intelligence", {**payload, "test": True}, batch=f"test-iia-{run}")
     _print({"queued": str(job), "batch": f"test-iia-{run}", "estimate": est, "storage": references_storage(pol)})
+    return 0
+
+
+def _research_monitor(args, conn, pol) -> int:
+    """mw research monitor [--dry-run] [--estimate N] [--usd X]: the reference universe's due checks
+    (manyworlds.research.monitor) as one brain.intelligence job (mode monitor) in a test-iia-mon-<run> batch, capped at
+    --usd (default intelligence.monitor.daily_usd). --dry-run: what is due and what it would cost; --estimate N:
+    $/month for N creators at the policy's tier mix."""
+    import uuid as uuid_mod
+
+    from . import queue
+    from .research import monitor
+    if args.estimate:
+        _print(monitor.monthly_estimate(pol, int(args.estimate)))
+        return 0
+    if args.dry_run:
+        _print({"dry_run": True, **monitor.due_estimate(conn, pol)})
+        return 0
+    cap = float(args.usd if args.usd is not None else monitor.cfg(pol).get("daily_usd", 0))
+    run = uuid_mod.uuid4().hex[:8]
+    job = queue.enqueue(conn, "brain.intelligence", {"mode": "monitor", "usd": cap, "test": True},
+                        batch=f"test-iia-mon-{run}")
+    _print({"queued": str(job), "batch": f"test-iia-mon-{run}", "cap_usd": cap, **monitor.due_estimate(conn, pol)})
     return 0
 
 
