@@ -18,7 +18,10 @@ manyworlds.brain.proposals, accepted at once within the requester's allowance an
               over each creator's own median; one iia_distill call per cluster writes a pattern card in our names
               (shot types, moves, talk-edit grammars, deliveries, motion references), validated before it is stored
               as a new card or a new version of one, status draft, with its sources (the posts) and evidence
-    pilot     scout, annotate, distill in order
+    pilot     scout, annotate, distill in order; scout may spend only up to (1 - intelligence.agent.reserve_share) of
+              the cap, so annotate and distill always have the rest
+    resume    annotate, distill on posts already stored (payload creator_ids, else every unread post): a pilot whose
+              scout collected posts but never read them (`mw research pilot --resume-annotate <batch>`)
     commerce  commercial research (owner 2026-11-25; manyworlds.brain.commerce): for each commercial category due a
               refresh (intelligence.commerce.max_age_days, or the payload's `categories`), one hashtag pull per
               category hashtag; the share of posts carrying a sponsorship marker sets its influencer-marketing activity
@@ -28,7 +31,10 @@ manyworlds.brain.proposals, accepted at once within the requester's allowance an
 Every Apify item is charged to the ledger (category data, agent intelligence:<mode>, this job); every LLM call is
 charged by the runtime to this job. Before each paid step the run's spend so far plus the step's estimate (policy
 `intelligence.agent.estimate`) is checked against its cap (payload `usd`, else `max_usd_per_run`): a run stops at its
-cap and reports what it got. Each mode is a remembered step: a rerun never pulls or asks again.
+cap and reports what it got. Each mode is a remembered step: a rerun never pulls or asks again. Inside scout, the
+plan and candidate pool are one remembered step and every creator's pull another, recorded as it completes, so a job
+retried mid-scout (a lost lease, a deploy) resumes where it stopped; a creator pulled by any run within
+`repull_after_days` is reused, never pulled again (2026-11-25: retries re-pulled 54 creators, $15.64 of a $16 cap).
 """
 
 from __future__ import annotations
@@ -52,7 +58,8 @@ from .. import aesthetics, archetypes, patterns
 from ..agent import AgentContext, register, remember
 
 AGENT = "intelligence"
-MODES = ("scout", "annotate", "distill", "pilot", "commerce", "monitor")
+MODES = ("scout", "annotate", "distill", "pilot", "commerce", "monitor", "resume")
+STEPS = {"pilot": ["scout", "annotate", "distill"], "resume": ["annotate", "distill"]}
 CLUSTER_FIELDS = (("visual", "situation"), ("visual", "nearest_shot_type"), ("visual", "device"), ("visual", "gaze"),
                   ("performance", "format"), ("performance", "movement"), ("craft", "hook"),
                   ("craft", "camera_movement"), ("craft", "structure"), ("personality", "relationship"))
@@ -125,20 +132,29 @@ def _cfg(policy) -> dict:
 
 
 class Spend:
-    """The run's spend so far (every ledger entry of this job) against its cap."""
+    """The run's spend so far (every ledger entry of this job) against its cap, and a step's own ceiling below it
+    (a pilot's scout keeps reserve_share of the cap for annotate and distill): stopping at the ceiling is `held`,
+    not `capped`, so the run goes on to its next step."""
 
     def __init__(self, conn, job_id, cap: float):
         self.conn, self.job_id, self.cap = conn, job_id, float(cap)
         self.capped = False
+        self.ceiling: float | None = None
+        self.held = False
 
     def spent(self) -> float:
         return float(self.conn.execute("SELECT coalesce(sum(usd), 0) AS u FROM cost_entries WHERE job_id = %s",
                                        (self.job_id,)).fetchone()["u"])
 
     def allow(self, estimate: float) -> bool:
-        ok = self.spent() + float(estimate) <= self.cap
-        self.capped = self.capped or not ok
-        return ok
+        total = self.spent() + float(estimate)
+        if total > self.cap:
+            self.capped = True
+            return False
+        if self.ceiling is not None and total > self.ceiling:
+            self.held = True
+            return False
+        return True
 
 
 def estimate(policy, *, creators: int | None = None, posts: int | None = None, platforms=None,
@@ -156,20 +172,74 @@ def estimate(policy, *, creators: int | None = None, posts: int | None = None, p
     lines = {}
     if plan:
         lines["plan_call"] = float(est.get("plan_call", 0))
-    lines["candidate_pool"] = sum(tags * per_tag * float(tag_price.get(p, 0)) for p in platforms)
+    pool = sum(tags * per_tag * float(tag_price.get(p, 0)) for p in platforms)
+    if cfg.get("max_candidate_pool_usd") is not None:
+        pool = min(pool, float(cfg["max_candidate_pool_usd"]))
+    lines["candidate_pool"] = pool
     share = {p: n // len(platforms) + (1 if i < n % len(platforms) else 0) for i, p in enumerate(platforms)}
     video = float(price.get("tiktok_video_download", 0)) if cfg.get("download_videos", True) else 0.0
+    # Instagram from the profile scraper's embedded posts: one item for up to profile_posts posts (no reel views)
+    from_profile = str(cfg.get("instagram_posts_from", "posts")) == "profile"
+    ig_posts = min(k, int(providers._catalog(policy, "apify").get("profile_posts", 12))) if from_profile else k
     lines["creator_pulls"] = (share.get("instagram", 0) * (float(price.get("instagram_profile", 0))
-                                                          + k * float(price.get("instagram_posts", 0)))
+                                                          + (0 if from_profile else k)
+                                                          * float(price.get("instagram_posts", 0)))
                               + share.get("tiktok", 0) * k * (float(price.get("tiktok_profile", 0)) + video))
-    total_posts = n * k
+    total_posts = share.get("instagram", 0) * ig_posts + sum(share[p] * k for p in share if p != "instagram")
     per_call = max(1, int((cfg.get("annotate") or {}).get("posts_per_call", 4)))
     lines["measure_video"] = total_posts * float(est.get("measure_video", 0))
     lines["annotate"] = -(-total_posts // per_call) * float(est.get("annotate_call", 0))
     lines["distill"] = int((cfg.get("distill") or {}).get("max_cards", 12)) * float(est.get("distill_call", 0))
     lines = {kk: round(v, 2) for kk, v in lines.items()}
     return {"creators": n, "posts_per_creator": k, "platforms": platforms, "posts": total_posts, "lines": lines,
-            "total_usd": round(sum(lines.values()), 2), "cap_usd": float(cfg.get("max_usd_per_run", 0))}
+            "total_usd": round(sum(lines.values()), 2), "cap_usd": float(cfg.get("max_usd_per_run", 0)),
+            "reserve_share": float(cfg.get("reserve_share", 0)), "instagram_posts_from": "profile" if from_profile
+            else "posts"}
+
+
+def estimate_resume(conn, policy, creator_ids: list | None) -> dict:
+    """What a resume run (annotate, distill on stored posts) would cost at most: the posts not yet read, their videos
+    not yet measured, and the distill calls, from policy estimates. Nothing is pulled."""
+    cfg = _cfg(policy)
+    est = cfg.get("estimate") or {}
+    ids = [str(x) for x in creator_ids or []] or None
+    row = conn.execute(
+        """SELECT count(*) AS n, count(DISTINCT p.creator_id) AS creators,
+                  count(*) FILTER (WHERE p.media_type = 'video' AND p.media @> '[{"kind": "video"}]'
+                                   AND NOT EXISTS (SELECT 1 FROM reference_annotations m WHERE m.post_id = p.id
+                                                   AND m.schema LIKE 'measure_%%')) AS videos
+           FROM reference_posts p WHERE (%s::uuid[] IS NULL OR p.creator_id = ANY(%s::uuid[]))
+           AND NOT EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %s
+                           AND (a.content_hash IS NULL OR p.content_hash IS NULL OR a.content_hash = p.content_hash))""",
+        (ids, ids, ann.ANNOTATION_SCHEMA)).fetchone()
+    per_call = max(1, int((cfg.get("annotate") or {}).get("posts_per_call", 4)))
+    lines = {"measure_video": int(row["videos"]) * float(est.get("measure_video", 0)),
+             "annotate": -(-int(row["n"]) // per_call) * float(est.get("annotate_call", 0)),
+             "distill": int((cfg.get("distill") or {}).get("max_cards", 12)) * float(est.get("distill_call", 0))}
+    lines = {k: round(v, 2) for k, v in lines.items()}
+    return {"creators": int(row["creators"]), "posts": int(row["n"]), "videos_to_measure": int(row["videos"]),
+            "lines": lines, "total_usd": round(sum(lines.values()), 2)}
+
+
+def batch_scope(conn, batch: str) -> dict:
+    """The creators a pilot batch collected: those its scout recorded (the whole step, or each creator's pull), and
+    any whose posts were fetched while the batch's jobs ran (a scout that never finished before per-creator records
+    existed). {jobs, creator_ids}."""
+    jobs = conn.execute("SELECT id, created_at, updated_at FROM jobs WHERE batch = %s AND kind = 'brain.intelligence'",
+                        (batch,)).fetchall()
+    if not jobs:
+        return {"jobs": [], "creator_ids": []}
+    ids: set[str] = set()
+    for d in conn.execute("SELECT output FROM decisions WHERE job_id = ANY(%s) AND (step = 'scout' "
+                          "OR step LIKE 'scout:%%')", ([j["id"] for j in jobs],)).fetchall():
+        out = d["output"] or {}
+        ids |= {str(c["creator_id"]) for c in out.get("creators") or [] if c.get("creator_id")}
+        if out.get("creator_id"):
+            ids.add(str(out["creator_id"]))
+    for r in conn.execute("SELECT DISTINCT creator_id FROM reference_posts WHERE fetched_at BETWEEN %s AND %s",
+                          (min(j["created_at"] for j in jobs), max(j["updated_at"] for j in jobs))).fetchall():
+        ids.add(str(r["creator_id"]))
+    return {"jobs": [str(j["id"]) for j in jobs], "creator_ids": sorted(ids)}
 
 
 # --- the hypothesis -----------------------------------------------------------------------------------------------
@@ -233,11 +303,16 @@ class Intelligence:
         cfg = _cfg(ctx.policy)
         default_cap = watch.cfg(ctx.policy).get("daily_usd", 0) if mode == "monitor" else cfg.get("max_usd_per_run", 0)
         spend = Spend(ctx.conn, ctx.job.id, float(p.get("usd") or default_cap))
-        steps = ["scout", "annotate", "distill"] if mode == "pilot" else [mode]
+        steps = STEPS.get(mode, [mode])
         out: dict = {"mode": mode, "cap_usd": spend.cap}
         scope = list(p.get("creator_ids") or [])
+        reserve = float(cfg.get("reserve_share", 0)) if mode == "pilot" else 0.0
         for step in steps:
+            # a pilot's scout leaves reserve_share of the cap to annotate and distill (2026-11-25: scout spent it all)
+            spend.ceiling = spend.cap * (1 - reserve) if step == "scout" and reserve > 0 else None
+            spend.held = False
             res = remember(ctx, step, lambda step=step: self._step(ctx, step, p, spend, scope))
+            spend.ceiling = None
             out[step] = res
             if step == "scout":
                 scope = [c["creator_id"] for c in res.get("creators") or [] if c.get("creator_id")] or scope
@@ -251,6 +326,8 @@ class Intelligence:
         res = {"scout": self.scout, "annotate": self.annotate, "distill": self.distill,
                "commerce": self.commerce, "monitor": self.monitor}[step](ctx, p, spend, scope)
         res["capped"] = bool(res.get("capped") or spend.capped)
+        if spend.held:
+            res["held_for_reserve"] = True       # stopped at its ceiling: the rest of the cap is the next steps'
         role = (_cfg(ctx.policy).get("roles") or {}).get({"scout": "plan"}.get(step, step))
         return {"kind": f"intelligence_{step}", "inputs": {k: v for k, v in p.items() if k != "reason"},
                 "output": res, "rationale": f"influencer intelligence: {step}",
@@ -262,6 +339,60 @@ class Intelligence:
         cfg = _cfg(policy)
         h = hypothesis(conn, p)
         platforms = list(p.get("platforms") or cfg.get("platforms") or ["instagram"])
+        # the plan and the candidate pool, remembered: a retried job never asks or pulls the hashtags again
+        got = remember(ctx, "scout:pool", lambda: {
+            "kind": "intelligence_scout_pool", "inputs": {"platforms": platforms},
+            "output": self._pool(ctx, p, spend, h, platforms), "rationale": "influencer intelligence: candidate pool"})
+        hashtags, plan, pool = got.get("hashtags") or {}, got.get("plan") or {}, got.get("pool") or []
+        sample = pulls.select(policy, pool, named=_named(h["handles"], platforms), n=p.get("creators"))
+        k = int(p.get("posts") or cfg.get("posts_per_creator", 30))
+        price = cfg.get("usd_per_item") or {}
+        store = self.store(policy)
+        done, skipped = [], []
+        with tempfile.TemporaryDirectory(prefix="mw-iia-") as tmp:
+            for c in sample:
+                step = f"scout:{c['platform']}:{str(c['handle']).lstrip('@').lower()}"
+                if conn.execute("SELECT 1 FROM decisions WHERE job_id = %s AND step = %s",
+                                (ctx.job.id, step)).fetchone() is None:
+                    reused = pulls.fresh(conn, policy, c["platform"], str(c["handle"]))
+                    if reused is None:
+                        # an upper bound: the post scraper's price even where the profile's own posts will do
+                        cost = (float(price.get("instagram_profile", 0)) + k * float(price.get("instagram_posts", 0))
+                                if c["platform"] == "instagram" else
+                                k * (float(price.get("tiktok_profile", 0))
+                                     + float(price.get("tiktok_video_download", 0))))
+                        if not spend.allow(cost):
+                            break
+                        try:
+                            r = pulls.pull_creator(conn, policy, self.fetch, {**c, "why": c.get("role")},
+                                                   store=store, download=self.download, workdir=Path(tmp),
+                                                   job_id=ctx.job.id, posts=k, views=bool(p.get("reel_views")))
+                        except Exception as e:  # noqa: BLE001 - one creator's failed pull is recorded, the rest go on
+                            skipped.append({"handle": c["handle"], "error": f"{type(e).__name__}: {str(e)[:200]}"})
+                            continue
+                    else:
+                        r = reused
+                    # recorded as it completes: a retry of this job finds it and pulls nobody twice
+                    remember(ctx, step, lambda r=r: {"kind": "intelligence_scout_creator",
+                                                     "inputs": {"platform": c["platform"], "handle": c["handle"]},
+                                                     "output": r, "rationale": "influencer intelligence: one pull"})
+                r = conn.execute("SELECT output FROM decisions WHERE job_id = %s AND step = %s",
+                                 (ctx.job.id, step)).fetchone()["output"] or {}
+                (skipped if r.get("skipped") else done).append({**r, "role": c.get("role"),
+                                                               "platform": c["platform"]})
+        for r in done:          # every scouted creator joins the monitored universe (manyworlds.research.monitor)
+            r["tier"] = watch.enroll(conn, policy, r["creator_id"])
+        return {"hypothesis": h["text"][:300], "hashtags": hashtags, "plan": plan, "pool": len(pool),
+                "creators": done, "skipped": skipped,
+                "reused": sum(1 for r in done if r.get("reused")), "storage": "research"
+                if references._research_bucket() else ("main_bucket:" + references.PREFIX if store is not None
+                                                       else "none")}
+
+    def _pool(self, ctx, p: dict, spend: Spend, h: dict, platforms: list) -> dict:
+        """The hashtags (the payload's, else one plan call) and the candidate pool they show, its spend capped at
+        intelligence.agent.max_candidate_pool_usd."""
+        conn, policy = ctx.conn, ctx.policy
+        cfg = _cfg(policy)
         hashtags = {pl: list((p.get("hashtags") or {}).get(pl) or []) for pl in platforms} \
             if isinstance(p.get("hashtags"), dict) else {pl: list(p.get("hashtags") or []) for pl in platforms}
         plan = {}
@@ -279,34 +410,14 @@ class Intelligence:
         per_tag = int(cfg.get("items_per_hashtag", 50))
         tag_price = cfg.get("usd_per_hashtag_item") or {}
         pool_cost = sum(len(t) * per_tag * float(tag_price.get(pl, 0)) for pl, t in hashtags.items())
+        budget = cfg.get("max_candidate_pool_usd")
+        if budget is not None:
+            pool_cost = min(pool_cost, float(budget))
         pool = []
         if any(hashtags.values()) and spend.allow(pool_cost):
-            pool = pulls.candidates(conn, policy, self.fetch, hashtags, job_id=ctx.job.id)
-        sample = pulls.select(policy, pool, named=_named(h["handles"], platforms), n=p.get("creators"))
-        k = int(p.get("posts") or cfg.get("posts_per_creator", 30))
-        price = cfg.get("usd_per_item") or {}
-        store = self.store(policy)
-        done, skipped = [], []
-        with tempfile.TemporaryDirectory(prefix="mw-iia-") as tmp:
-            for c in sample:
-                cost = (float(price.get("instagram_profile", 0)) + k * float(price.get("instagram_posts", 0))
-                        if c["platform"] == "instagram" else
-                        k * (float(price.get("tiktok_profile", 0)) + float(price.get("tiktok_video_download", 0))))
-                if not spend.allow(cost):
-                    break
-                try:
-                    r = pulls.pull_creator(conn, policy, self.fetch, {**c, "why": c.get("role")}, store=store,
-                                           download=self.download, workdir=Path(tmp), job_id=ctx.job.id, posts=k)
-                except Exception as e:  # noqa: BLE001 - one creator's failed pull is recorded, the rest go on
-                    skipped.append({"handle": c["handle"], "error": f"{type(e).__name__}: {str(e)[:200]}"})
-                    continue
-                (skipped if r.get("skipped") else done).append({**r, "role": c.get("role"),
-                                                               "platform": c["platform"]})
-        for r in done:          # every scouted creator joins the monitored universe (manyworlds.research.monitor)
-            r["tier"] = watch.enroll(conn, policy, r["creator_id"])
-        return {"hypothesis": h["text"][:300], "hashtags": hashtags, "plan": plan, "pool": len(pool),
-                "creators": done, "skipped": skipped, "storage": "research" if references._research_bucket()
-                else ("main_bucket:" + references.PREFIX if store is not None else "none")}
+            pool = pulls.candidates(conn, policy, self.fetch, hashtags, job_id=ctx.job.id,
+                                    budget_usd=None if budget is None else float(budget))
+        return {"hashtags": hashtags, "plan": plan, "pool": pool}
 
     # --- annotate -------------------------------------------------------------------------------------------------
     def annotate(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:

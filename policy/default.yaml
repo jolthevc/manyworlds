@@ -1534,6 +1534,19 @@ intelligence:
     items_per_hashtag: 50
     platforms: [instagram, tiktok]
     min_posts_per_creator: 6      # fewer: coverage too low, kept but not scored
+    # 2026-11-25: a pilot spent $15.64 of its $16 cap in scout alone (retries re-pulled every creator; half of it on
+    # hashtag pools) and never annotated. Now: a creator whose posts were pulled (or checked by the monitor) within
+    # repull_after_days is reused, and each creator's pull is remembered as it completes (a retry resumes); a pilot's
+    # scout stops at (1 - reserve_share) of the cap, leaving the rest to annotate and distill; the candidate pool
+    # (hashtag pulls) spends at most max_candidate_pool_usd a run.
+    repull_after_days: 14
+    reserve_share: 0.25
+    max_candidate_pool_usd: 1.0
+    # Instagram posts per creator: profile = the latest posts the profile scraper embeds in its one item
+    # (research.providers.catalog.apify.profile_posts: 12 for $0.0023, not $0.0023 a post; no reel views); posts = the
+    # post scraper (reel views). A pilot's payload reel_views: true (mw research pilot --reel-views) uses the post
+    # scraper; so does a found profile that embeds no posts.
+    instagram_posts_from: profile
     # Apify actors (logged-out public data), verified on the Apify store API 2026-11-24 (FREE-tier per-event prices;
     # paid plans are lower; check the invoice):
     #   apify~instagram-profile-scraper   input usernames[]                                        $0.0026 a profile

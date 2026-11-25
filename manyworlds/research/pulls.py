@@ -12,7 +12,8 @@ between actor versions, so each field is read from several names and missing one
 asked to be forgotten (research_forget) is never pulled.
 
     candidates(...)         creators found in hashtag pulls: handle, followers, mean engagement, posts seen
-    pull_creator(...)       one creator's profile and posts, stored; media copied to the research store
+    fresh(conn, ...)        a creator already pulled within intelligence.agent.repull_after_days: reused, not pulled
+    pull_creator(...)      one creator's profile and posts, stored; media copied to the research store
     engagement(post)        the traction number a post is compared on: views for a video, else likes+comments+shares
     baselines(conn, cid)    each post's engagement over its creator's median (reference_posts.metrics.over_own_median)
 """
@@ -110,17 +111,24 @@ def engagement(post: dict) -> float:
 
 
 # --- candidates from hashtag pulls --------------------------------------------------------------------------------
-def candidates(conn, policy: Policy, fetch: Fetch, hashtags: dict[str, list[str]], *, job_id=None) -> list[dict]:
+def candidates(conn, policy: Policy, fetch: Fetch, hashtags: dict[str, list[str]], *, job_id=None,
+               budget_usd: float | None = None) -> list[dict]:
     """Creators seen in hashtag pulls (the trend watcher's actors, research.apify_actors), with what one pull shows:
-    followers, mean engagement and posts seen. Forgotten accounts are left out. Every item is charged."""
+    followers, mean engagement and posts seen. Forgotten accounts are left out. Every item is charged. With
+    budget_usd (intelligence.agent.max_candidate_pool_usd), a hashtag is pulled only while the pool's spend so far
+    plus that hashtag's full price stays within it; the rest are left out."""
     from .apify import _actor_input
     per = int(_cfg(policy).get("items_per_hashtag", 50))
     seen: dict[tuple[str, str], dict] = {}
+    spent = 0.0
     for platform, tags in hashtags.items():
         actor = policy.get("research", "apify_actors", platform)
         price = float((_cfg(policy).get("usd_per_hashtag_item") or {}).get(platform, 0))
         for tag in tags:
+            if budget_usd is not None and spent + per * price > float(budget_usd):
+                continue
             raw = fetch(actor, _actor_input(platform, tag, per))
+            spent += len(raw) * price
             charge(conn, policy, provider=f"apify:{actor}", items=len(raw), usd=len(raw) * price, job_id=job_id)
             for item in raw:
                 p = NORMALIZE[platform](item) if isinstance(item, dict) else None
@@ -268,11 +276,34 @@ def store_media(conn, policy: Policy, store, download, post_id: str, p: dict, wo
     return media
 
 
+def fresh(conn, policy: Policy, platform: str, handle: str, *, days: float | None = None) -> dict | None:
+    """A creator whose posts were pulled, or who was checked by the monitor, within repull_after_days and who has
+    posts stored: {creator_id, handle, posts, usd: 0, reused: True}. A scout reuses them instead of paying for them
+    again (2026-11-25: a pilot's retries re-pulled every creator). None: pull them."""
+    days = float(days if days is not None else _cfg(policy).get("repull_after_days", 0))
+    if days <= 0:
+        return None
+    row = conn.execute(
+        """SELECT c.id, c.handle, count(p.id) AS n,
+                  greatest(c.last_checked_at, max(p.fetched_at)) >= now() - make_interval(secs => %s) AS recent
+           FROM reference_creators c LEFT JOIN reference_posts p ON p.creator_id = c.id
+           WHERE c.platform = %s AND lower(c.handle) = lower(%s) GROUP BY c.id""",
+        (days * 86400, platform, handle.lstrip("@"))).fetchone()
+    if not row or not row["n"] or not row["recent"]:
+        return None
+    return {"creator_id": str(row["id"]), "handle": row["handle"], "posts": int(row["n"]), "usd": 0.0, "reused": True}
+
+
 def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download, workdir: Path, job_id=None,
-                 posts: int | None = None
+                 posts: int | None = None, views: bool = False
                  ) -> dict:
     """One creator: their profile and up to posts_per_creator recent posts (posts_newer_than_days), stored, with
-    research copies of their media. Returns {creator_id, posts, usd}; {skipped} for a forgotten account."""
+    research copies of their media. Returns {creator_id, posts, usd}; {skipped} for a forgotten account.
+
+    Instagram posts come from intelligence.agent.instagram_posts_from: `profile` takes the latest posts the profile
+    scraper embeds in its one item (research.providers.catalog.apify.profile_posts of them, no reel views), `posts`
+    the post scraper (a billed item a post, with reel views). `views` (reel views needed) always uses the post
+    scraper; so does a profile that was found but embeds no posts. A profile not found (an error item) pulls no more."""
     cfg = _cfg(policy)
     actors = cfg.get("actors") or {}
     platform, handle = c["platform"], str(c["handle"]).lstrip("@")
@@ -281,6 +312,7 @@ def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download
     n = int(posts or cfg.get("posts_per_creator", 30))
     usd = 0.0
     profile: dict = {}
+    post_actor = actors["instagram_posts" if platform == "instagram" else "tiktok_profile"]
     if platform == "instagram":
         prof = fetch(actors["instagram_profile"], {"usernames": [handle]})
         usd += len(prof) * _price(policy, "instagram_profile")
@@ -290,10 +322,19 @@ def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download
         profile = {"display_name": _first(first, "fullName"), "bio": _first(first, "biography"),
                    "followers": _first(first, "followersCount"),
                    "profile_url": _first(first, "url") or f"https://www.instagram.com/{handle}/"}
-        since = (datetime.now(timezone.utc) - timedelta(days=int(cfg.get("posts_newer_than_days", 120)))).date()
-        raw = fetch(actors["instagram_posts"], {"username": [handle], "resultsLimit": n,
-                                                "onlyPostsNewerThan": since.isoformat(), "skipPinnedPosts": True})
-        cost = len(raw) * _price(policy, "instagram_posts")
+        found = bool(_first(first, "username")) and not first.get("error")
+        latest = [{**x, "ownerUsername": x.get("ownerUsername") or _first(first, "username"),
+                   "ownerFollowersCount": x.get("ownerFollowersCount") or profile["followers"]}
+                  for x in (first.get("latestPosts") or []) if isinstance(x, dict)] if found else []
+        if not found:
+            raw, cost, post_actor = [], 0.0, None
+        elif latest and not views and str(cfg.get("instagram_posts_from", "posts")) == "profile":
+            raw, cost, post_actor = latest[:n], 0.0, None        # paid for with the profile item
+        else:
+            since = (datetime.now(timezone.utc) - timedelta(days=int(cfg.get("posts_newer_than_days", 120)))).date()
+            raw = fetch(actors["instagram_posts"], {"username": [handle], "resultsLimit": n,
+                                                    "onlyPostsNewerThan": since.isoformat(), "skipPinnedPosts": True})
+            cost = len(raw) * _price(policy, "instagram_posts")
     else:
         # Apify's paid video download only when every video is kept; selected videos come from the post's own link
         download_videos = bool(cfg.get("download_videos", True)) and cfg.get("videos_for", "all") == "all"
@@ -305,8 +346,8 @@ def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download
         profile = {"display_name": _first(first, "authorMeta.nickName"), "bio": _first(first, "authorMeta.signature"),
                    "followers": _first(first, "authorMeta.fans"), "profile_url": f"https://www.tiktok.com/@{handle}"}
     usd += cost
-    charge(conn, policy, provider=f"apify:{actors['instagram_posts' if platform == 'instagram' else 'tiktok_profile']}",
-           items=len(raw), usd=cost, job_id=job_id)
+    if post_actor:
+        charge(conn, policy, provider=f"apify:{post_actor}", items=len(raw), usd=cost, job_id=job_id)
     cid = upsert_creator(conn, platform, handle, role=c.get("role"), **profile,
                          selected_because=c.get("why") or ("named in the brief" if c.get("named") else c.get("role")),
                          found_via={"tags": c.get("tags") or [], "named": bool(c.get("named"))})
