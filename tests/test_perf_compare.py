@@ -1,6 +1,6 @@
 """The talking-video route comparison (breadth plan perf_compare, owner 2026-11-24): one directed story-time script made
-three ways (InfiniteTalk, LongCat 1.6, borrowed motion + V2V lip sync) that share their scene photos, voice line and
-seeds through body.shared_key, so only the talking route differs."""
+two ways (InfiniteTalk, LongCat 1.6; the third, borrowed motion, was dropped 2026-11-25 with its stock clips) that
+share their scene photos, voice line and seeds through body.shared_key, so only the talking route differs."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from manyworlds.production import common
 from test_breadth import _creator, _paused
 
 DESIGNED = {"voice": {"engine": "voxcpm", "ref_uri": "s3://b/voice.wav", "ref_text": "Okay so this happened."}}
-ITEMS = ["perf_v1_infinitetalk", "perf_v2_longcat", "perf_v3_borrowed_motion"]
+ITEMS = ["perf_v1_infinitetalk", "perf_v2_longcat"]
 
 
 def _post(key=None):
@@ -31,14 +31,14 @@ def test_a_shared_key_shares_piece_keys_and_seeds_and_nothing_else_does():
     assert common._seed(_post("perf-compare:r2"), 800, 1) != common._seed(a, 800, 1)   # another run: its own
 
 
-def test_the_plan_is_one_script_three_routes_with_short_talking_lines(raw_policy):
+def test_the_plan_is_one_script_two_routes_with_short_talking_lines(raw_policy):
     pol = breadth.test_policy(raw_policy)
     plan, items = breadth.load_plan(pol, "perf_compare")
     assert [i.id for i in items] == ITEMS and float(plan["max_usd"]) <= 6
     assert all("runpod_secure_l40s_vol" not in pools for pools in plan["pools"].values())   # the volume is full
-    v1, v2, v3 = items
+    v1, v2 = items
     lines = [[direction.spoken(s) for s in i.body["shots"]] for i in items]
-    assert lines[0] == lines[1] == lines[2] and v1.body["scenes"] == v2.body["scenes"] == v3.body["scenes"]
+    assert lines[0] == lines[1] and v1.body["scenes"] == v2.body["scenes"]
     assert {i.body["shared_key"] for i in items} == {"perf-compare"}
     assert {i.body["edit_grammar"] for i in items} == {"story_time"}
     words = sum(len(t.split()) for t in lines[0])
@@ -47,15 +47,12 @@ def test_the_plan_is_one_script_three_routes_with_short_talking_lines(raw_policy
     assert len(talking) >= 6 and all(len(direction.spoken(s).split()) <= 12 for s in talking)   # <= one motion window
     assert v2.options == {"talk_profile": "longcat16"}
     assert pol.get("generation", "talk_profiles", "longcat16", "model") == "longcat_native"
-    refs = [production.dance_reference(pol, s) for s in v3.body["shots"] if not s.get("cutaway")]
-    assert all(refs) and len(set(refs)) >= 4, refs   # every talking shot performs a listed, licensed clip
-    for ref in set(refs):
-        entry = next(r for r in pol.get("dance", "references") if r["id"] == ref)
-        assert entry["owner"] == "licensed" and entry["licence"] == "Pexels License" and entry["move"] == "talk_gesture"
     assert not any(production.dance_reference(pol, s) for s in v1.body["shots"] + v2.body["shots"])
+    ids = {r["id"] for r in pol.get("dance", "references")}
+    assert not any(i.startswith("perf-") for i in ids)   # the stock clips that leaked their performers: gone
 
 
-def test_the_estimate_counts_shared_pieces_once_and_v3_pays_for_its_motion(conn, policy):
+def test_the_estimate_counts_shared_pieces_once(conn, policy):
     handle = _creator(conn, anchors=DESIGNED)
     out = breadth.run(conn, _paused(policy), "perf_compare", creator=handle, dry_run=True)
     jobs = {}
@@ -63,20 +60,20 @@ def test_the_estimate_counts_shared_pieces_once_and_v3_pays_for_its_motion(conn,
         jobs[i["id"]] = {}
         for j in i["estimate"]["jobs"]:
             jobs[i["id"]][j["kind"]] = jobs[i["id"]].get(j["kind"], 0) + j["n"]
-    v1, v2, v3 = (jobs[i] for i in ITEMS)
+    v1, v2 = (jobs[i] for i in ITEMS)
     assert v1["image.zimage"] == 9 and "voice.speak" in v1
-    assert "image.zimage" not in v2 and "voice.speak" not in v2 and "image.zimage" not in v3
-    assert v3["comfy.wan_animate2"] == 7 and "comfy.wan_animate2" not in v1
+    assert "image.zimage" not in v2 and "voice.speak" not in v2
+    assert not any("comfy.wan_animate2" in j for j in (v1, v2))
     assert out["estimated_usd"] > 0
 
 
-def test_the_three_posts_share_one_set_of_photos_and_one_voice_line(conn, policy, store):
+def test_the_posts_share_one_set_of_photos_and_one_voice_line(conn, policy, store):
     pol = _paused(policy)
     handle = _creator(conn, anchors=DESIGNED)
     out = breadth.run(conn, pol, "perf_compare", creator=handle, store=store, once=True)
     posts = conn.execute("SELECT * FROM posts WHERE body->>'breadth_run' = %s ORDER BY body->>'breadth_item'",
                          (out["run"],)).fetchall()
-    assert len(posts) == 3
+    assert len(posts) == len(ITEMS)
     keys = {p["body"]["shared_key"] for p in posts}
     assert keys == {f"perf-compare:{out['run']}"}                            # scoped to the run
     assert len({str(p["body"]["scene_jobs"]) for p in posts}) == 1           # the same scene jobs
@@ -87,16 +84,20 @@ def test_the_three_posts_share_one_set_of_photos_and_one_voice_line(conn, policy
     voice = DESIGNED["voice"]
     ids = {production.voice._voice_job(conn, tpol, dict(p), voice, [{"text": "Okay, story time."}], 0, segment=0)
            for p in posts}
-    assert len(ids) == 1                                                     # one voice line for all three
+    assert len(ids) == 1                                                     # one voice line for all
 
 
 def test_a_borrowed_motion_take_is_animated_from_its_reference_then_lip_synced(conn, policy):
+    """The walk-and-talk path for a shot with a listed motion reference (test overlay only), on the plan's own
+    shots with one of the remaining licensed clips."""
     pol = breadth.test_policy(_paused(policy))
     _, items = breadth.load_plan(pol, "perf_compare")
-    v1, _, v3 = items
+    v1 = items[0]
+    ref = pol.get("dance", "references")[0]["id"]
     cid = conn.execute("INSERT INTO creators (handle, bible, anchors) VALUES (%s, '{}', %s) RETURNING id",
                        (f"c{uuid.uuid4().hex[:6]}", Jsonb(DESIGNED))).fetchone()["id"]
-    body = {**v3.body, "talk_shots": [0, 1, 2, 4, 6, 7, 8]}
+    shots = [{**s, "motion_reference": ref} if k == 0 else s for k, s in enumerate(v1.body["shots"])]
+    body = {**v1.body, "shots": shots, "talk_shots": [0, 1, 2, 4, 6, 7, 8]}
     post = {"id": uuid.uuid4(), "creator_id": cid, "format": "talking_video", "body": body}
     assert production.talk_v2v(pol)
     assert production.motion._needs_motion(pol, post, body, 0)               # shot 0 has a motion reference

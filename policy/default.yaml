@@ -2610,16 +2610,6 @@ dance:
     - {id: dance-close, uri: "s3://manyworlds/references/motion/pexels-8347389.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8347389/", move: dance, notes: "arms-up dance, close framing"}
     - {id: twirl-dress, uri: "s3://manyworlds/references/motion/pexels-5777427.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/5777427/", move: twirl, notes: "twirls in a dress (2 s)"}
     - {id: twirl-hair-back, uri: "s3://manyworlds/references/motion/pexels-32152258.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/32152258/", move: twirl, notes: "twirls hair from behind"}
-    # Talking-with-gestures clips for the 2026-11-24 performance comparison (breadth plan perf_compare; owner-approved
-    # download of licensed stock, to be removed after the test): 5.2 s at 16 fps (one 81-frame Wan-Animate window),
-    # 480x832, no audio; only the motion drives the output.
-    - {id: perf-36931662-1, uri: "s3://manyworlds/references/motion/perf-36931662-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/36931662/", move: talk_gesture, notes: "selfie, talking with hand gestures: a raised finger, then hands open"}
-    - {id: perf-36931662-2, uri: "s3://manyworlds/references/motion/perf-36931662-2.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/36931662/", move: talk_gesture, notes: "selfie, hand to her chest, warm"}
-    - {id: perf-6965116-1, uri: "s3://manyworlds/references/motion/perf-6965116-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/6965116/", move: talk_gesture, notes: "handheld selfie, head tilts and a smile"}
-    - {id: perf-6965116-2, uri: "s3://manyworlds/references/motion/perf-6965116-2.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/6965116/", move: talk_gesture, notes: "handheld selfie, head shakes and laughs"}
-    - {id: perf-7988843-1, uri: "s3://manyworlds/references/motion/perf-7988843-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/7988843/", move: talk_gesture, notes: "seated, explaining with open hands, animated"}
-    - {id: perf-7988843-2, uri: "s3://manyworlds/references/motion/perf-7988843-2.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/7988843/", move: talk_gesture, notes: "seated, emphatic hand gestures"}
-    - {id: perf-8814493-1, uri: "s3://manyworlds/references/motion/perf-8814493-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8814493/", move: talk_gesture, notes: "chest-up to camera, calm, small head movements"}
   # The video gate's dance_identity row (manyworlds.review.video): identity scored per keyframe (1-10) over `keyframes`
   # keyframes (cut from the clip when the worker stored fewer); the worst at min_score or more, the mean at min_mean.
   # purge: a clip whose worst keyframe is under min_score shows someone else (a real performer): deleted, never kept

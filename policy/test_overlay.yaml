@@ -438,13 +438,12 @@ breadth:
     # The talking-video route comparison (owner 2026-11-24: "the same video basically with Maren, cut how we'd actually
     # cut it ... pick the best handful of production approaches and I can judge for myself", 30-45 s). One ~40 s
     # story-time script, the story_time edit grammar (punch-ins at word gaps, two faceless cutaways under her voice),
-    # made three ways. The items share body.shared_key, so they share their scene photos and voice line (one job each:
-    # production.common.piece_key) and seeds: only the talking route differs. Each talking line is at most ~12 words
-    # (about 5 s), so v3's borrowed motion (one 81-frame Wan-Animate window at 16 fps) covers the whole shot.
+    # made two ways (a third, borrowed motion, was dropped 2026-11-25: its seven stock clips came back as the stock
+    # performers, identity 0-1, and were deleted). The items share body.shared_key, so they share their scene photos
+    # and voice line (one job each:
+    # production.common.piece_key) and seeds: only the talking route differs. Each talking line is at most ~12 words.
     #   v1: InfiniteTalk lip sync from each shot's photo (the current stack).
     #   v2: LongCat-Video-Avatar 1.6 per shot (talk profile longcat16: params.model longcat_native).
-    #   v3: borrowed motion: each talking shot performs a licensed Pexels talking clip (Wan-Animate-2, motion only),
-    #       then V2V lip sync of her line onto it (production.motion, the walk-and-talk path).
     perf_compare:
       max_usd: 6                    # owner-approved 2026-11-24: about $4 for the three versions
       creator: maren.afterhours
@@ -535,24 +534,6 @@ breadth:
           caption: "the tea guy"
           options: {talk_profile: longcat16}
           body: *perf_body
-        - id: perf_v3_borrowed_motion
-          exercises: [talking, story_time, cutaway_broll, designed_voice, borrowed_motion]
-          format: talking_video
-          caption: "the tea guy"
-          body:
-            shared_key: perf-compare
-            edit_grammar: story_time
-            scenes: *perf_scenes
-            shots:
-              - {<<: *perf_s0, motion_reference: perf-36931662-1}
-              - {<<: *perf_s1, motion_reference: perf-6965116-1}
-              - {<<: *perf_s2, motion_reference: perf-7988843-1}
-              - *perf_s3
-              - {<<: *perf_s4, motion_reference: perf-8814493-1}
-              - *perf_s5
-              - {<<: *perf_s6, motion_reference: perf-6965116-2}
-              - {<<: *perf_s7, motion_reference: perf-7988843-2}
-              - {<<: *perf_s8, motion_reference: perf-36931662-2}
     # Candidate models against our baselines (docs/research/2026-11-24-video-candidates.md; owner 2026-11-24: "least
     # net new code; models should slot into existing workflows"). Each candidate says three of perf_compare's lines
     # (natural conversation, expressive hand gestures, a lifestyle scene) from the creator's reference photo, as one
