@@ -1,0 +1,331 @@
+"""Per-creator pulls for the influencer intelligence agent: named public creators and their recent posts, from Apify
+(logged-out public data), into reference_creators and reference_posts, with research copies of their media in the
+research store (manyworlds.research.references).
+
+The actors and their per-item prices are policy (`intelligence.agent.actors`, `usd_per_item`, verified on the
+Apify store 2026-11-24):
+    instagram_profile  apify~instagram-profile-scraper   {usernames: [...]}                  a profile per item
+    instagram_posts    apify~instagram-post-scraper      {username: [...], resultsLimit, onlyPostsNewerThan, skipPinnedPosts}
+    tiktok_profile     clockworks~tiktok-profile-scraper {profiles: [...], resultsPerPage, shouldDownloadVideos}
+Candidate pools come from the hashtag actors the trend watcher uses (research.apify_actors). Output fields vary
+between actor versions, so each field is read from several names and missing ones are tolerated. An account that
+asked to be forgotten (research_forget) is never pulled.
+
+    candidates(...)         creators found in hashtag pulls: handle, followers, mean engagement, posts seen
+    pull_creator(...)       one creator's profile and posts, stored; media copied to the research store
+    engagement(post)        the traction number a post is compared on: views for a video, else likes+comments+shares
+    baselines(conn, cid)    each post's engagement over its creator's median (reference_posts.metrics.over_own_median)
+"""
+
+from __future__ import annotations
+
+import statistics
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable
+
+from psycopg.types.json import Jsonb
+
+from .. import ledger
+from ..policy import Policy
+from . import references
+from .apify import _first, _ts
+
+Fetch = Callable[[str, dict], list[dict]]
+
+
+def _cfg(policy: Policy) -> dict:
+    return policy.get("intelligence", "agent", default={}) or {}
+
+
+def _price(policy: Policy, name: str) -> float:
+    return float((_cfg(policy).get("usd_per_item") or {}).get(name, 0))
+
+
+def charge(conn, policy: Policy, *, provider: str, items: int, usd: float, job_id=None, stage: str = "scout") -> None:
+    ledger.record(conn, category="data", provider=provider, quantity=items, unit="item", usd=round(usd, 6),
+                  job_id=job_id, policy_version=policy.version, agent=f"intelligence:{stage}")
+
+
+# --- normalisation ------------------------------------------------------------------------------------------------
+def normalize_instagram_post(item: dict) -> dict | None:
+    ext = _first(item, "id", "shortCode")
+    if not ext:
+        return None
+    kind = str(_first(item, "type", "productType", default="")).lower()
+    media = "carousel" if "sidecar" in kind or "carousel" in kind else "video" if (
+        "video" in kind or "clips" in kind or "reel" in kind) else "photo"
+    images = [_first(c, "displayUrl", "imageUrl") for c in (_first(item, "childPosts", default=[]) or [])
+              if isinstance(c, dict)] or list(_first(item, "images", default=[]) or [])
+    if not images and _first(item, "displayUrl"):
+        images = [_first(item, "displayUrl")]
+    return {"external_id": str(ext), "url": _first(item, "url"), "media_type": media,
+            "posted_at": _ts(_first(item, "timestamp", "takenAt")),
+            "caption": (_first(item, "caption", default="") or "")[:2000],
+            "metrics": {k: v for k, v in {"likes": _first(item, "likesCount", "likes"),
+                                          "comments": _first(item, "commentsCount", "comments"),
+                                          "views": _first(item, "videoViewCount", "videoPlayCount", "playsCount"),
+                                          "duration_s": _first(item, "videoDuration")}.items() if v is not None},
+            "images": [str(i) for i in images if i],
+            "video_url": _first(item, "videoUrl") if media == "video" else None,
+            "handle": _first(item, "ownerUsername", "owner.username"),
+            "followers": _first(item, "ownerFollowersCount", "owner.followersCount")}
+
+
+def normalize_tiktok_post(item: dict) -> dict | None:
+    ext = _first(item, "id")
+    if not ext:
+        return None
+    slides = [_first(i, "imageURL.urlList.0", "url") if isinstance(i, dict) else i
+              for i in (_first(item, "slideshowImageLinks", "imagePost.images", default=[]) or [])]
+    is_photo = bool(_first(item, "isSlideshow")) or bool(slides)
+    media_urls = _first(item, "mediaUrls", default=[]) or []
+    return {"external_id": str(ext), "url": _first(item, "webVideoUrl"),
+            "media_type": "carousel" if is_photo else "video",
+            "posted_at": _ts(_first(item, "createTimeISO", "createTime")),
+            "caption": (_first(item, "text", "desc", default="") or "")[:2000],
+            "metrics": {k: v for k, v in {"views": _first(item, "playCount"), "likes": _first(item, "diggCount"),
+                                          "comments": _first(item, "commentCount"),
+                                          "shares": _first(item, "shareCount"), "saves": _first(item, "collectCount"),
+                                          "duration_s": _first(item, "videoMeta.duration")}.items() if v is not None},
+            "images": [str(s) for s in slides if s] or ([_first(item, "videoMeta.coverUrl")]
+                                                         if _first(item, "videoMeta.coverUrl") else []),
+            "video_url": (media_urls[0] if media_urls else _first(item, "videoMeta.downloadAddr")) if not is_photo
+            else None,
+            "handle": _first(item, "authorMeta.name", "author.uniqueId"),
+            "followers": _first(item, "authorMeta.fans", "authorMeta.followers"),
+            "display_name": _first(item, "authorMeta.nickName"), "bio": _first(item, "authorMeta.signature")}
+
+
+NORMALIZE = {"instagram": normalize_instagram_post, "tiktok": normalize_tiktok_post}
+
+
+def engagement(post: dict) -> float:
+    m = post.get("metrics") or {}
+    if post.get("media_type") == "video" and m.get("views"):
+        return float(m["views"])
+    return float(sum(float(m.get(k) or 0) for k in ("likes", "comments", "shares")))
+
+
+# --- candidates from hashtag pulls --------------------------------------------------------------------------------
+def candidates(conn, policy: Policy, fetch: Fetch, hashtags: dict[str, list[str]], *, job_id=None) -> list[dict]:
+    """Creators seen in hashtag pulls (the trend watcher's actors, research.apify_actors), with what one pull shows:
+    followers, mean engagement and posts seen. Forgotten accounts are left out. Every item is charged."""
+    from .apify import _actor_input
+    per = int(_cfg(policy).get("items_per_hashtag", 50))
+    seen: dict[tuple[str, str], dict] = {}
+    for platform, tags in hashtags.items():
+        actor = policy.get("research", "apify_actors", platform)
+        price = float((_cfg(policy).get("usd_per_hashtag_item") or {}).get(platform, 0))
+        for tag in tags:
+            raw = fetch(actor, _actor_input(platform, tag, per))
+            charge(conn, policy, provider=f"apify:{actor}", items=len(raw), usd=len(raw) * price, job_id=job_id)
+            for item in raw:
+                p = NORMALIZE[platform](item) if isinstance(item, dict) else None
+                if not p or not p.get("handle") or references.forgotten(conn, platform, p["handle"]):
+                    continue
+                c = seen.setdefault((platform, str(p["handle"]).lower()),
+                                    {"platform": platform, "handle": p["handle"], "followers": p.get("followers"),
+                                     "engagement": [], "tags": set()})
+                c["engagement"].append(engagement(p))
+                c["tags"].add(tag)
+                c["followers"] = c["followers"] or p.get("followers")
+    out = []
+    for c in seen.values():
+        out.append({**c, "engagement": statistics.mean(c["engagement"]), "posts_seen": len(c["engagement"]),
+                    "tags": sorted(c["tags"])})
+    return out
+
+
+def select(policy: Policy, pool: list[dict], *, named: list[dict] = (), n: int | None = None) -> list[dict]:
+    """The sample by role quotas (intelligence.agent.quotas): named references always, then leaders (most
+    followers), mid-sized (in mid_band) by engagement, adjacent (other hashtags' creators), and low comparators
+    (the bottom of engagement for their size), always sampled. Each gets `role`."""
+    cfg = _cfg(policy)
+    n = int(n or cfg.get("creators", 40))
+    quotas = cfg.get("quotas") or {}
+    lo, hi = (cfg.get("mid_band") or [10000, 150000])[:2]
+    chosen: dict[tuple, dict] = {}
+
+    def take(rows, role, k):
+        for r in rows:
+            if k <= 0 or len(chosen) >= n:
+                return
+            key = (r["platform"], str(r["handle"]).lower())
+            if key not in chosen:
+                chosen[key] = {**r, "role": role}
+                k -= 1
+
+    take([{**c, "named": True} for c in named], "other", len(named))
+    rest = [c for c in pool if (c["platform"], str(c["handle"]).lower()) not in chosen]
+    rate = lambda c: c["engagement"] / max(float(c.get("followers") or 0), 1.0)   # noqa: E731
+    k = lambda role: max(1, round(n * float(quotas.get(role, 0)))) if quotas.get(role) else 0   # noqa: E731
+    take(sorted(rest, key=rate), "low_comparator", k("low_comparator"))
+    take(sorted(rest, key=lambda c: -(c.get("followers") or 0)), "leader", k("leader"))
+    take(sorted([c for c in rest if lo <= (c.get("followers") or 0) <= hi], key=lambda c: -rate(c)), "mid", k("mid"))
+    take(sorted(rest, key=lambda c: -rate(c)), "riser", k("riser"))
+    take(sorted(rest, key=lambda c: -c["posts_seen"]), "adjacent", n)
+    return list(chosen.values())
+
+
+# --- one creator --------------------------------------------------------------------------------------------------
+def default_download(url: str, dest: Path, max_bytes: int) -> Path | None:
+    req = urllib.request.Request(url, headers={"User-Agent": "manyworlds-research/0.1"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        data = r.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    return dest
+
+
+def upsert_creator(conn, platform: str, handle: str, **fields) -> str:
+    cols = {k: v for k, v in fields.items() if v is not None}
+    row = conn.execute(
+        """INSERT INTO reference_creators (platform, handle, display_name, profile_url, bio, followers, role,
+                                           selected_because, found_via)
+           VALUES (%(platform)s, %(handle)s, %(display_name)s, %(profile_url)s, %(bio)s, %(followers)s,
+                   coalesce(%(role)s, 'other'), %(why)s, %(found)s)
+           ON CONFLICT (platform, lower(handle)) DO UPDATE SET
+               display_name = coalesce(EXCLUDED.display_name, reference_creators.display_name),
+               bio = coalesce(EXCLUDED.bio, reference_creators.bio),
+               followers = coalesce(EXCLUDED.followers, reference_creators.followers),
+               role = CASE WHEN %(role)s IS NULL THEN reference_creators.role ELSE EXCLUDED.role END,
+               last_seen = now(), updated_at = now()
+           RETURNING id""",
+        {"platform": platform, "handle": handle, "display_name": cols.get("display_name"),
+         "profile_url": cols.get("profile_url"), "bio": cols.get("bio"), "followers": cols.get("followers"),
+         "role": cols.get("role"), "why": cols.get("selected_because"),
+         "found": Jsonb(cols.get("found_via") or {})}).fetchone()
+    if cols.get("followers") is not None:
+        conn.execute("UPDATE reference_creators SET follower_history = follower_history || %s WHERE id = %s",
+                     (Jsonb([{"at": datetime.now(timezone.utc).isoformat(), "followers": cols["followers"]}]),
+                      row["id"]))
+    return str(row["id"])
+
+
+def upsert_post(conn, policy: Policy, creator_id: str, platform: str, p: dict) -> str:
+    now = datetime.now(timezone.utc)
+    row = conn.execute(
+        """INSERT INTO reference_posts (creator_id, platform, external_id, url, media_type, posted_at, caption, metrics,
+                                        snapshots)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (platform, external_id) DO UPDATE SET metrics = EXCLUDED.metrics,
+               snapshots = reference_posts.snapshots || EXCLUDED.snapshots, fetched_at = now()
+           RETURNING id""",
+        (creator_id, platform, p["external_id"], p.get("url"), p.get("media_type"), p.get("posted_at"),
+         p.get("caption"), Jsonb(p.get("metrics") or {}), Jsonb([{"at": now.isoformat(), **(p.get("metrics") or {})}]))
+    ).fetchone()
+    return str(row["id"])
+
+
+def store_media(conn, policy: Policy, store, download, post_id: str, p: dict, workdir: Path) -> list[dict]:
+    """Research copies of a post's images (up to images_per_post) and video in the research store, under the post's
+    retention (media_purge_after). A post that already has media is left alone."""
+    cfg = _cfg(policy)
+    if store is None:
+        return []
+    have = conn.execute("SELECT media FROM reference_posts WHERE id = %s", (post_id,)).fetchone()
+    if have and have["media"]:
+        return have["media"]
+    limit = int(cfg.get("max_media_bytes", 60_000_000))
+    media = []
+    wanted = [("image", u, f"img{i}.jpg") for i, u in enumerate(p.get("images", [])[:int(cfg.get("images_per_post", 3))])]
+    if p.get("video_url") and cfg.get("download_videos", True):
+        wanted.append(("video", p["video_url"], "video.mp4"))
+    for kind, url, name in wanted:
+        try:
+            local = download(url, workdir / post_id / name, limit)
+        except Exception:  # noqa: BLE001 - a missing copy lowers coverage; the post's record stays
+            local = None
+        if local is None:
+            continue
+        o = store.put_file(Path(local), references.media_key(post_id, name))
+        media.append({"uri": o.uri, "kind": kind, "bytes": o.bytes})
+        Path(local).unlink(missing_ok=True)
+    if media:
+        conn.execute("UPDATE reference_posts SET media = %s, media_purge_after = %s WHERE id = %s",
+                     (Jsonb(media), references.media_purge_after(policy), post_id))
+    return media
+
+
+def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download, workdir: Path, job_id=None,
+                 posts: int | None = None
+                 ) -> dict:
+    """One creator: their profile and up to posts_per_creator recent posts (posts_newer_than_days), stored, with
+    research copies of their media. Returns {creator_id, posts, usd}; {skipped} for a forgotten account."""
+    cfg = _cfg(policy)
+    actors = cfg.get("actors") or {}
+    platform, handle = c["platform"], str(c["handle"]).lstrip("@")
+    if references.forgotten(conn, platform, handle):
+        return {"skipped": "forgotten", "handle": handle}
+    n = int(posts or cfg.get("posts_per_creator", 30))
+    usd = 0.0
+    profile: dict = {}
+    if platform == "instagram":
+        prof = fetch(actors["instagram_profile"], {"usernames": [handle]})
+        usd += len(prof) * _price(policy, "instagram_profile")
+        charge(conn, policy, provider=f"apify:{actors['instagram_profile']}", items=len(prof),
+               usd=len(prof) * _price(policy, "instagram_profile"), job_id=job_id)
+        first = prof[0] if prof and isinstance(prof[0], dict) else {}
+        profile = {"display_name": _first(first, "fullName"), "bio": _first(first, "biography"),
+                   "followers": _first(first, "followersCount"),
+                   "profile_url": _first(first, "url") or f"https://www.instagram.com/{handle}/"}
+        since = (datetime.now(timezone.utc) - timedelta(days=int(cfg.get("posts_newer_than_days", 120)))).date()
+        raw = fetch(actors["instagram_posts"], {"username": [handle], "resultsLimit": n,
+                                                "onlyPostsNewerThan": since.isoformat(), "skipPinnedPosts": True})
+        cost = len(raw) * _price(policy, "instagram_posts")
+    else:
+        download_videos = bool(cfg.get("download_videos", True))
+        raw = fetch(actors["tiktok_profile"], {"profiles": [handle], "resultsPerPage": n,
+                                               "shouldDownloadVideos": download_videos})
+        cost = len(raw) * (_price(policy, "tiktok_profile")
+                           + (_price(policy, "tiktok_video_download") if download_videos else 0))
+        first = raw[0] if raw and isinstance(raw[0], dict) else {}
+        profile = {"display_name": _first(first, "authorMeta.nickName"), "bio": _first(first, "authorMeta.signature"),
+                   "followers": _first(first, "authorMeta.fans"), "profile_url": f"https://www.tiktok.com/@{handle}"}
+    usd += cost
+    charge(conn, policy, provider=f"apify:{actors['instagram_posts' if platform == 'instagram' else 'tiktok_profile']}",
+           items=len(raw), usd=cost, job_id=job_id)
+    cid = upsert_creator(conn, platform, handle, role=c.get("role"), **profile,
+                         selected_because=c.get("why") or ("named in the brief" if c.get("named") else c.get("role")),
+                         found_via={"tags": c.get("tags") or [], "named": bool(c.get("named"))})
+    stored = 0
+    for item in raw:
+        p = NORMALIZE[platform](item) if isinstance(item, dict) else None
+        if not p:
+            continue
+        pid = upsert_post(conn, policy, cid, platform, p)
+        store_media(conn, policy, store, download, pid, p, workdir)
+        stored += 1
+    baselines(conn, cid)
+    span = conn.execute("SELECT extract(epoch FROM max(posted_at) - min(posted_at)) / 86400 AS d, count(*) n, "
+                        "count(*) FILTER (WHERE metrics ? 'views') v FROM reference_posts WHERE creator_id = %s",
+                        (cid,)).fetchone()
+    conn.execute("UPDATE reference_creators SET coverage = %s WHERE id = %s",
+                 (Jsonb({"posts": int(span["n"]), "with_views": int(span["v"]),
+                         "span_days": round(float(span["d"] or 0), 1),
+                         "enough": int(span["n"]) >= int(cfg.get("min_posts_per_creator", 6))}), cid))
+    return {"creator_id": cid, "handle": handle, "posts": stored, "usd": round(usd, 4)}
+
+
+def baselines(conn, creator_id) -> dict[str, float]:
+    """Each post's engagement over its creator's median (metrics.over_own_median), the creator's median in scores."""
+    rows = conn.execute("SELECT id, media_type, metrics FROM reference_posts WHERE creator_id = %s",
+                        (creator_id,)).fetchall()
+    eng = {str(r["id"]): engagement(dict(r)) for r in rows}
+    vals = [v for v in eng.values() if v > 0]
+    if not vals:
+        return {}
+    med = statistics.median(vals)
+    out = {}
+    for pid, v in eng.items():
+        ratio = round(v / med, 3) if med else None
+        out[pid] = ratio
+        conn.execute("UPDATE reference_posts SET metrics = metrics || %s WHERE id = %s",
+                     (Jsonb({"over_own_median": ratio}), pid))
+    conn.execute("UPDATE reference_creators SET scores = scores || %s WHERE id = %s",
+                 (Jsonb({"median_engagement": med}), creator_id))
+    return out

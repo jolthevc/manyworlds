@@ -155,12 +155,30 @@ def prompts(target: str, bible: dict, scene: str, *, motion: str = "", trigger: 
     return {"prompt": talk_prompt(bible, scene), "negative": ""}
 
 
+def casting_cards(conn, policy: Policy, thesis: dict) -> list[dict]:
+    """The pattern cards a casting is shown (manyworlds.brain.patterns.retrieve, stage casting): those whose best-fit
+    archetypes match the thesis's archetype, niche or summary words."""
+    from ..brain import patterns
+    text = {"archetype": str(thesis.get("archetype") or ""),
+            "niche": " ".join(str(thesis.get(k) or "") for k in ("niche", "summary", "audience")),
+            "one_line": str(thesis.get("one_line") or thesis.get("statement") or "")}
+    return patterns.retrieve(conn, policy, stage="casting", who=text)
+
+
 def write_bible(conn, policy: Policy, llm: StructuredLLM, thesis: dict) -> CreatorBible:
     scope = policy.get("scope", default={})
     n = int(policy.get("creator_lab", "reference_prompts", default=12))
     taken = [r["handle"] for r in conn.execute("SELECT handle FROM creators").fetchall()]
+    from ..brain import patterns
+    cards = casting_cards(conn, policy, thesis)
+    card_text = (f"Aesthetic and performance references from the creative pattern library (patterns that make creators "
+                 f"like this worth following; ILLUSTRATIVE ones are craft knowledge, researched ones carry evidence). "
+                 f"Cast someone these come naturally to: their taste, looks, rooms, way of talking and humour should "
+                 f"make these posts feel like theirs. Patterns, never a person to copy:\n{patterns.brief(cards)}\n\n"
+                 if cards else "")
     prompt = (
         f"Opportunity to test:\n{json.dumps({k: v for k, v in thesis.items() if k != 'id'}, default=str)}\n\n"
+        f"{card_text}"
         f"Design the creator. Minimum apparent age {scope.get('creator_min_age', 21)}. "
         f"Off-limits topics: {scope.get('excluded_topics')}. Disclosure must say '{scope.get('disclosure_line')}'.\n"
         f"Handles already taken: {taken}.\nKokoro voices to choose from: {KOKORO_VOICES}.\n"

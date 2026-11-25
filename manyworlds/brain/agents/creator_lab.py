@@ -52,8 +52,12 @@ class CreatorLab:
                     cid = row["creator_id"]   # created before a crash
                 else:
                     cid = LAB.bible(ctx.conn, ctx.policy, ctx.llm, {"id": t["id"], **(t["body"] or {})})
+                # the pattern cards the casting was shown (manyworlds.creator.lab.casting_cards), for attribution
+                cards = [{"key": c["key"], "id": c.get("id"), "version": c.get("version"), "stage": "casting"}
+                         for c in lab.casting_cards(ctx.conn, ctx.policy, {"id": t["id"], **(t["body"] or {})})]
                 return {"kind": "creator_launch_step", "inputs": {"launch_id": str(launch["id"]), "step": step},
-                        "output": {"creator_id": str(cid)}, "rationale": "bible written from the thesis",
+                        "output": {"creator_id": str(cid), "pattern_cards": cards},
+                        "rationale": "bible written from the thesis",
                         "creator_id": cid}
             cid = launch["creator_id"]
             out = (LAB.anchors if step == "anchors" else LAB.profile)(ctx.conn, ctx.policy, ctx.llm, cid)

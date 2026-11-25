@@ -9,6 +9,7 @@ budget). That is the whole debate mechanism: an argument with evidence, a decisi
               within `cooldown_days` and filed again with no new evidence, over the requester's allowance)
     decide()  the owner role accepts or rejects; an accepted request is applied when its kind has an effect
               (tier_change sets creator_states.tier; research commissions the analyst with the question;
+              intelligence commissions the IIA (brain.intelligence) within its cap;
               escalate and anything over the decider's rights go to the owner)
     open_for() what a role has to decide next run
 
@@ -27,7 +28,8 @@ from .. import notify, queue
 from ..policy import Policy
 from . import evidence
 
-KINDS = ("tier_change", "budget", "research", "experiment", "cohort", "production_upgrade", "escalate", "artist_concept")
+KINDS = ("tier_change", "budget", "research", "experiment", "cohort", "production_upgrade", "escalate", "artist_concept",
+         "intelligence")
 
 
 def _rights(policy: Policy) -> dict:
@@ -180,6 +182,8 @@ def _apply(conn, policy: Policy, p: dict, decided_by: str, now: datetime) -> dic
                                                     "proposal_id": str(p["id"])},
                             creator_id=p["creator_id"], idempotency_key=f"proposal:{p['id']}")
         return {"applied": {"analyst_job": str(job)}}
+    if kind == "intelligence":
+        return _commission_intelligence(conn, policy, p)
     if kind == "escalate":
         if decided_by == "owner" and subject.get("profile_changes"):
             return {"applied": {"profile_changes": _apply_profile_changes(conn, policy, p)}}
@@ -192,6 +196,26 @@ def _apply(conn, policy: Policy, p: dict, decided_by: str, now: datetime) -> dic
     if kind == "artist_concept":
         return _artist_thesis(conn, p)
     return {"applied": {}}
+
+
+def _commission_intelligence(conn, policy: Policy, p: dict) -> dict:
+    """An accepted `intelligence` request: a brain.intelligence job (the IIA) on the question or hypothesis, with any
+    named reference handles, capped at intelligence.agent.max_usd_per_commission (a larger ask is cut to the cap, not
+    sent to the owner: no approval gate, the cap is the control)."""
+    subject = p["subject"] or {}
+    cap = float(policy.get("intelligence", "agent", "max_usd_per_commission", default=5.0))
+    usd = min(float(subject.get("usd") or cap), cap)
+    text = str(subject.get("question") or subject.get("hypothesis") or p["argument"] or "")[:1000]
+    payload = {"mode": str(subject.get("mode") or "pilot"), "hypothesis": text, "usd": usd,
+               "proposal_id": str(p["id"]), "requested_by": p["from_role"]}
+    for k in ("thesis_id", "handles", "platforms", "archetype"):
+        if subject.get(k):
+            payload[k] = subject[k]
+    if payload["mode"] not in ("scout", "annotate", "distill", "pilot"):
+        payload["mode"] = "pilot"
+    job = queue.enqueue(conn, "brain.intelligence", payload, creator_id=p["creator_id"],
+                        idempotency_key=f"proposal:{p['id']}")
+    return {"applied": {"intelligence_job": str(job), "usd_cap": usd}}
 
 
 def _apply_profile_changes(conn, policy: Policy, p: dict) -> list[dict]:
