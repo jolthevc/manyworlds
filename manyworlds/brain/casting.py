@@ -68,8 +68,8 @@ playful, mysterious), to the standard of the best mainstream fashion and lifesty
 JUDGE = """You judge candidate talent for an AI-native modeling agency and lifestyle media network, strictly and
 independently: you did not write these candidates. Score each criterion 0-10 against the rubric with a reason grounded
 in the candidate. Say plainly when a candidate is generic (broad but bland), when production could not render its
-world, and when it falls under the restrictions (explicit, nude or implied-nude, fetish, soliciting, simulated
-intimacy with followers, gratification-first). Judge attractiveness in context: swimwear, shirtlessness and revealing
+world, and when it falls under the restrictions (explicit, visible nudity or a deliberately staged nudity simulation,
+fetish, soliciting, simulated intimacy with followers, gratification-first). Judge attractiveness in context: swimwear, shirtlessness and revealing
 fashion are not problems in themselves, and a sterile candidate is as weak as a crude one."""
 
 
@@ -221,9 +221,11 @@ def develop(conn, policy: Policy, llm, t: dict) -> list[dict]:
         _culture(conn, policy),
         f"Handles already taken: {taken}. Minimum apparent age {scope.get('creator_min_age', 21)}. Never touch: "
         f"{scope.get('excluded_topics')}.",
-        f"Develop exactly {n} candidates for this brief, clearly different from each other and from the portfolio. "
+        f"Develop exactly {n} candidates for this brief, clearly different from each other and each distinct enough "
+        f"from the portfolio's creators to own its own audience (sharing a proven archetype with them is fine). "
         f"Each a compact concept: who they are, the desire they embody, their look and styling direction, their "
-        f"audience, the core of their brand bible, 2-5 commercial categories (registry keys), and a content mix that "
+        f"audience, the core of their brand bible, 2-5 commercial categories (registry keys), their commercial case "
+        f"(why this is a valuable commercial asset, its signature associations), and a content mix that "
         f"leans on what production does reliably (photography first; a minority of cheap motion for discovery)."])
     out = llm.structured(str(cfg.get("role", "casting")), system=lab.persona_system(policy, SYSTEM), content=prompt,
                          schema=Concepts, effort=str(cfg.get("effort", "high")))

@@ -1152,7 +1152,29 @@ strategy:
     a portfolio of highly desirable, aspirational, commercially valuable virtual lifestyle personalities, openly AI.
     Desirability in many forms, across ages, demographics and cultures. Each one embodies a life people want, is
     worth following for its taste and world, and is built to carry fashion, travel, beauty, home and accessories
-    work from day one. Grow followers first; commercial value compounds with the brand.
+    work from day one. Commercial value is the objective and audiences are the asset it is built on: we build talent
+    whose influence creates natural commercial opportunities, never talent that reads as advertising.
+  # The commercial operating model (owner 2026-11-25): every agent that shapes the portfolio, a brand or a format
+  # reasons with it (dossier.strategy_text). Principles, not a template: evidence decides each case.
+  economics:
+    value_chain: >-
+      1 develop desirable talent; 2 build valuable audiences economically; 3 monetise through sponsorships, affiliate
+      commerce, creative services and licensing; 4 find commercially validated product opportunities; 5 launch,
+      partner with or acquire consumer brands; 6 scale them across our own talent network. Value compounds at each
+      step; the portfolio is a distribution platform, so a product that fits one personality may fit many.
+    principles: >-
+      Think like a talent agency executive, commercial strategist and portfolio manager, not only a creative
+      studio. Ask of every personality, format and decision: how large is the demonstrated demand, how valuable is
+      the audience it builds, how broad are the natural commercial adjacencies, and what does it cost to produce,
+      reliably and quickly. Repeating a commercially proven archetype is good strategy: many original personalities
+      can share one archetype if each is distinct enough to own its audience; never be different only for the sake
+      of it, and never copy a real person's likeness, identity or creative work. Give each personality commercial
+      optionality from inception: signature associations (a recurring hat, jewelry, a fragrance, a kind of luggage)
+      that recur naturally and situationally, never in every image and never as an advert. Production formats are
+      resources allocated by marginal return: photography and carousels are cheap and reliable, so a new lifestyle
+      personality is photo-led, and motion, narration or talking video earn a larger share only with evidence that
+      they buy more audience growth, brand equity or commercial value per dollar than photos do (e.g. a photo at a
+      tenth of a video's cost and half its growth is the better allocation).
   examples: [a sophisticated Italian gentleman, an ambitious metropolitan professional, a rugged outdoorsman,
              an effortlessly elegant Parisian woman, a coastal free spirit, a distinguished older gentleman,
              a creative director, a stylish female entrepreneur]
@@ -1219,11 +1241,11 @@ strategy:
       surface_area: {weight: 0.20, floor: 4,
                      ask: "audience size, appeal across demographics and cultures, adjacent lifestyle categories"}
       commercial: {weight: 0.20, floor: 5,
-                   ask: "consumer categories, market size, advertiser density, influencer-marketing activity, fit for sponsorship, affiliate, licensing and commercial photography; organic integration"}
+                   ask: "demonstrated demand for the archetype; consumer categories, market size, advertiser density, influencer-marketing activity; fit for sponsorship, affiliate, licensing and commercial photography; signature associations that could become product affinities and a path to owned products; organic integration"}
       feasibility: {weight: 0.15, floor: 6, hard_gate: true,
                     ask: "can our production render their world reliably and cheaply today (photography, consistent character, environments, fashion, carousels); what it would need that we can't do"}
       distinctiveness: {weight: 0.15, floor: 5,
-                        ask: "recognisable identity, aesthetic, ethos and world; would it last years, not a trend"}
+                        ask: "distinct enough to own an audience of its own: recognisable identity, aesthetic, ethos and world that would last years; sharing a proven archetype with other creators is fine and often wise"}
     too_close_cap: 4
   # What production does reliably and cheaply (manyworlds.brain.capability_card), per post format. Measured from posts
   # judged in the last window_days (accepted: intelligence.feedback.accepted_statuses; dropped: its dropped_statuses)
@@ -1550,7 +1572,7 @@ intelligence:
   # by the daily desk run within daily_usd (with monitor.daily_usd: the owner's $1/day of research).
   desk:
     enabled: true
-    daily_usd: 0.5
+    daily_usd: 0.6
     fresh_days: 7
     brief_grace_days: 14
     keep_days: 730
@@ -1570,6 +1592,9 @@ intelligence:
       - {name: brand_campaigns, every_days: 4, tags: [commerce], question: "Which fashion, beauty and lifestyle brand campaigns or creator partnerships launched in the last two weeks, and what creative approach and kind of talent did they use?"}
       - {name: creator_economy, every_days: 7, tags: [commerce, platforms], question: "What changed in the last two weeks for lifestyle creators on Instagram and TikTok: platform features, ranking signals, branded content rules, AI-content labelling?"}
       - {name: wellness_fitness, every_days: 7, tags: [wellness], question: "What wellness, fitness and food lifestyle trends are rising right now among mainstream aspirational audiences?"}
+      # commercial intelligence (owner 2026-11-25): how proven creators turn audiences into businesses, and where demand is
+      - {name: creator_business_models, every_days: 7, depth: deep, tags: [commerce, strategy], question: "How have the most commercially successful lifestyle creators (fashion, beauty, travel, wellness, men's style) turned their audiences into revenue in the last year: sponsorships, affiliate, licensing, product lines and owned brands? Give named examples, deal or product types, reported economics where public, and what made them work or fail."}
+      - {name: archetype_demand, every_days: 14, depth: deep, tags: [strategy, casting], question: "Which lifestyle creator archetypes (for example the relatable glamorous college-to-career woman, the effortless European, the rugged outdoorsman, the clean-girl wellness creator, the old-money menswear gentleman) show the largest and fastest-growing audiences and the strongest advertiser demand right now, and which consumer categories follow each?"}
   # Cost-aware monitoring of the reference creator universe (manyworlds.research.monitor; migration 045; the agent's
   # `monitor` mode, queued once a day by monitor_due on the Brain cycle while enabled and operations are live, or by
   # `mw research monitor`). A creator's tier comes from four scores in [0, 1] weighted by `weights`: relevance (its
@@ -1584,7 +1609,7 @@ intelligence:
   # `mw research monitor --estimate N` ($/month at N creators). Off until the owner turns it on.
   monitor:
     enabled: true            # owner 2026-11-25: on at $1/day, also while paused (operations.while_paused)
-    daily_usd: 0.5                 # with desk.daily_usd 0.5: the owner's $1/day of research (2026-11-25)
+    daily_usd: 0.4                 # with desk.daily_usd 0.6: the owner's $1/day of research (2026-11-25)
     max_checks_per_tick: 400
     max_enroll_per_tick: 500
     # Batched profile checks: Apify's profile scraper takes many handles a run and embeds each one's latest 12 posts

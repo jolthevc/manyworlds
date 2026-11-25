@@ -188,9 +188,33 @@ class BrandWorld(BaseModel):
                                                  "restaurant light")
 
 
+class SignatureAssociation(BaseModel):
+    element: str = Field(description="a recurring style element, e.g. vintage baseball hats, a signet ring")
+    category: str = Field(description="the commercial category key it belongs to")
+    how_it_recurs: str = Field(description="when it appears and when it doesn't (situational: never in every image, "
+                                           "never at the pool or a formal event if it wouldn't be worn there)")
+
+
+class OwnedBrandOption(BaseModel):
+    category: str
+    why: str = Field(description="why her audience might want this from her")
+    evidence_needed: str = Field(description="what would have to be true first: affiliate demand, engagement on the "
+                                             "association, partner interest")
+
+
 class BrandCommerce(BaseModel):
     categories: list[str] = Field(description="2-5 natural commercial category keys from the registry given")
     why_categories: str
+    commercial_thesis: str = Field(default="", description="why this personality is a valuable commercial asset: "
+                                   "the audience, its buying power and intent, the adjacencies, in 2-3 sentences")
+    signature_associations: list[SignatureAssociation] = Field(default_factory=list, max_length=4)
+    advertiser_fit: list[str] = Field(default_factory=list, description="kinds of advertisers who would pay to reach "
+                                      "her audience")
+    monetization_path: str = Field(default="", description="the likely order: sponsorship, affiliate, licensing, "
+                                   "then an owned product if evidence supports it")
+    owned_brand_options: list[OwnedBrandOption] = Field(default_factory=list, max_length=3)
+    portfolio_leverage: str = Field(default="", description="which of these categories could also travel across "
+                                    "other personalities in the portfolio")
     product_integration: str = Field(description="how products would enter her world organically, openly virtual and "
                                                  "disclosed, never claiming first-hand experience")
     will_do: list[str]
@@ -216,7 +240,10 @@ ASK = {
              "plan a year of posts that feel like the same life.",
     "content_system": "Design her content system from her archetypes' playbooks: the mix, how often she talks to "
                       "camera, 3-5 series built only from the capabilities listed, her hooks, and what she never "
-                      "makes. Series serve her positioning and audience, not trends.",
+                      "makes. Series serve her positioning and audience, not trends. Allocate the mix by expected "
+                      "return per dollar using the capability card's cost and reliability: photo-led at launch, with "
+                      "motion or talking only where her archetype needs it or evidence shows it buys more growth or "
+                      "commercial value per dollar.",
     "brand_core": "Write the core of her Talent & Brand Bible: why she exists as talent, the desire she embodies, what "
                   "she represents, why people follow, how her value compounds over years, her values, ethos, "
                   "aspirations, personality, the desirable traits of her look, her relationship with her audience and "
@@ -230,9 +257,15 @@ ASK = {
                    "footwear, silhouettes, materials and colours, possessions, seasonal and occasion dress, a few "
                    "signature elements that recur subtly, the rest varied with judgment; rugged stays rugged, "
                    "effortless stays effortless, always intentional), and the details of her world that show taste.",
-    "brand_commerce": "Write her commercial profile: her natural commercial categories (keys from the registry), why "
-                      "they fit, how products would enter her world organically, and what she will and won't do, "
-                      "wear and promote. She is openly virtual: never claims first-hand experience of a product.",
+    "brand_commerce": "Write her commercial profile as a talent agency executive would: her commercial thesis (why "
+                      "she is a valuable commercial asset), her natural commercial categories (keys from the "
+                      "registry) and why they fit, 1-4 signature associations (style elements that recur naturally "
+                      "and situationally and could become product affinities, never in every image, never as an "
+                      "advert), the advertisers who would pay to reach her audience, her likely monetisation path, "
+                      "up to 3 owned-product options with the evidence each would need first, which categories could "
+                      "travel across the portfolio, how products enter her world organically, and what she will and "
+                      "won't do, wear and promote. She is openly virtual: never claims first-hand experience of a "
+                      "product. Her influence creates the opportunities; she never reads as an advertisement.",
 }
 
 
@@ -240,7 +273,10 @@ def strategy_text(policy: Policy) -> str:
     """The portfolio thesis and desirability (objective, standard, context, the only restrictions, anti-drift), for
     prompts that shape a brand or a post."""
     s = policy.get("strategy", default={}) or {}
-    return f"The agency's thesis: {str(s.get('thesis') or '').strip()} {desirability_text(policy)}"
+    e = s.get("economics") or {}
+    econ = (f" How we create value: {str(e.get('value_chain') or '').strip()} {str(e.get('principles') or '').strip()}"
+            if e else "")
+    return f"The agency's thesis: {str(s.get('thesis') or '').strip()}{econ} {desirability_text(policy)}"
 
 
 def desirability_text(policy: Policy) -> str:

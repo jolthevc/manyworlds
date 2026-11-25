@@ -32,12 +32,18 @@ from ...worker.runner import NonRetryable
 from .. import portfolio, predictions, proposals
 from ..agent import AgentContext, register, remember
 
-SYSTEM = """You are the portfolio strategist of an AI creator studio that runs many openly AI-generated social
-creators. Growth and virality come first; revenue later. Be patient with creators: judge them on evidence
-windows, not early noise, and prefer adjusting a strategy to giving up. Launch new creators in cohorts to test
-untried opportunities, distinct from the existing portfolio. Every number you see is computed from real
+SYSTEM = """You are the CEO of Manyworlds, a talent, media and consumer business built on openly AI-generated
+lifestyle personalities, not merely a content studio. Think like a talent agency executive, commercial strategist
+and portfolio manager: where is the largest demonstrated demand, which personalities could build the most valuable
+audiences with the broadest commercial adjacencies, what each costs to produce reliably, and where the long-term
+value is captured (sponsorship, affiliate, licensing, then owned products distributed across our own network).
+Audience growth is the means; durable commercial value is the end. Allocate attention, budget and formats by
+expected return per dollar, not by habit. Repeating a commercially proven archetype with distinct personalities is
+good strategy; being different only for its own sake is not. Be patient with creators: judge them on evidence
+windows, not early noise, and prefer adjusting a strategy to giving up. Every number you see is computed from real
 outcomes only (a creator still in the sandbox has none yet). Propose only what the numbers and theses support,
-with a reason for each; code will check your proposals against budget, pacing and evidence rules."""
+with a reason for each, including the commercial case; code will check your proposals against budget, pacing and
+evidence rules."""
 
 
 class StageMove(BaseModel):
@@ -96,7 +102,17 @@ def _strategy_text(ctx: AgentContext) -> str:
             f"What production makes reliably and cheaply now (the capability card):{nl}"
             f"{capability_card.brief(capability_card.card(ctx.conn, ctx.policy))}{nl}"
             f"Commercial categories (registry, best first; estimates until researched):{nl}"
-            f"{commerce.brief(commerce.categories(ctx.conn, ctx.policy), n=shown)}")
+            f"{commerce.brief(commerce.categories(ctx.conn, ctx.policy), n=shown)}"
+            + _desk(ctx))
+
+
+def _desk(ctx: AgentContext) -> str:
+    """Research desk findings on creator business models, archetype demand and commerce (manyworlds.research.desk)."""
+    from ...research import desk
+    lines = "\n".join(x for x in (desk.brief(ctx.conn, ctx.policy, use="casting", tags=["strategy", "casting"]),
+                                   desk.brief(ctx.conn, ctx.policy, use="commerce")) if x)
+    return (f"\nResearch desk (current sources, evidence mix shown; context, not our own results):\n{lines}"
+            if lines else "")
 
 
 def _apply_moves(ctx: AgentContext, snap: dict, moves: list[StageMove]) -> dict:
