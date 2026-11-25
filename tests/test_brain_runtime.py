@@ -3,6 +3,8 @@ and one broken job never stops the others."""
 
 from __future__ import annotations
 
+import pytest
+
 from manyworlds import ledger, queue
 from manyworlds.brain import agent, runtime
 
@@ -214,3 +216,17 @@ def test_the_brain_worker_runs_again_at_once_while_work_is_waiting(conn, policy,
     runtime.serve(lambda: conn, lambda: policy, lambda c, p: StubLLM(conn=c), worker_id="w1", loops=4,
                   sleep=slept.append)
     assert len(slept) == 1                                             # only after the tick that drained the queue
+
+
+def test_a_shutdown_mid_job_hands_the_job_back_at_once(conn, policy, monkeypatch):
+    # A Fly deploy stops the brain process with SIGINT: the job goes back to the queue with no attempt charged
+    # instead of holding its 10-minute lease.
+    job = queue.enqueue(conn, "brain.echo", {})
+
+    def interrupted(ctx):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(agent.get("echo"), "run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        runtime.tick(conn, policy, StubLLM(conn=conn), worker_id="w1")
+    row = conn.execute("SELECT * FROM jobs WHERE id = %s", (job,)).fetchone()
+    assert row["status"] == "queued" and row["attempts"] == 0 and row["worker_id"] is None

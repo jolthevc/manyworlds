@@ -92,6 +92,15 @@ def _run_job(conn, policy: Policy, llm, job: queue.Job, *, worker_id: str, now: 
         # flusher wakes the job when its answer lands, and the rerun replays its finished calls from the journal.
         queue.defer(conn, job.id, worker_id, seconds=float(llm_batch.cfg(policy).get("requeue_seconds", 900)))
         return {"job": job.id, "agent": name, "status": "deferred", "waiting_on": d.row_id}
+    except (KeyboardInterrupt, SystemExit):
+        # Shutting down (a Fly deploy stops the process with SIGINT): hand the job back now, no attempt charged, so
+        # the next brain worker takes it at once instead of after its lease (brain.runtime.lease_seconds) lapses.
+        # Agents are rerun-safe (remembered decisions, journaled LLM calls). Best effort: the lease still lapses.
+        try:
+            queue.defer(conn, job.id, worker_id, seconds=0)
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     except (agent_mod.UnknownAgent, NonRetryable) as e:
         msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
         queue.fail(conn, job.id, worker_id, msg, retryable=False)
