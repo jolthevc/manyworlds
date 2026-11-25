@@ -199,6 +199,13 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         except ValueError as e:
             raise NonRetryable(str(e)) from None
         weights, ready_key = comfy.LONGCAT_WEIGHTS[version], f"weights:longcat:{version}"
+        vae = params.get("vae") or {}   # a profile's own VAE ({repo, file}: longcat_fast's LightVAE), beside Wan's
+        if vae:
+            if not (vae.get("repo") and vae.get("file")):
+                raise NonRetryable(f"params.vae needs repo and file, not {vae!r}")
+            weights = {**weights, "vae": [*weights["vae"], (vae["repo"], vae["file"])]}
+            params = {**params, "vae_file": vae["file"]}
+            ready_key += f":{vae['file']}"
     else:
         version, weights, ready_key = None, None, "weights"
     if not _ready.get(ready_key):

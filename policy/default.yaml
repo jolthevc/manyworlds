@@ -147,6 +147,9 @@ job_kinds:
   # Dance (handlers/dance_animate.py, policy `dance`, OFF: the handler refuses): Wan-Animate-2 14B int8 on the same ComfyUI
   # image, its own family so story-clip machines never load it. 48 GB+ cards until benchmarked; only `mw bench` queues it.
   comfy.wan_animate2: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1, family: dance}
+  # Any named ComfyUI workflow (worker/handlers/comfy_graph.py, policy comfy_graphs; benchmarks only: breadth plan
+  # candidates pins each graph to its own pools). min_vram_gb is the smallest graph floor; each graph has its own.
+  comfy.graph:     {min_vram_gb: 20, pools: [runpod_secure_l40s, vast_4090, runpod_comm_4090, vast_5090], outputs_per_job: 1}
   # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
   voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
   voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
@@ -326,7 +329,7 @@ review:
     max_repairs_per_post: 2    # new seeds for a rejected clip (each is a ~$0.05 render) before the post is dropped
     # Clip job kinds the video gate judges: `x.*` is every kind with that prefix, anything else one kind exactly
     # (`*.mirror` jobs and intermediate clips are never judged).
-    kinds: [video.*, talk.*, hosted.video, comfy.wan_i2v, comfy.wan_animate2]
+    kinds: [video.*, talk.*, hosted.video, comfy.wan_i2v, comfy.wan_animate2, comfy.graph]
     max_review_errors: 3       # as review.image: a clip whose review keeps raising counts as rejected
     review_error_spacing_seconds: 600
     # Talking clips: mouth openness vs voice loudness (worker/lipsync.py), recorded on every clip. Off until clips
@@ -555,6 +558,22 @@ generation:
     longcat15: {model: longcat, longcat_version: "1.5", steps: 10, cfg: 1.0, shift: 12.0, audio_cfg: 3.0,
                 frame_window: 93, overlap: 13, scheduler: longcat_distill_euler, lora_strength: 0.9, attention: sdpa,
                 blocks_to_swap: 25}
+    # What of ckinpdx/longcat-avatar-fast (a launcher patching LongCat 1.6's own demo; docs/research/2026-11-24-video-
+    # candidates.md) our WanVideoWrapper (a7439db) can do, on graph_longcat. NOT LongCat 1.6: the wrapper runs 1.0/1.5
+    # only, so this is LongCat 1.0 (Kijai's fp8 avatar) made faster. Ported: 6 steps (from 10), fp8 fast matmul
+    # (fp8_e4m3fn_scaled_fast: fp8 tensor cores on Ada/Blackwell, the wrapper's nearest to their W8A8 INT8), UMT5 on the
+    # CPU (text_device), lightx2v's LightVAE (lightvaew2_1, 75% pruned Wan 2.1 VAE, Apache-2.0; WanVideoVAELoader
+    # detects it: their LightVAE-pro decoder is a different file the wrapper can't load), torch.compile. Not ported:
+    # ConvRot W8A8 INT8 (no int8 path in the wrapper), SageAttention 2.2 (PyPI has 1.0.6 only, which fails with
+    # LongCat: needs a CUDA-devel source build), fused LoRA add (merge_loras is the nearest: off until checked on the
+    # fp8-scaled model), encoder-only Whisper (1.0 hears through wav2vec), VCOND latent pass-through, mask_frame_range 2
+    # (1.6's re-anchoring), the 1.6 weights themselves. On a 32 GB 5090 the fp8 DiT (~17 GB) stays on the card
+    # (swap_below_gb 30). download_gb: the 1.0 weights + LightVAE (Hugging Face listings, 2026-11-24). Unmeasured.
+    longcat_fast: {model: longcat, longcat_version: "1.0", steps: 6, cfg: 1.0, shift: 12.0, audio_cfg: 3.0,
+                   frame_window: 93, overlap: 13, scheduler: longcat_distill_euler, lora_strength: 0.9, attention: sdpa,
+                   longcat_quantization: fp8_e4m3fn_scaled_fast, text_device: cpu, compile: true, merge_loras: false,
+                   vae: {repo: lightx2v/Autoencoders, file: lightvaew2_1.safetensors},
+                   swap_below_gb: 30, blocks_to_swap: 10, download_gb: 30.2}
     # 720p close-ups (plan 2026-11-22 wave 2; direction.talk_profile_for picks it for direction.hd_for_shot_sizes
     # while direction.hd_close_ups is on). 720x1280 is ~2.3x the pixels of 480x832, so InfiniteTalk needs more VRAM
     # (latents and attention grow with it; small cards swap more blocks) and roughly 2.2-2.5x the time per clip.
@@ -2535,6 +2554,71 @@ dance:
   # The video gate's dance_identity row (manyworlds.review.video): identity scored per keyframe (1-10) over `keyframes`
   # keyframes (cut from the clip when the worker stored fewer); the worst at min_score or more, the mean at min_mean.
   identity: {min_score: 6, min_mean: 7, keyframes: 8}
+
+# Named ComfyUI graphs (job kind comfy.graph, worker/handlers/comfy_graph.py): a model slots in as a workflow file
+# (manyworlds/worker/graphs/<name>.json, API format, from the node pack's published example; its sidecar <name>.yaml
+# names the source and which payload value goes into which node input) plus this entry. A graph not listed here, or
+# without its files in the worker image, is refused. The entry travels with each job (graph_spec).
+#   weights: ComfyUI model folder -> [[Hugging Face repo, file]], downloaded once into the weights cache. A folder with
+#     a slash is a node pack's own directory (ComfyUI/models/<first part>, linked by model_links).
+#   download_gb: the sum of those files' sizes (Hugging Face listings, 2026-11-24): the dry run's download estimate;
+#     graphs with the same weights_set share one download on a machine.
+#   min_vram_gb: a card under it refuses the job (job_kinds.comfy.graph keeps the smallest graph's floor).
+#   requires_env: what the worker must have (LTX-2.5 is a gated repo: HF_TOKEN of an account that accepted its terms;
+#     the control plane passes its own HF_TOKEN to workers, deploy/credentials.SHARED). The breadth driver skips the
+#     item when it is not set where it runs.
+#   mux_audio: our voice line replaces the graph's audio track; pad_audio: the line is padded to the clip's length
+#     before the graph reads it (LTX encodes audio as long as the video).
+#   params: defaults (a job's params override them). fps and frame_multiple / frame_offset set the clip's frames
+#     (LTX: 8k + 1); vram_sample_s: how often peak VRAM is sampled while it renders; timeout_s: one render.
+# Benchmarks only (breadth plan `candidates`): nothing in production queues comfy.graph. None run on a GPU yet.
+comfy_graphs:
+  # EchoMimicV3-Flash (antgroup, Apache-2.0; chinese-wav2vec2-base MIT; Wan2.1-Fun 1.3B base Apache-2.0) through
+  # smthemex/ComfyUI_EchoMimic (Apache-2.0, pinned in docker/worker-talkcomfy.Dockerfile). 1.3B: expect weaker
+  # identity, hands and body than our 14B baselines (docs/research/2026-11-24-video-candidates.md). The README claims
+  # 768x768 at 8 steps in 12 GB. 576x1024 is 9:16 at 768x768's area (the node keeps the photo's aspect within it).
+  echomimic_v3_flash:
+    min_vram_gb: 20
+    download_gb: 15.7
+    model_links: [echo_mimic]
+    mux_audio: true
+    weights:
+      echo_mimic/transformer: [[alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP, config.json],
+                               [alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP, diffusion_pytorch_model.safetensors]]
+      echo_mimic: [[BadToBest/EchoMimicV3, echomimicv3-flash-pro/diffusion_pytorch_model.safetensors]]
+      echo_mimic/chinese-wav2vec2-base: [[TencentGameMate/chinese-wav2vec2-base, config.json],
+                                         [TencentGameMate/chinese-wav2vec2-base, preprocessor_config.json],
+                                         [TencentGameMate/chinese-wav2vec2-base, pytorch_model.bin]]
+      vae: [[alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP, Wan2.1_VAE.pth]]
+      text_encoders: [[Comfy-Org/Wan_2.1_ComfyUI_repackaged, split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors]]
+      clip_vision: [[Comfy-Org/Wan_2.1_ComfyUI_repackaged, split_files/clip_vision/clip_vision_h.safetensors]]
+    params: {width: 576, height: 1024, fps: 25, steps: 8, cfg: 6.0, timeout_s: 1800, vram_sample_s: 2,
+             fit_stretch_tolerance: 0.01,
+             negative_prompt: "Gesture is bad. Gesture is unclear. Strange and twisted hands. Bad hands. Bad fingers. Unclear and blurry hands."}
+  # LTX-2.5 distilled (Lightricks; LTX-2.x Community License: free below US$10M annual revenue, AUP requires disclosing
+  # machine-generated content) in ComfyUI core (v0.45.0; templates need 0.32.0+): the int8 ConvRot DiT (21.5 GB) and
+  # Gemma 4 12B int8 text encoder (15.4 GB), video and audio VAEs, x2 spatial upscaler. 48 GB cards (L40S): 16-24 GB
+  # is int8 with offload only (RunPod's guide). a2v: our voice line in, kept fixed; i2v_av: the model's own sound.
+  ltx25_a2v: &ltx25
+    min_vram_gb: 44
+    download_gb: 39.7
+    weights_set: ltx25         # the same files as ltx25_i2v_av: one download per machine for both
+    requires_env: [HF_TOKEN]
+    mux_audio: true
+    pad_audio: true
+    weights:
+      diffusion_models: [[Lightricks/LTX-2.5, diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors]]
+      text_encoders: [[Lightricks/LTX-2.5, text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors]]
+      vae: [[Lightricks/LTX-2.5, vae/ltx-2.5-video-vae-bf16.safetensors], [Lightricks/LTX-2.5, vae/ltx-2.5-audio-vae-bf16.safetensors]]
+      latent_upscale_models: [[Lightricks/LTX-2.5, latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors]]
+    params: &ltx25_params {width: 576, height: 1024, fps: 24, frame_multiple: 8, frame_offset: 1, timeout_s: 2400,
+                           vram_sample_s: 2, fit_stretch_tolerance: 0.01,
+                           negative_prompt: "pc game, console game, video game, cartoon, childish, ugly"}
+  ltx25_i2v_av:
+    <<: *ltx25
+    mux_audio: false
+    pad_audio: false
+    params: {<<: *ltx25_params, native_audio: true}
 
 # Hosted talking avatars, the quality ceiling (manyworlds.hosted_avatar; terms: docs/research/2026-11-22-hosted-avatar-
 # terms.md). OFF: refused unless BOTH enabled and terms_reviewed are true (the owner, after reading the provider's

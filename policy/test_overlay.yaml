@@ -60,8 +60,19 @@ breadth:
     # talk renders scale with the take: ~50 s of GPU per output second (ComfyUI InfiniteTalk, 10 steps, 2026-11-22)
     # talk.longcat (LongCat 1.6, one take, INT8 on an L40S): an estimate, not measured: ~150 s per 3.2 s segment
     # (8 steps of a ~14B DiT over 93 frames at 480p, plus decode) is ~47 s per output second.
-    seconds_per_output_second: {talk.infinitetalk: 50, talk.longcat: 50}
+    # Candidates (plan candidates), unmeasured guesses until the first run replaces them:
+    #   echomimic_v3_flash on a 4090: 12. Its node's PR #171 made a 512x512 8-step clip in ~121 s end to end on a
+    #     12 GB 4070 SUPER (length not stated); a 4090 is ~2x that card, our 576x1024 is ~2.25x the pixels.
+    #   ltx25_* on an L40S: 8. 22B distilled int8, 8 + 3 steps over two scales; no measured L40S timing found.
+    #   longcat_fast (LongCat 1.0 in the wrapper, 6 steps) on a 5090: 20. longcat-avatar-fast's table: the stock 1.6
+    #     demo is ~36 s per output second on a 5090 at 8 steps; 6 steps and fp8 fast matmul take some of that off.
+    seconds_per_output_second: {talk.infinitetalk: 50, talk.longcat: 50, comfy.graph:echomimic_v3_flash: 12,
+                                comfy.graph:ltx25_a2v: 8, comfy.graph:ltx25_i2v_av: 8,
+                                talk.infinitetalk:longcat_fast: 20}
     boot_seconds: {default: 600, talkcomfy: 900}   # boot + image pull + model load per machine (talk weights first)
+    # A graph's or talk profile's own weights (its download_gb) on top of the boot, once per machine: ~100 MB/s, from
+    # a first image job's ~30 GB downloaded within ~5-6 min on Vast (the gpu_runs max_attempt_minutes_by_family note).
+    download_mb_per_second: 100
     review_usd_per_output: 0.01    # screen + confirm calls per reviewed output, roughly
   # What each capability needs before an item exercising it can run: policy switches that must be on (`requires`,
   # dotted paths) and job kinds that must exist (`kinds`). An item whose capability is missing here, or not wired, is
@@ -91,6 +102,8 @@ breadth:
     camera_push_in: {requires: [generation.talk_motion.enabled]}
     longcat: {requires: [generation.talk_profiles.longcat]}
     longcat16: {requires: [generation.talk_profiles.longcat16], kinds: [talk.longcat]}
+    longcat_fast: {requires: [generation.talk_profiles.longcat_fast]}
+    comfy_graph: {kinds: [comfy.graph]}   # any named ComfyUI workflow (policy comfy_graphs)
     hd720: {requires: [generation.talk_profiles.hd720]}
     dancing: {requires: [dance.enabled], kinds: [comfy.wan_animate2]}
     # The route comparison (plan perf_compare): the story_time edit grammar, and talking shots that perform a licensed
@@ -538,3 +551,91 @@ breadth:
               - {<<: *perf_s6, motion_reference: perf-6965116-2}
               - {<<: *perf_s7, motion_reference: perf-7988843-2}
               - {<<: *perf_s8, motion_reference: perf-36931662-2}
+    # Candidate models against our baselines (docs/research/2026-11-24-video-candidates.md; owner 2026-11-24: "least
+    # net new code; models should slot into existing workflows"). Each candidate says three of perf_compare's lines
+    # (natural conversation, expressive hand gestures, a lifestyle scene) from the creator's reference photo, as one
+    # take each (manyworlds.long_take): the SAME audio perf_compare voiced (audio @shared:perf-compare: its finished
+    # voice.speak line whose words match the script; nothing is voiced again, so perf_compare must have run; the dry
+    # run says MISSING otherwise). Baselines are perf_compare's own outputs (v1 InfiniteTalk, v2 LongCat 1.6): those
+    # were made from the bar scene photos, these from the reference photo, so compare motion, sync, identity and
+    # speed, not the set. Each take is pinned to its candidate's card:
+    #   echomimic_v3_flash  comfy.graph, RTX 4090 (24 GB; claimed 12 GB)
+    #   ltx25_a2v           comfy.graph, L40S 48 GB (int8; gated weights: needs HF_TOKEN)
+    #   ltx25_i2v_av        comfy.graph, L40S: the lifestyle line only, in the model's own voice (audio none)
+    #   longcat_fast        talk.infinitetalk with talk profile longcat_fast (LongCat 1.0 + the portable speed-ups), 5090
+    # Run: mw test breadth --plan candidates --dry-run, then (owner's go) mw test breadth --plan candidates;
+    # mw test breadth-report <run>. Per take (render, download and server-start seconds, peak VRAM, cold or warm, lip
+    # sync): its long_take asset's segments[].bench.
+    candidates:
+      max_usd: 2                    # NOT owner-approved yet: dry run ~$0.85 (2026-11-24) plus idle tails and one retry
+      creator: maren.afterhours
+      pools:                        # the takes pin their own pools; nothing else in this plan runs
+        talk: [runpod_secure_l40s]
+        comfy: [runpod_secure_l40s]
+      items:
+        - id: echo_natural
+          exercises: [talking, comfy_graph]
+          take: &cand_natural
+            kind: comfy.graph
+            graph: echomimic_v3_flash
+            pools: [vast_4090, runpod_comm_4090]
+            audio: "@shared:perf-compare"
+            image: "@anchor"
+            keyframes: 4
+            prompt: &natural_prompt >-
+              A young woman leans toward her phone propped in front of her and starts a story, conspiratorial and
+              amused, chest-up framing, natural head movement, small hand gestures, real phone footage
+            script: &natural_line "Okay, story time. Five to two, I'm closing up."
+        - id: echo_gestures
+          exercises: [talking, comfy_graph]
+          take: &cand_gestures
+            <<: *cand_natural
+            prompt: &gestures_prompt >-
+              A young woman laughs in disbelief as she talks to her phone camera and throws one hand up, then both
+              hands open, expressive hand gestures, medium shot, real phone footage
+            script: &gestures_line "Doesn't want a drink. Wants tea. At a bar!"
+        - id: echo_lifestyle
+          exercises: [talking, comfy_graph]
+          take: &cand_lifestyle
+            <<: *cand_natural
+            prompt: &lifestyle_prompt >-
+              A young woman wipes the counter in front of her with a cloth while she talks to her phone camera,
+              smiling warmly, relaxed, end of a long shift, medium close-up, real phone footage
+            script: &lifestyle_line "Honestly? Best night of the week."
+        - id: ltx_a2v_natural
+          exercises: [talking, comfy_graph]
+          take: {<<: *cand_natural, graph: ltx25_a2v, pools: [runpod_secure_l40s]}
+        - id: ltx_a2v_gestures
+          exercises: [talking, comfy_graph]
+          take: {<<: *cand_gestures, graph: ltx25_a2v, pools: [runpod_secure_l40s]}
+        - id: ltx_a2v_lifestyle
+          exercises: [talking, comfy_graph]
+          take: {<<: *cand_lifestyle, graph: ltx25_a2v, pools: [runpod_secure_l40s]}
+        - id: ltx_i2v_av_lifestyle
+          exercises: [talking, comfy_graph]
+          take:
+            <<: *cand_lifestyle
+            graph: ltx25_i2v_av
+            pools: [runpod_secure_l40s]
+            audio: none
+            prompt: >-
+              A young woman wipes the counter in front of her with a cloth while she talks to her phone camera,
+              smiling warmly, relaxed, end of a long shift, medium close-up, real phone footage. She says, warm and
+              a little tired: "Honestly? Best night of the week."
+        - id: longcat_fast_natural
+          exercises: [talking, longcat_fast]
+          take: &cand_longcat
+            kind: talk.infinitetalk
+            profile: longcat_fast
+            pools: [vast_5090]
+            audio: "@shared:perf-compare"
+            image: "@anchor"
+            keyframes: 4
+            prompt: *natural_prompt
+            script: *natural_line
+        - id: longcat_fast_gestures
+          exercises: [talking, longcat_fast]
+          take: {<<: *cand_longcat, prompt: *gestures_prompt, script: *gestures_line}
+        - id: longcat_fast_lifestyle
+          exercises: [talking, longcat_fast]
+          take: {<<: *cand_longcat, prompt: *lifestyle_prompt, script: *lifestyle_line}

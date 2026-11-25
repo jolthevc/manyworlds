@@ -220,9 +220,10 @@ def _pools_by_family(policy: Policy, plan: dict) -> dict[str, list[str]]:
     return {str(k): list(v) for k, v in ((plan.get("pools") or _cfg(policy).get("pools_by_family") or {})).items()}
 
 
-def _pool_price(policy: Policy, plan: dict, kind: str) -> tuple[str | None, float]:
-    """(the pool a kind's job would run in for this test, its usd per hour): the plan's pin, else the kind's first."""
-    pools = _pools_by_family(policy, plan).get(policy.family(kind)) or \
+def _pool_price(policy: Policy, plan: dict, kind: str, pools: list[str] | None = None) -> tuple[str | None, float]:
+    """(the pool a kind's job would run in for this test, its usd per hour): the job's own pools (a take's), else
+    the plan's pin, else the kind's first."""
+    pools = pools or _pools_by_family(policy, plan).get(policy.family(kind)) or \
         list(policy.get("job_kinds", kind, "pools", default=[]) or [])
     if not pools:
         return None, 0.0
@@ -288,7 +289,8 @@ def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = Fa
 def estimate(conn, policy: Policy, plan: dict, item: Item, creator, *, shared_done: bool = False) -> dict:
     """What an item should cost on its first try: GPU seconds per job (measured from finished attempts where they
     exist, else policy: autoscale.scale.default_job_seconds, or breadth.estimate.seconds_per_output_second for
-    kinds priced by length), at its pool's price, plus the review calls. Labelled by source."""
+    kinds priced by length, by the job's own rate first: <kind>:<graph or talk profile>), at its pool's price, plus
+    the review calls. Labelled by source."""
     from .deploy import autoscale
     est = _cfg(policy).get("estimate") or {}
     per_second = est.get("seconds_per_output_second") or {}
@@ -296,11 +298,12 @@ def estimate(conn, policy: Policy, plan: dict, item: Item, creator, *, shared_do
     candidates = int(policy.get("production", "candidates_per_scene", default=4))
     jobs, gpu_usd, reviews = [], 0.0, 0.0
     for j in expected_jobs(policy, item, creator, shared_done=shared_done):
-        if j["output_seconds"] is not None and j["kind"] in per_second:
-            seconds, source = float(per_second[j["kind"]]) * float(j["output_seconds"]), "policy (per output second)"
+        rate = j.get("rate") if j.get("rate") in per_second else j["kind"]
+        if j["output_seconds"] is not None and rate in per_second:
+            seconds, source = float(per_second[rate]) * float(j["output_seconds"]), f"policy ({rate} per output second)"
         else:
             seconds, source = autoscale.job_seconds(conn, policy, j["kind"])
-        pool, usd_h = _pool_price(policy, plan, j["kind"])
+        pool, usd_h = _pool_price(policy, plan, j["kind"], j.get("pools"))
         usd = j["n"] * seconds * usd_h / 3600
         gpu_usd += usd
         outputs = j["n"] * (candidates if j["kind"].startswith("image.") and j["kind"] != "image.narrated" else 1)
@@ -310,24 +313,39 @@ def estimate(conn, policy: Policy, plan: dict, item: Item, creator, *, shared_do
             "usd": round(gpu_usd + reviews, 4)}
 
 
-def machines_estimate(policy: Policy, plan: dict, kinds: set[str]) -> list[dict]:
-    """The machines the run needs (one per machine family: merged families share one) and their boot cost
-    (breadth.estimate.boot_seconds, per family or default), at each family's pinned pool price."""
+def machines_estimate(policy: Policy, plan: dict, kinds: set[str], jobs: list[dict] | None = None) -> list[dict]:
+    """The machines the run needs (one per machine family and pool: merged families share one; a take pinned to its
+    own pools gets its own) and their boot cost (breadth.estimate.boot_seconds, per family or default), plus the
+    weights each first downloads (a job's download_gb, once per machine, at breadth.estimate.download_mb_per_second),
+    at the pool's price."""
     from .deploy import autoscale
     est = _cfg(policy).get("estimate") or {}
     boots = est.get("boot_seconds") or {}
-    fams: dict[str, str] = {}
-    for kind in sorted(kinds):
+    mbps = float(est.get("download_mb_per_second") or 0)
+    uses = [(j["kind"], j.get("pool"), j) for j in jobs] if jobs is not None else [(k, None, {}) for k in kinds]
+    machines: dict[tuple, dict] = {}
+    for kind, pool, j in sorted(uses, key=lambda u: (u[0], str(u[1]))):
         if policy.get("gpu_pools", (policy.get("job_kinds", kind, "pools", default=[]) or ["local"])[0],
                       "provider") == "local":
             continue   # hosted APIs and the control plane rent nothing
-        fams.setdefault(autoscale.machine_family(policy, kind), kind)
+        fam = autoscale.machine_family(policy, kind)
+        if pool is None:
+            pool = _pool_price(policy, plan, kind)[0]
+        m = machines.setdefault((fam, pool), {"kinds": set(), "weights": {}})
+        m["kinds"].add(kind)
+        if j.get("weights"):
+            m["weights"][j["weights"]] = float(j.get("download_gb") or 0)
     out = []
-    for fam, kind in sorted(fams.items()):
-        pool, usd_h = _pool_price(policy, plan, kind)
+    for (fam, pool), m in sorted(machines.items(), key=lambda x: (x[0][0], str(x[0][1]))):
+        usd_h = float(policy.get("gpu_pools", pool, "usd_per_hour", default=0) or 0) if pool else 0.0
         seconds = float(boots.get(fam, boots.get("default", 0)))
-        out.append({"family": fam, "pool": pool, "boot_seconds": seconds, "boot_usd": round(seconds * usd_h / 3600, 4),
-                    "kinds": sorted(k for k in kinds if autoscale.machine_family(policy, k) == fam)})
+        gb = sum(m["weights"].values())
+        dl = round(gb * 1000 / mbps) if mbps and gb else 0
+        row = {"family": fam, "pool": pool, "boot_seconds": seconds, "boot_usd": round((seconds + dl) * usd_h / 3600, 4),
+               "kinds": sorted(m["kinds"])}
+        if dl:
+            row.update(download_gb=round(gb, 1), download_seconds=dl, weights=sorted(m["weights"]))
+        out.append(row)
     return out
 
 
@@ -554,23 +572,28 @@ def run(conn, policy: Policy, plan_name: str, *, items: list[str] | None = None,
 
 
 def _dry_run(conn, pol: Policy, plan: dict, rid: str, todo: list[Item], creators: dict) -> dict:
-    out, kinds, total, shared = [], set(), 0.0, set()
+    out, all_jobs, total, shared = [], [], 0.0, set()
     for item in todo:
         key = str((item.body or {}).get("shared_key") or "")
         e = estimate(conn, pol, plan, item, creators[item.id], shared_done=bool(key) and key in shared)
         if key:
             shared.add(key)
-        kinds |= {j["kind"] for j in e["jobs"]}
+        all_jobs += e["jobs"]
         total += e["usd"]
         post = _post_for(conn, rid, item.id) if item.format else None
-        out.append({"id": item.id, "exercises": item.exercises, "format": item.format,
-                    "bench": (item.bench or {}).get("kind"), "options": item.options,
-                    "would": f"resume (post is {post['status']})" if post else "create", "estimate": e})
-    machines = machines_estimate(pol, plan, kinds)
+        row = {"id": item.id, "exercises": item.exercises, "format": item.format,
+               "bench": (item.bench or {}).get("kind"), "options": item.options,
+               "would": f"resume (post is {post['status']})" if post else "create", "estimate": e}
+        if item.take:
+            from . import long_take
+            row["audio"] = long_take.audio_status(conn, item.take)
+        out.append(row)
+    machines = machines_estimate(pol, plan, {j["kind"] for j in all_jobs}, all_jobs)
     total += sum(m["boot_usd"] for m in machines)
     return {"dry_run": True, "items": out, "machines": machines, "estimated_usd": round(total, 2),
             "estimate_note": "first try only (repairs cost more); seconds are 'measured' from finished attempts where "
-                             "they exist, else 'policy'; boots from breadth.estimate.boot_seconds",
+                             "they exist, else 'policy'; boots from breadth.estimate.boot_seconds, weight downloads "
+                             "from each graph's download_gb at breadth.estimate.download_mb_per_second",
             "daily_gpu_cap_usd": pol.get("gpu_runs", "daily_gpu_usd")}
 
 

@@ -1,0 +1,28 @@
+# EchoMimicV3-Flash (antgroup, Apache-2.0) through smthemex/ComfyUI_EchoMimic: photo + voice line -> talking video.
+source:
+  repo: https://github.com/smthemex/ComfyUI_EchoMimic
+  commit: 9f430d9219c378505dedec6ed1749d5088745b3c
+  example: example_workflows/echov3_falsh_Workflow.json
+  converted: >-
+    By hand from the example's UI format to API format, input names from EchoMimic_node.py at the same commit (the
+    example's Echo_LoadModel widget values predate the node's current inputs, so they were matched by meaning).
+    Changed from the example: use_mmgp None and block_offload off (mmgp is not installed; a 24 GB card holds the
+    1.3B model whole), lowvram on (with it off the sampler moves the pipeline to the CPU after each clip and the
+    next prompt reuses it there), CLIP vision is Comfy-Org's clip_vision_h (the Wan CLIP-H the README points to),
+    the output is mp4/h264. Same 8 steps, cfg 6, 16 kHz audio, 25 fps.
+  size: >-
+    V3_flash ignores width and height after fitting the photo: it renders at the photo's aspect within 768x768's
+    area (infer_flash_pro.get_sample_size). Our photo is fitted to 576x1024 first (exactly 9:16 and 768x768's
+    area), so the clip comes out 576x1024: portrait is supported (the example itself is 512x768), 9:16 untested.
+inputs:
+  image: [image.image]
+  audio: [audio.audio]
+  prompt: [predata.prompt]
+  negative_prompt: [predata.negative_prompt]
+  seed: [sampler.seed]
+  width: [predata.width]
+  height: [predata.height]
+  fps: [predata.fps]
+  frames: [predata.length]
+  steps: [sampler.steps]
+  cfg: [sampler.cfg]

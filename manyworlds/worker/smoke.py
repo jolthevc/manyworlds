@@ -203,6 +203,28 @@ def _check_negatives(info: dict | None = None) -> str:
     return "every graph encodes a job's negative prompt" + (" (valid against ComfyUI's nodes)" if info else "")
 
 
+def _check_named_graphs(info: dict | None = None, specs: dict | None = None) -> str:
+    """Every named graph (policy comfy_graphs, worker/graphs) has its workflow and sidecar in the image, fills from a
+    probe job, and (with ComfyUI's node catalogue `info`) every node it uses is loaded with every input it needs: the
+    EchoMimic pack imported, LTX-2.5's core nodes present in this ComfyUI."""
+    from . import comfy
+    from .. import policy as policy_mod
+    from .handlers import comfy_graph
+    specs = specs if specs is not None else (policy_mod.load().get("comfy_graphs", default={}) or {})
+    for name, spec in specs.items():
+        _, spec = comfy_graph.spec_for({"graph": name}, spec)
+        graph, side = comfy_graph.load(name)
+        params = {**(spec.get("params") or {}), "seconds": 3.0}
+        values = comfy_graph.values_for(image="x.png", audio="x.wav", prompt="a person talks", negative="blurry",
+                                        seed=1, seconds=3.0, params=params)
+        g = comfy_graph.fill(graph, side.get("inputs") or {}, values)
+        if info is not None:
+            problems = comfy.missing_inputs(g, info)
+            if problems:
+                raise RuntimeError(f"named graph {name} doesn't match ComfyUI's nodes: " + "; ".join(problems))
+    return f"named graphs fill{' and match ComfyUI' if info is not None else ''}: {', '.join(specs)}"
+
+
 def _check_interpolation(d: Path, interpolate: dict | None = None) -> str:
     """Walk-and-talk's motion clip is motion-interpolated to the talk frame rate (talk_comfy.at_fps with the
     policy's `generation.talk.motion_interpolate`, or `interpolate`; minterpolate) by this image's ffmpeg: the filter
@@ -309,13 +331,21 @@ def check_talkcomfy() -> list[str]:
                                    + "; ".join(problems))
         negatives = _check_negatives(info)
         song = _check_song_graph(info)
+        named = _check_named_graphs(info)
+        lc_fast = {**(policy_mod.load().get("generation", "talk_profiles", "longcat_fast", default={}) or {}),
+                   "width": 480, "height": 832, "vae_file": "x.safetensors"}
+        problems = comfy.missing_inputs(comfy.graph_longcat(image="x.png", audio="x.wav", prompt="a person talks",
+                                                            frames=250, seed=1, params=lc_fast, blocks_to_swap=0), info)
+        if problems:
+            raise RuntimeError("LongCat longcat_fast graph doesn't match ComfyUI's nodes: " + "; ".join(problems))
     finally:
         comfy.stop()
-    handlers_for(["comfy.wan_i2v", "comfy.wan_animate2"])
-    done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat), story-clip and "
-                "Wan-Animate-2 graphs")
+    handlers_for(["comfy.wan_i2v", "comfy.wan_animate2", "comfy.graph"])
+    done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat, longcat_fast), "
+                "story-clip and Wan-Animate-2 graphs")
     done.append(negatives)
     done.append(song)
+    done.append(named)
 
     # The motion clip is resampled to the talk's 25 fps before V2V (talk_comfy.at_fps), with the image's ffmpeg.
     import imageio.v3 as iio
