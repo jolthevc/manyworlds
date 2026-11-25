@@ -218,6 +218,7 @@ def develop(conn, policy: Policy, llm, t: dict) -> list[dict]:
         f"The archetype library (name: what it is): {json.dumps(archetypes.catalogue(policy))}",
         (f"Pattern cards for casting (what makes creators like this worth following; patterns, never a person):\n"
          f"{patterns.brief(cards)}" if cards else ""),
+        _culture(conn, policy),
         f"Handles already taken: {taken}. Minimum apparent age {scope.get('creator_min_age', 21)}. Never touch: "
         f"{scope.get('excluded_topics')}.",
         f"Develop exactly {n} candidates for this brief, clearly different from each other and from the portfolio. "
@@ -699,3 +700,13 @@ def summary(conn, run: str) -> dict:
          "creator_id": str(r["creator_id"]) if r["creator_id"] else None,
          "usd": float(r["actual_usd"]) if r["actual_usd"] is not None else None} for r in rows]}
 
+
+
+def _culture(conn, policy: Policy) -> str:
+    """Culture signals for casting and commerce (manyworlds.research.culture): context from publications, not
+    evidence of what performs."""
+    from ..research import culture
+    lines = "\n".join(x for x in (culture.brief(conn, policy, use="casting"), culture.brief(conn, policy, use="commerce"))
+                      if x)
+    return (f"What is moving in culture now (signals from fashion, beauty, design, travel and advertising publications; "
+            f"our own synthesis, context not proof):\n{lines}" if lines else "")

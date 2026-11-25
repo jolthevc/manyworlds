@@ -198,6 +198,10 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
                   f"correlation, not proof; use it for hooks, formats and pacing, never copy, and stay in the creator's "
                   f"voice): {json.dumps(niche)}\n" if niche else "")
     cards = pattern_cards(conn, policy, prof or c["bible"], formats)
+    from ...research import culture
+    culture_lines = culture.brief(conn, policy, use="content")
+    culture_text = (f"Culture now (signals from publications; ideas may ride one when it suits her, never forced):\n"
+                    f"{culture_lines}\n" if culture_lines else "")
     card_text = (f"Pattern cards from the creative pattern library (photo and video patterns that make creators like "
                  f"her worth following; ILLUSTRATIVE ones are craft knowledge, researched ones carry evidence and "
                  f"weigh more). An idea that follows one sets `pattern` to its name and takes its format, hook, "
@@ -220,7 +224,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"{continuity_text}"
         f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
-        f"{niche_text}{play_text}{card_text}{brief_text}{style_text}"
+        f"{niche_text}{play_text}{card_text}{culture_text}{brief_text}{style_text}"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
         f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"

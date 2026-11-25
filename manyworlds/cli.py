@@ -815,7 +815,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
     from . import notify
     from .brain import discover, events, ideas, launches, portfolio, showrunner_loop
     from .brain import chief_of_staff
-    from .research import monitor
+    from .research import culture, monitor
     from .brain.agents import comment_themes, market_lead, style_director, talent_manager
     from .deploy.providers import redact
 
@@ -841,6 +841,7 @@ def brain_steps(conn, pol, llm=None) -> dict:
         comment_themes.ensure(conn, pol, now=now)           # what each audience keeps saying, for the showrunner
         discover.ensure_due(conn, pol, now=now)             # research discovery on its cadence (live only)
         monitor.ensure_due(conn, pol, now=now)              # the reference universe's daily checks (live, enabled)
+        culture.ensure_due(conn, pol, now=now)              # publications beyond social media, once a day
         chief_of_staff.tick(conn, pol, now=now)             # predictions resolved, stalled requests and agents reported
         r = launches.advance(conn, pol)            # approved launches walk the creator lab's steps
         return [{"launches": r}] if any(r.values()) else []
@@ -878,7 +879,19 @@ def produce_tick(conn, pol, llm=None) -> dict:
             casts = voice_lab.settle_casts(conn, pol)
         except Exception as e:  # noqa: BLE001 - reported, retried next tick
             casts = {"error": f"{type(e).__name__}: {e}"[:300]}
-        return {"operations": "paused", **({"casts": casts} if casts and any(casts.values()) else {})}
+        # Research the owner lets run while paused (operations.while_paused: research_monitor): the daily monitor and
+        # culture runs, each queued once a day (both check the leave themselves).
+        research = {}
+        from .research import culture, monitor
+        for name, due in (("monitor", monitor.ensure_due), ("culture", culture.ensure_due)):
+            try:
+                job = due(conn, pol)
+                if job:
+                    research[name] = str(job)
+            except Exception as e:  # noqa: BLE001 - reported, retried next tick
+                research[name] = f"error: {type(e).__name__}: {e}"[:300]
+        return {"operations": "paused", **({"casts": casts} if casts and any(casts.values()) else {}),
+                **({"research": research} if research else {})}
     if pol.get("brain", "showrunner", "enabled", default=False):
         # The showrunner plans (brain worker); here: ask for batches, schedule evaluated ones, events, launches.
         steps = brain_steps(conn, pol, llm)

@@ -184,7 +184,8 @@ def clean(policy, part: str, out: BaseModel) -> dict:
     return {"season": {**d, "started": datetime.now(timezone.utc).date().isoformat(), "days": days}}
 
 
-def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime, cards: list[dict] | None = None) -> str:
+def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime, cards: list[dict] | None = None,
+            culture_text: str = "") -> str:
     import json
     lib = aesthetics.library(policy)
     have = {k: prof.get(k) for k in ("persona", "archetypes", "positioning", "audience_insight", "story", "style",
@@ -204,7 +205,10 @@ def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime, cards: li
             f"make creators like her worth following; ILLUSTRATIVE ones are craft knowledge, researched ones carry "
             f"evidence): let her style, families and signature items make these hers, never copy a person:\n"
             f"{patterns.brief(cards)}\n\n" if cards else "")
-    return (refs + f"Creator bible: {json.dumps(bible, default=str)}\n\nProfile so far: {json.dumps(have, default=str)}\n\n"
+    refs += (f"What is moving in fashion, beauty, grooming, interiors and travel now (culture signals from publications, "
+             f"our own synthesis; cultural context, not evidence of what performs; take what suits her and follow no "
+             f"trend she would not):\n{culture_text}\n\n" if culture_text else "")
+    return (refs +f"Creator bible: {json.dumps(bible, default=str)}\n\nProfile so far: {json.dumps(have, default=str)}\n\n"
             + (f"Last month's capsule (make this one different): {json.dumps(last.get('capsule'))}\n\n" if part == 'season' and last else "")
             + f"Rules: {json.dumps(lib['rules'])}\n\n{dossier.desirability_text(policy)} Her wardrobe and photographic "
               f"style express her presentation register (brand_core.presentation), from her own character, not a "
@@ -218,10 +222,13 @@ def build_part(ctx: AgentContext, creator_id, part: str) -> dict:
     now = datetime.now(timezone.utc)
     role = _cfg(policy).get("role", ROLE)
     cards = patterns.retrieve(conn, policy, stage="style", who=prof or bible) if part == "style" else []
+    from ...research import culture
+    culture_text = culture.brief(conn, policy, use="style") if part in ("style", "season") else ""
 
     def compute():
         out = ctx.llm.structured(role, system=profile_mod.persona_system(policy, SYSTEM),
-                                 content=_prompt(policy, prof, bible, part, now, cards), schema=SCHEMAS[part],
+                                 content=_prompt(policy, prof, bible, part, now, cards, culture_text=culture_text),
+                                 schema=SCHEMAS[part],
                                  effort=_cfg(policy).get("effort", "medium"), creator_id=creator_id)
         used = [{"key": c["key"], "id": c.get("id"), "version": c.get("version"), "stage": "style"} for c in cards]
         return {"kind": "style_part", "creator_id": creator_id,

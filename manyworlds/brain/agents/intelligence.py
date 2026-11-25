@@ -58,7 +58,7 @@ from .. import aesthetics, archetypes, patterns
 from ..agent import AgentContext, register, remember
 
 AGENT = "intelligence"
-MODES = ("scout", "annotate", "distill", "pilot", "commerce", "monitor", "resume")
+MODES = ("scout", "annotate", "distill", "pilot", "commerce", "monitor", "resume", "culture")
 STEPS = {"pilot": ["scout", "annotate", "distill"], "resume": ["annotate", "distill"]}
 CLUSTER_FIELDS = (("visual", "situation"), ("visual", "nearest_shot_type"), ("visual", "device"), ("visual", "gaze"),
                   ("performance", "format"), ("performance", "movement"), ("craft", "hook"),
@@ -301,7 +301,9 @@ class Intelligence:
         if mode not in MODES:
             raise NonRetryable(f"intelligence mode must be one of {MODES}")
         cfg = _cfg(ctx.policy)
-        default_cap = watch.cfg(ctx.policy).get("daily_usd", 0) if mode == "monitor" else cfg.get("max_usd_per_run", 0)
+        default_cap = (watch.cfg(ctx.policy).get("daily_usd", 0) if mode == "monitor" else
+                       (ctx.policy.get("intelligence", "culture", "daily_usd", default=0) if mode == "culture" else
+                        cfg.get("max_usd_per_run", 0)))
         spend = Spend(ctx.conn, ctx.job.id, float(p.get("usd") or default_cap))
         steps = STEPS.get(mode, [mode])
         out: dict = {"mode": mode, "cap_usd": spend.cap}
@@ -324,7 +326,7 @@ class Intelligence:
 
     def _step(self, ctx, step: str, p: dict, spend: Spend, scope: list) -> dict:
         res = {"scout": self.scout, "annotate": self.annotate, "distill": self.distill,
-               "commerce": self.commerce, "monitor": self.monitor}[step](ctx, p, spend, scope)
+               "commerce": self.commerce, "monitor": self.monitor, "culture": self.culture}[step](ctx, p, spend, scope)
         res["capped"] = bool(res.get("capped") or spend.capped)
         if spend.held:
             res["held_for_reserve"] = True       # stopped at its ceiling: the rest of the cap is the next steps'
@@ -563,6 +565,18 @@ class Intelligence:
             made.append({**store_card(conn, card, c, ctx.job.id), "cluster": c["name"],
                          "dropped_names": problems[:5]})
         return {"annotations": len(rows), "clusters": len(clusters), "cards": made, "skipped": skipped}
+
+    # --- culture: publications beyond social media (manyworlds.research.culture) ------------------------------
+    def culture(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:
+        from ...research import culture
+        items, report = culture.collect(ctx.conn, ctx.policy, get=self.feed)
+        est = float(ctx.policy.get("intelligence", "culture", "usd_per_call", default=0))
+        made = culture.distill(ctx.conn, ctx.policy, ctx.llm, items) if items and spend.allow(est) else []
+        return {"new_items": len(items), "feeds": report, "signals": made}
+
+    def feed(self, url: str) -> bytes:                               # replaced in tests
+        from ...research.culture import fetch
+        return fetch(url)
 
     # --- commerce -------------------------------------------------------------------------------------------------
     def commerce(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:

@@ -1536,6 +1536,39 @@ intelligence:
     sponsored_markers: ["#ad", "#sponsored", "#advertisement", "#werbung", "#anzeige", "paid partnership",
                         "#partner", "#gifted"]
     activity_bands: {high: 0.08, medium: 0.03}
+  # Culture intelligence beyond social media (manyworlds.research.culture; owner 2026-11-25): publishers' own feeds,
+  # read once a day while research runs (operations.while_paused). Kept: link, title, feed, date (source references)
+  # and our distilled signals; never article text or images (data_policy source `feeds`). A signal's kind is code's:
+  # corroborated (at least corroborated_min publications) or single_source (confidence capped). Feeds checked
+  # 2026-11-25 (all answered 200 with items).
+  culture:
+    enabled: true
+    daily_usd: 0.2                 # with monitor.daily_usd 0.8: the owner's $1/day of research
+    usd_per_call: 0.03
+    role: culture_distill
+    effort: low
+    max_items_per_call: 120
+    max_signals: 12
+    corroborated_min: 2
+    single_source_confidence_max: 0.5
+    max_item_age_days: 14
+    signal_days: 120
+    item_days: 180
+    k: {style: 6, casting: 6, commerce: 5, content: 5}
+    feeds:
+      - {name: vogue, category: fashion, url: "https://www.vogue.com/feed/rss"}
+      - {name: harpers_bazaar, category: fashion, url: "https://www.harpersbazaar.com/rss/all.xml/"}
+      - {name: elle, category: fashion, url: "https://www.elle.com/rss/all.xml/"}
+      - {name: wwd, category: fashion_business, url: "https://wwd.com/feed/"}
+      - {name: business_of_fashion, category: fashion_business, url: "https://www.businessoffashion.com/arc/outboundfeeds/rss/"}
+      - {name: allure, category: beauty, url: "https://www.allure.com/feed/rss"}
+      - {name: gq, category: menswear_grooming, url: "https://www.gq.com/feed/rss"}
+      - {name: esquire, category: menswear_grooming, url: "https://www.esquire.com/rss/all.xml/"}
+      - {name: hypebeast, category: streetwear, url: "https://hypebeast.com/feed"}
+      - {name: architectural_digest, category: interiors, url: "https://www.architecturaldigest.com/feed/rss"}
+      - {name: dezeen, category: architecture_design, url: "https://www.dezeen.com/feed/"}
+      - {name: conde_nast_traveler, category: travel, url: "https://www.cntraveler.com/feed/rss"}
+      - {name: adweek, category: brand_campaigns, url: "https://www.adweek.com/feed/"}
   # Cost-aware monitoring of the reference creator universe (manyworlds.research.monitor; migration 045; the agent's
   # `monitor` mode, queued once a day by monitor_due on the Brain cycle while enabled and operations are live, or by
   # `mw research monitor`). A creator's tier comes from four scores in [0, 1] weighted by `weights`: relevance (its
@@ -1550,7 +1583,7 @@ intelligence:
   # `mw research monitor --estimate N` ($/month at N creators). Off until the owner turns it on.
   monitor:
     enabled: true            # owner 2026-11-25: on at $1/day, also while paused (operations.while_paused)
-    daily_usd: 1.0
+    daily_usd: 0.8                 # with culture.daily_usd 0.2: the owner's $1/day of research (2026-11-25)
     max_checks_per_tick: 400
     max_enroll_per_tick: 500
     # Batched profile checks: Apify's profile scraper takes many handles a run and embeds each one's latest 12 posts
@@ -3526,6 +3559,7 @@ llm:
     iia_annotate: claude-haiku-5-5
     iia_distill: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     iia_curate: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
+    culture_distill: claude-haiku-5-5   # publications beyond social media, once a day (research.culture)
     iia_synthesize: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
     # Casting (manyworlds.brain.casting): 3-5 concepts in one call (judgement and taste: Opus, once per launch) and one
     # judge call scoring them on the rubric (another model than the writer's, so it does not grade its own work).

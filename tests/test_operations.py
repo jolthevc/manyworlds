@@ -46,8 +46,23 @@ def test_paused_producer_does_nothing(conn, policy, monkeypatch):
     from manyworlds import cli, production
     called = []
     monkeypatch.setattr(production, "advance", lambda *a, **k: called.append("advance") or {})
-    out = cli.produce_tick(conn, _paused(policy))
+    quiet = _paused(policy)
+    quiet = dataclasses.replace(quiet, body={**quiet.body, "operations": {**quiet.body["operations"], "while_paused": []}})
+    out = cli.produce_tick(conn, quiet)
     assert out == {"operations": "paused"} and called == []
+
+
+def test_paused_producer_queues_only_the_research_the_owner_allows(conn, policy, monkeypatch):
+    # owner 2026-11-25: research keeps learning during the build (operations.while_paused: research_monitor)
+    from manyworlds import cli, production
+    called = []
+    monkeypatch.setattr(production, "advance", lambda *a, **k: called.append("advance") or {})
+    out = cli.produce_tick(conn, _paused(policy))
+    assert set(out["research"]) == {"monitor", "culture"} and called == []
+    modes = sorted(r["payload"]["mode"] for r in conn.execute("SELECT payload FROM jobs"))
+    assert modes == ["culture", "monitor"]
+    cli.produce_tick(conn, _paused(policy))
+    assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 2          # once a day
 
 
 def test_paused_producer_still_stores_finished_casts(conn, policy, monkeypatch):
@@ -58,4 +73,4 @@ def test_paused_producer_still_stores_finished_casts(conn, policy, monkeypatch):
     monkeypatch.setattr(production, "advance", lambda *a, **k: called.append("advance") or {})
     monkeypatch.setattr(voice_lab, "settle_casts", lambda conn, pol: {"judged": 1, "picked": 1})
     out = cli.produce_tick(conn, _paused(policy))
-    assert out == {"operations": "paused", "casts": {"judged": 1, "picked": 1}} and called == []
+    assert out["casts"] == {"judged": 1, "picked": 1} and called == []
