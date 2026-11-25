@@ -17,7 +17,6 @@ Flags are warnings for the talent manager. An obvious impersonation (a name or h
 
 from __future__ import annotations
 
-import math
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -51,7 +50,22 @@ def _verdict(score: float, warn: float, block: float) -> str | None:
     return "block" if score >= block else "warn" if score >= warn else None
 
 
-def names(candidate: dict, references: list[dict], policy: Policy |def dhash(path: str | Path, size: int = 8) -> int:
+def names(candidate: dict, references: list[dict], policy: Policy | None) -> list[dict]:
+    """candidate {name, handle}; references [{id, display_name, handle}]. Every pair at or past the warning level."""
+    c = _cfg(policy)
+    warn, block = float(c.get("name_warn", 0.75)), float(c.get("name_block", 0.92))
+    flags = []
+    for r in references:
+        for mine, theirs in (("name", "display_name"), ("handle", "handle"), ("name", "handle"), ("handle", "display_name")):
+            score = similarity(candidate.get(mine), r.get(theirs))
+            v = _verdict(score, warn, block)
+            if v:
+                flags.append({"check": "name", "verdict": v, "score": score, "reference": str(r.get("id")),
+                              "fields": [mine, theirs]})
+    return flags
+
+
+def dhash(path: str | Path, size: int = 8) -> int:
     """A difference hash: the image greyed and shrunk to (size+1) x size, one bit per left/right brightness step."""
     from PIL import Image
     with Image.open(path) as im:
