@@ -64,3 +64,22 @@ def test_an_engine_loaded_earlier_in_the_family_is_freed_too(policy, monkeypatch
     for kind in ("image.zimage", "image.narrated", "comfy.wan_i2v"):
         w._switch_to(kind)
     assert freed == ["zimage"]
+
+
+def test_a_code_fault_quoted_from_a_subprocess_or_a_node_fails_once():
+    # 2026-11-22..24: InfiniteTalk's and SVC's own tracebacks end in an AttributeError / TypeError, but reach the
+    # worker as a RuntimeError, so each job ran three times (an L40S for 5-35 min a try) and failed the same way.
+    sub = RuntimeError("InfiniteTalk exited 1:   File \"/opt/InfiniteTalk/wan/multitalk.py\", line 714, in gen\n"
+                       "    x = context[0].to(context[0].dtype)\nAttributeError: 'list' object has no attribute 'dtype'\n")
+    svc = RuntimeError("cli.inference_svc failed (1):     return forward_call(*args, **kwargs)\nTypeError: "
+                       "LlamaAttention.forward() missing 1 required positional argument: 'position_embeddings'\n")
+    node = RuntimeError("ComfyUI failed: node sample_high (WanVideoSampler): ImportError: cannot import name 'x'")
+    assert runner.is_code_fault(sub) and runner.is_code_fault(svc) and runner.is_code_fault(node)
+    # The last exception decides: a code-looking error the program recovered from, then a machine or a transient one
+    assert not runner.is_code_fault(RuntimeError("LongCat exited 1: TypeError: x\nDuring handling...\n"
+                                                 "torch.OutOfMemoryError: CUDA out of memory"))
+    assert not runner.is_code_fault(RuntimeError("tool exited 1: TypeError: bad\nConnectionResetError: reset by peer"))
+    # An attribute of None stays a transient empty answer, quoted or not
+    assert not runner.is_code_fault(RuntimeError("tool exited 1:\nAttributeError: 'NoneType' object has no attribute 'json'"))
+    # A plain failure with no exception named is retried as before
+    assert not runner.is_code_fault(RuntimeError("InfiniteTalk timed out after 3000 s"))
