@@ -100,7 +100,8 @@ BRIEF: dict[str, str] = {
     "slides": "a carousel's text slides (manyworlds.slides)",
     "song": "a music_video post's song (manyworlds.music spec: title, lyrics, tags, bpm, key, duration_s)",
     "template": "the shot-sheet archetype the caption style is looked up by",
-    "breadth_run": "marks a breadth-test post, advanced only by its own driver",
+    "breadth_run": ("marks a test post (a breadth test, or a casting audition: casting-<run>), advanced only by its "
+                    "own driver"),
     "shared_key": "posts with the same key share scene photos, voice lines and seeds (a route comparison)",
     "talk_route": "the talk routes this post's takes try, in order (generation.talk_routes; else generation.talk_route)",
 }

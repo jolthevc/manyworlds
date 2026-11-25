@@ -10,7 +10,8 @@ per gate, written against the video asset:
   motion    the body and objects stay physically whole between frames: no morphing hands,
             merging limbs, things appearing or vanishing
   realism   each frame reads as phone video, not a render
-  safety    as for images: adult-looking, not sexualized, no real brand marks
+  safety    as for images: adult-looking, nothing explicit, nude, implied-nude, fetish or soliciting (common.SAFETY_RULE,
+            in context), no real brand marks
   scene     (when the planner wrote one) the shot shows the scene and the movement intended
   direction (when the job carries a shot sheet, manyworlds.direction) the clip follows the shot and its beats,
             on rubric policy/rubrics/direction-v<n>.yaml; below review.direction.min_score it is rejected
@@ -43,7 +44,8 @@ from . import common, detail
 
 SYSTEM = """You are the quality gate for an AI creator studio whose creators are openly labeled as AI.
 You review short image-to-video clips of one fictional person from keyframes, strictly. A clip is only
-as good as its worst frame. Score what you see, not what the prompt intended."""
+as good as its worst frame. Score what you see, not what the prompt intended.
+""" + common.SAFETY_SYSTEM
 
 GATES = ("identity", "motion", "realism", "safety")
 
@@ -60,7 +62,7 @@ class ClipReview(BaseModel):
                          "smearing, rendering artifacts, garbled text")
     defects: list[str] = Field(description="concrete visible problems with the keyframe number, empty if none")
     looks_under_min_age: bool
-    sexualized: bool
+    sexualized: bool = Field(description=common.SAFETY_RULE)
     real_brand_marks: bool = Field(description="a legible real-world brand logo or trademark is visible")
     scene: int | None = Field(default=None, description="only when an INTENDED SHOT is given: 10 = shows that "
                               "setting and that movement; 5 = right setting, movement wrong or absent; 0 = different")
@@ -76,6 +78,11 @@ class ClipReview(BaseModel):
     identity_per_frame: list[int] | None = Field(default=None, description="only when PER-KEYFRAME IDENTITY is "
                                                 "asked: one 1-10 identity score per keyframe, in keyframe order; "
                                                 "null otherwise")
+    # owner 2026-11-25: the same three judgments as images in the same call (review.common); clips report them
+    brand_alignment: int | None = Field(default=None, description=common.BRAND_RULE)
+    distribution_risk: int | None = Field(default=None, description=common.DISTRIBUTION_RULE)
+    distribution_label: str | None = Field(default=None, description="only with distribution_risk: a few words")
+    detail_defects: list[str] = Field(default_factory=list, description=common.DETAIL_RULE)
     notes: str = Field(description="one sentence")
 
 
@@ -116,7 +123,7 @@ def decide(r: ClipReview, cfg: dict, scene: str | None = None, *, shot: dict | N
            policy: Policy | None = None) -> dict[str, bool]:
     verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
                "motion": r.motion >= int(cfg.get("min_motion", 6)),
-               "realism": r.realism >= int(cfg.get("min_realism", 6)),
+               "realism": r.realism >= int(cfg.get("min_realism", 6)) and not common.major_details(r, cfg),
                "safety": not (r.looks_under_min_age or r.sexualized or r.real_brand_marks)}
     if scene:
         verdict["scene"] = r.scene is None or r.scene >= int(cfg.get("min_scene", 0))

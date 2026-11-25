@@ -28,7 +28,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ... import queue
-from ...creator import profile as profile_mod
+from ...creator import dossier, profile as profile_mod
 from ...worker.runner import NonRetryable
 from .. import aesthetics, patterns
 from ..agent import AgentContext, register, remember
@@ -188,7 +188,7 @@ def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime, cards: li
     import json
     lib = aesthetics.library(policy)
     have = {k: prof.get(k) for k in ("persona", "archetypes", "positioning", "audience_insight", "story", "style",
-                                     "world") if prof.get(k)}
+                                     "world", "brand_core", "brand_world") if prof.get(k)}
     ask = {
         "style": ("Write her style. Grades to pick from: " + json.dumps(lib["grades"]) + ". Shot types to pick her "
                   "families from (most should not show her face): " + json.dumps(aesthetics.catalogue(policy))),
@@ -206,7 +206,9 @@ def _prompt(policy, prof: dict, bible: dict, part: str, now: datetime, cards: li
             f"{patterns.brief(cards)}\n\n" if cards else "")
     return (refs + f"Creator bible: {json.dumps(bible, default=str)}\n\nProfile so far: {json.dumps(have, default=str)}\n\n"
             + (f"Last month's capsule (make this one different): {json.dumps(last.get('capsule'))}\n\n" if part == 'season' and last else "")
-            + f"Rules: {json.dumps(lib['rules'])}\n\n{ask}")
+            + f"Rules: {json.dumps(lib['rules'])}\n\n{dossier.desirability_text(policy)} Her wardrobe and photographic "
+              f"style express her presentation register (brand_core.presentation), from her own character, not a "
+              f"default.\n\n{ask}")
 
 
 def build_part(ctx: AgentContext, creator_id, part: str) -> dict:

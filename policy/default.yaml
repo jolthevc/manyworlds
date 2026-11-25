@@ -329,6 +329,10 @@ review:
     min_identity: 5
     min_realism: 5
     min_scene: 0
+    # Brand alignment (owner 2026-11-25; review.common.BRAND_RULE, scored in the same call when the creator has a
+    # presentation register): an image under this is a clear misfit for her register and is rejected; above it the
+    # score only ranks. Distribution risk is a report (and routing) only, never a reject.
+    min_brand_alignment: 3
     reference_images: 3        # creator reference photos shown with every review
     max_jobs_per_run: 50
     loop_seconds: 120          # how often the reviewer looks for new images
@@ -1077,9 +1081,195 @@ scope:
   # stories. Fictional organisations a creator belongs to are fine and persist (memory, key employer).
   excluded_topics: [politics, elections, wars and conflicts, tragedies and disasters, crime stories,
                     health scares, culture-war topics, health advice, medical claims, financial advice,
-                    crypto, gambling, sexualized content, minors, real brands without rights]
+                    crypto, gambling, explicit sexual content, visible or staged nudity, fetish content,
+                    sexual solicitation, simulated romantic relationships with followers, minors,
+                    real brands without rights]
+  # Owner 2026-11-25: attractiveness, swimwear, shirtlessness, revealing fashion and romantic appeal are not
+  # excluded; judged in context (strategy.desirability).
   creator_min_age: 21
   disclosure_line: "AI-generated character"
+
+# The portfolio strategy (owner 2026-11-25; docs/superpowers/specs/2026-11-25-talent-agency.md): what the agency is
+# building, how a candidate creator is scored before it is cast, what production does reliably and cheaply now, and
+# the commercial categories talent can be valuable in. Read by casting (manyworlds.brain.casting), the talent manager,
+# the CEO (strategist) and the portfolio map. Change the thesis here; code reads it, never hard-codes it.
+strategy:
+  version: lifestyle-desirability-2026-11-25
+  focus: lifestyle               # the vertical casting favours now (a key of verticals)
+  thesis: >-
+    An AI-native modeling agency, talent development company and lifestyle media network that owns its talent IP:
+    a portfolio of highly desirable, aspirational, commercially valuable virtual lifestyle personalities, openly AI.
+    Desirability in many forms, across ages, demographics and cultures. Each one embodies a life people want, is
+    worth following for its taste and world, and is built to carry fashion, travel, beauty, home and accessories
+    work from day one. Grow followers first; commercial value compounds with the brand.
+  examples: [a sophisticated Italian gentleman, an ambitious metropolitan professional, a rugged outdoorsman,
+             an effortlessly elegant Parisian woman, a coastal free spirit, a distinguished older gentleman,
+             a creative director, a stylish female entrepreneur]
+  verticals:
+    lifestyle: {status: focus, note: "aspirational lifestyle personalities: style, places, taste, routines"}
+    education: {status: deferred, note: "educational and listicle creators: not for now"}
+    news: {status: deferred, note: "news and commentary: not for now"}
+    niche: {status: deferred, note: "narrow hobby niches: only as part of a lifestyle"}
+    music: {status: separate, note: "the music department (music.*), off"}
+  # Desirability (owner 2026-11-25): an affirmative objective, judged in context, bounded per creator. Casting, the
+  # talent manager, the style director, showrunner and director optimise for it; the review's safety gate
+  # (manyworlds.review.common.SAFETY_RULE) keeps only the restrictions below.
+  desirability:
+    objective: >-
+      Deliberately optimise physical attractiveness, visual magnetism, elegance, charm, style, charisma, confidence,
+      coolness, romantic appeal and aspiration, expressed differently per personality (extraordinarily beautiful,
+      rugged and handsome, elegant, natural sex appeal, playful, mysterious). That people may want to date them is an
+      audience motivation, never a product feature.
+    standard: >-
+      Exceptional mainstream lifestyle and fashion content: Vogue, GQ, Ralph Lauren, premium fashion photography,
+      luxury travel editorials, fitness and swimwear campaigns, the best mainstream lifestyle creators. Attractive,
+      tasteful, aesthetically exceptional, culturally relevant, confident, commercially desirable.
+    context: >-
+      Judge by context, never by clothing alone: swimwear, shirtlessness, cleavage, fitted or revealing fashion,
+      fitness photography and tasteful sensuality are not inappropriate in themselves. Character, setting, activity,
+      composition, creative intent, platform and commercial positioning decide. A bikini on a beach holiday is not
+      content made for sexual gratification. Don't overcorrect into sterile or modest-by-default either. The bar is
+      the creative judgment of a world-class modeling agency, fashion house, lifestyle publication, luxury creative
+      director and personal stylist: appearance, surroundings, clothing, accessories and grooming all count.
+    # Implied nudity is judged on what is visible, in context, never by guessing what is under clothing (owner
+    # 2026-11-25): an oversized shirt, a bathrobe, a backless dress or a cardigan worn as a top pass when covered.
+    restrictions: [explicit sexual content, "visible nudity or a deliberately staged nudity simulation",
+                   fetish-oriented content, sexual solicitation, "simulated romantic or intimate relationships with
+                   followers (no AI-girlfriend or boyfriend behaviour in posts, captions or replies)",
+                   content made primarily for sexual gratification, anyone who could read as under creator_min_age]
+    # Anti-drift: outcomes never push a creator's register up. Each creator's brand_core.presentation bounds how
+    # their attractiveness is expressed; a review may move it at most brain.talent_manager.brand.presentation.max_step
+    # levels, only once the brand core may change and only with a stated brand fit; engagement alone never counts.
+    anti_drift: >-
+      Never learn that ever more provocative content wins: each creator stays within the presentation register of
+      their brand bible. Reach and engagement never justify going past it; a register changes only by a deliberate
+      brand-bible revision with evidence that it fits their brand and commercial positioning.
+  # Presentation registers a brand bible picks from (brand_core.presentation.register), with their level: how much
+  # sensuality the register carries. Wardrobe, modesty and photographic style come from each bible, not a default.
+  presentation:
+    registers: {understated: 0, refined: 1, natural: 1, sporty: 1, playful: 2, glamorous: 2, sultry_editorial: 3}
+  # Platform recommendation guidelines and advertiser requirements differ by platform and partner: lists here, never
+  # one blanket rule. Showrunner and director keep a post within its platform's list; a brand deal adds its partner's.
+  platform_guidelines:
+    instagram: [no nudity or sexual activity, no sexual solicitation, "sexually suggestive content is not recommended
+                to non-followers: keep discovery posts within mainstream fashion and swimwear norms", AI label on
+                every post]
+    tiktok: [no nudity or sexual activity, no sexual solicitation, suggestive content is kept out of For You,
+             swimwear in a swimming or beach context is fine, AI label on every post]
+  partner_requirements: {}       # per partner, added with each brand deal: {partner: [requirement, ...]}
+  # The casting rubric (manyworlds.brain.casting): one judge call scores each concept 0-10 per criterion; code keeps
+  # floors, the feasibility hard gate (the lower of the judge's score and code's: the concept's content mix weighted
+  # by the capability card's reliability), blends commercial with the registry's index of its categories, and caps
+  # distinctiveness at too_close_cap when its positioning overlaps a sibling past brain.talent_manager.max_overlap.
+  rubric:
+    criteria:
+      desirability: {weight: 0.30, floor: 6,
+                     ask: "how attractive, magnetic, stylish, charismatic and aspirational they are in their own register; what desire they embody, why someone would follow; memorable, not generic"}
+      surface_area: {weight: 0.20, floor: 4,
+                     ask: "audience size, appeal across demographics and cultures, adjacent lifestyle categories"}
+      commercial: {weight: 0.20, floor: 5,
+                   ask: "consumer categories, market size, advertiser density, influencer-marketing activity, fit for sponsorship, affiliate, licensing and commercial photography; organic integration"}
+      feasibility: {weight: 0.15, floor: 6, hard_gate: true,
+                    ask: "can our production render their world reliably and cheaply today (photography, consistent character, environments, fashion, carousels); what it would need that we can't do"}
+      distinctiveness: {weight: 0.15, floor: 5,
+                        ask: "recognisable identity, aesthetic, ethos and world; would it last years, not a trend"}
+    too_close_cap: 4
+  # What production does reliably and cheaply (manyworlds.brain.capability_card), per post format. Measured from posts
+  # judged in the last window_days (accepted: intelligence.feedback.accepted_statuses; dropped: its dropped_statuses)
+  # and the ledger (every category booked to the post) once a format has min_tried judged posts; until then these
+  # defaults (from the 2026-11-24 breadth test and the ledger). status: reliable | promising | unproven.
+  capability_card:
+    window_days: 30
+    min_tried: 12
+    formats:
+      photo: {reliability: 0.85, usd_per_accepted: 0.04, status: reliable,
+              limits: "one person, any place; hands and small text can fail"}
+      carousel: {reliability: 0.80, usd_per_accepted: 0.12, status: reliable,
+                 limits: "3-8 photos and branded text slides; outfit and set consistency across slides"}
+      story: {reliability: 0.85, usd_per_accepted: 0.04, status: reliable, limits: "a single photo"}
+      narrated_edit: {reliability: 0.80, usd_per_accepted: 0.15, status: reliable,
+                      limits: "a photo-dump Reel: photos cut to music or a voiceover; the cheap discovery layer"}
+      story_clip: {reliability: 0.60, usd_per_accepted: 0.35, status: promising,
+                   limits: "a few seconds of simple motion from a photo (LTX-2.5 / Wan i2v); no complex action"}
+      talking_video: {reliability: 0.40, usd_per_accepted: 1.20, status: unproven,
+                      limits: "lip-synced talk to camera; drops on audio and sync; keep out of casting mixes"}
+      music_video: {reliability: 0.30, usd_per_accepted: 1.50, status: unproven, limits: "the music department, off"}
+  # Content guidance for lifestyle talent (showrunner, talent manager, casting): exploit production strengths.
+  content: >-
+    Build on what we render best: lifestyle and fashion photography, portraits, environments, photo dumps,
+    carousels, day-in-the-life sequences, seasonal moments, tasteful product-like objects in her world. A beautiful
+    photo is often enough: no forced educational, listicle or bait formats. Discovery on Instagram is Reels-heavy,
+    so a minority of posts are the cheap discovery layer: photo-dump Reels with music and short, simple image-to-video
+    moments. Talking to camera only where it is the creator's thing and production proves it.
+  # Commercial categories (manyworlds.brain.commerce; table commercial_categories). The seed is general knowledge,
+  # marked source estimate; the intelligence agent's `commerce` mode (intelligence.commerce) replaces it with research.
+  # band_values turn bands into 0-1 for the commercial index; weights combine them.
+  commercial:
+    mode: organic_only            # no brand deals yet: products appear as unbranded objects of her world
+    end_state: >-
+      Exact commercial products (licensed product imagery) placed in her photos for brands, openly virtual and
+      disclosed, never claiming first-hand experience she can't have.
+    content_rule: >-
+      Until a brand deal exists, no sponsored, product or review posts; objects of her world are unbranded and
+      tasteful (a watch, a bag, a bottle), the kind a brand could later be placed into.
+    shown: 8                      # categories shown per prompt
+    # Commercial adjacency (owner 2026-11-25): words in a creator's personal style and world details that touch a
+    # category (manyworlds.brain.commerce.adjacent): a manicure touches beauty, a necklace jewelry, a briefcase leather
+    # goods, interiors furniture and homeware. Opportunities then emerge from who she already is.
+    adjacency:
+      beauty_skincare: [manicure, nails, nail, lipstick, makeup, skincare, serum, pedicure]
+      jewelry: [necklace, ring, rings, earrings, bracelet, chain, pendant]
+      watches: [watch, wristwatch, chronograph]
+      luxury_accessories: [bag, handbag, briefcase, leather, tote, wallet, belt, scarf]
+      eyewear: [sunglasses, glasses, eyewear, frames]
+      footwear: [sneakers, loafers, heels, boots, sandals, shoes]
+      fragrance: [perfume, fragrance, cologne, scent]
+      mens_grooming: [beard, razor, shave, grooming, aftershave]
+      home_interiors: [linens, sofa, vase, furniture, interiors, armchair, lamp, rug, ceramics, candles]
+      food_dining: [coffee, espresso, cafe, restaurant, bakery, pastry]
+      wine_spirits: [wine, cocktail, champagne, negroni]
+      travel_hospitality: [hotel, suitcase, luggage, resort, villa, airport, train]
+      fitness_wellness: [yoga, running, gym, pilates, activewear, leggings]
+      outdoor_gear: [hiking, tent, climbing, fleece, trail]
+      consumer_tech: [headphones, camera, laptop, phone, earbuds]
+      automotive: [car, convertible, motorcycle, roadster]
+      mens_fashion: [tailoring, suit, blazer, overcoat, oxford]
+      womens_fashion: [dress, skirt, blouse, gown, slip]
+    band_values:
+      market_size: {small: 0.25, medium: 0.5, large: 0.75, very_large: 1.0}
+      advertiser_density: {low: 0.25, medium: 0.6, high: 1.0}
+      influencer_activity: {low: 0.25, medium: 0.6, high: 1.0}
+      virtual_precedent: {none: 0.2, some: 0.6, strong: 1.0}
+      production_fit: {hard: 0.1, maybe: 0.5, good: 0.8, excellent: 1.0}
+      affiliate_fit: {low: 0.25, medium: 0.6, high: 1.0}
+      licensing_fit: {low: 0.25, medium: 0.6, high: 1.0}
+    weights: {market_size: 0.2, advertiser_density: 0.2, influencer_activity: 0.15, virtual_precedent: 0.1,
+              production_fit: 0.2, affiliate_fit: 0.1, licensing_fit: 0.05}
+    seed:
+      - {key: womens_fashion, name: "women's fashion and apparel", market_size: very_large, advertiser_density: high, influencer_activity: high, virtual_precedent: strong, production_fit: excellent, affiliate_fit: high, licensing_fit: medium, hashtags: [ootd, womensfashion]}
+      - {key: mens_fashion, name: "men's fashion and tailoring", market_size: large, advertiser_density: high, influencer_activity: high, virtual_precedent: some, production_fit: excellent, affiliate_fit: high, licensing_fit: medium, hashtags: [menswear, mensstyle]}
+      - {key: luxury_accessories, name: "bags, leather goods and accessories", market_size: large, advertiser_density: high, influencer_activity: high, virtual_precedent: strong, production_fit: good, affiliate_fit: medium, licensing_fit: medium, hashtags: [luxurybags, accessories]}
+      - {key: watches, name: watches, market_size: large, advertiser_density: high, influencer_activity: medium, virtual_precedent: some, production_fit: maybe, affiliate_fit: medium, licensing_fit: low, hashtags: [watchesofinstagram, wristshot]}
+      - {key: jewelry, name: "fine and fashion jewelry", market_size: large, advertiser_density: high, influencer_activity: high, virtual_precedent: some, production_fit: maybe, affiliate_fit: high, licensing_fit: low, hashtags: [jewelry, finejewelry]}
+      - {key: eyewear, name: eyewear, market_size: medium, advertiser_density: medium, influencer_activity: medium, virtual_precedent: some, production_fit: good, affiliate_fit: medium, licensing_fit: medium, hashtags: [eyewear, sunglasses]}
+      - {key: footwear, name: footwear, market_size: large, advertiser_density: high, influencer_activity: high, virtual_precedent: some, production_fit: good, affiliate_fit: high, licensing_fit: medium, hashtags: [shoesoftheday, sneakers]}
+      - {key: beauty_skincare, name: "beauty and skincare", market_size: very_large, advertiser_density: high, influencer_activity: high, virtual_precedent: strong, production_fit: good, affiliate_fit: high, licensing_fit: medium, hashtags: [skincare, makeup]}
+      - {key: fragrance, name: fragrance, market_size: large, advertiser_density: high, influencer_activity: medium, virtual_precedent: some, production_fit: good, affiliate_fit: medium, licensing_fit: medium, hashtags: [fragrance, perfume]}
+      - {key: mens_grooming, name: "men's grooming", market_size: medium, advertiser_density: medium, influencer_activity: medium, virtual_precedent: none, production_fit: good, affiliate_fit: medium, licensing_fit: low, hashtags: [mensgrooming, beard]}
+      - {key: travel_hospitality, name: "travel, hotels and hospitality", market_size: very_large, advertiser_density: high, influencer_activity: high, virtual_precedent: some, production_fit: excellent, affiliate_fit: high, licensing_fit: medium, hashtags: [travelgram, luxurytravel]}
+      - {key: food_dining, name: "food, dining and coffee", market_size: large, advertiser_density: medium, influencer_activity: high, virtual_precedent: some, production_fit: good, affiliate_fit: medium, licensing_fit: low, hashtags: [foodie, coffeetime]}
+      - {key: wine_spirits, name: "wine and spirits (adult audiences only)", market_size: large, advertiser_density: medium, influencer_activity: medium, virtual_precedent: none, production_fit: good, affiliate_fit: low, licensing_fit: low, hashtags: [wine, cocktails]}
+      - {key: home_interiors, name: "home, interiors and design", market_size: large, advertiser_density: medium, influencer_activity: high, virtual_precedent: some, production_fit: excellent, affiliate_fit: high, licensing_fit: medium, hashtags: [interiordesign, homedecor]}
+      - {key: fitness_wellness, name: "fitness, wellness and athleisure", market_size: large, advertiser_density: high, influencer_activity: high, virtual_precedent: some, production_fit: good, affiliate_fit: high, licensing_fit: medium, hashtags: [wellness, athleisure]}
+      - {key: outdoor_gear, name: "outdoor gear and apparel", market_size: medium, advertiser_density: medium, influencer_activity: medium, virtual_precedent: none, production_fit: good, affiliate_fit: high, licensing_fit: medium, hashtags: [outdoors, hikingadventures]}
+      - {key: automotive, name: "cars and motorcycles", market_size: very_large, advertiser_density: high, influencer_activity: medium, virtual_precedent: some, production_fit: hard, affiliate_fit: low, licensing_fit: medium, hashtags: [carsofinstagram, classiccars]}
+      - {key: consumer_tech, name: "phones, audio and consumer tech", market_size: very_large, advertiser_density: high, influencer_activity: high, virtual_precedent: strong, production_fit: maybe, affiliate_fit: high, licensing_fit: medium, hashtags: [techgadgets, setup]}
+  # The portfolio map (manyworlds.brain.portfolio_map, code): who covers which archetypes, audience cells and
+  # categories; gaps ranked by commercial index x production fit. Audience cells are gender x age band.
+  portfolio_map:
+    genders: [female, male]
+    age_bands: [[18, 24], [25, 34], [35, 54], [55, 99]]
+    top_gaps: 5
 
 research:
   hashtags_per_platform: 6
@@ -1197,6 +1387,20 @@ intelligence:
     accepted_statuses: [ready, approved, scheduled, published]
     dropped_statuses: [dropped]
     recent_posts: 200            # per real creator, the posts whose outcomes are read
+  # Commercial research (the intelligence agent's `commerce` mode; manyworlds.brain.commerce): for each commercial
+  # category older than max_age_days (or those named), one hashtag pull of items_per_hashtag public posts per hashtag
+  # on `platform`; the share carrying a sponsorship marker sets influencer_activity (>= high: high, >= medium: medium,
+  # else low) and is kept as evidence (source research). No model call. Off: the mode only says what it would pull
+  # and what it would cost.
+  commerce:
+    enabled: false
+    platform: instagram
+    items_per_hashtag: 30
+    max_age_days: 90
+    max_categories: 6
+    sponsored_markers: ["#ad", "#sponsored", "#advertisement", "#werbung", "#anzeige", "paid partnership",
+                        "#partner", "#gifted"]
+    activity_bands: {high: 0.08, medium: 0.03}
   # The influencer intelligence agent (brain/agents/intelligence.py, job kind brain.intelligence; requests of kind
   # `intelligence` commission it). Modes: scout (pick creators from hashtag pulls and named handles, pull their posts),
   # annotate (finish.measure_video for videos, a batched Haiku read of images, frames and caption), distill (clusters
@@ -1247,13 +1451,16 @@ intelligence:
 
 creator_lab:
   # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
-  # with `captions.voice_guide` for how they write.
+  # with `captions.voice_guide` for how they write. Owner 2026-11-25 (strategy): desirable and aspirational, with the
+  # specificity that keeps aspiration from turning bland.
   persona_guide: >-
-    Design someone a stranger would follow after three posts: real taste (specific places, music, food and
-    objects; never real brands), a clear point of view and a few opinions people could disagree with, a sense of
-    humour that is theirs (dry, chaotic, deadpan, warm), a flaw or two, and a life with texture (a job, friends,
-    a neighbourhood, routines). Current and culturally aware without chasing trends. Never a generic wholesome
-    lifestyle account, a mood board, a motivational voice or a polished brand; never cringe.
+    Design someone a stranger would follow after three posts: desirable and aspirational (a life, a look and a taste
+    people want), yet specific: real taste (specific places, music, food and objects; never real brands), a clear
+    point of view and a few opinions people could disagree with, a sense of humour that is theirs (dry, warm,
+    deadpan), a flaw or two, and a life with texture (work, friends, a neighbourhood, routines). Current and
+    culturally aware without chasing trends. Attractive in their own way and register (strategy.desirability),
+    never explicit. Never a generic lifestyle account, a faceless mood board, a motivational voice or a corporate
+    brand voice; never cringe.
   # A voice of their own (manyworlds.voices): a fixed blend of `mix` stock Kokoro voices led by the bible's pick
   # (weight >= lead), at least min_distance (L1 over the weights) from every other creator's voice.
   voice_blend: {mix: 3, lead: 0.5, min_distance: 0.5}
@@ -1395,6 +1602,35 @@ brain:
   # Launches (manyworlds.brain.launches): an approved launch walks bible -> reference pack -> anchors -> LoRA ->
   # profile -> ready (sandbox + account request); a step whose jobs fail is retried this many times, then stops.
   launches: {max_step_retries: 2, step_timeout_hours: 48, min_reference_renders: 8}
+  # Casting with auditions (manyworlds.brain.casting; spec 2026-11-25-talent-agency): a launch starts with `casting`
+  # before `bible` while enabled. One call (role casting) develops `candidates` compact concepts (3-5), one judge call
+  # (role casting_judge) scores them on strategy.rubric; code applies floors, the feasibility gate and the guardrail.
+  # The best `audition_top` are auditioned: a bible each (role creator), a small reference pack (reference_prompts x
+  # candidates_per_reference) and anchors, then a `posts`-photo mini-feed through normal production in the test batch
+  # batch_prefix<run>. The winner maximises rubric x acceptance^acceptance_weight x (cost_ref_usd / $ per accepted
+  # post)^cost_weight among auditions with acceptance >= min_acceptance; it becomes the launched creator. An audition
+  # past deadline_hours is judged on what it has. Respects brain.strategist.launches_per_week (no launch, no casting);
+  # `mw brain casting <thesis>` runs it as a sandbox test.
+  casting:
+    enabled: true
+    candidates: 4
+    audition_top: 2
+    role: casting
+    judge_role: casting_judge
+    effort: high
+    judge_effort: medium
+    audition:
+      posts: 9
+      reference_prompts: 6
+      candidates_per_reference: 2
+      min_reference_renders: 4
+      batch_prefix: test-casting-
+      deadline_hours: 24
+    pick: {min_acceptance: 0.5, acceptance_weight: 1.0, cost_weight: 0.3, cost_ref_usd: 0.05, cost_floor_usd: 0.01}
+    # The dry run's estimate per casting (USD): concept and judge calls, one bible and anchor picks per audition, and
+    # each audition's renders (references and posts, with their image screens).
+    estimate: {concepts_call: 0.15, judge_call: 0.05, bible_call: 0.12, anchor_call: 0.02, image: 0.004,
+               image_review: 0.002}
   # The strategist (manyworlds.brain.agents.strategist, daily): proposes stage moves and launches; code checks them.
   strategist:
     enabled: true
@@ -1433,7 +1669,19 @@ brain:
                    review_days_by_stage: {default: 7, exploring: 7, iterating: 5, growing: 3, breaking_out: 2,
                                           established: 7, paused: 30},
                    editable: [look.wardrobe, look.situational_looks, look.makeup, persona.traits, persona.humour,
-                              content, content_system, arc, story, audience_insight, positioning, dials.tone_mix]}
+                              content, content_system, arc, story, audience_insight, positioning, dials.tone_mix,
+                              brand_core, brand_world, brand_commerce],
+                   # The brand bible (dossier sections brand_core, brand_world, brand_commerce). brand_core is her
+                   # stable core: a review may change it only once she has core_change_min_real_posts real published
+                   # posts and its last change is at least core_change_days old (code-checked; refused otherwise).
+                   # attribution_posts: her recent real posts the review sees broken down by format, shot type,
+                   # pattern card and grade (evidence.attribution); growth_days: her account growth window.
+                   # presentation: brand_core.presentation (her register, strategy.presentation.registers) moves at
+                   # most max_step levels a change, needs the brand core's gate and a stated brand fit (not engagement).
+                   brand: {core_change_min_real_posts: 30, core_change_days: 60, attribution_posts: 60,
+                           presentation: {max_step: 1},
+                           growth_days: 28,
+                           attribution_dims: [format, outfit, setting, shot_type, pattern_card, archetype]}}
   # Decision rights (manyworlds.brain.proposals; docs/superpowers/plans/2026-11-23-agency.md): who decides each kind
   # of request, and what each role may decide alone. Code checks them; the model only argues. Anything over a role's
   # rights goes to the owner.
@@ -3072,6 +3320,10 @@ llm:
     iia_distill: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
     iia_curate: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
     iia_synthesize: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
+    # Casting (manyworlds.brain.casting): 3-5 concepts in one call (judgement and taste: Opus, once per launch) and one
+    # judge call scoring them on the rubric (another model than the writer's, so it does not grade its own work).
+    casting: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
+    casting_judge: {model: claude-sonnet-5-5, fallback: claude-haiku-5-5}
   server_fallback_models: [claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2]   # models that take fallbacks: "default"
   usd_per_mtok:                  # input, output, cache_read, cache_write
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
@@ -3214,6 +3466,9 @@ instagram:
   url_seconds: 3600
   max_attempts: 3              # attempts per post, then held
   quota_fallback: 50
+  # Account-level insights once a day per connected account (publish/metrics.collect_account): followers, reach by
+  # follower / non-follower, follows and unfollows, profile views (evidence.growth). Free Graph API calls.
+  account_insights: {enabled: true}
   ramp:
     - {from_day: 0, posts_per_day: 1}
     - {from_day: 7, posts_per_day: 2}

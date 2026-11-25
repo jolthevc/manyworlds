@@ -14,6 +14,76 @@ from ..storage import ObjectStore
 
 log = logging.getLogger("manyworlds.review")
 
+# The QA's three judgments (owner 2026-11-25), all in the one existing judge call:
+#   content safety       hard: the `sexualized` flag, defined by SAFETY_RULE (policy strategy.desirability.restrictions)
+#   brand alignment      scored against the creator's presentation register (BRAND_RULE); rejects only a clear misfit
+#                        (review.<image|video>.min_brand_alignment)
+#   distribution         a risk score and label per platform (DISTRIBUTION_RULE): report and routing only, never a reject
+# Safety is judged on VISIBLE content, context, composition and intent, never on speculation about what is under
+# clothing: an oversized shirt, a hotel bathrobe, a backless dress or a cardigan worn as a top pass when covered.
+SAFETY_RULE = ("true ONLY for what is VISIBLE: explicit sexual content or sexual activity; visible nudity (genitals, "
+               "nipples) or a deliberately staged nudity simulation (posed to look naked, e.g. strategically hidden "
+               "with hands or objects); fetish-oriented content; sexual solicitation; content plainly made for "
+               "sexual gratification. Never speculate about what is under clothing: an oversized shirt, a hotel "
+               "bathrobe, off-the-shoulder or backless clothes, a cardigan worn as a top are fine when covered. Judge "
+               "by context, never by clothing alone: swimwear at a beach or pool, a shirtless man swimming or "
+               "training, cleavage, fitted or revealing fashion, covered underwear in a fashion campaign, fitness "
+               "and swimwear-campaign photography and tasteful sensuality are NOT sexualized; attractive and "
+               "confident is the goal")
+SAFETY_SYSTEM = ("Safety is judged on visible content in context, never by clothing alone and never by guessing what "
+                 "is underneath: mainstream fashion, swimwear and fitness photography (Vogue, GQ, swimwear campaigns) "
+                 "is fine; only explicit, visibly nude or staged-nude, fetish, soliciting or gratification-first "
+                 "content, or someone who could read as under age, is unsafe. Judge it like a world-class fashion "
+                 "editor and stylist: appearance, styling, accessories, grooming and surroundings.")
+BRAND_RULE = ("only when HER PRESENTATION is given: 0-10, how well the image fits her presentation register, "
+              "wardrobe range and photographic style (10 = exactly her; 0 = clearly someone else's register, e.g. a "
+              "sultry editorial for an understated creator or a sterile catalogue shot for a glamorous one); "
+              "null when not given")
+DISTRIBUTION_RULE = ("0-10 risk that the platforms would limit recommendation of this post to non-followers "
+                     "(0 = mainstream; 10 = would surely be limited); a report, never a reason to reject")
+DETAIL_RULE = ("styling and detail defects an ordinary viewer would notice, worst first, each 'severity: what', "
+               "severity minor or major: malformed jewelry, unnatural or melted nails, accessories that change or "
+               "merge, grooming artifacts (patchy beard, smeared makeup), distorted hands, implausible clothing "
+               "(seams, straps or buttons that make no sense); empty if none")
+CONTEXT_FIELDS = ("brand_alignment", "distribution_risk", "distribution_label", "detail_defects")
+CONTEXT_SCORES = {"brand": "brand_alignment", "distribution": "distribution_risk"}
+
+
+def major_details(r, cfg: dict | None = None) -> list[str]:
+    """The styling/detail defects an ordinary viewer would notice (severity major): they fail realism. Minor ones are
+    kept in the row's details as a report."""
+    return [d for d in (getattr(r, "detail_defects", None) or []) if str(d).strip().lower().startswith("major")]
+
+
+def context_verdicts(cfg: dict, r) -> dict[str, tuple[bool, dict]]:
+    """Brand alignment (rejects only a clear misfit: under review.<kind>.min_brand_alignment) and distribution
+    suitability (a risk score and label: report and routing only, always passes), when the judge scored them."""
+    out = {}
+    b = getattr(r, "brand_alignment", None)
+    if b is not None:
+        b = max(0, min(10, int(b)))
+        bar = float(cfg.get("min_brand_alignment", 3))
+        out["brand"] = (b >= bar, {"brand_alignment": b, "bar": bar, "enforced": True})
+    d = getattr(r, "distribution_risk", None)
+    if d is not None:
+        out["distribution"] = (True, {"distribution_risk": max(0, min(10, int(d))),
+                                      "label": getattr(r, "distribution_label", None), "report_only": True})
+    return out
+
+
+def presentation_of(conn, creator_id) -> dict | None:
+    """The creator's presentation register (brand_core.presentation in her latest profile), or None."""
+    row = conn.execute("SELECT body FROM creator_profiles WHERE creator_id = %s ORDER BY version DESC LIMIT 1",
+                       (creator_id,)).fetchone()
+    return (((row or {}).get("body") or {}).get("brand_core") or {}).get("presentation") or None
+
+
+def presentation_prompt(policy, presentation: dict) -> str:
+    import json
+    guidelines = (policy.get("strategy", "platform_guidelines", default={}) or {}) if policy is not None else {}
+    return (f"HER PRESENTATION (score brand_alignment against it, per candidate; and distribution_risk with a "
+            f"label against these platform guidelines: {json.dumps(guidelines)}): {json.dumps(presentation)}")
+
 
 def policy_for(policy, batch: str | None):
     """The policy a job is judged under: the test overlay for a batch it names (operations.test_overlay.batches,

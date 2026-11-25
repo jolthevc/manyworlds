@@ -254,3 +254,103 @@ def creators_with_new_comments(conn, *, min_new: int, every, now) -> list:
            GROUP BY m.creator_id HAVING count(*) >= %s ORDER BY m.creator_id""",
         (now - every, int(min_new))).fetchall()
     return [r["creator_id"] for r in rows]
+
+
+RATES = ("saves", "shares", "follows", "profile_visits")
+
+
+def _target_snapshot(conn, post_id, mode: Mode, target: int) -> dict | None:
+    rows = [r for r in metrics(conn, post_id, mode=mode) if (r.get("post_age_s") or 0) >= target]
+    return (min(rows, key=lambda r: r.get("post_age_s") or 0).get("metrics") or {}) if rows else None
+
+
+def attribution(conn, creator_ids, mode: Mode, *, policy=None, n: int = 60, dims=None) -> dict:
+    """What works, by dimension (owner 2026-11-25: performance by aesthetic, outfit, environment, format, archetype,
+    pattern card): the creators' last `n` published posts each, at the analysis target age, grouped per dimension value
+    with n, median reach, and per-1k-reach saves, shares, follows and profile visits (where the platform gave them),
+    and the median reach over the creators' own medians (`lift`). Dimensions: format, the idea's attributes (outfit,
+    setting...), the shot types of its shot sheet, the pattern cards it applied, the creator's archetype. `real` reads
+    real publications only; `sandbox` the simulated ones, labelled SIMULATED."""
+    import statistics
+    if mode not in ("real", "sandbox"):
+        raise ValueError(f"unknown evidence mode {mode!r}")
+    target = int((policy.get("brain", "analysis", "target_age_s", default=259200) if policy else 259200))
+    dims = list(dims or ("format", "outfit", "setting", "shot_type", "pattern_card", "archetype"))
+    groups: dict = {}
+    for cid in [str(c) for c in creator_ids]:
+        prof = conn.execute("SELECT body FROM creator_profiles WHERE creator_id = %s ORDER BY version DESC LIMIT 1",
+                            (cid,)).fetchone()
+        archetype = ((prof or {}).get("body") or {}).get("archetypes") or [None]
+        rows = conn.execute(
+            """SELECT DISTINCT ON (p.id) p.id, p.format, p.body, u.published_at, i.attributes FROM posts p
+               JOIN publications u ON u.post_id = p.id LEFT JOIN ideas i ON i.post_id = p.id
+               WHERE p.creator_id = %s AND u.simulated = %s ORDER BY p.id, u.published_at DESC""",
+            (cid, mode == "sandbox")).fetchall()
+        rows = sorted(rows, key=lambda r: r["published_at"], reverse=True)[:int(n)]
+        posts = []
+        for r in rows:
+            m = _target_snapshot(conn, r["id"], mode, target)
+            if not m or not m.get("reach"):
+                continue
+            body, attrs = r["body"] or {}, r["attributes"] or {}
+            values = {"format": [r["format"]], "archetype": [archetype[0]] if archetype[0] else [],
+                      "shot_type": sorted({s.get("shot_type") for s in body.get("shots") or []
+                                           if isinstance(s, dict) and s.get("shot_type")}),
+                      "pattern_card": sorted({c.get("key") for c in body.get("pattern_cards") or []
+                                              if isinstance(c, dict) and c.get("applied") and c.get("key")})}
+            for d in dims:
+                if d not in values and attrs.get(d):
+                    values[d] = [str(attrs[d])[:60]]
+            posts.append((m, values))
+        if not posts:
+            continue
+        own = statistics.median(float(m["reach"]) for m, _ in posts)
+        for m, values in posts:
+            for d in dims:
+                for v in values.get(d) or []:
+                    groups.setdefault(d, {}).setdefault(v, []).append((m, float(m["reach"]) / own if own else None))
+    out: dict = {}
+    for d, by in groups.items():
+        out[d] = {}
+        for v, items in by.items():
+            reach = [float(m["reach"]) for m, _ in items]
+            row = {"n": len(items), "median_reach": statistics.median(reach)}
+            lifts = [x for _, x in items if x is not None]
+            row["lift"] = round(statistics.median(lifts), 3) if lifts else None
+            for k in RATES:
+                vals = [1000.0 * float(m[k]) / float(m["reach"]) for m, _ in items if m.get(k) is not None]
+                if vals:
+                    row[f"{k}_per_1k"] = round(statistics.median(vals), 2)
+            if mode == "sandbox":
+                row["label"] = LABEL
+            out[d][v] = row
+    return out
+
+
+def growth(conn, creator_id, mode: Mode, *, days: int = 28) -> dict | None:
+    """The account's growth over `days` from account-level insights (publish/metrics.collect_account): followers
+    at the start and end, net change, follows, reach from non-followers and profile views, and follows per 1k
+    non-follower reach (how well being discovered turns into following). Real accounts only: there are no simulated
+    account insights, so `sandbox` returns None."""
+    if mode not in ("real", "sandbox"):
+        raise ValueError(f"unknown evidence mode {mode!r}")
+    if mode == "sandbox":
+        return None
+    rows = conn.execute("SELECT day, metrics FROM account_insights WHERE creator_id = %s "
+                        "AND day > current_date - %s ORDER BY day", (creator_id, int(days))).fetchall()
+    if not rows:
+        return None
+    ms = [r["metrics"] or {} for r in rows]
+    counts = [m["follower_count"] for m in ms if m.get("follower_count") is not None]
+
+    def total(k):
+        vals = [float(m[k]) for m in ms if m.get(k) is not None]
+        return sum(vals) if vals else None
+    out = {"days": len(rows), "followers_start": counts[0] if counts else None,
+           "followers_end": counts[-1] if counts else None,
+           "net_followers": (counts[-1] - counts[0]) if len(counts) > 1 else None,
+           "follows": total("follows"), "non_follower_reach": total("reach_non_follower"),
+           "follower_reach": total("reach_follower"), "profile_views": total("profile_views")}
+    if out["follows"] is not None and out["non_follower_reach"]:
+        out["follows_per_1k_non_follower_reach"] = round(1000 * out["follows"] / out["non_follower_reach"], 2)
+    return out

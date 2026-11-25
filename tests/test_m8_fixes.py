@@ -12,6 +12,7 @@ from manyworlds.brain import launches, portfolio, showrunner_loop
 
 from brain_helpers import creator
 from test_launches import _approve_launch, _run_lab, _thesis
+from test_launches import policy  # noqa: F401 - the launch path without casting (bible first), as these tests walk it
 
 
 def test_a_failing_brain_step_does_not_stop_production(conn, policy, monkeypatch):

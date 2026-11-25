@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ...creator import profile as profile_mod
+from ...creator import dossier, profile as profile_mod
 from ...worker.runner import NonRetryable
 from .. import archetypes, events, evidence, experiments, exploration, memory, patterns, planner, proposals, series
 from ..agent import AgentContext, commission, record_decision, register
@@ -113,6 +113,15 @@ def recipe_view(moves: dict) -> dict:
     the capabilities it uses and its length; its shot defaults are the director's business."""
     keys = ("note", "formats", "readiness", "suits", "uses", "length_s")
     return {name: {k: m[k] for k in keys if m.get(k)} for name, m in moves.items()}
+
+
+def _strategy_line(policy) -> str:
+    """The agency's content guidance and commercial rule (policy strategy): what to build on, and how objects appear
+    in her world until a brand deal exists."""
+    s = policy.get("strategy", default={}) or {}
+    parts = [str(s.get("content") or "").strip(), str((s.get("commercial") or {}).get("content_rule") or "").strip(),
+             f"Platform guidelines: {json.dumps(s.get('platform_guidelines') or {})}."]
+    return " ".join(p for p in parts if p) + (" " if any(parts) else "")
 
 
 def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str, dict]:
@@ -227,6 +236,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
         f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
+        f"{_strategy_line(policy)}{dossier.presentation_line(prof)}"
         + ("Covers and talking show her face; details, places, food, her back and her hands carry the rest. "
            if look else "") + planner.face_rule(prof))
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,

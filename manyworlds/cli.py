@@ -237,6 +237,20 @@ def build_parser() -> argparse.ArgumentParser:
     bsim.add_argument("--seed", type=int, default=0)
     blearn = bsub.add_parser("learning", help="what the Brain learned for a creator and how its plans used it")
     blearn.add_argument("creator")
+    bpm = bsub.add_parser("portfolio-map", help="archetypes x audiences x commercial categories: coverage, overlaps, "
+                          "gaps (code, no model)")
+    bpm.add_argument("--text", action="store_true", help="the CEO's view, as lines")
+    bcc = bsub.add_parser("capability-card", help="what production makes reliably and cheaply, per post format")
+    bcc.add_argument("--refresh", action="store_true", help="measure it again from posts and the ledger, and store it")
+    bco = bsub.add_parser("commerce", help="the commercial category registry (estimates until researched)")
+    bco.add_argument("--seed", action="store_true", help="insert or update the policy seed (research rows kept)")
+    bca = bsub.add_parser("casting", help="cast a thesis as a sandbox test: concepts, judge, auditions (a mini-feed "
+                          "each, test batches), the winner; launches nothing. --dry-run: the estimate only")
+    bca.add_argument("thesis")
+    bca.add_argument("--dry-run", action="store_true")
+    bca.add_argument("--once", action="store_true", help="one step, then stop (run again to resume)")
+    bca.add_argument("--hours", type=float, default=None, help="stop driving after this long (default: the "
+                     "audition deadline)")
 
     te = sub.add_parser("test", help="owner-approved tests: the breadth test (policy/test_overlay.yaml)")
     tsub = te.add_subparsers(dest="test_cmd", required=True)
@@ -376,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(comments.recent(conn, _creator_id(conn, args.creator)))
     elif args.cmd == "collect-metrics":
         from .publish import metrics
-        _print(metrics.collect(conn, pol))
+        _print({**metrics.collect(conn, pol), "account_insights": metrics.collect_account(conn, pol)})
     elif args.cmd == "reconcile":
         from .deploy import reconcile
         from .deploy.providers import all_providers
@@ -585,6 +599,63 @@ def _voice(args, conn, pol) -> int:
     return 0
 
 
+def _agency(args, conn, pol) -> int:
+    """`mw brain portfolio-map|capability-card|commerce|casting` (spec 2026-11-25-talent-agency)."""
+    from .brain import capability_card, casting, commerce, portfolio_map
+    if args.brain_cmd == "portfolio-map":
+        m = portfolio_map.build(conn, pol)
+        print(portfolio_map.text(m)) if args.text else _print(m)
+        return 0
+    if args.brain_cmd == "capability-card":
+        _print(capability_card.refresh(conn, pol) if args.refresh else capability_card.card(conn, pol))
+        return 0
+    if args.brain_cmd == "commerce":
+        if args.seed:
+            commerce.seed(conn, pol)
+        _print([{k: r.get(k) for k in ("key", "name", *commerce.BANDS, "index", "source", "evidence")}
+                for r in commerce.categories(conn, pol)])
+        return 0
+    thesis = casting.thesis(conn, args.thesis)
+    if args.dry_run:
+        _print({"thesis": thesis["id"], "dry_run": True, **casting.estimate(pol)})
+        return 0
+    return _casting_drive(conn, pol, thesis["id"], once=args.once, hours=args.hours)
+
+
+def _casting_drive(conn, pol, thesis_id, *, once: bool, hours: float | None) -> int:
+    """The sandbox casting: the model steps inline, the renders in test batches (they run while operations are
+    paused), the image review in the driver; loops until a winner is picked or the time is up. Launches nothing."""
+    import tempfile
+    import time
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    from .brain import casting
+    from .llm import Claude
+    from .review import gates
+    llm, store = Claude(conn, pol), storage.from_url()
+    run = f"t{str(thesis_id)[:8]}"
+    casting.cast(conn, pol, llm, thesis_id, run=run)
+    acfg = casting._acfg(pol)
+    until = datetime.now(timezone.utc) + timedelta(hours=float(hours or acfg.get("deadline_hours", 24)) + 1)
+    loop_s = float(pol.get("brain", "runtime", "loop_seconds", default=30))
+    while True:
+        with tempfile.TemporaryDirectory() as tmp:
+            moved = casting.advance(conn, pol, run=run, llm=llm, store=store, workdir=tmp)
+            for r in conn.execute("SELECT run, arm FROM auditions WHERE run = %s AND stage = 'feed'", (run,)).fetchall():
+                d = Path(tmp) / r["arm"]
+                d.mkdir(exist_ok=True)
+                gates.run_pending(conn, pol, llm, store, d, batch=casting.batch(pol, r["run"], r["arm"]))
+        picked = casting.pick(conn, pol, run)
+        if once or picked is not None or datetime.now(timezone.utc) > until:
+            break
+        logging.getLogger("manyworlds.casting").info("casting %s: %s", run, moved)
+        time.sleep(loop_s)
+    _print({**casting.summary(conn, run), "picked": picked, "llm_usd": llm.spent,
+            "note": "a sandbox test: nothing is launched (brain.strategist.launches_per_week decides launches)"})
+    return 0
+
+
 def _brain_ops(args, conn, pol) -> int:
     import socket
     import time
@@ -615,6 +686,8 @@ def _brain_ops(args, conn, pol) -> int:
         from .brain import predictions
         _print(predictions.scorecard(conn, mode="sandbox" if args.sandbox else "real", role=args.role))
         return 0
+    if args.brain_cmd in ("portfolio-map", "capability-card", "commerce", "casting"):
+        return _agency(args, conn, pol)
     if args.brain_cmd == "learning":
         from .brain import sandbox
         _print(sandbox.learning_trace(conn, _creator_id(conn, args.creator)))
@@ -805,6 +878,9 @@ def produce_tick(conn, pol, llm=None) -> dict:
         collected = metrics.collect(conn, pol)
         if collected["snapshots"] or collected["errors"]:
             result["metrics"] = collected
+        accounts = metrics.collect_account(conn, pol)   # follower growth, non-follower reach, profile views (daily)
+        if accounts["accounts"] or accounts["errors"]:
+            result["account_insights"] = accounts
     except Exception as e:  # noqa: BLE001 - metrics must never stop production or publishing
         result["metrics"] = {"error": f"{type(e).__name__}: {e}"[:300]}
     try:   # comments on our posts, answered in the creator's voice (autonomy.comment_replies; off by default)

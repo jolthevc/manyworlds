@@ -74,7 +74,8 @@ def conn(database_url, policy):
         "markets, clusters, accounts, creator_states, creator_memory, ideas, rubric_versions, evaluations, "
         "findings, allocations, budgets, convictions, publications, simulated_metrics, approvals, events, "
         "policy_overrides, simulated_findings, leases, provider_charges, launches, llm_shadow, llm_journal, llm_batches, serverless_requests, trend_briefs, research_features, "
-        "reference_creators, reference_posts, reference_annotations, pattern_cards, auditions, research_forget "
+        "reference_creators, reference_posts, reference_annotations, pattern_cards, auditions, research_forget, "
+        "commercial_categories, capabilities, account_insights "
         "RESTART IDENTITY CASCADE"
     )
     yield c

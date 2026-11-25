@@ -23,7 +23,14 @@ A review writes:
     evidence.
   - predictions (manyworlds.brain.predictions): checkable claims about her next weeks, scored later
   - profile changes within `brain.talent_manager.editable` (identity, the never-list, disclosure and handle never);
-    anything else goes to the owner as an escalation
+    anything else goes to the owner as an escalation. The brand bible's stable core (`brand_core`) changes only with
+    evidence (brain.talent_manager.brand: enough real posts, not twice within core_change_days); code refuses it
+    otherwise and the brief records it (`held_changes`), with no human in the loop.
+
+Onboarding builds the Talent & Brand Bible with the dossier (brand_core, brand_world, brand_commerce; spec
+2026-11-25-talent-agency). Each review also sees the agency's thesis, her commercial categories (the registry), the
+capability card, and what is working by format, outfit, setting, shot type, pattern card and archetype, with her
+account's growth (manyworlds.brain.evidence.attribution, growth).
 """
 
 from __future__ import annotations
@@ -39,7 +46,7 @@ from ... import direction, queue
 from ...creator import dossier
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import archetypes, evidence, predictions, proposals
+from .. import archetypes, capability_card, commerce, evidence, predictions, proposals
 from ..agent import AgentContext, record_decision, register, remember
 from . import analyst
 
@@ -51,6 +58,9 @@ class ProfileChange(BaseModel):
     path: str = Field(description="dotted profile path, e.g. content_system.series or look.wardrobe")
     value: str = Field(description="the new value as JSON (a string, list or object)")
     reason: str
+    brand_fit: str = Field(default="", description="only for a change of her presentation register "
+                                                   "(brand_core.presentation): the evidence it fits her brand and "
+                                                   "commercial positioning; engagement alone never counts")
 
 
 class Conviction(BaseModel):
@@ -255,6 +265,7 @@ def _review_prompt(ctx: AgentContext, creator_id, prof: dict, mode: str, event: 
         f"Profile paths you may change yourself (prefixes): {cfg.get('editable')}; never: {list(LOCKED)}. Anything "
         f"else is an `escalate` request. Never touch: {policy.get('scope', 'excluded_topics')}.",
     ]
+    parts += _brand_parts(conn, policy, creator_id, prof, ev_mode, label)
     if mode == "diagnose" and event:
         parts.append(f"WHAT HAPPENED (diagnose this before changing course): {json.dumps(event, default=str)}. Rank the "
                      f"likely causes (content, production quality, cadence, audience fit, distribution), say what "
@@ -265,6 +276,86 @@ def _review_prompt(ctx: AgentContext, creator_id, prof: dict, mode: str, event: 
                  "checkable within their horizon. Simulated findings only show the loop works; never treat them as "
                  "what real people want.")
     return "\n\n".join(parts)
+
+
+def _brand_cfg(policy) -> dict:
+    return _cfg(policy).get("brand") or {}
+
+
+def _brand_parts(conn, policy, creator_id, prof: dict, ev_mode: str, label: str) -> list[str]:
+    """What the review sees of her brand and business (owner 2026-11-25): the agency's thesis, her commercial
+    categories from the registry, what production does reliably (the capability card), and what is working by
+    format, outfit, setting, shot type, pattern card and archetype, with her account's growth (real only)."""
+    bcfg = _brand_cfg(policy)
+    card = capability_card.card(conn, policy)
+    mine = commerce.for_keys(conn, policy, (prof.get("brand_commerce") or {}).get("categories"))
+    attribution = evidence.attribution(conn, [creator_id], ev_mode, policy=policy,
+                                       n=int(bcfg.get("attribution_posts", 60)), dims=bcfg.get("attribution_dims"))
+    growth = evidence.growth(conn, creator_id, ev_mode, days=int(bcfg.get("growth_days", 28)))
+    return [
+        dossier.strategy_text(policy),
+        f"Her brand bible is in her profile (brand_core, brand_world, brand_commerce). brand_core is her stable core: "
+        f"change it only with strong real evidence (code refuses it before {bcfg.get('core_change_min_real_posts')} "
+        f"real posts or within {bcfg.get('core_change_days')} days of its last change). Her presentation register "
+        f"bounds every post; never raise it because provocative posts got reach.",
+        f"Her commercial categories (registry; estimates until researched): "
+        f"{commerce.brief(mine) if mine else 'none chosen yet'}. Categories her own style and world already touch "
+        f"(adjacency: opportunities that come from who she is): "
+        f"{json.dumps(commerce.adjacent(policy, [prof.get('brand_world'), prof.get('style'), prof.get('world')]))}. "
+        f"{str(policy.get('strategy', 'commercial', 'content_rule', default='')).strip()}",
+        f"What production makes reliably and cheaply now (the capability card):\n{capability_card.brief(card)}",
+        f"Content guidance: {str(policy.get('strategy', 'content', default='')).strip()}",
+        f"What is working, by format, outfit, setting, shot type, pattern card and archetype ({label}; lift = median "
+        f"reach over her own median; rates per 1k reach): {json.dumps(attribution) if attribution else 'no outcomes yet'}",
+        f"Her account's growth over {bcfg.get('growth_days')} days (real accounts only: followers, follows per 1k "
+        f"non-follower reach, profile views): {json.dumps(growth) if growth else 'no account insights yet'}",
+    ]
+
+
+def brand_core_gate(conn, policy, creator_id, *, now: datetime | None = None) -> str | None:
+    """Why her brand core may not change now, or None: it changes only with evidence (enough real published posts)
+    and not again within core_change_days of its last change."""
+    cfg = _brand_cfg(policy)
+    now = now or datetime.now(timezone.utc)
+    real = conn.execute("SELECT count(*) n FROM publications u JOIN posts p ON p.id = u.post_id "
+                        "WHERE p.creator_id = %s AND NOT u.simulated", (creator_id,)).fetchone()["n"]
+    need = int(cfg.get("core_change_min_real_posts", 30))
+    if real < need:
+        return f"brand_core is her stable core: it changes only with evidence ({real} real posts, needs {need})"
+    last = conn.execute(
+        """SELECT max(created_at) AS at FROM (
+             SELECT created_at, body->'brand_core' AS bc,
+                    lag(body->'brand_core') OVER (ORDER BY version) AS prev
+             FROM creator_profiles WHERE creator_id = %s) t
+           WHERE bc IS DISTINCT FROM prev AND bc IS NOT NULL""", (creator_id,)).fetchone()["at"]
+    days = float(cfg.get("core_change_days", 60))
+    if last and now - last < timedelta(days=days):
+        return f"brand_core changed {(now - last).days} days ago; it may change again after {days:g} days"
+    return None
+
+
+def presentation_gate(policy, prof: dict, path: str, value, brand_fit: str | None) -> str | None:
+    """Anti-drift (owner 2026-11-25): why a brand_core change may not move her presentation register, or None. The
+    learning loop never escalates a creator because provocative posts got reach: a register moves at most
+    brain.talent_manager.brand.presentation.max_step levels a change, and only with a stated brand fit."""
+    old = ((prof.get("brand_core") or {}).get("presentation") or {}).get("register")
+    if path == "brand_core.presentation":
+        new = (value or {}).get("register") if isinstance(value, dict) else None
+    elif path == "brand_core":
+        new = ((value or {}).get("presentation") or {}).get("register") if isinstance(value, dict) else None
+    else:
+        return None
+    if new is None or new == old:
+        return None
+    lo, ln = dossier.register_level(policy, old), dossier.register_level(policy, new)
+    if ln is None:
+        return f"unknown presentation register {new!r}"
+    if not str(brand_fit or "").strip():
+        return "a presentation register changes only with stated evidence of brand fit (engagement alone never counts)"
+    step = int(((_brand_cfg(policy).get("presentation") or {}).get("max_step", 1)))
+    if lo is not None and abs(ln - lo) > step:
+        return f"presentation {old} -> {new} moves {abs(ln - lo)} levels; at most {step} a change"
+    return None
 
 
 def _review(ctx: AgentContext, creator_id, mode: str, event: dict | None) -> dict:
@@ -282,10 +373,15 @@ def _review(ctx: AgentContext, creator_id, mode: str, event: dict | None) -> dic
                 "inputs": {"profile_version": version, "mode": mode, "event": event},
                 "output": out.model_dump(), "rationale": out.state, "model": ctx.llm.model_for(role)}
     review = remember(ctx, "review", compute)
-    applied, needs_owner = [], []
+    applied, needs_owner, held = [], [], []
     for ch in review.get("profile_changes") or []:
         if not editable(policy, ch["path"]):
             needs_owner.append(ch)
+            continue
+        if ch["path"].split(".")[0] == "brand_core" and (
+                (why := brand_core_gate(conn, policy, creator_id))
+                or (why := presentation_gate(policy, prof, ch["path"], _value(ch["value"]), ch.get("brand_fit")))):
+            held.append({**ch, "refused": why})   # her stable core: refused in code, never sent to a human
             continue
         def change(ch=ch):
             saved = dossier.checked_change(policy, prof, ch["path"], _value(ch["value"]))
@@ -317,6 +413,8 @@ def _review(ctx: AgentContext, creator_id, mode: str, event: dict | None) -> dic
                                         "brief_for_showrunner", "conviction")}
     brief["capabilities_to_try"] = [c for c in review.get("capabilities_to_try") or [] if c in ok_caps]
     brief["requests"] = filed
+    if held:
+        brief["held_changes"] = held
     decision = record_decision(ctx, "talent_brief", step="brief", creator_id=creator_id, inputs={"mode": mode},
                                output=brief, rationale=review.get("state", ""), model=ctx.llm.model_for(role))
     if conv and not conn.execute("SELECT 1 FROM convictions WHERE inputs->>'decision_id' = %s",
@@ -333,7 +431,7 @@ def _review(ctx: AgentContext, creator_id, mode: str, event: dict | None) -> dic
                                        claim=c["claim"], metric=c["metric"], comparator=c["comparator"],
                                        threshold=c["threshold"], probability=c["probability"],
                                        horizon_days=c["horizon_days"]) is not None
-    return {"applied": len(applied), "needs_owner": len(needs_owner),
+    return {"applied": len(applied), "needs_owner": len(needs_owner), "held": len(held),
             "requests": sum(1 for f in filed if f.get("id")), "refused": [f["refused"] for f in filed if f.get("refused")],
             "predictions": made}
 
