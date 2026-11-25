@@ -508,6 +508,25 @@ def adopt_plates(conn, policy: Policy, batch: str, creator_ids: list) -> int:
                                 [f"post-sets-{c}" for c in creator_ids])).rowcount
 
 
+def register_cap(conn, batch: str, max_usd: float) -> None:
+    """The run's cap where the autoscaler sees it (table run_caps; capped_runs)."""
+    conn.execute("INSERT INTO run_caps (batch, max_usd) VALUES (%s, %s) ON CONFLICT (batch) DO UPDATE SET "
+                 "max_usd = EXCLUDED.max_usd, updated_at = now()", (batch, max_usd))
+
+
+def capped_runs(conn) -> list[dict]:
+    """Runs whose spend reached their cap, with queued work still open: [{batch, spent_usd, max_usd}]."""
+    out = []
+    for r in conn.execute(
+            """SELECT c.batch, c.max_usd FROM run_caps c WHERE EXISTS (SELECT 1 FROM jobs j
+                 WHERE j.status = 'queued' AND (j.batch = c.batch OR j.batch LIKE c.batch || '-%%'
+                                                OR j.batch = c.batch || '.plates'))""").fetchall():
+        spent = run_spend(conn, r["batch"])
+        if spent >= float(r["max_usd"]):
+            out.append({"batch": r["batch"], "spent_usd": round(spent, 2), "max_usd": float(r["max_usd"])})
+    return out
+
+
 def run_spend(conn, batch: str) -> float:
     """What the run has cost so far: every ledger entry of its jobs except attributed GPU time, plus what the
     machines that ran its jobs billed (idle and boot included)."""
@@ -754,12 +773,14 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
         # and deferred, and its eight followers waited for a next step that a long brain job held off.
         _advance_posts(conn, pol, rid, holder, loop_s, store=store, llm=llm, errors=errors, count_failures=False)
         state = _state(conn, rid, list(benches.values()), takes=take_states, expected_takes=list(takes))
+        cap = plan.get("max_usd", cfg.get("max_usd"))   # a plan may set its own cap (longtake: owner-approved $3)
+        if cap is not None:
+            register_cap(conn, batch, float(cap))       # the autoscaler enforces it too, driver or not
         spent = run_spend(conn, batch)
         log.info("breadth %s: posts %s, open bench jobs %s, spent $%.2f", rid, state["posts"],
                  state["bench_open_jobs"], spent)
         if state["done"]:
             break
-        cap = plan.get("max_usd", cfg.get("max_usd"))   # a plan may set its own cap (longtake: owner-approved $3)
         if cap is not None and spent >= float(cap):
             state["spend_cap"] = {"spent_usd": round(spent, 2), "max_usd": float(cap)}
             state["cancelled_jobs"] = cancel_queued(conn, batch)

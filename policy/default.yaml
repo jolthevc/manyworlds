@@ -2762,6 +2762,7 @@ production:
   loop_seconds: 120
   busy_loop_seconds: 15        # while a post is producing: light ticks (production only) this often
   max_advance_errors: 5        # ticks in which advancing a post raised before it is dropped and the owner told
+  stall_hours: 24              # a post producing with no open job and no progress this long is dropped (reap_stalled)
   # One producer per post (production.locks): a post's start or advance holds a lease row this long at most; a post
   # whose lease another producer holds is skipped that tick. Longer than the slowest advance (a finish with its review).
   post_lease_seconds: 1800

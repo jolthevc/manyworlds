@@ -483,6 +483,11 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
         actions += serverless.poll(conn, policy, now=now)
     from .. import operations
     allowed = operations.test_batch_patterns(policy)   # None when live; else tests and benchmarks only
+    # A test run at its spend cap gets nothing more, whatever its driver is doing (review 2026-11-25: the cap was the
+    # driver's alone): its queued jobs are cancelled, so no machine starts for them.
+    from .. import breadth
+    for r in breadth.capped_runs(conn):
+        actions.append({"action": "run_capped", **r, "cancelled_jobs": breadth.cancel_queued(conn, r["batch"])})
     over = over_budget(conn, policy)
     if over:
         everything = waiting_work(conn, allowed)
@@ -977,6 +982,10 @@ def housekeeping(conn, policy: Policy | None = None, store=None, now: datetime |
         if policy is not None:
             ledger.accrue_fixed(conn, policy.get("fixed_costs", default=[]) or [])
         out += [{"action": "purged_research_items", "items": n}] if n else []
+        if policy is not None:   # posts stuck producing with nothing left to run (production.common.reap_stalled)
+            from ..production.common import reap_stalled
+            stalled = reap_stalled(conn, policy)
+            out += [{"action": "dropped_stalled_posts", "posts": len(stalled)}] if stalled else []
     except Exception as e:  # noqa: BLE001 - housekeeping never stops enforcement; retried next tick
         out.append({"action": "housekeeping_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]})
     if policy is not None:

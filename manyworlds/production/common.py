@@ -164,3 +164,32 @@ def _pieces(conn, video: dict) -> tuple[dict, list[dict]]:
         raise ValueError(f"a segment of {video['uri']} has no asset")
     return row, [{**r, "job": conn.execute("SELECT id, kind, payload FROM jobs WHERE id = %s", (r["job_id"],)).fetchone()
                   if r["job_id"] else None} for r in rows]
+
+
+def reap_stalled(conn, policy: Policy, now=None) -> list[str]:
+    """Posts left 'producing' with no open job and no progress for production.stall_hours are dropped, and the owner
+    told once (review 2026-11-25: a breadth run that ended by deadline, cap or a dead driver left its posts producing
+    forever, which kept warm holds on and the no-demand idle stop off). Returns the dropped post ids."""
+    hours = _cfg(policy).get("stall_hours")
+    if hours is None:
+        return []
+    rows = conn.execute(
+        """SELECT p.id, p.body FROM posts p
+           WHERE p.status = 'producing' AND p.updated_at < now() - %s * interval '1 hour'
+             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.post_id = p.id AND j.status IN ('queued', 'running'))
+             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.post_id = p.id
+                             AND j.updated_at > now() - %s * interval '1 hour')
+           LIMIT 200""", (float(hours), float(hours))).fetchall()
+    if not rows:
+        return []
+    from .. import notify
+    gone = []
+    for r in rows:
+        body = dict(r["body"] or {})
+        body.setdefault("drop_reason", f"stalled: no open job and no progress for {hours} h")
+        body["drop_kind"] = "failed"
+        _set(conn, r["id"], "dropped", body)
+        gone.append(str(r["id"]))
+    notify.owner_event(conn, "posts_stalled", payload={"posts": gone[:20], "count": len(gone)},
+                       dedupe_key=f"posts_stalled:{gone[0]}")
+    return gone

@@ -299,6 +299,7 @@ class Production(_Strict):
     loop_seconds: Num
     busy_loop_seconds: Num
     max_advance_errors: int
+    stall_hours: Num | None = None
     post_lease_seconds: Num | None = None
     max_job_failures_per_post: int
     max_ready_unpublished: int
