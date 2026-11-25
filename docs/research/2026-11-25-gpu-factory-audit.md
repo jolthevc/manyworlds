@@ -66,9 +66,9 @@ only; `no_capacity` is now an owner event); the volume's free space (column exis
 | 2 | (f) no capacity: owner event after 15 min; pinned test work widened to the same card's other pools after 30 min | `scale_up`, `notify.owner_event` | 0 | up to an hour per silent wait | S | **done** |
 | 3 | (g) factory clock in `report.throughput`: provisioning, boot, cold start, idle tail, queue latency, jobs/machine | `report.throughput`, `mw machines` | enabling | — | S | **done** (provisioning after a worker rebuild) |
 | 4 | (c) warm reuse: pinned test work goes to a running machine with its kind on the same card before a new rental; benchmarks keep pins | `scale_up`, `queue.claim` pools rule | ~4.5 (≈10 boots/72 h × boot + first-job load + tail) | 5-10 min per avoided boot | S | **done** |
-| 5 | (d) verify the volume fix live (first talkcomfy v24 machine on the volume must record `volume_free_gb`); then point tts at the volume and add a second volume in another DC | `worker/volume`, `volume_low` | ~4 (volume machines with no output: $1.79/72 h) | boots that die at first download | policy + one GPU run | needs a run |
-| 6 | daily cap drains instead of killing: stop launches at the cap, let in-flight attempts finish up to an overrun allowance, stop machines between jobs | `enforce.tick`, `over_budget` | ~1.5 (3 lost attempts + next-day reboots per 72 h) | a lost render per cap hit | M (needs workers to stop claiming: rebuild) | open |
-| 7 | (e) demand-aware hold: the worker's self-stop keeps its machine while queued or soon-due work for its loaded kinds exists (an autoscaler-set `keep_warm_until`) | `pull_forward.demand`, enforcer `busy` | ~2.4 (6 re-boots within 15 min per 72 h) minus extra idle | 5-10 min per avoided boot | M (migration + worker rebuild) | open |
+| 5 | (d) verify the volume fix live (first talkcomfy v24 machine on the volume must record `volume_free_gb`); then point tts at the volume and add a second volume in another DC | `worker/volume`, `volume_low` | ~4 (volume machines with no output: $1.79/72 h) | boots that die at first download | policy + one GPU run | code **done** on `feat/gpu-factory-2` (tts on the volume first, headroom check, volume order, second-volume entry not created); live check needs a run |
+| 6 | daily cap drains instead of killing: stop launches at the cap, let in-flight attempts finish up to an overrun allowance, stop machines between jobs | `enforce.tick`, `over_budget` | ~1.5 (3 lost attempts + next-day reboots per 72 h) | a lost render per cap hit | M (needs workers to stop claiming: rebuild) | **done** on `feat/gpu-factory-2` (enforcer side live at deploy; workers stop claiming after a rebuild) |
+| 7 | (e) demand-aware hold: the worker's self-stop keeps its machine while queued or soon-due work for its loaded kinds exists (an autoscaler-set `keep_warm_until`) | `pull_forward.demand`, enforcer `busy` | ~2.4 (6 re-boots within 15 min per 72 h) minus extra idle | 5-10 min per avoided boot | M (migration + worker rebuild) | **done** on `feat/gpu-factory-2` (enforcer side live at deploy; worker self-stop after a rebuild) |
 | 8 | bake small models into images or seed them on a volume (Z-Image ≈5 min per image boot, voice ≈2 min) | `models.ensure`, image build | ~0.4 | ~5 min per image boot | M | open |
 | 9 | relax `breadth.refuse_beside_open_tests` once warm reuse is proven; split `run_spend` so shared machines are not double counted | `breadth.open_test_work` | — | runs no longer queue behind each other | S | open |
 | 10 | RunPod Serverless for talkcomfy (prior note, rec. 1) | `deploy/serverless.py` | largest at volume | no boots | L (owner: endpoint) | open |
@@ -87,3 +87,22 @@ the queue-latency and warm-reuse fixes matter more than the dollars here suggest
 - `deploy/report.throughput`: `provision_minutes_p50`, `boot_minutes_p50`, `cold_start_seconds_p50`,
   `tail_minutes_p50`, `queue_minutes_p50/p90`, `jobs_per_machine`; migration 042 `gpu_groups.worker_ready_at`, written
   by `worker/runner.mark_ready`.
+
+## 5. What changed on `feat/gpu-factory-2`
+
+- Warm hold (e): `deploy/autoscale.warm_holds` sets `gpu_groups.keep_warm_until` (migration 043) every tick from work due
+  for a machine's kinds (`warm_demand`: a queued job it may claim, a producing post whose format needs its families,
+  a planned post about to start or within pull-forward's horizon), from its last job's end plus
+  `autoscale.warm_hold.max_hold_minutes`, capped by deadline and spend cap, off while draining or at the daily cap.
+  The enforcer's idle stop and the worker's idle self-stop (`runner.Worker.self_stop_reason`) wait for it.
+- Daily cap drains (6): `deploy/enforce.drain` marks a machine with a job in flight `draining_since` (migration 043);
+  its worker claims nothing new (`runner.Worker.draining`) and self-stops between jobs; the enforcer stops it when the
+  job ends or at `gpu_runs.daily_drain_grace_minutes` / `daily_drain_max_overshoot_usd`. Idle machines stop at once.
+- Volumes (d): tts pinned to the volume first in the test overlay (default `job_kinds` already were);
+  `autoscale.volume_skip` keeps a family off a volume whose last reading leaves less than `min_free_gb` plus
+  `network_volume.headroom_gb_by_family` unless that family has finished a job there; `volume_order` tries volumes
+  holding the family's weights first, then by measured free space; pool `runpod_secure_l40s_vol2` is a policy entry
+  with `id: null` (skipped, `volume_not_created`) until the owner creates a second volume.
+- Image churn: not solved in code (a machine on an older tag serving new work risks running stale handlers);
+  `mw machines` now shows each machine's worker image so the churn is visible. Fewer rebuilds of the talkcomfy image,
+  or weights on the volume (which survive rebuilds), are the remedy.

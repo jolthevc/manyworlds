@@ -55,7 +55,7 @@ breadth:
     talk: [runpod_secure_l40s_vol, runpod_secure_l40s]
     comfy: [runpod_secure_l40s_vol, runpod_secure_l40s]
     voice: [runpod_secure_l40s_vol, runpod_secure_l40s]
-    tts: [runpod_secure_l40s, runpod_comm_4090]       # container disk for the engines' weights, never the full volume
+    tts: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_comm_4090]   # the volume (HF_HOME) unless too full for its ~14 GB (headroom_gb_by_family); IndexTTS on the container disk
     dance: [runpod_secure_l40s_vol, runpod_secure_l40s]
     edit: [runpod_secure_l40s, runpod_secure_h100]   # off the 150 GB weights volume: Qwen-Image-Edit is ~58 GB
     image: [runpod_comm_3090, runpod_comm_4090, vast_3090, vast_4090]   # RunPod or Vast community cards (2026-11-23: RunPod 3090s ran out mid-run)

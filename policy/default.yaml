@@ -45,6 +45,12 @@ gpu_runs:
   # music.convert_voice: the first job downloads the SVC weights; music.train_voice: RVC v2, 200 epochs on ~20 min of singing
   max_attempt_minutes_by_kind: {image.mirror: 120, talk.longcat: 180, music.convert_voice: 45, music.train_voice: 150}
   daily_gpu_usd: 10.0          # all groups together, billed, per UTC day
+  # At daily_gpu_usd a machine with a job in flight drains instead of being stopped mid-job (deploy/enforce.drain; three
+  # renders thrown away 2026-11-22..24): it claims nothing new and stops when the job ends, or at whichever ceiling
+  # comes first: this many minutes after draining began (a typical L40S job is 3-7 min), or today's GPU spend passing
+  # the cap by daily_drain_max_overshoot_usd (all machines together). Remove the grace key to stop at once again.
+  daily_drain_grace_minutes: 30
+  daily_drain_max_overshoot_usd: 1.5
   serverless_idle_exit_seconds: 20   # a serverless request's worker returns once no job is left for this long
 
 # Where GPU work runs. Prices are per GPU-hour (Nov 2026 snapshots; re-check).
@@ -83,9 +89,24 @@ gpu_pools:
   # missing model, not a whole family's weights: those are already there) it records the measurement and gives the
   # machine up; the autoscaler skips this volume's pools for recheck_hours after a low reading, falling back to
   # runpod_secure_l40s.
+  # headroom_gb_by_family: a family whose machines have never finished a job on this volume (its weights are not there
+  # yet) gets a machine here only while the latest reading leaves min_free_gb plus this much (deploy/autoscale
+  # .volume_skip); otherwise the next pool. tts: Qwen3 Base + VoiceDesign, judges and Whisper into HF_HOME (~14 GB;
+  # IndexTTS stays on the container disk, MW_INDEXTTS_DIR). Two volume pools for the same work are tried in order of
+  # holding its weights, then free space measured (volume_order).
   runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                            network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
-                                            prune: [longcat], min_free_gb: 15, recheck_hours: 6}}
+                                            prune: [longcat], min_free_gb: 15, recheck_hours: 6,
+                                            headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10, tts: 15,
+                                                                    music: 12}}}
+  # A second weights volume in another data centre (US-NC-1's L40S stock was LOW on 2026-11-22): NOT CREATED. Creating
+  # it is a provider resource and costs ~$10.50/month: the owner's decision. Until `id` is set the pool is skipped
+  # (volume_not_created) and nothing is rented for it; then set id and data_center, and add it to fixed_costs.
+  runpod_secure_l40s_vol2: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
+                            network_volume: {id: null, data_center: null, path: /models, size_gb: 150,
+                                             prune: [longcat], min_free_gb: 15, recheck_hours: 6,
+                                             headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10,
+                                                                     tts: 15, music: 12}}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
   # Hosted APIs (Together): jobs run on the control plane (fly.toml process `hosted`); the host bills per output
   # (ledger `hosted_api`), so no machine is rented and nothing idles.
@@ -123,12 +144,12 @@ job_kinds:
   train.lora:      {pools: [vast_3090, vast_4090, runpod_comm_3090, salad_batch_4090], outputs_per_job: 1}
   # Lip-synced talking video (InfiniteTalk on Wan2.1-I2V-14B). Benchmark first (M10): 24-32 GB cards, fp8 / low-VRAM mode.
   # fp8 + block swapping fits 24 GB cards: the volume L40S first (weights cached), then by price.
-  talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  talk.infinitetalk: {pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
   # One continuous talking take (worker/handlers/talk_longcat.py): LongCat-Video-Avatar 1.6 on its own repo, settings
   # generation.talk_profiles.longcat16. INT8 on a 48 GB card, bf16 on 80 GB; ~47-63 GB of weights at the first job,
   # onto the container disk, not the 150 GB weights volume (it holds the ComfyUI talk, story-clip and voice weights;
   # longcat16.weights_on_volume). Only the long-take comparison (manyworlds.long_take) queues it. Not run on a GPU yet.
-  talk.longcat: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1}
+  talk.longcat: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1}
   # Image-to-video on a hosted API (worker/handlers/hosted_video.py; generation.hosted_video).
   hosted.video:    {pools: [hosted], outputs_per_job: 1}
   # The finish of a made video (production.finish_mode: queue): ffmpeg on the finisher, no GPU. Its outputs are the
@@ -144,24 +165,24 @@ job_kinds:
   # Story clips on the ComfyUI worker (handlers/comfy_video.py, generation.comfy_video): Wan 2.2 I2V A14B + lightx2v.
   # min_vram_gb (any kind): a worker whose card has less total memory doesn't serve the kind (worker.runner
   # kinds_that_fit); a card that can serve none destroys its own machine at start.
-  comfy.wan_i2v:   {pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_comm_3090, vast_4090, vast_5090, runpod_secure_a40], outputs_per_job: 1}
+  comfy.wan_i2v:   {pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_secure_l40s, runpod_comm_3090, vast_4090, vast_5090, runpod_secure_a40], outputs_per_job: 1}
   # Dance (handlers/dance_animate.py, policy `dance`, OFF: the handler refuses): Wan-Animate-2 14B int8 on the same ComfyUI
   # image, its own family so story-clip machines never load it. 48 GB+ cards until benchmarked; only `mw bench` queues it.
-  comfy.wan_animate2: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1, family: dance}
+  comfy.wan_animate2: {min_vram_gb: 44, pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_secure_l40s, runpod_secure_h100], outputs_per_job: 1, family: dance}
   # Any named ComfyUI workflow (worker/handlers/comfy_graph.py, policy comfy_graphs; breadth plan
   # candidates and the talk route ltx25 pin each graph to its own pools). min_vram_gb is the smallest graph floor;
   # each graph has its own.
   comfy.graph:     {min_vram_gb: 20, pools: [runpod_secure_l40s, vast_4090, runpod_comm_4090, vast_5090], outputs_per_job: 1}
   # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
-  voice.design:    {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
-  voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  voice.design:    {pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
+  voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
   # Expressive engines and casting (worker/handlers/tts_engines.py, policy voice.engines / voice.casting): their own
   # worker family `tts` (talkcomfy v21 and later: IndexTTS-2.5 and Qwen3-TTS venvs, the judges), so a machine on an
   # older image is never handed a kind it has no handler for. IndexTTS-2.5 bf16 ~10 GB + Whisper large-v3 ~3 GB +
   # the judges ~2 GB (+ Qwen3 VoiceDesign ~5 GB while casting).
-  voice.speak.indextts: {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
-  voice.speak.qwen3:    {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
-  voice.cast:           {family: tts, min_vram_gb: 22, pools: [runpod_secure_l40s_vol, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
+  voice.speak.indextts: {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  voice.speak.qwen3:    {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
+  voice.cast:           {family: tts, min_vram_gb: 22, pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
   # Original songs (worker/handlers/music_song.py, policy `music`): ACE-Step 1.5 in ComfyUI core on the ComfyUI image,
   # family music; then Demucs splits a vocal and an instrumental stem. turbo DiT 2B + 1.7B LM + VAE ~10 GB of weights,
   # fits 16 GB+; not benchmarked. Only `mw bench music.song` and production music_video posts (off) queue it.
@@ -278,6 +299,25 @@ autoscale:
   # (or one typical job, if longer) before its deadline and has spent under max_spend_share of its cap. 2026-11-25
   # audit: ~1 boot in 5 started beside a compatible machine, each paying a 2-5 min boot and a 2-6 min weights load.
   warm_reuse: {enabled: true, min_remaining_minutes: 20, max_spend_share: 0.8}
+  # A running machine for which work is due soon is kept past its idle window (deploy/autoscale.warm_holds sets
+  # gpu_groups.keep_warm_until each tick; the worker's idle self-stop and the enforcer's idle stop wait for it). Due
+  # soon: a queued job it may claim, a producing post whose format needs one of its families (format_families; while
+  # paused, test posts only: a breadth run between stages), or (live, scene-kind machines) a planned post about to
+  # start or within production.pull_forward's horizon. The hold runs at most max_hold_minutes from its last job's end
+  # (per family, the longest of a machine's families), never past its deadline or spend cap, never while today's GPU
+  # budget is reached. 2026-11-25 audit: 6 boots in 72 h came within 15 min of a same-pool machine idling out; a reboot
+  # costs a 2-5 min boot plus a 2-6 min weights load. Workers built before this ignore it (rebuild needed).
+  warm_hold:
+    enabled: true
+    max_hold_minutes: {default: 15, image: 12, edit: 15, talk: 20, comfy: 20, dance: 20, voice: 15, tts: 15, music: 15,
+                       train: 0, finish: 0, video: 0}
+    format_families:
+      photo: [image, edit]
+      carousel: [image, edit]
+      story: [image, edit]
+      narrated_edit: [image, voice, tts]
+      story_clip: [image, edit, comfy, dance]
+      talking_video: [image, edit, voice, tts, talk, comfy]
   # Work no pool has capacity for (deploy/autoscale.capacity_fallback): after report_after_minutes the owner is told
   # (owner event no_capacity, once a day per kind and pins); after fallback_after_minutes pinned work (not
   # hard_pin_batches) is widened to the kind's other pools with the same card. 2026-11-25: jobs pinned to vast_5090

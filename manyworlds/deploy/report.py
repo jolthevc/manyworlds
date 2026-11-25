@@ -17,7 +17,7 @@ def machines(conn, *, hours: float = 72, now: datetime | None = None) -> list[di
     return conn.execute(
         """
         WITH g AS (SELECT *, coalesce(stopped_at, %(now)s) AS ended FROM gpu_groups WHERE started_at > %(since)s)
-        SELECT g.name, g.provider, g.pool, g.family, g.stop_reason, round(g.cost_usd::numeric, 4)::float AS billed_usd,
+        SELECT g.name, g.provider, g.pool, g.family, g.image, g.stop_reason, round(g.cost_usd::numeric, 4)::float AS billed_usd,
                round(extract(epoch FROM g.ended - g.started_at)::numeric / 60, 1)::float AS billed_minutes,
                round(extract(epoch FROM min(a.started_at) - g.started_at)::numeric / 60, 1)::float AS boot_minutes,
                round(coalesce(sum(extract(epoch FROM least(a.finished_at, g.ended) - a.started_at))
@@ -25,7 +25,7 @@ def machines(conn, *, hours: float = 72, now: datetime | None = None) -> list[di
                count(a.id) FILTER (WHERE a.outcome = 'done') AS jobs_done,
                count(a.id) FILTER (WHERE a.outcome IS DISTINCT FROM 'done') AS jobs_not_done
         FROM g LEFT JOIN attempts a ON a.gpu_group = g.name
-        GROUP BY g.name, g.provider, g.pool, g.family, g.stop_reason, g.cost_usd, g.started_at, g.ended
+        GROUP BY g.name, g.provider, g.pool, g.family, g.image, g.stop_reason, g.cost_usd, g.started_at, g.ended
         ORDER BY g.started_at""", {"now": now, "since": now - timedelta(hours=hours)}).fetchall()
 
 
