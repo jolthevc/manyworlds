@@ -1504,12 +1504,12 @@ intelligence:
     k: {showrunner: 4, director: 3, casting: 4, style: 4}
     fit: {archetype: 2.0, medium: 1.0, shot_types: 1.0, min: 1.0}
     weights: {illustrative: 0.5, evidence_base: 1.0, evidence_per_log_post: 0.4, evidence_max: 3.0,
-              prior_accepted: 2, prior_dropped: 1, min_outcomes: 3, outcome_clip: [0.5, 2.0]}
+              prior_accepted: 2, prior_dropped: 1, min_outcomes: 10, outcome_clip: [0.5, 2.0]}   # 10: three posts were noise
     # What kind of knowledge a card is (patterns.basis; owner 2026-11-25: keep judgment, observation, correlation,
     # hypothesis and validated learning apart): validated = our own posts' real outcomes (min_outcomes); correlation =
     # a high-vs-low traction difference with p <= max_p and at least min_group posts each side (two-proportion test);
     # observed = researched, not significant; judgment = craft knowledge (illustrative). Weight multiplier per basis.
-    basis: {max_p: 0.1, min_group: 5, weight: {validated: 1.5, correlation: 1.2, observed: 1.0, judgment: 1.0}}
+    basis: {max_p: 0.1, min_group: 10, weight: {validated: 1.5, correlation: 1.2, observed: 1.0, judgment: 1.0}}
     format_media:
       photo: [photo]
       story: [photo]
@@ -1556,6 +1556,8 @@ intelligence:
     keep_days: 730
     structure_role: desk_claims
     k: {style: 6, casting: 6, commerce: 5, content: 5}
+    # Platforms that reserve against automated collection (robots.txt, terms) are never searched or fetched.
+    blocked_domains: [instagram.com, tiktok.com, facebook.com, threads.net]
     depths:
       quick: {role: research_quick, max_searches: 3, fetch: false, effort: low, est_usd: 0.06, fresh_days: 7}
       deep: {role: research_deep, max_searches: 8, fetch: true, max_fetches: 4, max_content_tokens: 12000,
@@ -1672,7 +1674,8 @@ intelligence:
     annotate: {posts_per_call: 4, image_max_bytes: 400000, caption_chars: 600}
     # distill: a cluster is posts sharing a medium and a format or situation; it needs min_posts posts from at least
     # min_creators creators; high and low traction are over_own_median >= high and <= low; at most max_cards calls.
-    distill: {min_posts: 6, min_creators: 1, high: 1.5, low: 0.8, max_cards: 12, examples: 6}
+    # min_creators 3 (review 2026-11-25: one creator's posts are not independent evidence)
+    distill: {min_posts: 6, min_creators: 3, high: 1.5, low: 0.8, max_cards: 12, examples: 6}
     # Estimates (USD) the cap checks before each step and the dry run adds up.
     estimate: {plan_call: 0.25, annotate_call: 0.004, distill_call: 0.06, measure_video: 0.001}
 

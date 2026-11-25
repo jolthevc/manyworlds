@@ -107,9 +107,10 @@ def basis(policy: Policy | None, card: dict) -> dict:
     ev = card.get("evidence") or {}
     best = None
     for t in ev.get("tests") or []:
-        if (t.get("p") is not None and t["p"] <= float(c.get("max_p", 0.1))
+        sig = t.get("q", t.get("p"))   # corrected for multiple tests when the distill recorded it
+        if (sig is not None and sig <= float(c.get("max_p", 0.1))
                 and min(int(t.get("n_high") or 0), int(t.get("n_low") or 0)) >= int(c.get("min_group", 5))):
-            if best is None or t["p"] < best["p"]:
+            if best is None or sig < best.get("q", best["p"]):
                 best = t
     if best:
         return {"kind": "correlation", **{k: best[k] for k in ("attribute", "high", "low", "p", "n_high", "n_low")}}

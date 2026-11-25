@@ -81,3 +81,27 @@ def test_a_take_whose_repairs_run_out_counts_as_rejected_for_the_photo_reroute(c
     step = Step(["j1"], lambda jobs: ("rejected", None), make, ("clip_repairs", 9), ("follow_up_failures", 9), "clip")
     assert advance_step(body, step)[0] == "dropped"
     assert body["drop_kind"] == "rejected" and "passed review" not in body["drop_reason"]
+
+
+def test_a_correlation_must_survive_the_multiple_testing_correction(policy):
+    from manyworlds.brain import patterns
+    base = {"status": "draft", "sources": [{"post_id": "a"}]}
+    raw_only = {**base, "evidence": {"tests": [{"attribute": "a", "high": 0.6, "low": 0.3, "n_high": 20, "n_low": 20,
+                                               "p": 0.04, "q": 0.6}]}}
+    assert patterns.basis(policy, raw_only)["kind"] == "observed"      # p 0.04 but 15 attributes looked at
+    survives = {**base, "evidence": {"tests": [{"attribute": "a", "high": 0.8, "low": 0.2, "n_high": 20, "n_low": 20,
+                                               "p": 0.001, "q": 0.015}]}}
+    assert patterns.basis(policy, survives)["kind"] == "correlation"
+    small = {**base, "evidence": {"tests": [{"attribute": "a", "high": 0.8, "low": 0.2, "n_high": 6, "n_low": 6,
+                                            "p": 0.001, "q": 0.01}]}}
+    assert patterns.basis(policy, small)["kind"] == "observed"          # min_group 10 per side
+
+
+def test_research_never_supersedes_a_reviewed_or_seed_card(conn):
+    from manyworlds.brain.agents import intelligence
+    conn.execute("INSERT INTO pattern_cards (key, version, status, medium, body) VALUES ('golden_hour', 1, 'active', "
+                 "'photo', '{}')")
+    out = intelligence.store_card(conn, {"key": "golden_hour", "medium": "photo", "signature_ok": False},
+                                  {"name": "photo:x", "high": [], "low": [], "n": 0, "lift": []}, "00000000-0000-0000-0000-000000000000")
+    assert out["key"] == "golden_hour_research"
+    assert conn.execute("SELECT superseded_by FROM pattern_cards WHERE key = 'golden_hour'").fetchone()["superseded_by"] is None

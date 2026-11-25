@@ -134,7 +134,8 @@ def ask(conn, policy: Policy, llm, question: str, *, depth: str = "quick", reque
                                max_searches=int(d.get("max_searches", 3)), fetch=bool(d.get("fetch")),
                                max_fetches=int(d.get("max_fetches", 3)),
                                max_content_tokens=int(d.get("max_content_tokens", 15000)),
-                               allowed_domains=allowed_domains, blocked_domains=blocked_domains,
+                               allowed_domains=allowed_domains,
+                               blocked_domains=None if allowed_domains else (blocked_domains or c.get("blocked_domains")),
                                effort=str(d.get("effort", "low")))
         sources = got["sources"]
         listing = "\n".join(f"{i + 1}. {s.get('title') or ''} ({s.get('url') or 'no url'})"
