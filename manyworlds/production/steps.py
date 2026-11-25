@@ -12,19 +12,24 @@ class DropPost(Exception):
     """Raised by a step's job maker when the post must not be retried (e.g. unsafe output)."""
 
 
+# What ranks accepted candidates: the core gates' scores only. Report rows (distribution_risk, where higher is worse;
+# hands or teeth, present only when visible) once ranked riskier photos first (review 2026-11-25).
+RANKED_GATES = ["identity", "realism", "scene", "direction"]
+
+
 def _best_confirmed(conn, job_ids: list[str]) -> dict | None:
     """The best image of these jobs that passed every review row and was confirmed, or cleared the screen by the
     clear-pass margin (no confirm needed: review.image.clear_pass_margin)."""
     return conn.execute(
         """SELECT a.id, a.uri,
-                  coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm'),
-                           sum(r.score) FILTER (WHERE r.details->>'clear_pass' = 'true')) AS score
+                  coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm' AND r.gate = ANY(%s)),
+                           sum(r.score) FILTER (WHERE r.details->>'clear_pass' = 'true' AND r.gate = ANY(%s))) AS score
            FROM assets a JOIN reviews r ON r.asset_id = a.id
            WHERE a.job_id = ANY(%s::uuid[]) AND a.kind = 'image'
            GROUP BY a.id, a.uri
            HAVING bool_and(r.passed)
               AND bool_or(r.details->>'stage' = 'confirm' OR r.details->>'clear_pass' = 'true')
-           ORDER BY score DESC NULLS LAST, a.uri LIMIT 1""", (job_ids,)).fetchone()
+           ORDER BY score DESC NULLS LAST, a.uri LIMIT 1""", (RANKED_GATES, RANKED_GATES, job_ids)).fetchone()
 
 
 # Every piece of a post (each scene's image, then the edit or clip made from them) is a Step:
@@ -60,12 +65,14 @@ def advance_step(body: dict, step: Step) -> tuple[str, Any]:
     if body.get(key, 0) >= limit:
         body["drop_reason"] = (f"{step.label}no {step.thing} passed review after {body[key]} repairs"
                                if state == "rejected" else f"{step.label}the {step.thing} job failed {body[key] + 1} times")
+        body["drop_kind"] = state   # structured: "rejected" (review kept failing it) or "failed" (machines)
         return "dropped", None
     body[key] = body.get(key, 0) + 1
     try:
         step.jobs.append(str(step.make(len(step.jobs))))
     except DropPost as e:
         body["drop_reason"] = f"{step.label}{e}"
+        body["drop_kind"] = state   # a repair that can change nothing more after rejections is a rejection too
         return "dropped", None
     return "waiting", None
 

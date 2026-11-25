@@ -231,7 +231,10 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                for a in assets}
 
     remaining, rows = list(assets), []
-    for stage_role, effort, stage in stages:
+    plan, backlog = list(stages), []
+    walks = int(cfg.get("confirm_walk_max", 3))
+    while plan:
+        stage_role, effort, stage = plan.pop(0)
         if not remaining:
             break
         with common.charged_to(llm, job_id):   # review counts in this output's cost
@@ -287,7 +290,17 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         # The rest stay accepted on the screen alone ("confirmed": False).
         top = int(cfg.get("confirm_top_per_job", 0)) or len(still)
         still.sort(key=lambda a: -sum(results[a["id"]][f"{k}_score"] or 0 for k in ("identity", "realism", "scene")))
-        remaining = still[:top]
+        if stage == "screen":
+            remaining, backlog = still[:top], still[top:]
+        elif (not still and backlog and walks > 0
+              and not any(r.get("clear_pass") for r in results.values())):
+            # The confirm rejected every candidate it judged: confirm the next screen passes instead of throwing
+            # them away and regenerating the scene (review 2026-11-25; shipped confirm_top_per_job is 1).
+            walks -= 1
+            remaining, backlog = backlog[:top], backlog[top:]
+            plan.insert(0, (stage_role, effort, stage))
+        else:
+            remaining = still[:top]
     # A clear pass is stored on its screen rows, so production can choose it without a confirm row.
     clear = {str(i) for i, r in results.items() if r.get("clear_pass")}
     rows = [(aid, g, ok, sc, Jsonb({**j.obj, "clear_pass": True})

@@ -84,3 +84,34 @@ def test_shared_mode_falls_back_for_development(conn, policy, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://dev:dev@localhost/mw")
     pol = policy_mod.from_dict({**policy.body, "security": {"worker_database": "shared", "worker_storage": "shared"}})
     assert credentials.worker_env(pol)["DATABASE_URL"] == "postgresql://dev:dev@localhost/mw"
+
+
+def test_a_rented_host_cannot_queue_brain_work_forge_the_ledger_or_extend_its_deadline(conn):
+    # review 2026-11-25: 022 let mw_worker rewrite any job, insert negative gpu_billed rows and push its deadline out
+    import psycopg
+    import pytest
+    from manyworlds import queue
+    brain = queue.enqueue(conn, "brain.intelligence", {"mode": "pilot"})
+    gpu = queue.enqueue(conn, "image.zimage", {"prompt": "x"}, batch="test-x")
+    conn.execute("INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, started_at) "
+                 "VALUES ('mw-x', 'runpod', 'p', 1, '{image.zimage}', now() + interval '1 hour', 1, now())")
+    conn.execute("SET ROLE mw_worker")
+    try:
+        assert conn.execute("SELECT count(*) n FROM jobs WHERE id = %s", (brain,)).fetchone()["n"] == 0
+        assert conn.execute("UPDATE jobs SET status = 'queued' WHERE id = %s RETURNING id", (brain,)).fetchall() == []
+        for sql, args in (("UPDATE jobs SET payload = '{\"test\": true}' WHERE id = %s", (gpu,)),
+                          ("UPDATE jobs SET batch = 'test-y' WHERE id = %s", (gpu,)),
+                          ("INSERT INTO cost_entries (category, provider, quantity, unit, usd) "
+                           "VALUES ('gpu_billed', 'p', 1, 's', -500)", ()),
+                          ("INSERT INTO cost_entries (category, provider, quantity, unit, usd) "
+                           "VALUES ('gpu', 'p', 1, 's', -5)", ()),
+                          ("UPDATE gpu_groups SET deadline = now() + interval '1 year' WHERE name = 'mw-x'", ())):
+            with pytest.raises(psycopg.Error):
+                with conn.transaction():
+                    conn.execute(sql, args)
+        # what a worker legitimately does still works
+        conn.execute("UPDATE jobs SET status = 'running', worker_id = 'w', lease_until = now() WHERE id = %s", (gpu,))
+        conn.execute("INSERT INTO cost_entries (category, provider, quantity, unit, usd) VALUES ('gpu', 'p', 1, 's', 0.1)")
+        conn.execute("UPDATE gpu_groups SET deadline = now() WHERE name = 'mw-x'")
+    finally:
+        conn.execute("RESET ROLE")

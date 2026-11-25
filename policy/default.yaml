@@ -10,7 +10,9 @@ budgets:
   # Once a cap is reached, work that finishes a post already in production (one with a finished job) may still
   # start machines, up to this much above the cap; nothing new starts. One-day owner exceptions: `mw budget grant`
   # (table budget_grants; manyworlds.budget). The owner hears once a day when the headroom is used.
-  completion_usd: 5.0
+  # Off (0) after the 2026-11-25 review: kinds-level headroom let new posts ride on it and its end killed in-flight
+  # renders. Rebuild it per job before turning it on; one-day owner grants (mw budget grant) remain.
+  completion_usd: 0
 
 # Storage retention (manyworlds.retention): rejected media (and a rejected clip's keyframes and voice line) older than
 # retention_days is deleted once a day; anything a post or creator names is kept. ~60 MB a creator a day otherwise.
@@ -366,6 +368,7 @@ review:
     confirm_role: review_confirm
     confirm_effort: low
     confirm_top_per_job: 1
+    confirm_walk_max: 3          # a rejecting confirm walks down to the next screen passes (review 2026-11-25)
     clear_pass_margin: 2
     # 2026-11-19 (owner): keep images unless the face is clearly someone else (identity 5 = recognisably her,
     # small drift) or there are clear AI defects (realism 5 = passes a casual scroll). Scene fit only ranks
@@ -1423,9 +1426,9 @@ data_policy:
       transient_media: true
     graph:
       status: approved
-      basis: "Instagram Graph API Business Discovery through our own professional account (Meta Platform Terms)"
-      tasks: [profiles, posts, posts_media]
-      transient_media: true
+      basis: "Instagram Graph API Business Discovery through our own professional account (Meta Platform Terms): factual metadata; media (media_url) uncertain under Platform Terms 3.a.v until counsel reviews"
+      tasks: [profiles, posts]
+      transient_media: false
     hikerapi:
       status: blocked
       why: "private mobile API through logged-in sessions; its terms need written permission for commercial use"

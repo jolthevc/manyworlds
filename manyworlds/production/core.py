@@ -128,7 +128,9 @@ def advance_post(conn, policy: Policy, post: dict, store=None, *, llm=None) -> s
             target = (_cfg(policy).get("reroute_failed_video") or {}).get(post["format"])
             # Only when review kept rejecting the clips (not machine failures), and never for an experiment
             # idea, whose arm would then be measured on a photo.
-            rejected = "passed review" in (body.get("drop_reason") or "")
+            # body.drop_kind (steps.advance_step) is structured; matching the reason's words missed every take whose
+            # repairs ran out ("... no repair changes it", review 2026-11-25), so those posts were dropped unshipped.
+            rejected = body.get("drop_kind") == "rejected" or "passed review" in (body.get("drop_reason") or "")
             in_experiment = conn.execute("SELECT 1 FROM ideas WHERE post_id = %s AND experiment_id IS NOT NULL",
                                          (post["id"],)).fetchone()
             if state == "dropped" and target and rejected and not in_experiment:

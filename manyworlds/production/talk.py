@@ -14,7 +14,7 @@ from ..policy import Policy
 from .common import SUNG, _cfg, _seed, _shot, _with_crops, _with_prompts, _with_shot, unmarked
 from .finish import captions_burned
 from .motion import _advance_motion, _last_frame, _motion_cfg, _needs_motion, talk_v2v
-from .steps import DropPost, Step, _clip_state, _edit_state, advance_step
+from .steps import RANKED_GATES, DropPost, Step, _clip_state, _edit_state, advance_step
 from .takes import _hybrid_cfg, _photo_per_shot, _take_index, _take_photo, _take_script, _take_shot, _talk_long_cfg
 from .voice import _advance_voice, _designed_voice, _with_audio, voice_lines
 
@@ -49,6 +49,13 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
         route = _routes(policy).get(name) or {}
         params = route_params(policy, route, shot, motion)
         mine = [j for j in prior if _job_route(conn, policy, j) == name]
+        # A route has its own repairs (review.video.max_repairs_per_post) whatever its scores do: before, only
+        # knobs that repeated a score within tolerance ran out, so varying scores re-seeded one failing route until
+        # the take's cap dropped the post and the next route was never tried (review 2026-11-25).
+        if k + 1 < len(names) and len(mine) >= int(policy.get("review", "video", "max_repairs_per_post",
+                                                                 default=2)) + 1:
+            fell_back = {"from": name, "reason": f"{name}: its {len(mine)} takes used its repairs"}
+            continue
         try:
             repair = talk_repair(conn, policy, mine, params, v2v=bool(motion), options=options,
                                  rcfg=route_repair_cfg(policy, route))
@@ -374,12 +381,13 @@ def _other_photos(conn, body: dict, i: int, used: set) -> list[str]:
     if not jobs:
         return []
     rows = conn.execute(
-        """SELECT a.uri, coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm'),
-                                  sum(r.score) FILTER (WHERE r.details->>'stage' = 'screen')) AS score
+        """SELECT a.uri, coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm' AND r.gate = ANY(%s)),
+                                  sum(r.score) FILTER (WHERE r.details->>'stage' = 'screen' AND r.gate = ANY(%s)))
+                                  AS score
            FROM assets a JOIN reviews r ON r.asset_id = a.id
            WHERE a.job_id = ANY(%s::uuid[]) AND a.kind = 'image'
            GROUP BY a.uri HAVING bool_and(r.passed)
-           ORDER BY score DESC NULLS LAST, a.uri""", (jobs,)).fetchall()
+           ORDER BY score DESC NULLS LAST, a.uri""", (RANKED_GATES, RANKED_GATES, jobs)).fetchall()
     return [r["uri"] for r in rows if r["uri"] not in used]
 
 

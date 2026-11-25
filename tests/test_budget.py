@@ -13,6 +13,17 @@ from test_autoscale import T0, providers, registry  # noqa: F401 - registry: aut
 from test_production import creator
 
 
+@pytest.fixture()
+def policy(policy):
+    # the completion headroom mechanics under test (shipped off since the 2026-11-25 review: see the test below)
+    import dataclasses
+    return dataclasses.replace(policy, body={**policy.body, "budgets": {**policy.body["budgets"], "completion_usd": 5.0}})
+
+
+def test_the_completion_headroom_ships_off(raw_policy):
+    assert float(raw_policy.get("budgets", "completion_usd")) == 0
+
+
 def _at_cap(conn, policy, extra=0.0):
     ledger.record(conn, category="llm", provider="claude-opus-5-5", quantity=1, unit="token",
                   usd=float(policy.get("budgets", "daily_usd")) + extra)

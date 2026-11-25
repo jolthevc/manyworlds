@@ -153,6 +153,7 @@ class ReviewImage(_Strict):
     confirm_role: str
     confirm_effort: str
     confirm_top_per_job: int
+    confirm_walk_max: int
     clear_pass_margin: Num
     min_identity: Num
     min_realism: Num

@@ -75,6 +75,7 @@ STATE: dict[str, str] = {
     "finish_held": "the error after which the finish was given up and the post held (finishing.on_give_up: hold)",
     # the outcome
     "drop_reason": "why the post was dropped (or, before a reroute, why its video failed)",
+    "drop_kind": "rejected (review kept failing a piece) or failed (its jobs kept failing): what a reroute decides on",
     "rerouted_from": "the video format a rerouted post was planned as (it shipped as a photo)",
     "reroute_reason": "the drop reason that sent the post to its reroute",
     "caption_before_reroute": "the caption written for the video, before its rewrite for the photo (reroute_caption)",
