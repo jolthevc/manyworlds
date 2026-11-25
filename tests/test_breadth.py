@@ -467,3 +467,13 @@ def test_a_started_run_resumes_even_beside_other_open_test_work(conn, policy, st
     queue.enqueue(conn, "image.zimage", {}, batch="bench-image-y")          # test work opened since
     again = breadth.run(conn, pol, "default", items=["photo_propped_pose"], creator=handle, store=store, once=True)
     assert again["run"] == first["run"]
+
+
+def test_cpu_only_test_work_never_blocks_a_new_run(conn, policy):
+    # 2026-11-25: a research pilot (brain.intelligence in a test-iia batch) held the voice bake-off for an hour.
+    pol = breadth.test_policy(policy)
+    conn.execute("INSERT INTO jobs (kind, payload, batch) VALUES ('brain.intelligence', '{}', 'test-iia-x')")
+    conn.execute("INSERT INTO jobs (kind, payload, batch) VALUES ('finish.measure_video', '{}', 'test-iia-x')")
+    assert breadth.open_test_work(conn, pol, "test-breadth-run") == {}
+    conn.execute("INSERT INTO jobs (kind, payload, batch) VALUES ('talk.infinitetalk', '{}', 'test-breadth-other')")
+    assert breadth.open_test_work(conn, pol, "test-breadth-run") == {"test-breadth-other": 1}

@@ -458,12 +458,15 @@ def plates_batch(batch: str) -> str:
 
 def open_test_work(conn, policy: Policy, batch: str) -> dict:
     """Open jobs of other test batches (operations.test_batch_prefixes): they could share this run's merged machine
-    or start a second one. {batch: open jobs}."""
+    or start a second one. {batch: open jobs}. Kinds that never rent a GPU (breadth.open_work_ignores_kinds: the
+    brain's own jobs, the Fly finisher's) don't count: 2026-11-25 a research pilot held the voice bake-off an hour."""
     prefixes = policy.get("operations", "test_batch_prefixes", default=["bench-", "test-"]) or []
+    ignored = list(policy.get("breadth", "open_work_ignores_kinds", default=[]) or [])
     rows = conn.execute(
         "SELECT batch, count(*) AS n FROM jobs WHERE status IN ('queued', 'running') AND batch LIKE ANY(%s) "
-        "AND batch <> %s AND batch NOT LIKE %s AND batch <> %s GROUP BY batch ORDER BY batch",
-        ([f"{p}%" for p in prefixes], batch, f"{batch}-%", plates_batch(batch))).fetchall()
+        "AND batch <> %s AND batch NOT LIKE %s AND batch <> %s AND NOT (kind LIKE ANY(%s)) "
+        "GROUP BY batch ORDER BY batch",
+        ([f"{p}%" for p in prefixes], batch, f"{batch}-%", plates_batch(batch), ignored)).fetchall()
     return {r["batch"]: r["n"] for r in rows}
 
 
