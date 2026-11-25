@@ -315,11 +315,36 @@ def edit_pools(policy: Policy) -> list[str] | None:
     return list(policy.get("job_kinds", edit_kind(policy), "pools", default=[]) or []) or None
 
 
-def conditioning(conn, policy: Policy, creator_id, references: list[dict]) -> list[dict] | None:
+def shared_cfg(policy: Policy) -> dict:
+    return cfg(policy).get("shared_set") or {}
+
+
+def shared_leader(policy: Policy, fmt: str, shots: list | None, i: int) -> int | None:
+    """The scene whose accepted photo sets the look of scene i's place, or None. Within one post of a format in
+    `sets.shared_set.formats`, every shot naming the same set_id shares one place: the first of them that shows her
+    face is the leader (its photo is made first, from text), the others follow it. perf_compare 2026-11-25: nine
+    shots named pub_bar; one photo was at the bar, the rest in a living room or kitchen."""
+    c = shared_cfg(policy)
+    if not c.get("enabled") or fmt not in (c.get("formats") or []) or not shots or i >= len(shots):
+        return None
+    from ..direction import faceless
+    sid = _ids(shots[i])[0]
+    if not sid:
+        return None
+    same = [k for k, s in enumerate(shots) if isinstance(s, dict) and _ids(s)[0] == sid]
+    if len(same) < 2:
+        return None
+    leader = next((k for k in same if not faceless(shots[k])), same[0])
+    return None if leader == i else leader
+
+
+def conditioning(conn, policy: Policy, creator_id, references: list[dict], *,
+                 force: bool = False) -> list[dict] | None:
     """The input images for a reference-conditioned scene, [{kind: person|set|outfit, uri}] with the creator's
-    anchor first, or None (text-only Z-Image) unless `sets.reference_conditioning` is on, the edit kind is in
-    policy job_kinds, and there are an anchor and at least one reference."""
-    if not enabled(policy) or not cfg(policy).get("reference_conditioning") or not references:
+    anchor first, or None (text-only Z-Image) unless `sets.reference_conditioning` is on (or `force`: a shared
+    set's follower while sets.shared_set.conditioning), the edit kind is in policy job_kinds, and there are an
+    anchor and at least one reference."""
+    if not enabled(policy) or not (force or cfg(policy).get("reference_conditioning")) or not references:
         return None
     if edit_kind(policy) not in (policy.get("job_kinds", default={}) or {}):
         return None

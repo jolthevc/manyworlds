@@ -638,10 +638,12 @@ def _render(head: str, sections: dict[str, str], tail: str) -> str:
 
 
 def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, tail: str, budget: int, video: bool,
-         scene: str, short_subject: str, policy: Any) -> str:
+         scene: str, short_subject: str, policy: Any, subject_floor: str = "") -> str:
     """Trim a directed prompt into `budget` estimated tokens (see _SHORTEN, _DROP, _TRUNCATE). Camera, action and the
     tail (the positive stand-ins) are kept whole; if they alone are over budget, the prompt is returned with
-    everything else cut."""
+    everything else cut. `subject_floor` (a photo of her face: her appearance without its signature details) is
+    where the subject may be cut to before the set and the wardrobe are: perf_compare 2026-11-25 lost both
+    sections whole to a long signature item (a cardigan she wasn't wearing), and eight of nine photos left the set."""
     fits = lambda: estimate_tokens(_render(head, sections, tail)) <= budget  # noqa: E731
     if fits():
         return _render(head, sections, tail)
@@ -666,9 +668,15 @@ def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, tail: str, budget
         refresh()
         if fits():
             return _render(head, sections, tail)
-    for key in _TRUNCATE:                                             # (4) cut at a word boundary, lowest first
+    order = list(_TRUNCATE)
+    if subject_floor and "set" in order:   # her signature details go before the set and the wardrobe
+        order.insert(order.index("set"), "signature")
+    for key in order:                                                 # (4) cut at a word boundary, lowest first
+        floor = 0
+        if key == "signature":
+            key, floor = "subject", len(subject_floor.split())
         kept = sections.get(key, "").split()
-        while kept and not fits():
+        while len(kept) > floor and not fits():
             kept.pop()
             while kept and kept[-1].lower() in _DANGLING:              # no cut ending on 'with the'
                 kept.pop()
@@ -818,7 +826,8 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
     if not budget:
         return {"prompt": _render(head, sections, tail), "negative": negative}
     prompt = _fit(s, sections, head=head, tail=tail, budget=int(budget), video=video, scene=scene,
-                  short_subject=short_appearance(bible) if video and not no_face else "", policy=policy)
+                  short_subject=short_appearance(bible) if video and not no_face else "", policy=policy,
+                  subject_floor=_appearance_core(bible) if not video and not no_face else "")
     return {"prompt": prompt, "negative": negative}
 
 
@@ -830,3 +839,12 @@ def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target,
 
 def _capitalised(text: str) -> str:
     return f"{text[0].upper()}{text[1:]}." if text else ""
+
+
+def _appearance_core(bible: dict) -> str:
+    """Her full appearance without its signature details (the part of a photo's subject a set outranks)."""
+    from .creator.lab import appearance_prompt
+    a = dict(bible.get("appearance") or {})
+    if not str(a.get("signature_details") or "").strip():
+        return ""
+    return appearance_prompt({**bible, "appearance": {**a, "signature_details": ""}}).rstrip(", ")

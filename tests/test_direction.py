@@ -362,9 +362,14 @@ def test_video_uses_the_short_appearance_and_photos_keep_the_full_one(policy):
     for target in ("i2v", "talk"):
         p = direction.compile_prompt(long_kitchen(), LONG_BIBLE, target, policy)
         assert f"Subject: {short}." in p and lab.appearance_prompt(LONG_BIBLE) not in p, target
-    # the photo is where identity is made (LoRA + the full appearance: 12 of 12 kept on Maren)
+    # the photo is where identity is made (LoRA + the full appearance: 12 of 12 kept on Maren); over budget, only her
+    # signature details give way before the set and the wardrobe (perf_compare 2026-11-25 lost both whole to them)
     photo = direction.compile_prompt(long_kitchen(), LONG_BIBLE, "photo", policy, trigger="mw_m")
-    assert f"Subject: {lab.appearance_prompt(LONG_BIBLE)}." in photo and photo.startswith("mw_m, Camera:")
+    core = lab.appearance_prompt({**LONG_BIBLE, "appearance": {**LONG_BIBLE["appearance"], "signature_details": ""}})
+    assert f"Subject: {core.rstrip(', ')}" in photo and photo.startswith("mw_m, Camera:")
+    assert "Set: her narrow galley kitchen" in photo and "Wardrobe and look: wearing" in photo
+    whole = direction.compile_prompt(long_kitchen(), LONG_BIBLE, "photo", unbudgeted(policy), trigger="mw_m")
+    assert f"Subject: {lab.appearance_prompt(LONG_BIBLE)}." in whole                  # within budget: all of it
 
 
 def test_short_shots_are_not_trimmed(policy):

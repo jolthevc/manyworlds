@@ -29,6 +29,8 @@ STATE: dict[str, str] = {
     "talk_script": "a directed one-take talking video's words",
     "talk_shots": "the shot each take belongs to (a directed post)",
     "talk_modes": "per take, 'talk' (lip-synced) or 'narrated' (a cutaway over a photo)",
+    "edit_grammar": "the talking edit grammar the post follows (manyworlds.cuts; a lip-sync repair reads it)",
+    "rerouted": "per take index (as text), a line a lip-sync repair moved under a cutaway: {image_uri, reason}",
     "talk_segment_jobs": "per take, its talk or cutaway job ids",
     # the designed voice
     "voice_jobs": "the one-take follow-up's voice.speak job ids",

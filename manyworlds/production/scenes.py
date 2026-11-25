@@ -10,7 +10,7 @@ from ..creator.lab import photo_prompt
 from ..policy import Policy
 from ..review import repair
 from .common import FOLLOW_UP_FORMATS, _cfg, _seed, _set, _shot, _with_shot, candidates_per_scene, piece_key
-from .steps import DropPost, Step, _scene_state
+from .steps import DropPost, Step, _best_confirmed, _scene_state
 
 
 def ensure_lora(conn, policy: Policy, creator_id) -> dict | None:
@@ -53,9 +53,17 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
     # A registered set or outfit (creator.sets): its canonical description goes into the shot, its plate and outfit
     # reference into `references` (the consistency check compares). Nothing registered: the shot as it was.
     shot, references = sets.apply(conn, policy, post["creator_id"], _shot(post["body"], scene_i))
+    # A shared set (sets.shared_set): the post's first accepted photo of the place is this scene's SET reference,
+    # the image the scene is conditioned on (image.qwen_edit, sets.shared_set.conditioning) and judged against
+    # (gate set_match). The leader's photo is made first, from text (_scene_steps holds the others).
+    shared = _shared_reference(conn, policy, post, scene_i)
+    if shared:
+        references = [{"kind": "set", "uri": shared["uri"]}, *[r for r in references if r.get("kind") != "set"]]
     # Reference-conditioned (sets.reference_conditioning, off until benchmarked): image.qwen_edit from the anchor,
     # plate and outfit reference; the creator's LoRA (and its trigger word) is for Z-Image only.
-    images = sets.conditioning(conn, policy, post["creator_id"], references)
+    from ..direction import faceless
+    force = bool(shared) and bool(sets.shared_cfg(policy).get("conditioning")) and not faceless(shot)
+    images = sets.conditioning(conn, policy, post["creator_id"], references, force=force)
     trigger = None if images else (lora and lora.get("trigger"))
     payload = {"prompt": photo_prompt(bible, post["body"]["scenes"][scene_i], trigger=trigger,
                                       shot=shot, policy=policy),
@@ -65,6 +73,8 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
                "width": img.get("width", 896), "height": img.get("height", 1152),
                "params": {"steps": img.get("steps", 9), "guidance": img.get("guidance", 0.0)}}
     _with_shot(payload, shot)
+    if shared:
+        payload["shared_set"] = {"set_id": shared["set_id"], "leader": shared["leader"]}
     if references:
         payload["references"] = references
     kind, pools = cfg.get("image_kind", "image.zimage"), None
@@ -80,11 +90,33 @@ def _scene_job(conn, policy: Policy, post: dict, bible: dict, lora: dict | None,
                          idempotency_key=f"{piece_key(post)}:{scene_i}:{attempt}")
 
 
+def _leader(policy: Policy, post: dict, i: int) -> int | None:
+    from ..creator import sets
+    body = post["body"]
+    return sets.shared_leader(policy, post["format"], body.get("shots"), i)
+
+
+def _shared_reference(conn, policy: Policy, post: dict, i: int) -> dict | None:
+    """{uri, set_id, leader} of the shared set's accepted leader photo for scene i, or None (no shared set, or
+    scene i leads it, or its leader has no accepted photo yet)."""
+    leader = _leader(policy, post, i)
+    jobs = (post["body"].get("scene_jobs") or [])
+    if leader is None or leader >= len(jobs) or not jobs[leader]:
+        return None
+    best = _best_confirmed(conn, [str(j) for j in jobs[leader]])
+    if not best:
+        return None
+    sid = ((post["body"]["shots"][i].get("set") or {}).get("set_id") or "").strip()
+    return {"uri": best["uri"], "set_id": sid, "leader": leader}
+
+
 def start(conn, policy: Policy, post: dict) -> None:
     c = conn.execute("SELECT bible FROM creators WHERE id = %s", (post["creator_id"],)).fetchone()
     lora = ensure_lora(conn, policy, post["creator_id"])
     body = dict(post["body"])
-    body["scene_jobs"] = [[str(_scene_job(conn, policy, post, c["bible"], lora, i, 0))]
+    # a shared set's followers wait for its leader's photo (_scene_steps starts them)
+    body["scene_jobs"] = [[] if _leader(policy, post, i) is not None else
+                          [str(_scene_job(conn, policy, post, c["bible"], lora, i, 0))]
                           for i in range(len(body["scenes"]))]
     body["repairs"] = 0
     _set(conn, post["id"], "producing", body)
@@ -114,5 +146,11 @@ def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:
                               adjust=adjust)
         return make
 
+    def hold(i):
+        leader = _leader(policy, post, i)
+        if leader is None:
+            return None
+        return lambda: _shared_reference(conn, policy, post, i) is None   # until the leader's photo is accepted
+
     return [Step(jobs, lambda j: _scene_state(conn, j), remake(i), repairs, ("job_failures", max_failures),
-                 "image", f"scene {i}: ") for i, jobs in enumerate(body["scene_jobs"])]
+                 "image", f"scene {i}: ", hold=hold(i)) for i, jobs in enumerate(body["scene_jobs"])]

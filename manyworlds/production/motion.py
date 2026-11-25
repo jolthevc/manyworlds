@@ -114,11 +114,15 @@ def _dance_kind(policy: Policy) -> str:
 
 
 def dance_reference(policy: Policy, shot: dict | None) -> str | None:
-    """The shot's motion reference (a listed dance.references id, direction.motion_reference) when dance is on, else
-    None (the shot renders as before)."""
+    """The shot's motion reference (a listed dance.references id, direction.motion_reference) when dance and borrowed
+    motion (policy generation.borrowed_motion: off in production, on in the test overlay) are on, else None (the shot
+    renders as before). perf_compare 2026-11-25: every Wan-Animate-2 clip came back with the stock clip's performer,
+    not her (identity 0-1 of 10), as the two dance tests of 2026-11-24 had."""
     from .. import dance
     from ..direction import motion_reference
-    if shot is None or not dance.enabled(policy) or not str(shot.get("motion_reference") or "").strip():
+    if shot is None or not dance.enabled(policy) or not policy.get("generation", "borrowed_motion", default=False):
+        return None
+    if not str(shot.get("motion_reference") or "").strip():
         return None
     return motion_reference(shot, policy) or None
 
@@ -297,6 +301,33 @@ def _motion_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]
                          post_id=post["id"], idempotency_key=key)
 
 
+def _borrowed_state(conn, job_ids: list[str]) -> tuple[str, Any]:
+    """A borrowed-motion clip (Wan-Animate-2) is lip-synced only once the video gate has judged that it shows her:
+    chosen when its latest dance_identity row passed and the clip still exists; rejected when it failed (the reviewer
+    deletes a clip under dance.identity's floor: it shows someone else); waiting until it is reviewed. perf_compare
+    2026-11-25 lip-synced seven unreviewed clips of the stock performers."""
+    from .steps import _status
+    status = _status(conn, job_ids[-1])
+    if status in ("queued", "running"):
+        return "waiting", None
+    video = conn.execute(
+        """SELECT a.id, a.uri, a.deleted_at,
+                  (SELECT r.passed FROM reviews r WHERE r.asset_id = a.id AND r.gate = 'dance_identity'
+                    ORDER BY r.created_at DESC LIMIT 1) AS held,
+                  EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = a.id) AS reviewed
+           FROM assets a WHERE a.job_id = %s AND a.kind = 'video' ORDER BY a.uri LIMIT 1""",
+        (job_ids[-1],)).fetchone()
+    if status != "done" or not video:
+        return "failed", None
+    if video["deleted_at"] is not None or video["held"] is False:
+        return "rejected", None
+    if not video["reviewed"]:
+        return "waiting", None
+    if video["held"] is not True:   # reviewed, but never shown to be her (a free check stopped it first)
+        return "rejected", None
+    return "chosen", {"id": video["id"], "uri": video["uri"]}
+
+
 def _chain_jobs(body: dict, segment: int | None, clip: int) -> list[str]:
     """The job ids of motion clip `clip` (> 0) of a take's chain, kept in the body beside clip 0's."""
     if segment is None:
@@ -326,11 +357,13 @@ def _advance_motion(conn, policy: Policy, post: dict, body: dict, chosen: list[d
                 start = _last_frame(conn, videos[-1])
             except DropPost:
                 break
-        step = Step(jobs if k == 0 else _chain_jobs(body, segment, k), lambda j: _edit_state(conn, j),
+        borrowed = bool(dance_reference(policy, _shot(body, _take_index(body, segment))))
+        state_of = (lambda j: _borrowed_state(conn, j)) if borrowed else (lambda j: _edit_state(conn, j))
+        step = Step(jobs if k == 0 else _chain_jobs(body, segment, k), state_of,
                     lambda attempt, k=k, s=start, secs=seconds: _motion_job(
                         conn, policy, post, body, chosen, attempt, segment=segment, start_uri=s, audio=audio,
                         clip=k, seconds=secs),
-                    ("motion_repairs", 0), failures, "motion clip", label)
+                    ("motion_repairs", 0), failures, "borrowed-motion clip" if borrowed else "motion clip", label)
         state, video = advance_step(body, step)
         if state != "chosen":
             return state, None

@@ -337,7 +337,32 @@ review:
     # judged by eye give the threshold (benchmark); then a clip below it is rejected before any paid review.
     # Enforced since 2026-11-22: 8-step clips passed the visual gate with lip-sync correlation 0.07 and 0.28 (the
     # keyframes can't show sync); 6-step clips scored 0.61-0.70.
-    lip_sync: {enforce: true, min_corr: 0.3, min_face_share: 0.8}
+    # voiced_span (2026-11-25, perf_compare segment 8): InfiniteTalk renders whole 81-frame windows, so a short line
+    # comes back with frames that have no voice (2.06 s line, 3.24 s clip), and the join cuts every take to its voice
+    # (media.normalize -shortest). Over 68 stored clips those frames decided the whole-clip score: a mouth closing in
+    # them lifted passing clips (0.54 whole, 0.06 voiced), a parted smile sank segment 8 (-0.46 whole, 0.41 voiced;
+    # head motion was lower than in passing clips, the clip's sound matched the line). When the whole clip fails, the
+    # reviewer scores the voiced frames (+ tail_frames) with the same min_corr; the mouth must move over them
+    # (min_open_std: talking clips 0.041-0.17, never-redrawn V2V mouths 0.001-0.003). A pass needs one of the two.
+    lip_sync: {enforce: true, min_corr: 0.3, min_face_share: 0.8,
+               voiced_span: {enabled: true, tail_frames: 0, min_open_std: 0.02, audio_rate: 16000, min_frames: 25,
+                             max_offset_frames: 5}}
+    # Repairs of a rejected talking take (production.talk.talk_repair). perf_compare 2026-11-25: segment 8 failed
+    # lip_sync at -0.46, -0.34, -0.43, every repair a new seed. Per gate, the escalation in order (a V2V lip-sync take
+    # tries generation.talk_motion.v2v_repair's start_step first): a knob whose repair failed the same gate within
+    # `tolerance` of the attempt before is dead and the next one is used; when all are dead the post drops with the
+    # reason. seed: a new seed. audio_guidance: the params below (InfiniteTalk's audio cfg acts only with cfg > 1;
+    # s8audiocfg 2026-11-22: corr 0.70, ~2x the render time). cutaway: the line goes under the post's nearest faceless
+    # shot in the same voice, when the edit grammar lip-syncs on camera only and the line is not one kept on camera
+    # (first: the hook, last: the sign-off). next_photo: the scene's next accepted photo as the start frame.
+    # tolerance is in the gate's own score (lip_sync: correlation; identity, realism: the judge's 1-10).
+    talk_repair:
+      gates:
+        lip_sync: {tolerance: 0.15, steps: [seed, audio_guidance, cutaway]}
+        identity: {tolerance: 1, steps: [seed, next_photo]}
+        realism: {tolerance: 1, steps: [seed, next_photo]}
+      audio_guidance: {cfg: 2.0, audio_cfg: 2.0}
+      cutaway: {keep_on_camera: [first, last]}
     # Talking clips: the voice line transcribed (Whisper on Together, $0.0015 a minute, 2026-11-21) must match the
     # script within max_wer (word error rate), or the clip fails before any paid review (manyworlds.speech).
     # Voices are judged automatically, never by ear (owner 2026-11-21).
@@ -632,6 +657,12 @@ generation:
   # the slower lip-synced ones by motion interpolation (finishing.interpolate), so the finish stage scales nothing.
   talk_hybrid: {enabled: true, segment_seconds: 8, on_camera_share: 0.4,
                 output: {width: 1080, height: 1920, fps: 30, lufs: -14}}
+  # Borrowed motion (a shot's motion_reference rendered by Wan-Animate-2, production.motion.dance_reference): OFF in
+  # production, on in policy/test_overlay.yaml only. perf_compare 2026-11-25 (seven licensed stock clips, V2V lip
+  # sync after) and both dance tests of 2026-11-24 came back with the stock clip's performer, not her (identity
+  # 0-1 of 10). The graph matches WanAnimate2ToVideo's inputs at ComfyUI v0.45.0; the cause is unproven. A clip that
+  # does run is identity-reviewed before any lip sync, and one under dance.identity's floor is deleted.
+  borrowed_motion: false
   # Cut-based talking edits (manyworlds.cuts; owner 2026-11-24: one long take reads clunky and costs the most GPU).
   # A talking post follows a grammar: the idea's edit_grammar, else its creator's first archetype's (by_archetype),
   # else default. punch_in: the finish crops in and out of a lip-synced take at word gaps (CPU only, the voice
@@ -1858,6 +1889,15 @@ sets:
   # Scene images made by sets.edit.kind from [creator anchor, set plate, outfit reference] instead of text-only
   # Z-Image. Off until `mw bench image.qwen_edit` passes the image gate (owner rule: no unbenchmarked switch-over).
   reference_conditioning: false
+  # One place per shared set (production.scenes, creator.sets.shared_leader). perf_compare 2026-11-25: nine shots
+  # named pub_bar; one photo was at the bar, eight in a living room or kitchen, all passed (scene fit only scores:
+  # 0-5 of 10). In a post of these formats, shots naming the same set_id share one place: the first with her face
+  # leads (made from text), the rest wait for its accepted photo, which becomes their SET reference: conditioning
+  # (image.qwen_edit from [her anchor, that photo]; faces only: a faceless shot stays Z-Image) and the judge's
+  # consistency score, which rejects under min_consistency (gate set_match; 5 = recognisably similar, 1 =
+  # different). Qwen edits passed the image gate 8 of 8 from her anchor alone (breadth 2026-11-24, L40S); from
+  # anchor + a set photo they are unmeasured: check the first shared-set post.
+  shared_set: {enabled: true, formats: [talking_video], conditioning: true, min_consistency: 4}
   plate_kind: image.zimage
   plate_candidates: 4
   max_plate_attempts: 3        # plate jobs per set or outfit before giving up (it then has text only)
@@ -2570,19 +2610,10 @@ dance:
     - {id: dance-close, uri: "s3://manyworlds/references/motion/pexels-8347389.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8347389/", move: dance, notes: "arms-up dance, close framing"}
     - {id: twirl-dress, uri: "s3://manyworlds/references/motion/pexels-5777427.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/5777427/", move: twirl, notes: "twirls in a dress (2 s)"}
     - {id: twirl-hair-back, uri: "s3://manyworlds/references/motion/pexels-32152258.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/32152258/", move: twirl, notes: "twirls hair from behind"}
-    # Talking-with-gestures clips for the 2026-11-24 performance comparison (breadth plan perf_compare; owner-approved
-    # download of licensed stock, to be removed after the test): 5.2 s at 16 fps (one 81-frame Wan-Animate window),
-    # 480x832, no audio; only the motion drives the output.
-    - {id: perf-36931662-1, uri: "s3://manyworlds/references/motion/perf-36931662-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/36931662/", move: talk_gesture, notes: "selfie, talking with hand gestures: a raised finger, then hands open"}
-    - {id: perf-36931662-2, uri: "s3://manyworlds/references/motion/perf-36931662-2.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/36931662/", move: talk_gesture, notes: "selfie, hand to her chest, warm"}
-    - {id: perf-6965116-1, uri: "s3://manyworlds/references/motion/perf-6965116-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/6965116/", move: talk_gesture, notes: "handheld selfie, head tilts and a smile"}
-    - {id: perf-6965116-2, uri: "s3://manyworlds/references/motion/perf-6965116-2.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/6965116/", move: talk_gesture, notes: "handheld selfie, head shakes and laughs"}
-    - {id: perf-7988843-1, uri: "s3://manyworlds/references/motion/perf-7988843-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/7988843/", move: talk_gesture, notes: "seated, explaining with open hands, animated"}
-    - {id: perf-7988843-2, uri: "s3://manyworlds/references/motion/perf-7988843-2.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/7988843/", move: talk_gesture, notes: "seated, emphatic hand gestures"}
-    - {id: perf-8814493-1, uri: "s3://manyworlds/references/motion/perf-8814493-1.mp4", owner: licensed, licence: Pexels License, source: "https://www.pexels.com/video/8814493/", move: talk_gesture, notes: "chest-up to camera, calm, small head movements"}
   # The video gate's dance_identity row (manyworlds.review.video): identity scored per keyframe (1-10) over `keyframes`
   # keyframes (cut from the clip when the worker stored fewer); the worst at min_score or more, the mean at min_mean.
-  identity: {min_score: 6, min_mean: 7, keyframes: 8}
+  # purge: a clip whose worst keyframe is under min_score shows someone else (a real performer): deleted, never kept
+  identity: {min_score: 6, min_mean: 7, keyframes: 8, purge: true}
 
 # Named ComfyUI graphs (job kind comfy.graph, worker/handlers/comfy_graph.py): a model slots in as a workflow file
 # (manyworlds/worker/graphs/<name>.json, API format, from the node pack's published example; its sidecar <name>.yaml

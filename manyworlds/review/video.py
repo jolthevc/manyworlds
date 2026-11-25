@@ -240,8 +240,14 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         if sync is not None:
             res["sync"] = sync
         synced = lip_sync_ok(cfg, sync)
+        if synced is False:   # the whole clip failed: score the frames its voice covers (the join drops the rest)
+            voiced = _voiced_sync(conn, cfg, store, job_id, payload, v, sync, workdir)
+            if voiced is not None:
+                sync = {**sync, "voiced": voiced}
+                res["sync"] = sync
+                synced = lip_sync_ok(cfg, sync)
         if synced is not None:   # checked first: it is free, and a clip out of sync never needs a paid judge
-            rows.append((v["id"], "lip_sync", synced, sync.get("corr"), Jsonb(_without_series(sync))))
+            rows.append((v["id"], "lip_sync", synced, sync_value(cfg, sync), Jsonb(_without_series(sync))))
             res["lip_sync"] = synced
             if not synced:
                 res.update(accepted=False, confirmed=False)
@@ -295,7 +301,37 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         out.append(res)
     if write:
         common.write_rows(conn, rows)
+        if motion_ref:
+            for res in out:
+                if res.get("dance_identity") is False:
+                    res["purged"] = purge_other_identity(conn, policy, store, job_id, res)
     return out
+
+
+def purge_other_identity(conn, policy: Policy, store: ObjectStore, job_id, res: dict) -> bool:
+    """A borrowed-motion clip that shows someone else is never kept (policy dance.identity.purge, on): perf_compare
+    2026-11-25 and the dance tests of 2026-11-24 returned the stock clip's real performer, identity 0-1 of 10. Its
+    video, keyframes and crops are deleted from the store and marked deleted, and the job records why. Only when the
+    worst keyframe is under dance.identity.min_score (the floor), not for a near miss on the mean."""
+    ident = policy.get("dance", "identity", default={}) or {}
+    if not ident.get("purge", True):
+        return False
+    worst = next((s.get("dance_identity") for s in reversed(res.get("stages") or [])
+                  if s.get("dance_identity") is not None), None)
+    if worst is not None and float(worst) >= float(ident.get("min_score", 6)):
+        return False
+    rows = conn.execute("SELECT id, uri FROM assets WHERE job_id = %s AND kind IN ('video', 'keyframe', 'crop') "
+                        "AND deleted_at IS NULL", (job_id,)).fetchall()
+    for a in rows:
+        try:
+            store.delete(a["uri"])
+        except Exception:  # noqa: BLE001 - marked deleted below; the retention sweep retries the object
+            pass
+    conn.execute("UPDATE assets SET deleted_at = now() WHERE job_id = %s AND kind IN ('video', 'keyframe', 'crop') "
+                 "AND deleted_at IS NULL", (job_id,))
+    conn.execute("UPDATE jobs SET error = %s WHERE id = %s",
+                 (f"identity guard: the motion clip shows someone else (worst keyframe {worst}); deleted", job_id))
+    return True
 
 
 def _intelligibility(conn, policy: Policy, store: ObjectStore, job_id, payload: dict, creator_id, workdir: Path):
@@ -364,28 +400,103 @@ def lip_sync_ok(cfg: dict, sync: dict | None) -> bool | None:
     ls = cfg.get("lip_sync") or {}
     if not ls.get("enforce") or not sync or "error" in sync:
         return None
-    return (sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
-            and float(sync.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8)))
+    face = float(sync.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8))
+    whole = sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
+    return face and (whole or _voiced_ok(ls, sync.get("voiced")))
+
+
+def _voiced_ok(ls: dict, voiced: dict | None) -> bool:
+    """The voiced span's score passes (lipsync.voiced_score): the same min_corr, a mouth that moves over it
+    (voiced_span.min_open_std) and a face in it."""
+    vs = ls.get("voiced_span") or {}
+    if not vs.get("enabled") or not voiced or voiced.get("corr") is None:
+        return False
+    return (float(voiced["corr"]) >= float(ls.get("min_corr", 0.3))
+            and float(voiced.get("open_std") or 0) >= float(vs.get("min_open_std", 0.0))
+            and float(voiced.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8)))
+
+
+def sync_value(cfg: dict, sync: dict) -> float | None:
+    """The lip_sync row's score: the voiced span's when it decided the pass, else the whole clip's."""
+    ls = cfg.get("lip_sync") or {}
+    whole = sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
+    if not whole and _voiced_ok(ls, sync.get("voiced")):
+        return sync["voiced"]["corr"]
+    return sync.get("corr")
+
+
+def _line_audio(conn, job_id, payload: dict, video_uri: str) -> str:
+    """Where the clip's voice line is: the job's own audio output (a Kokoro line, a cut window), else the designed
+    voice's line it was given, else the clip's own sound track."""
+    row = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'audio' ORDER BY uri LIMIT 1",
+                       (job_id,)).fetchone()
+    return row["uri"] if row else (payload.get("audio_uri") or video_uri)
+
+
+def _decode_mono(path: Path, rate: int):
+    """The file's sound as mono float samples at `rate` (ffmpeg; a video's audio track too)."""
+    import subprocess
+
+    import numpy as np
+
+    from .. import media
+    r = subprocess.run([media.ffmpeg(), "-v", "error", "-i", str(path), "-vn", "-f", "f32le", "-ac", "1",
+                        "-ar", str(rate), "-"], capture_output=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or b"")[-300:].decode(errors="replace"))
+    return np.frombuffer(r.stdout, dtype=np.float32)
+
+
+def _voiced_sync(conn, cfg: dict, store: ObjectStore, job_id, payload: dict, video: dict, sync: dict | None,
+                 workdir: Path) -> dict | None:
+    """The sync score over the clip's voiced frames (lipsync.voiced_score), from its stored mouth series and its
+    voice line; None when off, when the clip has no series or no frames past its line, or the audio can't be read
+    (the whole-clip verdict stands)."""
+    import numpy as np
+
+    from ..worker import lipsync
+    ls = cfg.get("lip_sync") or {}
+    vs = ls.get("voiced_span") or {}
+    series = (sync or {}).get("openness")
+    if not vs.get("enabled") or not series:
+        return None
+    fps = float(sync.get("fps") or 25)
+    rate = int(vs.get("audio_rate", 16000))
+    uri = _line_audio(conn, job_id, payload, video["uri"])
+    try:
+        samples = _decode_mono(store.get_file(uri, Path(workdir) / f"line_{video['id']}{Path(uri).suffix}"), rate)
+    except Exception:  # noqa: BLE001 - without the line the whole-clip score decides
+        return None
+    if not len(samples):
+        return None
+    openness = np.array([np.nan if x is None else float(x) for x in series], dtype=float)
+    loud = lipsync.loudness(samples, rate, fps, len(openness))
+    voiced = int(np.ceil(len(samples) / rate * fps))
+    return lipsync.voiced_score(openness, loud, voiced, max_offset_frames=int(vs.get("max_offset_frames", 5)),
+                                min_frames=int(vs.get("min_frames", 25)), tail_frames=int(vs.get("tail_frames", 0)))
 
 
 def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int | None = None) -> list:
     """Finished clip jobs, story clips and talking clips (with keyframes) for a creator with reference images,
     not yet reviewed. Keyframes show identity and artefacts, not whether the mouth matches the audio. An
     intermediate clip (payload.intermediate: walk-and-talk's silent motion clip) is not reviewed: the lip-synced take
-    made from it is."""
+    made from it is, except a borrowed-motion clip (Wan-Animate-2): it is judged on her identity before any lip sync
+    (production.motion._borrowed_state)."""
     limit = limit or int(policy.get("review", "video", "max_jobs_per_run", default=10))
     return [r["id"] for r in conn.execute(
         """SELECT j.id FROM jobs j JOIN creators c ON c.id = j.creator_id
            WHERE j.status = 'done' AND j.kind LIKE ANY(%(kinds)s::text[])
              AND j.kind NOT LIKE '%%.mirror'
-             AND coalesce(j.payload->>'intermediate', '') <> 'true'
+             AND (coalesce(j.payload->>'intermediate', '') <> 'true' OR j.kind = ANY(%(motion)s::text[])
+                  OR j.payload ? 'reference')
              AND jsonb_array_length(coalesce(c.anchors->'reference_images', '[]'::jsonb)) > 0
              AND (%(batch)s::text IS NULL OR j.batch = %(batch)s)
              AND EXISTS (SELECT 1 FROM assets k WHERE k.job_id = j.id AND k.kind = 'keyframe')
              AND EXISTS (SELECT 1 FROM assets a WHERE a.job_id = j.id AND a.kind = 'video'
                            AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.asset_id = a.id))
            ORDER BY j.updated_at LIMIT %(limit)s""",
-        {"batch": batch, "limit": limit, "kinds": reviewed_kind_patterns(policy)}).fetchall()]
+        {"batch": batch, "limit": limit, "kinds": reviewed_kind_patterns(policy),
+         "motion": list(MOTION_TRANSFER_KINDS)}).fetchall()]
 
 
 def _like_literal(text: str) -> str:

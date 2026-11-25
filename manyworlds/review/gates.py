@@ -79,6 +79,23 @@ def gates_for(scene: str | None, shot: dict | None = None, *, plate: bool = Fals
     return base + (("scene",) if scene else ()) + (("direction",) if shot else ())
 
 
+def set_match(policy: Policy, shared: dict | None, r, has_references: bool) -> tuple[bool, dict] | None:
+    """For a scene photo of a shared set (payload `shared_set`, creator.sets.shared_leader: the post's first
+    accepted photo of that set is its SET REFERENCE), whether it shows the same place: the judge's `consistency`
+    score at policy sets.shared_set.min_consistency or more. Always enforced: perf_compare 2026-11-25 had one bar
+    shot and eight in a living room or kitchen, every one passed because scene fit only scores. None when the photo
+    has no shared set, no reference was shown or the judge gave no score."""
+    if not shared or not has_references or getattr(r, "consistency", None) is None:
+        return None
+    bar = float((policy.get("sets", "shared_set", default={}) or {}).get("min_consistency", 0))
+    ok = float(r.consistency) >= bar
+    return ok, {"would_pass": ok, "enforced": True, "bar": bar, "shared_set": shared}
+
+
+def _check_score(r, gate: str):
+    return getattr(r, "consistency" if gate == "set_match" else gate, None)
+
+
 def decide(r: CandidateReview, cfg: dict, scene: str | None = None, *, shot: dict | None = None,
            policy: Policy | None = None, plate: bool = False) -> dict[str, bool]:
     verdict = {"identity": r.identity >= int(cfg.get("min_identity", 7)),
@@ -143,7 +160,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     A job in a test-overlay batch (operations.test_overlay.batches, e.g. test-breadth-*) is judged under that
     overlay (policy.for_batch: the breadth test's direction gate is report-only), wherever it is reviewed."""
     job = conn.execute("SELECT creator_id, batch, payload->>'scene' AS scene, payload->'shot' AS shot, "
-                       "payload->'references' AS refs, payload->'plate' AS plate FROM jobs WHERE id = %s",
+                       "payload->'references' AS refs, payload->'plate' AS plate, payload->'shared_set' AS shared_set "
+                       "FROM jobs WHERE id = %s",
                        (job_id,)).fetchone()
     policy = common.policy_for(policy, job.get("batch"))
     cfg = policy.get("review", "image", default={})
@@ -187,17 +205,20 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                     scores["direction"] = r.direction
                 # finer checks: a row each when scored; they reject only when enforced (review.detail)
                 checks = detail.judged_verdicts(policy, r, consistency=bool(extra[1]))
+                same = set_match(policy, job.get("shared_set"), r, bool(extra[1]))
+                if same is not None:   # a shared set (creator.sets.shared_leader): another place rejects
+                    checks["set_match"] = same
             details.update(model=model, stage=stage)
             rows += [(a["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
-            rows += [(a["id"], g, ok, getattr(r, g), Jsonb({**details, **info})) for g, (ok, info) in checks.items()]
+            rows += [(a["id"], g, ok, _check_score(r, g), Jsonb({**details, **info})) for g, (ok, info) in checks.items()]
             res = results[a["id"]]
             res["stages"].append({"stage": stage, "model": model, **scores,
-                                  **{g: getattr(r, g) for g in checks},
+                                  **{g: _check_score(r, g) for g in checks},
                                   "passed": all(verdict.values()) and all(ok for ok, _ in checks.values())})
             res.update({g: res[g] and verdict[g] for g in gates}, identity_score=scores.get("identity"),
                        realism_score=scores.get("realism"), scene_score=scores.get("scene"), defects=details.get("defects", []))
             res.update({g: res.get(g, True) and ok for g, (ok, _) in checks.items()})
-            res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True) for g in detail.JUDGED)
+            res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True) for g in (*detail.JUDGED, "set_match"))
             if res["accepted"]:
                 still.append(a)
         # A screen pass that clears every bar by `clear_pass_margin` needs no paid confirm (as for clips): only
