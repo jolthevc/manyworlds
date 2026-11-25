@@ -17,6 +17,12 @@ retried on a review verdict: the raw takes are what is compared. When a take's v
 lip-sync score and render seconds; on the finished take, at `breadth.takes.checkpoints_s` (0/30/60/90 s), the colour
 drift (CIEDE2000 of the frame's mean Lab colour against the first frame) and the face identity (the video judge's
 per-keyframe identity, 1-10, against the creator's references: one screen call per take).
+
+The same item benchmarks any model as one take (plan `candidates`): `kind: comfy.graph` with `graph` (a named ComfyUI
+workflow, policy comfy_graphs; worker/handlers/comfy_graph.py), `audio: "@shared:<key>"` (speak the voice line a
+production comparison already made for this script: the voice.speak job of body.shared_key <key> whose lines say it,
+so every model speaks the very same audio; nothing is voiced again), or `audio: none` (a graph that makes its own
+sound: its length comes from the script), and `pools` (this take's own pools, over the plan's per family).
 """
 
 from __future__ import annotations
@@ -38,6 +44,9 @@ log = logging.getLogger("manyworlds.long_take")
 
 ROLE = "long_take"
 VOICE_KIND = "voice.speak"
+GRAPH_KIND = "comfy.graph"
+NO_AUDIO = "none"      # take.audio: the graph makes its own sound
+SHARED = "@shared:"     # take.audio: the voice line a production comparison made (its body.shared_key)
 
 
 # --------------------------------------------------------------------------------------------------------- the item
@@ -47,7 +56,8 @@ def cfg(policy: Policy) -> dict:
 
 
 def validate(item_id: str, take: Any) -> dict:
-    """A plan item's `take`: {kind, script, image, prompt, profile?, max_segment_seconds?, keyframes?}."""
+    """A plan item's `take`: {kind, script, image, prompt, profile?, max_segment_seconds?, keyframes?, graph?,
+    audio?, pools?, params?}."""
     if not isinstance(take, dict):
         raise ValueError(f"item {item_id}: `take` must be a mapping")
     for key in ("kind", "script", "image", "prompt"):
@@ -55,20 +65,53 @@ def validate(item_id: str, take: Any) -> dict:
             raise ValueError(f"item {item_id}: take.{key} is required")
     if take.get("max_segment_seconds") is not None and float(take["max_segment_seconds"]) <= 0:
         raise ValueError(f"item {item_id}: take.max_segment_seconds must be positive")
+    if (take["kind"] == GRAPH_KIND) != bool(take.get("graph")):
+        raise ValueError(f"item {item_id}: take.graph goes with kind {GRAPH_KIND}, and that kind needs one")
+    audio = take.get("audio")
+    if audio is not None and audio != NO_AUDIO and not (str(audio).startswith(SHARED) and str(audio)[len(SHARED):]):
+        raise ValueError(f"item {item_id}: take.audio is {NO_AUDIO!r} or {SHARED}<shared_key>, not {audio!r}")
+    if (audio is not None or take.get("graph")) and take.get("max_segment_seconds"):
+        raise ValueError(f"item {item_id}: a graph or a reused line is one take (no max_segment_seconds)")
     return take
 
 
-def skip_reason(policy: Policy, take: dict, creator) -> str | None:
-    """Why this take can't run: its kinds or profile missing, or a creator without a designed voice."""
+def shared_key(take: dict) -> str | None:
+    audio = str(take.get("audio") or "")
+    return audio[len(SHARED):] if audio.startswith(SHARED) else None
+
+
+def voiced_here(take: dict) -> bool:
+    """The take speaks a voice line of its own (one voice.speak job), not a reused one or the graph's own sound."""
+    return take.get("audio") is None
+
+
+def graph_spec(policy: Policy, take: dict) -> dict | None:
+    return policy.get("comfy_graphs", take["graph"], default=None) if take.get("graph") else None
+
+
+def skip_reason(policy: Policy, take: dict, creator, env=None) -> str | None:
+    """Why this take can't run: its kinds, graph or profile missing, a gated graph's token missing here (a worker
+    gets this environment's), or a creator without a designed voice when the take voices its own line."""
+    import os
+
     from . import voices
     kinds = policy.get("job_kinds", default={}) or {}
-    for kind in (take["kind"], VOICE_KIND):
+    for kind in (take["kind"], *([VOICE_KIND] if voiced_here(take) else [])):
         if kind not in kinds:
             return f"job kind {kind} is not in job_kinds"
+    if take.get("graph"):
+        spec = graph_spec(policy, take)
+        if not spec:
+            return f"graph {take['graph']} is not in comfy_graphs"
+        env = os.environ if env is None else env
+        missing = [k for k in spec.get("requires_env") or [] if not env.get(k)]
+        if missing:
+            return (f"graph {take['graph']} downloads from a gated repo: {', '.join(missing)} is not set here, so "
+                    f"no worker would get it")
     profile = take.get("profile")
     if profile and profile not in (policy.get("generation", "talk_profiles", default={}) or {}):
         return f"talk profile {profile} is not in generation.talk_profiles"
-    if voices.engine((creator or {}).get("anchors")) != "voxcpm":
+    if voiced_here(take) and voices.engine((creator or {}).get("anchors")) != "voxcpm":
         return (f"creator {creator['handle']} has no designed voice (speaks with Kokoro): the long-take comparison "
                 f"speaks one line in the designed voice (voice.speak, VoxCPM2). Design and pick one first: "
                 f"mw voice design {creator['handle']}, then mw voice pick {creator['handle']}")
@@ -76,25 +119,76 @@ def skip_reason(policy: Policy, take: dict, creator) -> str | None:
 
 
 def talk_params(policy: Policy, take: dict) -> dict:
-    """The talk job's settings: generation.talk with the take's talk profile merged over it."""
-    params = dict(policy.get("generation", "talk", default={}) or {})
-    params.pop("voice", None)
-    params.pop("max_take_seconds", None)   # production's take limit, not a render setting
-    if take.get("profile"):
-        params.update(policy.get("generation", "talk_profiles", take["profile"], default={}) or {})
+    """The job's settings: for a graph, its comfy_graphs params; otherwise generation.talk with the take's talk
+    profile merged over it. The take's own `params` go on top."""
+    if take.get("graph"):
+        params = dict((graph_spec(policy, take) or {}).get("params") or {})
+    else:
+        params = dict(policy.get("generation", "talk", default={}) or {})
+        params.pop("voice", None)
+        params.pop("max_take_seconds", None)   # production's take limit, not a render setting
+        if take.get("profile"):
+            params.update(policy.get("generation", "talk_profiles", take["profile"], default={}) or {})
+    params.update(take.get("params") or {})
     return params
 
 
-def expected_jobs(policy: Policy, take: dict) -> list[dict]:
-    """The take's jobs on a first try, for the dry run: its voice line (shared by the run's takes) and its renders."""
+def script_seconds(policy: Policy, take: dict) -> float:
     from .talk_segments import estimate_seconds
-    wps = float(policy.get("generation", "talk_long", "words_per_second", default=2.5))
-    seconds = estimate_seconds(take["script"], wps)
+    return estimate_seconds(take["script"], float(policy.get("generation", "talk_long", "words_per_second",
+                                                             default=2.5)))
+
+
+def expected_jobs(policy: Policy, take: dict) -> list[dict]:
+    """The take's jobs on a first try, for the dry run: its voice line (shared by the run's takes) when it voices one,
+    and its renders. A graph's or a talk profile's render is priced at its own rate (`rate`: <kind>:<name>, breadth
+    estimate) and carries what its machine downloads first (`download_gb`, once per machine and `weights`)."""
+    seconds = script_seconds(policy, take)
     n = 1
     if take.get("max_segment_seconds"):
         n = max(1, math.ceil(seconds / float(take["max_segment_seconds"])))
-    return [{"kind": VOICE_KIND, "n": 1, "output_seconds": None},
-            *({"kind": take["kind"], "n": 1, "output_seconds": round(seconds / n, 1)} for _ in range(n))]
+    render: dict = {"kind": take["kind"], "n": 1, "output_seconds": round(seconds / n, 1)}
+    if take.get("pools"):
+        render["pools"] = list(take["pools"])
+    spec = graph_spec(policy, take)
+    name, source = (take.get("graph"), spec) if spec else \
+        (take.get("profile"), policy.get("generation", "talk_profiles", take.get("profile") or "", default=None))
+    if name:
+        render["rate"] = f"{take['kind']}:{name}"
+        if (source or {}).get("download_gb"):
+            render.update(weights=(source or {}).get("weights_set") or name,
+                          download_gb=float(source["download_gb"]))
+    voice = [{"kind": VOICE_KIND, "n": 1, "output_seconds": None}] if voiced_here(take) else []
+    return [*voice, *(dict(render) for _ in range(n))]
+
+
+def shared_audio(conn, key: str, script: str):
+    """The newest finished voice line of a production comparison (body.shared_key `key`: its voice.speak jobs are
+    keyed shared:<key>:voice:...) whose lines say `script`, as its audio asset {id, uri, meta}; None when there is
+    none (that comparison hasn't voiced this line yet)."""
+    want = " ".join(str(script).lower().split())
+    rows = conn.execute(
+        """SELECT j.payload, a.id, a.uri, a.meta FROM jobs j
+             JOIN LATERAL (SELECT id, uri, meta FROM assets WHERE job_id = j.id AND kind = 'audio'
+                           ORDER BY uri LIMIT 1) a ON true
+            WHERE j.kind = %s AND j.status = 'done' AND j.idempotency_key LIKE %s
+            ORDER BY j.updated_at DESC""",
+        (VOICE_KIND, f"shared:{key}:voice:%")).fetchall()
+    for r in rows:
+        said = " ".join(" ".join(str(ln.get("text") or "") for ln in (r["payload"] or {}).get("lines") or [])
+                        .lower().split())
+        if said == want:
+            return {"id": r["id"], "uri": r["uri"], "meta": r["meta"] or {}}
+    return None
+
+
+def audio_status(conn, take: dict) -> str:
+    """For the dry run: where the take's voice line comes from, and whether a reused one exists yet."""
+    key = shared_key(take)
+    if key:
+        return f"reused from shared_key {key}" if shared_audio(conn, key, take["script"]) else \
+            f"MISSING: no finished voice line of shared_key {key} says this script (run that comparison first)"
+    return "the graph's own sound" if take.get("audio") == NO_AUDIO else "voiced by this run (voice.speak)"
 
 
 # ------------------------------------------------------------------------------------------------- the voice line
@@ -166,6 +260,32 @@ def take_asset(conn, run: str, item_id: str):
                         (ROLE, run, item_id)).fetchone()
 
 
+def _voice_line(conn, policy: Policy, *, run: str, batch: str, take: dict, creator, pins: dict, meta: dict):
+    """(None, the take's audio {uri, meta}) once its line is there, else ({state...}, None): voiced here (one
+    voice.speak job), reused (take.audio @shared:<key>), or none for a graph that makes its own sound (its length
+    then comes from the script)."""
+    if take.get("audio") == NO_AUDIO:
+        return None, {"uri": None, "meta": {"seconds": script_seconds(policy, take)}}
+    key = shared_key(take)
+    if key:
+        audio = shared_audio(conn, key, take["script"])
+        if audio is None:
+            return {"state": "failed", "reason": f"no finished voice line of shared_key {key} says this script "
+                                                 f"(run that comparison first)"}, None
+        return None, audio
+    voice = voice_job(conn, policy, run=run, batch=batch, take=take, creator=creator,
+                      pools=pins.get(policy.family(VOICE_KIND)), meta=meta)
+    v = conn.execute("SELECT status, error FROM jobs WHERE id = %s", (voice,)).fetchone()
+    if v["status"] in FAILED:
+        return {"state": "failed", "reason": f"the voice line failed: {v['error']}"[:300]}, None
+    if v["status"] != "done":
+        return {"state": "waiting", "on": "voice"}, None
+    audio = _output(conn, voice, "audio")
+    if not audio:
+        return {"state": "failed", "reason": "the voice line finished without audio"}, None
+    return None, audio
+
+
 def advance(conn, policy: Policy, *, run: str, batch: str, item_id: str, take: dict, creator, item_batch: str,
             anchors_uri: str, pins: dict, meta: dict, store=None, llm=None) -> dict:
     """One step of a take: its voice line, then its segments one after another, then the finished take measured
@@ -173,16 +293,9 @@ def advance(conn, policy: Policy, *, run: str, batch: str, item_id: str, take: d
     done = take_asset(conn, run, item_id)
     if done:
         return {"state": "done", "asset": str(done["id"])}
-    voice = voice_job(conn, policy, run=run, batch=batch, take=take, creator=creator,
-                      pools=pins.get(policy.family(VOICE_KIND)), meta=meta)
-    v = conn.execute("SELECT status, error FROM jobs WHERE id = %s", (voice,)).fetchone()
-    if v["status"] in FAILED:
-        return {"state": "failed", "reason": f"the voice line failed: {v['error']}"[:300]}
-    if v["status"] != "done":
-        return {"state": "waiting", "on": "voice"}
-    audio = _output(conn, voice, "audio")
-    if not audio:
-        return {"state": "failed", "reason": "the voice line finished without audio"}
+    state, audio = _voice_line(conn, policy, run=run, batch=batch, take=take, creator=creator, pins=pins, meta=meta)
+    if state:
+        return state
     seconds = float((audio["meta"] or {}).get("seconds") or 0)
     lines = (audio["meta"] or {}).get("lines") or []
     params = talk_params(policy, take)
@@ -192,6 +305,8 @@ def advance(conn, policy: Policy, *, run: str, batch: str, item_id: str, take: d
     if take.get("max_segment_seconds") and not all("start_s" in ln and "end_s" in ln for ln in lines):
         return {"state": "failed", "reason": "the voice line has no sentence timings to cut the chain at"}
     parts = windows(lines, seconds, take.get("max_segment_seconds"))
+    if not lines:   # a reused line without timings, or none: one part, the whole script
+        parts = [{"start_s": 0.0, "end_s": seconds, "text": " ".join(str(take["script"]).split())}]
     videos = []
     for k, part in enumerate(parts):
         job = _job(conn, segment_key(run, item_id, k))
@@ -202,7 +317,8 @@ def advance(conn, policy: Policy, *, run: str, batch: str, item_id: str, take: d
                 start = _last_frame(conn, videos[-1])
             job_id = segment_job(conn, policy, run=run, item_id=item_id, take=take, creator=creator, k=k,
                                  n=len(parts), part=part, audio_uri=audio["uri"], start_uri=start,
-                                 item_batch=item_batch, pools=pins.get(policy.family(take["kind"])), meta=meta,
+                                 item_batch=item_batch, meta=meta,
+                                 pools=take.get("pools") or pins.get(policy.family(take["kind"])),
                                  params=params)
             job = conn.execute("SELECT id, status, error FROM jobs WHERE id = %s", (job_id,)).fetchone()
         if job["status"] in FAILED:
@@ -221,7 +337,7 @@ def advance(conn, policy: Policy, *, run: str, batch: str, item_id: str, take: d
 
 
 def segment_job(conn, policy: Policy, *, run: str, item_id: str, take: dict, creator, k: int, n: int, part: dict,
-                audio_uri: str, start_uri: str, item_batch: str, pools, meta: dict, params: dict):
+                audio_uri: str | None, start_uri: str, item_batch: str, pools, meta: dict, params: dict):
     from .production.common import _with_crops
     text = part["text"]
     payload = {"image_uri": start_uri, "audio_uri": audio_uri, "script": text, "prompt": take["prompt"],
@@ -232,6 +348,11 @@ def segment_job(conn, policy: Policy, *, run: str, item_id: str, take: dict, cre
     if take.get("max_segment_seconds"):   # a chain: this segment's part of the shared line
         payload["audio_window"] = [part["start_s"], part["end_s"]]
         payload["segment"] = {"index": k, "of": n}
+    if audio_uri is None:   # a graph that makes its own sound: as long as the script takes to say
+        payload.pop("audio_uri")
+        payload["params"] = {**params, "seconds": round(float(part["end_s"]) - float(part["start_s"]), 2)}
+    if take.get("graph"):   # its spec travels with the job (a worker's baked policy may predate the graph)
+        payload.update(graph=take["graph"], graph_spec=graph_spec(policy, take))
     _with_crops(payload, policy)
     return queue.enqueue(conn, take["kind"], payload, batch=item_batch, pools=pools, creator_id=creator["id"],
                          idempotency_key=segment_key(run, item_id, k),
@@ -270,7 +391,8 @@ def finish(conn, policy: Policy, *, run: str, item_id: str, take: dict, creator,
         segments.append({"job_id": str(v["job_id"]), "uri": v["uri"], "window": [part["start_s"], part["end_s"]],
                          "sync": (v.get("meta") or {}).get("sync"), "render_seconds": float(att["s"] or 0),
                          "gpu": att["gpu"], "model": (v.get("meta") or {}).get("model"),
-                         "quantization": (v.get("meta") or {}).get("quantization")})
+                         "quantization": (v.get("meta") or {}).get("quantization"),
+                         "bench": (v.get("meta") or {}).get("bench")})
     corr = [s["sync"]["corr"] for s in segments if isinstance(s.get("sync"), dict) and s["sync"].get("corr") is not None]
     metrics = {"seconds": round(seconds, 2), "voice_seconds": (audio.get("meta") or {}).get("seconds"),
                "segments": len(segments), "checkpoints_s": points,
