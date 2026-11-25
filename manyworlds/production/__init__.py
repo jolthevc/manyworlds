@@ -80,7 +80,7 @@ from .captioning import (  # noqa: F401
 )
 from .common import (  # noqa: F401
     FOLLOW_UP_FORMATS, SPOKEN, SUNG, _cfg, _pieces, _seed, _set, _shot, _with_crops, _with_prompts, _with_shot, log,
-    candidates_per_scene, piece_key, retract_dropped, seed_base, shared_key, tier_production, unmarked,
+    candidates_per_scene, piece_key, reap_stalled, retract_dropped, seed_base, shared_key, tier_production, unmarked,
 )
 from .core import (  # noqa: F401
     RerouteCaptionAnswer, _advance_failed, _slide_formats, advance, advance_post, reroute_caption,
