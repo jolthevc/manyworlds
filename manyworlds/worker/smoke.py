@@ -758,7 +758,9 @@ def check_tts() -> list[str]:
     vj._gender = lambda params: (lambda wav, rate: {"female": 0.9, "male": 0.1})
     vj._age = lambda params: (lambda wav, rate: {"20s": 0.8, "30s": 0.2})
     params = {"line_check": {"enabled": True, "repairs": 1, "strength_steps": [1.25], "max_wer": 0.15,
-                             "min_mos": 9.0, "pace_wps": [1.0, 3.0]}, "pitch_hz": [65, 500]}
+                             "min_mos": 9.0, "pace_wps": [1.0, 3.0]}, "pitch_hz": [65, 500],
+              # the handlers record each engine's settings in the recipe even with the stand-in engine
+              "engines": {"indextts": {"python_env": "MW_INDEXTTS_PYTHON"}, "qwen3": {"python_env": "MW_QWENTTS_PYTHON"}}}
     try:
         res = te.speak_indextts({"ref_uri": "x://ref.wav", "ref_text": "hello there friend", "seed": 1,
                                  "lines": [{"text": "hello there friend",
