@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel
@@ -282,7 +283,7 @@ def test_a_long_system_prompt_is_sent_as_a_cached_block(conn, policy):
 
 class BigVerdict(Verdict):
     """A schema too large for any output grammar (2026-11-25: research reads): no format, schema in the prompt."""
-    json_in_prompt = True
+    json_in_prompt: ClassVar[bool] = True
 
 
 def test_a_schema_in_the_prompt_is_validated_and_retried_once(conn, policy):
