@@ -210,6 +210,34 @@ def purge(conn, policy: Policy, store, *, now: datetime | None = None) -> dict:
                              AND media <> '[]'::jsonb ORDER BY media_purge_after LIMIT %s""", (now, limit)).fetchall():
         conn.execute("UPDATE reference_posts SET media = %s WHERE id = %s", (Jsonb(drop_media(p)), p["id"]))
 
+    # Amber (manyworlds.research.data_policy): third-party media is held only until it has been read. Once the post
+    # has its vision read (and, for a video, its measurement), the media goes after media_after_read_hours; caption
+    # text goes caption_days after it was fetched once read (its caption_features stay).
+    from .annotation import ANNOTATION_SCHEMA
+    from .data_policy import retention
+    r = retention(policy)
+    if r.get("media_after_read_hours") is not None:
+        read_before = now - timedelta(hours=float(r["media_after_read_hours"]))
+        for p in conn.execute(
+                """SELECT p.id, p.media FROM reference_posts p WHERE p.media <> '[]'::jsonb
+                   AND EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %(s)s
+                               AND a.updated_at < %(t)s)
+                   AND (p.media_type <> 'video' OR EXISTS (SELECT 1 FROM reference_annotations m
+                        WHERE m.post_id = p.id AND m.schema LIKE 'measure_%%')
+                        OR NOT p.media @> '[{"kind": "video"}]'::jsonb)
+                   LIMIT %(n)s""", {"s": ANNOTATION_SCHEMA, "t": read_before, "n": limit}).fetchall():
+            conn.execute("UPDATE reference_posts SET media = %s, media_purge_after = NULL WHERE id = %s",
+                         (Jsonb(drop_media(p)), p["id"]))
+            out["read_media_purged"] = out.get("read_media_purged", 0) + 1
+    if r.get("caption_days") is not None:
+        out["captions_cleared"] = len(conn.execute(
+            """UPDATE reference_posts p SET caption = NULL WHERE p.caption IS NOT NULL AND p.fetched_at < %(t)s
+               AND (EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %(s)s)
+                    OR p.fetched_at < %(hard)s)
+               RETURNING p.id""",
+            {"t": now - timedelta(days=float(r["caption_days"])), "s": ANNOTATION_SCHEMA,
+             "hard": now - timedelta(days=float(r.get("caption_max_days", r["caption_days"])))}).fetchall())
+
     cutoff = now - timedelta(days=float(cfg.get("records_days", 730)))
     stale = conn.execute(
         """SELECT c.id FROM reference_creators c

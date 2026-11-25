@@ -101,6 +101,10 @@ def _due(conn, market: str, now: datetime, hours: float) -> bool:
 
 
 def collect(conn, policy: Policy, src, *, now: datetime) -> dict:
+    from .data_policy import refused
+    why = refused(policy, "scrapecreators", "search")   # the data policy first (manyworlds.research.data_policy)
+    if why:
+        return {"requests": 0, "items": 0, "errors": 0, "refused": why}
     cfg = _cfg(policy)
     out = {"requests": 0, "items": 0, "errors": 0}
     calls = []

@@ -151,7 +151,7 @@ def test_forget_someone_we_hold_nothing_on_still_blocks_collection(conn, rstore)
 
 def test_retention_deletes_old_media_and_uncited_stale_creators(conn, rstore, tmp_path, policy):
     days = policy.get("intelligence", "retention", "records_days")
-    assert policy.get("intelligence", "retention", "media_days") == 180 and days == 730
+    assert policy.get("intelligence", "retention", "media_days") == 14 and days == 730   # data_policy amber
     fresh = _ref_creator(conn, handle="fresh")
     fp, furi = _ref_post(conn, rstore, fresh, tmp_path, ext="f1", purge_after=NOW - timedelta(days=1))
     keep, _ = _ref_post(conn, rstore, fresh, tmp_path, ext="f2", purge_after=NOW + timedelta(days=10))
@@ -342,11 +342,10 @@ def test_names_block_an_impersonation_and_warn_on_a_resemblance(policy):
     assert not apart["blocked"] and not apart["warnings"]
 
 
-def test_faces_only_when_vectors_exist(policy):
+def test_no_face_comparison_of_real_people(policy):
+    # data_policy red (owner 2026-11-25): no face-identity templates of real creators, so no face check at all
     assert impersonation.check({"name": "A"}, [], policy)["ran"] == ["names"]
-    out = impersonation.check({"name": "A"}, [], policy, face_vec=[1.0, 0.0, 0.0],
-                              reference_faces={"r1": [0.99, 0.05, 0.0], "r2": [0.0, 1.0, 0.0]})
-    assert out["blocked"] and [b["reference"] for b in out["blocks"]] == ["r1"] and "faces" in out["ran"]
+    assert not hasattr(impersonation, "faces")
 
 
 def test_near_duplicates_by_difference_hash(policy, tmp_path):

@@ -1400,6 +1400,55 @@ trends:
     - {name: talking to camera, queries: [storytime, honest rant, things nobody tells you], platforms: [tiktok, instagram]}
     - {name: ai creators, queries: [ai influencer, ai generated character], platforms: [tiktok, instagram]}
 
+# What research may collect, keep and send where (owner 2026-11-25; manyworlds.research.data_policy; spec
+# docs/superpowers/specs/2026-11-25-data-policy.md). Maximise permissible intelligence, minimise retained third-party
+# content: green = persistent intelligence (facts, metrics, growth, our observations and findings); amber = third-party
+# media and caption text, held only until read; red = never collected (below). Enforced in code: a source or task not
+# approved here is refused by the provider router and the direct pulls; an unlisted source is refused.
+data_policy:
+  sources:
+    # status: approved | paused (rights unclear: nothing runs until clarified) | blocked. basis: why we may use it.
+    apify:
+      status: approved
+      basis: "logged-out public data via Apify actors; Instagram Terms 4.2 (no automated collection without permission) is a known risk the owner accepted, bounded, 2026-11-25"
+      tasks: [profiles, posts, posts_media, search]
+      transient_media: true
+    scrapecreators:
+      status: approved
+      basis: "public data API; its terms allow commercial use of returned data; whether it uses logged-in sessions is not stated (asked; owner accepted bounded risk 2026-11-25)"
+      tasks: [profiles, posts, posts_media, search]
+      transient_media: true
+    graph:
+      status: approved
+      basis: "Instagram Graph API Business Discovery through our own professional account (Meta Platform Terms)"
+      tasks: [profiles, posts, posts_media]
+      transient_media: true
+    hikerapi:
+      status: blocked
+      why: "private mobile API through logged-in sessions; its terms need written permission for commercial use"
+      tasks: []
+    feeds:
+      status: approved
+      basis: "publishers' own RSS/Atom feeds, offered for syndication: we keep the link, title, date and our own notes, never article text or images"
+      tasks: [feed]
+      transient_media: false
+  fields:
+    creator: [display_name, profile_url, bio, followers, role, selected_because, found_via]
+    bio_chars: 300                 # public professional bio, contact details removed (clean_bio)
+  retention:
+    media_after_read_hours: 24     # read media (vision read; a video also measured) goes this long after the read
+    caption_days: 30               # caption text goes this long after its last fetch once read (caption_features stay)
+    caption_max_days: 60           # and this long after its last fetch even if never read
+  # Who may read third-party research media and text: model-name prefixes whose provider terms we checked (Anthropic's
+  # commercial API: inputs not used for training; retained up to 30 days for abuse monitoring unless zero data
+  # retention is agreed). Open-weight hosts (llm.hosts) are not listed until their terms are checked.
+  processors: [claude-]
+  # Never collected or derived, by any code path (documentation of what the tests guard): biometric templates of real
+  # people (face embeddings, voiceprints), private or non-public content, comment text or commenter/follower lists,
+  # contact details, sensitive personal data, location histories; nor any training on third-party media.
+  red: [face_embeddings, voiceprints, private_content, comment_text, follower_lists, contact_details,
+        sensitive_personal_data, location_history, training_on_third_party_media]
+
 # Influencer intelligence (docs/superpowers/specs/2026-11-25-influencer-intelligence.md): learn from and emulate
 # successful public creators, named references allowed. Research references (tables reference_*, the research store
 # RESEARCH_STORAGE_URL, key prefix research-refs/) are kept apart from production inputs (manyworlds.research.references
@@ -1414,7 +1463,9 @@ intelligence:
   # Per-table retention (owner D1 recommendation): research media (videos, images, frames) media_days after it was
   # fetched; a creator unseen for records_days whom no open hypothesis, audition or active card cites is deleted with
   # its posts and annotations. housekeeping runs it every tick (deploy/autoscale.housekeeping).
-  retention: {media_days: 180, records_days: 730, max_deletes_per_run: 2000}
+  # media_days is the hard maximum for unread media (data_policy amber, owner 2026-11-25: was 180); read media goes
+  # sooner (data_policy.retention.media_after_read_hours).
+  retention: {media_days: 14, records_days: 730, max_deletes_per_run: 2000}
   # finish.measure_video (manyworlds.research.video_measure), from the 2026-11-24 calibration: scene scores above
   # scene_floor on a scale_width copy; hard cuts above hard_cut, soft (punch-ins) above soft_cut, at least min_gap_s
   # apart; shots under short_shot_s count as short; words in the first hook_window_s; `frames` stills in a grid.
@@ -1424,9 +1475,9 @@ intelligence:
   patterns: {file: patterns-v0.yaml}
   # Cheap checks of a candidate against the real creators its brief names (manyworlds.brain.impersonation). Flags are
   # warnings to the talent manager; an obvious impersonation blocks: a name or handle at least name_block similar,
-  # or a face at least face_block similar (the face-identity embedding, when one is computed; no new model). A
+  # (no face comparison: data_policy red). A
   # generated image within near_duplicate_bits (64-bit difference hash) of a cited post is a near-duplicate warning.
-  checks: {name_warn: 0.75, name_block: 0.92, face_warn: 0.75, face_block: 0.9, near_duplicate_bits: 6}
+  checks: {name_warn: 0.75, name_block: 0.92, near_duplicate_bits: 6}
   # Where research media goes (manyworlds.research.references.research_store). RESEARCH_STORAGE_URL (a separate private
   # bucket) wins; while it is unset, fallback main_bucket keeps research media in the main bucket (STORAGE_URL) under
   # the key prefix research-refs/. Research URIs are recognised by that prefix in either place and refused in every

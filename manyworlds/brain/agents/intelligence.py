@@ -445,6 +445,10 @@ class Intelligence:
                 queued += 1
         store = self.store(policy)
         role = (cfg.get("roles") or {}).get("annotate", "iia_annotate")
+        from ...research.data_policy import processor_ok
+        if not processor_ok(policy, ctx.llm.model_for(role)):   # third-party media only to checked processors
+            return {"posts": len(posts), "annotated": 0, "measure_jobs": queued, "measures_collected": collected,
+                    "refused": f"{ctx.llm.model_for(role)} is not in data_policy.processors"}
         per_call = max(1, int(acfg.get("posts_per_call", 4)))
         written = 0
         for i in range(0, len(posts), per_call):

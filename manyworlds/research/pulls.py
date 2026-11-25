@@ -31,7 +31,7 @@ from psycopg.types.json import Jsonb
 
 from .. import ledger
 from ..policy import Policy
-from . import references
+from . import data_policy, references
 from .apify import _first, _ts
 
 Fetch = Callable[[str, dict], list[dict]]
@@ -118,6 +118,7 @@ def candidates(conn, policy: Policy, fetch: Fetch, hashtags: dict[str, list[str]
     budget_usd (intelligence.agent.max_candidate_pool_usd), a hashtag is pulled only while the pool's spend so far
     plus that hashtag's full price stays within it; the rest are left out."""
     from .apify import _actor_input
+    data_policy.require(policy, "apify", "search")
     per = int(_cfg(policy).get("items_per_hashtag", 50))
     seen: dict[tuple[str, str], dict] = {}
     spent = 0.0
@@ -192,6 +193,8 @@ def default_download(url: str, dest: Path, max_bytes: int) -> Path | None:
 
 def upsert_creator(conn, platform: str, handle: str, **fields) -> str:
     cols = {k: v for k, v in fields.items() if v is not None}
+    if cols.get("bio"):   # a public bio without contact details (manyworlds.research.data_policy: red)
+        cols["bio"] = data_policy.clean_bio(cols["bio"])
     row = conn.execute(
         """INSERT INTO reference_creators (platform, handle, display_name, profile_url, bio, followers, role,
                                            selected_because, found_via)
@@ -227,17 +230,20 @@ def upsert_post(conn, policy: Policy, creator_id: str, platform: str, p: dict) -
     now = datetime.now(timezone.utc)
     row = conn.execute(
         """INSERT INTO reference_posts (creator_id, platform, external_id, url, media_type, posted_at, caption, metrics,
-                                        snapshots, content_hash)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                        snapshots, content_hash, caption_features)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (platform, external_id) DO UPDATE SET metrics = EXCLUDED.metrics,
                snapshots = reference_posts.snapshots || EXCLUDED.snapshots, fetched_at = now(),
                caption = coalesce(EXCLUDED.caption, reference_posts.caption),
+               caption_features = CASE WHEN EXCLUDED.caption IS NULL THEN reference_posts.caption_features
+                                       ELSE EXCLUDED.caption_features END,
                content_hash = CASE WHEN EXCLUDED.caption IS NULL THEN reference_posts.content_hash
                                    ELSE EXCLUDED.content_hash END
            RETURNING id""",
         (creator_id, platform, p["external_id"], p.get("url"), p.get("media_type"), p.get("posted_at"),
          p.get("caption") or None, Jsonb(p.get("metrics") or {}),
-         Jsonb([{"at": now.isoformat(), **(p.get("metrics") or {})}]), content_hash(p))
+         Jsonb([{"at": now.isoformat(), **(p.get("metrics") or {})}]), content_hash(p),
+         Jsonb(data_policy.caption_features(p.get("caption"))))
     ).fetchone()
     return str(row["id"])
 
@@ -307,6 +313,7 @@ def pull_creator(conn, policy: Policy, fetch: Fetch, c: dict, *, store, download
     cfg = _cfg(policy)
     actors = cfg.get("actors") or {}
     platform, handle = c["platform"], str(c["handle"]).lstrip("@")
+    data_policy.require(policy, "apify", "posts")
     if references.forgotten(conn, platform, handle):
         return {"skipped": "forgotten", "handle": handle}
     n = int(posts or cfg.get("posts_per_creator", 30))

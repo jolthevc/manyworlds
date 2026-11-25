@@ -165,7 +165,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, "
                                          "patterns, pilot (the influencer intelligence agent: scout, annotate, distill)")
-    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor"])
+    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor", "data-audit"])
+    rs.add_argument("--apply", action="store_true", help="data-audit: clean what the data policy no longer allows "
+                                                         "(contact details in bios, caption features backfilled)")
     rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
     rs.add_argument("--seed", action="store_true", help="patterns: also add the seed file's cards to pattern_cards")
     rs.add_argument("--hypothesis", help="pilot: a thesis id or the hypothesis in words")
@@ -1081,6 +1083,9 @@ def _research(args, conn, pol) -> int:
         _print(references.forget(conn, references.research_store(pol), args.who))
     elif args.action == "purge":
         _print(references.purge(conn, pol, references.research_store(pol)))
+    elif args.action == "data-audit":
+        from .research import data_policy
+        _print(data_policy.audit(conn, pol, apply=args.apply))
     elif args.action == "feedback":
         _print(patterns.feedback(conn, pol))
     elif args.action == "pilot":
