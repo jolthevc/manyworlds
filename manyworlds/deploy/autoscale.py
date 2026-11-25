@@ -518,12 +518,15 @@ def scale_up(conn, policy: Policy, providers: dict[str, Provider], *, now: datet
             continue
         # A machine for this work stopped for a reason other than finishing (crashed,
         # vanished, hit its cap): wait before paying for another, so a broken image or
-        # job can't start machines in a loop.
+        # job can't start machines in a loop. A worker that idled out after finishing work (enforce.gone_reason:
+        # gone:idle) stopped like an idle stop; until 2026-11-25 it read 'gone' and held new work for the cooldown.
         recent = conn.execute(
-            """SELECT name, stop_reason FROM gpu_groups
-               WHERE %s = ANY(job_kinds) AND pool = ANY(%s) AND stopped_at > %s
-                 AND coalesce(stop_reason, '') NOT IN ('idle', 'manual') AND NOT coalesce(volume_low, false)
-               ORDER BY stopped_at DESC LIMIT 1""", (kind, pools, now - cooldown)).fetchone()
+            """SELECT g.name, g.stop_reason FROM gpu_groups g
+               WHERE %s = ANY(g.job_kinds) AND g.pool = ANY(%s) AND g.stopped_at > %s
+                 AND coalesce(g.stop_reason, '') NOT IN ('idle', 'manual') AND NOT coalesce(g.volume_low, false)
+                 AND NOT (g.stop_reason = 'gone:idle' AND EXISTS (
+                     SELECT 1 FROM attempts a WHERE a.gpu_group = g.name AND a.outcome = 'done'))
+               ORDER BY g.stopped_at DESC LIMIT 1""", (kind, pools, now - cooldown)).fetchone()
         if recent:
             actions.append({"action": "cooldown", "kind": kind, "after": recent["name"],
                             "reason": recent["stop_reason"]})
