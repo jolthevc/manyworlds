@@ -24,7 +24,18 @@ ATOM = b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><entry
 <link href="https://other.example/c"/><updated>2026-11-24T09:00:00Z</updated><summary>Text.</summary></entry></feed>"""
 
 
+def _sources(policy, **status):
+    body = dict(policy.body)
+    src = dict(body["data_policy"]["sources"])
+    for name, st in status.items():
+        src[name] = {**src[name], "status": st}
+    body["data_policy"] = {**body["data_policy"], "sources": src}
+    return dataclasses.replace(policy, body=body)
+
+
 def _feeds(policy, feeds):
+    # direct publisher feeds are paused as shipped (their terms); a test approves them, GDELT off
+    policy = _sources(policy, feeds="approved", gdelt="paused")
     body = {**policy.body, "intelligence": {**policy.body["intelligence"], "culture": {
         **policy.body["intelligence"]["culture"], "feeds": feeds}}}
     return dataclasses.replace(policy, body=body)
@@ -45,12 +56,29 @@ def test_items_are_kept_as_references_never_their_text(conn, policy):
     assert again == []                                                        # deduped by link
 
 
-def test_a_paused_feed_source_is_never_read(conn, policy):
-    body = dict(policy.body)
-    body["data_policy"] = {**body["data_policy"], "sources": {**body["data_policy"]["sources"],
-                                                              "feeds": {"status": "paused", "why": "terms check"}}}
+def test_a_paused_source_is_never_read(conn, policy):
+    assert policy.get("data_policy", "sources", "feeds", "status") == "paused"   # publisher terms unconfirmed
     with pytest.raises(data_policy.SourcePaused):
-        culture.collect(conn, dataclasses.replace(policy, body=body), get=lambda u: RSS, now=NOW)
+        culture.collect(conn, _sources(policy, gdelt="paused"), get=lambda u: RSS, now=NOW)
+
+
+GDELT_JSON = (b'{"articles": [{"url": "https://www.elle.com/a", "title": "Swim caps are the hat of the season", '
+              b'"seendate": "20261124T201500Z", "domain": "elle.com"}, {"url": "https://www.harpersbazaar.com/b", '
+              b'"title": "Spring 2027 trends", "seendate": "20261124T024500Z", "domain": "harpersbazaar.com"}]}')
+
+
+def test_gdelt_headlines_are_read_politely_and_keep_their_publication(conn, policy):
+    asked, slept = [], []
+    new, report = culture.collect(conn, policy, get=lambda u: asked.append(u) or GDELT_JSON, now=NOW,
+                                  sleep=slept.append)
+    queries = policy.get("intelligence", "culture", "gdelt", "queries")
+    assert len(asked) == len(queries) and all("api.gdeltproject.org" in u for u in asked)
+    assert len(slept) == len(queries) - 1 and set(slept) == {policy.get("intelligence", "culture", "gdelt",
+                                                                          "min_interval_s")}
+    assert {i["feed"] for i in new} == {"elle.com", "harpersbazaar.com"}     # the publication is the source
+    assert len(new) == 2                                                      # deduped across queries
+    with pytest.raises(RuntimeError):
+        culture.parse_gdelt(b"Please limit requests to one every 5 seconds")
 
 
 class LLM:

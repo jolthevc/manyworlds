@@ -1428,8 +1428,15 @@ data_policy:
       why: "private mobile API through logged-in sessions; its terms need written permission for commercial use"
       tasks: []
     feeds:
+      # Paused 2026-11-25: publisher feed terms often limit RSS to personal, non-commercial use (Condé Nast is listed
+      # as personal-use-only; not confirmed per publisher). Re-approve a publisher once its terms or a licence allow it.
+      status: paused
+      why: "publisher RSS terms commonly personal/non-commercial use only; confirm per publisher or license"
+      tasks: [feed]
+      transient_media: false
+    gdelt:
       status: approved
-      basis: "publishers' own RSS/Atom feeds, offered for syndication: we keep the link, title, date and our own notes, never article text or images"
+      basis: "The GDELT Project DOC 2.0 API: GDELT releases its data free for academic, commercial or governmental use; we keep link, headline, publication and date, never article text or images"
       tasks: [feed]
       transient_media: false
   fields:
@@ -1555,6 +1562,22 @@ intelligence:
     signal_days: 120
     item_days: 180
     k: {style: 6, casting: 6, commerce: 5, content: 5}
+    # The GDELT Project news index (data_policy source gdelt): English headlines from the last timespan per query,
+    # one request every min_interval_s (its stated limit is one per 5 s). The publication (domain) is the source.
+    gdelt:
+      timespan: 1d
+      max_records: 75
+      min_interval_s: 6
+      queries:
+        - {category: fashion, query: "(fashion OR runway OR designer) (trend OR collection OR season) sourcelang:english"}
+        - {category: fashion_business, query: "(luxury OR fashion) (brand OR retail OR sales) sourcelang:english"}
+        - {category: beauty, query: "(beauty OR skincare OR makeup OR fragrance) trend sourcelang:english"}
+        - {category: menswear_grooming, query: "(menswear OR grooming OR barber) sourcelang:english"}
+        - {category: interiors, query: "(interior design OR home decor) trend sourcelang:english"}
+        - {category: architecture_design, query: "(architecture OR design) (hotel OR house OR studio) sourcelang:english"}
+        - {category: travel, query: "(travel OR hotel OR destination) trend sourcelang:english"}
+        - {category: brand_campaigns, query: "(campaign OR ambassador OR collaboration) (brand OR fashion OR beauty) sourcelang:english"}
+        - {category: wellness_lifestyle, query: "(wellness OR fitness OR lifestyle) trend sourcelang:english"}
     feeds:
       - {name: vogue, category: fashion, url: "https://www.vogue.com/feed/rss"}
       - {name: harpers_bazaar, category: fashion, url: "https://www.harpersbazaar.com/rss/all.xml/"}

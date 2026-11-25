@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import re
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -105,18 +106,67 @@ def fetch(url: str, timeout: float = 20) -> bytes:   # replaced in tests
         return r.read(5_000_000)
 
 
-def collect(conn, policy: Policy, *, get=None, now: datetime | None = None) -> tuple[list[dict], dict]:
-    """New items from every feed (dedupe by link), stored without their summaries; returns (the new items with their
-    summaries, for this run's distill only, {feed: new or error})."""
-    data_policy.require(policy, "feeds", "feed")
-    get = get or fetch
+GDELT = "https://api.gdeltproject.org/api/v2/doc/doc"
+
+
+def parse_gdelt(body: bytes) -> list[dict]:
+    """The GDELT DOC 2.0 article list as items: {url, title, published_at, summary: ""}; the domain is the feed."""
+    import json
+    try:
+        arts = (json.loads(body) or {}).get("articles") or []
+    except ValueError:   # a rate-limit notice is plain text
+        raise RuntimeError(body[:120].decode(errors="replace")) from None
+    out = []
+    for a in arts:
+        if not a.get("url") or not a.get("title"):
+            continue
+        try:
+            when = datetime.strptime(a.get("seendate", ""), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            when = None
+        out.append({"url": a["url"], "title": str(a["title"])[:200], "published_at": when, "summary": "",
+                    "domain": a.get("domain") or "gdelt"})
+    return out
+
+
+def _sources(policy: Policy) -> list[tuple[str, dict]]:
+    """(source, entry) to read this run: publishers' feeds and GDELT queries, each only while its data_policy source
+    is approved for `feed`. Raises SourcePaused when none is."""
+    out = []
+    if data_policy.refused(policy, "feeds", "feed") is None:
+        out += [("feeds", f) for f in cfg(policy).get("feeds") or []]
+    if data_policy.refused(policy, "gdelt", "feed") is None:
+        g = cfg(policy).get("gdelt") or {}
+        out += [("gdelt", {"name": f"gdelt:{q['category']}", "category": q["category"],
+                           "url": (f"{GDELT}?query={urllib.parse.quote(q['query'])}&mode=artlist&format=json"
+                                   f"&maxrecords={int(g.get('max_records', 75))}&timespan={g.get('timespan', '1d')}")})
+                for q in g.get("queries") or []]
+    if not out:
+        raise data_policy.SourcePaused(data_policy.refused(policy, "feeds", "feed") or "no culture source approved")
+    return out
+
+
+def collect(conn, policy: Policy, *, get=None, now: datetime | None = None, sleep=None) -> tuple[list[dict], dict]:
+    """New items from every approved source (dedupe by link), stored without their summaries; returns (the new items
+    with their summaries, for this run's distill only, {source: new or error}). GDELT answers one request every
+    gdelt.min_interval_s."""
+    import time
+    get, sleep = get or fetch, sleep or time.sleep
     now = now or datetime.now(timezone.utc)
     max_age = timedelta(days=float(cfg(policy).get("max_item_age_days", 14)))
+    gap = float((cfg(policy).get("gdelt") or {}).get("min_interval_s", 6))
     new, report = [], {}
-    for f in cfg(policy).get("feeds") or []:
+    asked_gdelt = False
+    for kind, f in _sources(policy):
         try:
-            items = parse(get(f["url"]))
-        except Exception as e:  # noqa: BLE001 - one feed down never stops the others
+            if kind == "gdelt":
+                if asked_gdelt:
+                    sleep(gap)
+                asked_gdelt = True
+                items = parse_gdelt(get(f["url"]))
+            else:
+                items = parse(get(f["url"]))
+        except Exception as e:  # noqa: BLE001 - one source down never stops the others
             report[f["name"]] = f"error: {type(e).__name__}"
             continue
         n = 0
@@ -126,9 +176,9 @@ def collect(conn, policy: Policy, *, get=None, now: datetime | None = None) -> t
             row = conn.execute(
                 """INSERT INTO culture_items (url, feed, category, title, published_at) VALUES (%s, %s, %s, %s, %s)
                    ON CONFLICT (url) DO NOTHING RETURNING url""",
-                (it["url"], f["name"], f["category"], it["title"], it["published_at"])).fetchone()
+                (it["url"], it.get("domain") or f["name"], f["category"], it["title"], it["published_at"])).fetchone()
             if row:
-                new.append({**it, "feed": f["name"], "category": f["category"]})
+                new.append({**it, "feed": it.get("domain") or f["name"], "category": f["category"]})   # the publication
                 n += 1
         report[f["name"]] = n
     return new, report
