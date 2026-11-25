@@ -136,14 +136,23 @@ def test_a_photo_accepted_by_a_steps_review_starts_its_followers_in_that_step(co
     assert len(jobs) > 2 and len(jobs[0]) == 1 and not any(jobs[1:])   # the leader first, its followers wait
     accepted = []
 
-    def review(*a, **k):   # this step's review accepts the leader photo
+    def plate_jobs():
+        return [r["id"] for r in conn.execute("SELECT id FROM jobs WHERE payload->>'plate' = 'true' AND status = "
+                                              "'queued' AND idempotency_key LIKE '%%:plate:%%'").fetchall()]
+
+    def review(*a, **k):   # this step's review accepts the leader photo, the next one its empty plate
         if not accepted:
             accepted.append(_accept(conn, jobs[0][0], cid))
+        elif plate_jobs():
+            accepted.append(_accept(conn, plate_jobs()[0], cid))
         return {}
     monkeypatch.setattr(breadth, "_review", review)
     conn.execute("UPDATE jobs SET run_after = NULL WHERE id = %s", (out["driver_job"],))
     assert runtime.tick(conn, pol, StubLLM(conn=conn), worker_id="brain-1")[0]["status"] == "deferred"
-    assert accepted and all(len(j) == 1 for j in _scene_jobs(conn, out["run"]))   # the followers started at once
+    assert accepted and plate_jobs()   # the leader's photo became a plate job in the same step (sets.shared_set.plate)
+    conn.execute("UPDATE jobs SET run_after = NULL WHERE id = %s", (out["driver_job"],))
+    assert runtime.tick(conn, pol, StubLLM(conn=conn), worker_id="brain-1")[0]["status"] == "deferred"
+    assert len(accepted) == 2 and all(len(j) == 1 for j in _scene_jobs(conn, out["run"]))   # then the followers
 
 
 def test_a_queued_step_drives_the_run_for_its_window_then_is_due_again_soon(conn, raw_policy, monkeypatch,
