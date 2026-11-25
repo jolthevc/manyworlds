@@ -49,6 +49,7 @@ def test_web_research_follows_pause_turn_charges_searches_and_keeps_only_sources
     assert len(client.calls) == 2 and client.calls[1]["messages"][-1]["role"] == "assistant"
     tools = client.calls[0]["tools"]
     assert tools[0]["name"] == "web_search" and tools[0]["max_uses"] == 3 and len(tools) == 1   # no fetch on quick
+    assert tools[0]["type"] == policy.get("llm", "web", "search_tool")
     assert out["searches"] == 3 and out["text"].startswith("Butter yellow")
     assert [s["url"] for s in out["sources"]] == ["https://www.vogue.com/a", "https://www.elle.com/b",
                                                   "https://blog.example/c"]
@@ -125,3 +126,16 @@ def test_watched_topics_are_asked_once_per_cadence(conn, policy):
     asked = llm.web_calls
     desk.run_topics(conn, policy, llm)
     assert llm.web_calls == asked                                              # nothing due again yet
+
+
+def test_a_question_that_found_no_sources_is_not_stored_and_is_asked_again(conn, policy):
+    class Failing(DeskLLM):
+        def web_research(self, role, **kw):
+            self.web_calls += 1
+            return {"text": "I could not search.", "model": "claude-haiku-5-5", "searches": 0, "fetches": 0,
+                    "sources": []}
+    llm = Failing(conn)
+    assert desk.ask(conn, policy, llm, "anything new?")["skipped"] == "research failed: no sources"
+    assert conn.execute("SELECT count(*) n FROM research_findings").fetchone()["n"] == 0
+    desk.ask(conn, policy, llm, "anything new?")
+    assert llm.web_calls == 2

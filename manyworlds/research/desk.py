@@ -138,6 +138,10 @@ def ask(conn, policy: Policy, llm, question: str, *, depth: str = "quick", reque
                                blocked_domains=None if allowed_domains else (blocked_domains or c.get("blocked_domains")),
                                effort=str(d.get("effort", "low")))
         sources = got["sources"]
+        if not got["searches"] or not sources:
+            # 2026-11-25: three questions came back without a single source (search errored); stored, they would have
+            # been "fresh" for a week. A failed question is asked again on the next run.
+            return {"skipped": "research failed: no sources", "searches": got["searches"]}
         listing = "\n".join(f"{i + 1}. {s.get('title') or ''} ({s.get('url') or 'no url'})"
                             for i, s in enumerate(sources))
         st = llm.structured(str(c.get("structure_role", "desk_claims")), system=STRUCTURE, schema=Structured,

@@ -3577,7 +3577,9 @@ llm:
   max_output_tokens: 16000
   # Claude's server-side web tools (llm.web_research, research.desk): $10 per 1,000 searches (failed ones free), fetch
   # tokens only; at most max_continuations pause_turn continuations per question.
-  web: {search_tool: web_search_20260209, fetch_tool: web_fetch_20260209, usd_per_search: 0.01, max_continuations: 3}
+  # Basic tools (no dynamic filtering): the filtering variant runs code execution, which hit a usage limit on 3 of 7
+  # questions on 2026-11-25; the basic ones need none (and are zero-data-retention eligible).
+  web: {search_tool: web_search_20250305, fetch_tool: web_fetch_20250910, usd_per_search: 0.01, max_continuations: 3}
   # System prompts at least this long go out as a cached block (llm._system): ~1000+ tokens, the smallest prefix
   # the API caches. Shorter ones are sent as plain text (caching would not apply anyway).
   cache_system_min_chars: 4000
