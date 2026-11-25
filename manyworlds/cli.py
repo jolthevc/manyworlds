@@ -248,6 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
     tb.add_argument("--creator", help="creator handle (default: the plan's)")
     tb.add_argument("--hours", type=float, help="deadline from the run's first post (default breadth.deadline_hours)")
     tb.add_argument("--once", action="store_true", help="one pass, then exit (run again to continue)")
+    tb.add_argument("--queue", action="store_true",
+                    help="queue the driver as a durable brain job (survives deploys) instead of looping in this process")
     tr2 = tsub.add_parser("breadth-report", help="a breadth run: per item and capability, gates, lip sync, WER, file, $")
     tr2.add_argument("run")
     tr2.add_argument("--no-probe", action="store_true", help="skip downloading the final videos to read fps and size")
@@ -451,6 +453,14 @@ def _test(args, conn, pol) -> int:
     store = None if getattr(args, "dry_run", False) else storage.from_url()
     if args.test_cmd == "breadth-report":
         _print(breadth.report(conn, pol, args.run, store=store, probe=not args.no_probe))
+        return 0
+    if getattr(args, "queue", False) and not args.dry_run:   # the brain worker drives it, step by step
+        try:
+            _print(breadth.enqueue_driver(conn, pol, args.plan, items=[i.strip() for i in args.items.split(",")
+                                                                     if i.strip()] if args.items else None,
+                                          run=args.run, creator=args.creator, hours=args.hours))
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
         return 0
     llm = None
     tpol = breadth.test_policy(pol)

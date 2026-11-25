@@ -584,30 +584,87 @@ def run(conn, policy: Policy, plan_name: str, *, items: list[str] | None = None,
     blockers = open_test_work(conn, pol, batch)
     if dry_run:
         return {**head, **_dry_run(conn, pol, plan, rid, todo, creators), "blockers": blockers}
-    # Only a new run is refused: resuming one that already has jobs must not be blocked by test work started since
-    # (2026-11-24: a relaunched long-take driver was refused 8 times while its GPU job kept rendering).
-    started = conn.execute("SELECT 1 FROM jobs WHERE batch = %s OR batch LIKE %s LIMIT 1",
-                           (batch, f"{batch}-%")).fetchone() is not None
-    if blockers and not started and cfg.get("refuse_beside_open_tests", True):
-        raise SystemExit(f"other test work is open and could share or start machines: {blockers}. "
-                         "Finish or cancel it first.")
-    if operations.is_live(pol) and cfg.get("require_paused", True):
-        raise SystemExit("operations are live: the producer would advance and publish these posts too. "
-                         "The breadth test runs while operations.mode is paused.")
+    refused = refusal(conn, pol, batch, blockers)
+    if refused:
+        raise SystemExit(refused)
     policy_mod.register(conn, pol)   # cost entries name the overlay's version
     loop_s = float(cfg.get("loop_seconds", 60))
     holder = _take_lease(conn, rid, loop_s * 3)
     if holder is None:
-        raise SystemExit(f"another driver is running {rid}; wait for it, or for its lease to lapse")
+        raise DriverBusy(f"another driver is running {rid}; wait for it, or for its lease to lapse")
     try:
         out = {**head, **_drive(conn, pol, plan, plan_name, rid, batch, todo, creators, store=store, llm=llm,
                                 once=once, hours=hours, sleep=sleep, now=now, holder=holder)}
     finally:
         _release_lease(conn, rid, holder)
-    if plan.get("decides") == "voice_engine" and not once:   # the voice bake-off flips the default engine itself
+    out["finished"] = finished(out)
+    # the voice bake-off flips the default engine itself, once the run is over (a one-pass step that ends it too)
+    if plan.get("decides") == "voice_engine" and (not once or out["finished"]):
         from . import voice_bakeoff
         out["decision"] = voice_bakeoff.decide(conn, policy, rid)
     return out
+
+
+class DriverBusy(SystemExit):
+    """Another driver holds the run's lease (a CLI driver, or a step of the queued driver still running or killed
+    mid-step: its lease lapses after 3 loop_seconds). A SystemExit for the CLI; the queued driver waits and retries."""
+
+
+def finished(out: dict) -> bool:
+    """The run is over: every item ready or dropped, its spend cap reached, or its deadline passed."""
+    return bool(out.get("done") or out.get("spend_cap") or out.get("deadline_passed"))
+
+
+def refusal(conn, pol: Policy, batch: str, blockers: dict | None = None) -> str | None:
+    """Why a run may not start now (`pol`: the overlaid policy), or None. Only a new run is refused beside other open
+    test work: resuming one that already has jobs must not be blocked by test work started since (2026-11-24: a
+    relaunched long-take driver was refused 8 times while its GPU job kept rendering)."""
+    cfg = _cfg(pol)
+    blockers = open_test_work(conn, pol, batch) if blockers is None else blockers
+    started = conn.execute("SELECT 1 FROM jobs WHERE batch = %s OR batch LIKE %s LIMIT 1",
+                           (batch, f"{batch}-%")).fetchone() is not None
+    if blockers and not started and cfg.get("refuse_beside_open_tests", True):
+        return (f"other test work is open and could share or start machines: {blockers}. "
+                "Finish or cancel it first.")
+    if operations.is_live(pol) and cfg.get("require_paused", True):
+        return ("operations are live: the producer would advance and publish these posts too. "
+                "The breadth test runs while operations.mode is paused.")
+    return None
+
+
+DRIVER_KIND = "brain.breadth"   # the queued driver (manyworlds.brain.agents.breadth_driver), not a tunable
+
+
+def driver_batch(batch: str) -> str:
+    """The queued driver's own job: a test batch (paused brain workers take test jobs), outside the run's job
+    patterns (`batch`, `batch-%`, the plates batch), so the run never counts, cancels or adopts it."""
+    return f"{batch}.driver"
+
+
+def enqueue_driver(conn, policy: Policy, plan_name: str, *, items: list[str] | None = None, run: str | None = None,
+                   creator: str | None = None, hours: float | None = None) -> dict:
+    """Queue the run's driver as a durable brain job (2026-11-25): one driver step per job run, then the job defers
+    itself for loop_seconds, so the run survives deploys and restarts of the control plane (a shell loop in /tmp did
+    not). The same run already queued or running is returned, not queued twice. Refusals (live operations, other open
+    test work for a new run) are said now, before anything is queued."""
+    pol = test_policy(policy)
+    plan, chosen = load_plan(pol, plan_name, items)
+    who = creator or plan.get("creator")
+    rid = _slug(run) if run else run_id(plan_name, chosen, who)
+    batch = batch_name(pol, rid)
+    open_job = conn.execute("SELECT id, status FROM jobs WHERE kind = %s AND batch = %s AND status IN ('queued', "
+                            "'running') ORDER BY created_at LIMIT 1", (DRIVER_KIND, driver_batch(batch))).fetchone()
+    if open_job:
+        return {"run": rid, "batch": batch, "driver_job": str(open_job["id"]), "status": open_job["status"],
+                "queued": False}
+    refused = refusal(conn, pol, batch)
+    if refused:
+        raise SystemExit(refused)
+    payload = {"test": True, "plan": plan_name, "items": [i.id for i in chosen] if items else None, "run": rid,
+               "creator": who, "hours": hours}
+    job = queue.enqueue(conn, DRIVER_KIND, payload, batch=driver_batch(batch), priority=urgent_priority(pol),
+                        max_attempts=int(_cfg(pol).get("driver_max_attempts", 5)))
+    return {"run": rid, "batch": batch, "driver_job": str(job), "status": "queued", "queued": True}
 
 
 def _dry_run(conn, pol: Policy, plan: dict, rid: str, todo: list[Item], creators: dict) -> dict:
@@ -706,7 +763,7 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
         spent = run_spend(conn, batch)
         log.info("breadth %s: posts %s, open bench jobs %s, spent $%.2f", rid, state["posts"],
                  state["bench_open_jobs"], spent)
-        if state["done"] or once:
+        if state["done"]:
             break
         cap = plan.get("max_usd", cfg.get("max_usd"))   # a plan may set its own cap (longtake: owner-approved $3)
         if cap is not None and spent >= float(cap):
@@ -717,6 +774,8 @@ def _drive(conn, pol: Policy, plan: dict, plan_name: str, rid: str, batch: str, 
             state["deadline_passed"] = True
             if cfg.get("cancel_on_deadline", True):
                 state["cancelled_jobs"] = cancel_queued(conn, batch)
+            break
+        if once:   # one pass (the queued driver's step, or --once): the cap and deadline are still checked first
             break
         _renew_lease(conn, rid, holder, loop_s * 3)
         sleep(loop_s)

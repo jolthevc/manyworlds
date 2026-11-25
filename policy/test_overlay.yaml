@@ -43,6 +43,7 @@ breadth:
   refuse_beside_open_tests: true   # other open test batches could share or start machines: finish them first
   open_work_ignores_kinds: ["brain.%", "finish.%"]   # never rent a GPU (brain worker, Fly finisher): never block a run
   max_reconnects: 20               # a dropped database connection: reconnect and resume the run (mw test breadth)
+  driver_max_attempts: 5           # the queued driver (mw test breadth --queue): failed steps before the job fails
   go: {min_pass_share: 0.6, min_items: 1}   # per-format verdict in the report: go at this ready share or better
   loop_seconds: 60                 # how often the driver advances its posts
   review_in_driver: true           # the driver reviews its batches under this overlay (direction report-only)

@@ -183,6 +183,7 @@ job_kinds:
   brain.market_lead: {pools: [local], outputs_per_job: 0}
   brain.comment_themes: {pools: [local], outputs_per_job: 0}
   brain.scouts:    {pools: [local], outputs_per_job: 0}
+  brain.breadth:   {pools: [local], outputs_per_job: 0}   # the breadth test's driver, one step per run (mw test breadth --queue)
   fake.image:      {pools: [local], outputs_per_job: 4}
   fake.video:      {pools: [local], outputs_per_job: 1}
   fake.tts:        {pools: [local], outputs_per_job: 1}

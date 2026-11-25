@@ -44,6 +44,15 @@ class Agent(Protocol):
 REGISTRY: dict[str, Agent] = {}
 
 
+class Defer(Exception):
+    """An agent that works in steps (the breadth driver) gives its job back to run again in `seconds`, with no
+    attempt charged; `progress` is kept on the job's result so the step's state can be read meanwhile."""
+
+    def __init__(self, seconds: float, progress: dict | None = None):
+        super().__init__(f"deferred for {seconds} s")
+        self.seconds, self.progress = float(seconds), progress
+
+
 class UnknownAgent(KeyError):
     """A brain.<name> job for an agent that doesn't exist: permanent, unlike a KeyError inside an agent."""
 
