@@ -209,3 +209,19 @@ def test_without_a_shared_set_the_consistency_score_still_only_reports(conn, pol
                  (Jsonb({"shot": SHOTS[1], "references": [{"kind": "set", "uri": "s3://b/plate.png"}]}), job))
     [r] = gates.review_job(conn, policy, JudgeStub([ok(consistency=1)]), store, job, tmp_path)
     assert "set_match" not in r
+
+
+def test_a_hands_cutaway_is_framed_from_her_own_eyes_and_its_scene_loses_its_negations(policy):
+    # 2026-11-25 maren-final-4: "phone held by someone else" and a repair that led with "..., no face" drew her head
+    # into all eight hands-at-the-sink cutaways (each rejected for a face in a cutaway)
+    from manyworlds.review import repair
+    hands = {"set": BAR, "cutaway": True, "framing": {"shot_size": "close-up", "angle": "high angle", "device": "held"},
+             "blocking": [{"at_s": 0, "action": "fills a battered steel kettle at the bar sink"}]}
+    out = direction.compile_prompt(hands, MAREN, "photo", policy, scene="hands filling a kettle, no face")
+    assert "held by someone else" not in out and "point of view from her eyes" in out and "cropped at the forearms" in out
+    face = direction.compile_prompt(SHOTS[0], MAREN, "photo", policy)
+    assert "cropped at the forearms" not in face
+    adjust, _ = repair.plan(policy, "scene", scene="close-up of her hands filling a kettle, warm bar light, no face",
+                            identity_repairs=0)
+    p = adjust({"prompt": "base"})
+    assert "no face" not in p["prompt"] and "filling a kettle" in p["prompt"]

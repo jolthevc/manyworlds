@@ -117,7 +117,11 @@ def plan(policy: Policy, cause: str, *, scene: str, identity_repairs: int, targe
         return adjust, f"stronger likeness (lora_scale +{step} per repair, max {cap}) and a face-visible prompt"
     if cause == "scene":
         text, avoid = split_hint(hints.get("scene", ""))
-        lead = text.format(scene=scene)
+        # the scene's own negations ("..., no face") leave the positive prompt for the avoid list: put first, "no
+        # face" drew a face into every hands cutaway (2026-11-25, maren-final-4)
+        positive, negated = split_hint(scene)
+        lead = text.format(scene=positive)
+        avoid = [*avoid, *negated]
         return (lambda p: with_negative({**p, "prompt": lead + p["prompt"]}, avoid, policy, target)), "prompt leads with the scene"
     if cause in ("realism", "hands", "teeth"):   # hands / teeth: the finer checks (review.detail), when enforced
         text, avoid = split_hint(hints.get(cause, hints.get("realism", "")))

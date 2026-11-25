@@ -794,9 +794,14 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
     medium = "candid smartphone photo" if target == "photo" else "smartphone video"
     lens = f"{f.lens_mm:g} mm lens" if f.lens_mm else ""
     move = camera_move(s, policy).replace("_", " ") if video else ""
+    device = _DEVICE.get(f.device or "", "")
+    if faceless(s) and (s.subject or "") in ("", "face", "hands"):
+        # Her hands from her own eyes, whatever device the sheet named: "phone held by someone else" on a hands
+        # cutaway drew a third-person view with her head at the edge of every frame (2026-11-25, maren-final-4:
+        # 8 of 8 rejected for a face in a cutaway).
+        device = f"{_DEVICE['pov']}, cropped at the forearms, the frame filled by her hands and what they hold"
     camera = _join([medium, f.shot_size, f.angle, lens, f"{f.headroom} headroom" if f.headroom.strip() else "",
-                    _DEVICE.get(f.device or "", ""), _shake(s, policy) if video else "",
-                    f"camera {move}" if move else ""])
+                    device, _shake(s, policy) if video else "", f"camera {move}" if move else ""])
 
     wardrobe = _wardrobe(s)
 
