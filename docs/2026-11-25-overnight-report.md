@@ -39,7 +39,14 @@ The research overspend came from a bug: the scout step re-pulled creators on eac
 2. **Maren drop 2:** the hands-shot prompt pasted in her whole signature paragraph, including the cardigan. Fixed: it now keeps only hand-level details (rings, nails, watch, scars).
 3. **The run driver stalled:** it advanced the post before its own review. Fixed: it advances again after review and drives for 5 minutes per turn.
 4. **The voice cast wasn't stored while paused.** Fixed.
-5. **The research pilot re-pulled creators** and spent its budget before analysis. Fix in progress.
+5. **The research pilot re-pulled creators** and spent its budget before analysis. Fixed and deployed:
+   - each creator's pull is recorded as it completes;
+   - creators fetched in the last 14 days are reused;
+   - 25% of the cap is reserved for analysis;
+   - hashtag pools are capped at $1;
+   - Instagram posts come through the cheaper profile scraper.
+
+   The stored 1,551 posts can now be analysed without collecting again. Dry run: **$2.29** (cap $4) for 54 creators. Command: `mw research pilot --resume-annotate test-iia-95904e18 --usd 4`. It is held until the daily budget allows it.
 
 ## Decisions for you
 
