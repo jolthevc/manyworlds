@@ -348,3 +348,15 @@ def test_the_breadth_run_starts_with_the_shared_voice_line_only(conn, policy, st
 
 def _jobs(conn):
     return conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"]
+
+
+def test_a_longcat_failure_names_the_childs_exception_not_torchruns_banner():
+    # 2026-11-25: every recorded LongCat error was torchrun's ChildFailedError banner, the cause cut off.
+    from manyworlds.worker.handlers.talk_longcat import child_error
+    out = ("Traceback (most recent call last):\n  File \"run.py\", line 9\n"
+           "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB\n"
+           "[rank0]: something\n" + "x\n" * 200 +
+           "torch.distributed.elastic.multiprocessing.errors.ChildFailedError: \n  error_file: <N/A>\n")
+    msg = child_error(out)
+    assert "CUDA out of memory" in msg and "ChildFailedError" not in msg
+    assert child_error("nothing useful") == "no exception line in the output"

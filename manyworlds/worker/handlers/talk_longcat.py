@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -153,8 +154,21 @@ def run(cmd: list[str], cwd: Path, timeout: float) -> None:
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-3000:]
         log.error("LongCat failed (%s):\n%s", proc.returncode, tail)
-        # The text carries "CUDA out of memory" etc., so the runner counts machine faults correctly.
-        raise RuntimeError(f"LongCat exited {proc.returncode}: {tail[-800:]}")
+        # The text carries "CUDA out of memory" etc., so the runner counts machine faults correctly. torchrun's own
+        # ChildFailedError banner fills the tail, so the child's exception lines go first (2026-11-25: every
+        # recorded error was the banner, the cause cut off).
+        raise RuntimeError(f"LongCat exited {proc.returncode}: {child_error(proc.stderr or proc.stdout or '')}"
+                           f" | {tail[-500:]}")
+
+
+def child_error(text: str, limit: int = 600) -> str:
+    """The lines that name what went wrong in a torchrun child's output: exception lines ("XxxError: ...",
+    "...Exception: ..."), CUDA out-of-memory and Killed, last ones first, without torchrun's own wrapper lines."""
+    hits = [line.strip() for line in text.splitlines()
+            if re.search(r"(Error|Exception)\b.*:|out of memory|Killed", line)
+            and not re.search(r"ChildFailedError|elastic|error_file", line)]
+    out = " / ".join(dict.fromkeys(reversed(hits)))
+    return out[:limit] or "no exception line in the output"
 
 
 def newest_video(out_dir: Path) -> Path:
