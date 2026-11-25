@@ -337,7 +337,16 @@ review:
     # judged by eye give the threshold (benchmark); then a clip below it is rejected before any paid review.
     # Enforced since 2026-11-22: 8-step clips passed the visual gate with lip-sync correlation 0.07 and 0.28 (the
     # keyframes can't show sync); 6-step clips scored 0.61-0.70.
-    lip_sync: {enforce: true, min_corr: 0.3, min_face_share: 0.8}
+    # voiced_span (2026-11-25, perf_compare segment 8): InfiniteTalk renders whole 81-frame windows, so a short line
+    # comes back with frames that have no voice (2.06 s line, 3.24 s clip), and the join cuts every take to its voice
+    # (media.normalize -shortest). Over 68 stored clips those frames decided the whole-clip score: a mouth closing in
+    # them lifted passing clips (0.54 whole, 0.06 voiced), a parted smile sank segment 8 (-0.46 whole, 0.41 voiced;
+    # head motion was lower than in passing clips, the clip's sound matched the line). When the whole clip fails, the
+    # reviewer scores the voiced frames (+ tail_frames) with the same min_corr; the mouth must move over them
+    # (min_open_std: talking clips 0.041-0.17, never-redrawn V2V mouths 0.001-0.003). A pass needs one of the two.
+    lip_sync: {enforce: true, min_corr: 0.3, min_face_share: 0.8,
+               voiced_span: {enabled: true, tail_frames: 0, min_open_std: 0.02, audio_rate: 16000, min_frames: 25,
+                             max_offset_frames: 5}}
     # Talking clips: the voice line transcribed (Whisper on Together, $0.0015 a minute, 2026-11-21) must match the
     # script within max_wer (word error rate), or the clip fails before any paid review (manyworlds.speech).
     # Voices are judged automatically, never by ear (owner 2026-11-21).

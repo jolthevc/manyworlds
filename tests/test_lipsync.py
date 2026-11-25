@@ -35,3 +35,36 @@ def test_a_frozen_mouth_or_no_face_gives_no_score():
     assert lipsync.sync_score(np.full(len(loud), 0.1), loud)["corr"] is None          # never moves
     s = lipsync.sync_score(np.full(len(loud), np.nan), loud)
     assert s["corr"] is None and s["face_share"] == 0.0
+
+
+# The voiced span (perf_compare segment 8, 2026-11-25): a short line in an 81-frame InfiniteTalk window leaves
+# frames with no voice that the join cuts away; the gate scores the span the voice covers when the whole clip fails.
+
+def _short_line(seed=0, voiced=52, frames=81):
+    rng = np.random.default_rng(seed)
+    env = (rng.random(voiced) > 0.45).astype(float)
+    audio = np.concatenate([(0.05 + np.repeat(env, RATE // FPS)) * rng.normal(0, 0.3, voiced * (RATE // FPS)),
+                            np.zeros((frames - voiced) * (RATE // FPS))])
+    return lipsync.loudness(audio, RATE, FPS, frames)
+
+
+def test_a_synced_mouth_that_stays_parted_after_the_line_scores_well_on_the_voiced_span():
+    loud = _short_line()
+    mouth = np.concatenate([(loud[:52] - loud[:52].min()) / np.ptp(loud[:52]) * 0.15, np.full(29, 0.14)])
+    mouth += np.random.default_rng(3).normal(0, 0.005, 81)
+    assert lipsync.sync_score(mouth, loud)["corr"] < 0.3                     # the silent smile sinks the whole clip
+    v = lipsync.voiced_score(mouth, loud, 52)
+    assert v["corr"] > 0.8 and v["voiced_frames"] == 52 and v["open_std"] > 0.02
+
+
+def test_an_unsynced_mouth_stays_low_on_the_voiced_span_too():
+    loud, other = _short_line(0), _short_line(7)
+    mouth = np.concatenate([(other[:52] - other[:52].min()) / np.ptp(other[:52]) * 0.15, np.full(29, 0.14)])
+    v = lipsync.voiced_score(mouth, loud, 52)
+    assert v["corr"] is None or v["corr"] < 0.3
+
+
+def test_a_clip_without_frames_past_its_line_has_no_voiced_score():
+    loud = _short_line(voiced=81, frames=81)
+    assert lipsync.voiced_score(np.linspace(0, 1, 81), loud, 81) is None
+    assert lipsync.voiced_score(np.linspace(0, 1, 81), loud, 70, tail_frames=20) is None

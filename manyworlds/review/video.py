@@ -240,8 +240,14 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         if sync is not None:
             res["sync"] = sync
         synced = lip_sync_ok(cfg, sync)
+        if synced is False:   # the whole clip failed: score the frames its voice covers (the join drops the rest)
+            voiced = _voiced_sync(conn, cfg, store, job_id, payload, v, sync, workdir)
+            if voiced is not None:
+                sync = {**sync, "voiced": voiced}
+                res["sync"] = sync
+                synced = lip_sync_ok(cfg, sync)
         if synced is not None:   # checked first: it is free, and a clip out of sync never needs a paid judge
-            rows.append((v["id"], "lip_sync", synced, sync.get("corr"), Jsonb(_without_series(sync))))
+            rows.append((v["id"], "lip_sync", synced, sync_value(cfg, sync), Jsonb(_without_series(sync))))
             res["lip_sync"] = synced
             if not synced:
                 res.update(accepted=False, confirmed=False)
@@ -364,8 +370,80 @@ def lip_sync_ok(cfg: dict, sync: dict | None) -> bool | None:
     ls = cfg.get("lip_sync") or {}
     if not ls.get("enforce") or not sync or "error" in sync:
         return None
-    return (sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
-            and float(sync.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8)))
+    face = float(sync.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8))
+    whole = sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
+    return face and (whole or _voiced_ok(ls, sync.get("voiced")))
+
+
+def _voiced_ok(ls: dict, voiced: dict | None) -> bool:
+    """The voiced span's score passes (lipsync.voiced_score): the same min_corr, a mouth that moves over it
+    (voiced_span.min_open_std) and a face in it."""
+    vs = ls.get("voiced_span") or {}
+    if not vs.get("enabled") or not voiced or voiced.get("corr") is None:
+        return False
+    return (float(voiced["corr"]) >= float(ls.get("min_corr", 0.3))
+            and float(voiced.get("open_std") or 0) >= float(vs.get("min_open_std", 0.0))
+            and float(voiced.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8)))
+
+
+def sync_value(cfg: dict, sync: dict) -> float | None:
+    """The lip_sync row's score: the voiced span's when it decided the pass, else the whole clip's."""
+    ls = cfg.get("lip_sync") or {}
+    whole = sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
+    if not whole and _voiced_ok(ls, sync.get("voiced")):
+        return sync["voiced"]["corr"]
+    return sync.get("corr")
+
+
+def _line_audio(conn, job_id, payload: dict, video_uri: str) -> str:
+    """Where the clip's voice line is: the job's own audio output (a Kokoro line, a cut window), else the designed
+    voice's line it was given, else the clip's own sound track."""
+    row = conn.execute("SELECT uri FROM assets WHERE job_id = %s AND kind = 'audio' ORDER BY uri LIMIT 1",
+                       (job_id,)).fetchone()
+    return row["uri"] if row else (payload.get("audio_uri") or video_uri)
+
+
+def _decode_mono(path: Path, rate: int):
+    """The file's sound as mono float samples at `rate` (ffmpeg; a video's audio track too)."""
+    import subprocess
+
+    import numpy as np
+
+    from .. import media
+    r = subprocess.run([media.ffmpeg(), "-v", "error", "-i", str(path), "-vn", "-f", "f32le", "-ac", "1",
+                        "-ar", str(rate), "-"], capture_output=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or b"")[-300:].decode(errors="replace"))
+    return np.frombuffer(r.stdout, dtype=np.float32)
+
+
+def _voiced_sync(conn, cfg: dict, store: ObjectStore, job_id, payload: dict, video: dict, sync: dict | None,
+                 workdir: Path) -> dict | None:
+    """The sync score over the clip's voiced frames (lipsync.voiced_score), from its stored mouth series and its
+    voice line; None when off, when the clip has no series or no frames past its line, or the audio can't be read
+    (the whole-clip verdict stands)."""
+    import numpy as np
+
+    from ..worker import lipsync
+    ls = cfg.get("lip_sync") or {}
+    vs = ls.get("voiced_span") or {}
+    series = (sync or {}).get("openness")
+    if not vs.get("enabled") or not series:
+        return None
+    fps = float(sync.get("fps") or 25)
+    rate = int(vs.get("audio_rate", 16000))
+    uri = _line_audio(conn, job_id, payload, video["uri"])
+    try:
+        samples = _decode_mono(store.get_file(uri, Path(workdir) / f"line_{video['id']}{Path(uri).suffix}"), rate)
+    except Exception:  # noqa: BLE001 - without the line the whole-clip score decides
+        return None
+    if not len(samples):
+        return None
+    openness = np.array([np.nan if x is None else float(x) for x in series], dtype=float)
+    loud = lipsync.loudness(samples, rate, fps, len(openness))
+    voiced = int(np.ceil(len(samples) / rate * fps))
+    return lipsync.voiced_score(openness, loud, voiced, max_offset_frames=int(vs.get("max_offset_frames", 5)),
+                                min_frames=int(vs.get("min_frames", 25)), tail_frames=int(vs.get("tail_frames", 0)))
 
 
 def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int | None = None) -> list:

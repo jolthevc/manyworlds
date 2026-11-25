@@ -61,6 +61,28 @@ def sync_score(openness: np.ndarray, loud: np.ndarray, *, max_offset_frames: int
     return best
 
 
+def voiced_score(openness, loud, voiced_frames: int, *, max_offset_frames: int = 5, min_frames: int = 25,
+                 tail_frames: int = 0) -> dict | None:
+    """The sync score over the frames the voice line spans (plus `tail_frames` after it), or None when the clip
+    has no frames past that span (the whole-clip score already is this one).
+
+    InfiniteTalk renders whole 81-frame windows, so a 2.06 s line comes back as a 3.24 s clip whose last 29 frames
+    have no voice; the join cuts each take to its own voice (media.normalize, -shortest). Those frames weigh heavily
+    in a whole-clip correlation: a mouth that closes in them lifts it, a smile with parted lips sinks it (perf_compare
+    segment 8, 2026-11-25: -0.46 over 81 frames, 0.41 over the 52 voiced ones). `open_std` is the mouth's movement
+    over the span: a mouth that never moves (a V2V take that never redrew it) gets a correlation from noise alone."""
+    a = np.asarray(openness, dtype=float)
+    end = int(voiced_frames) + max(0, int(tail_frames))
+    if end >= len(a) or voiced_frames <= 0:
+        return None
+    span_a, span_b = a[:end], np.asarray(loud, dtype=float)[:end]
+    out = sync_score(span_a, span_b, max_offset_frames=max_offset_frames, min_frames=min(min_frames, end))
+    valid = span_a[~np.isnan(span_a)]
+    out.update(open_std=round(float(np.std(valid)), 4) if len(valid) else 0.0, voiced_frames=int(voiced_frames),
+               tail_frames=max(0, int(tail_frames)), clip_frames=len(a))
+    return out
+
+
 BILABIALS = "bpm"
 
 

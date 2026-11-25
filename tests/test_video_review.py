@@ -500,3 +500,77 @@ def test_the_dance_gate_cuts_its_keyframes_from_the_clip_when_the_worker_stored_
     [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
     texts = [str(b.get("text", "")) for b in llm.calls[0]["content"]]
     assert sum(t.startswith("KEYFRAME") for t in texts) == n > 4 and r["accepted"]
+
+
+def _short_line_wav(path, voiced_frames=52, seed=0, fps=25, rate=16000):
+    """A speech-like line of `voiced_frames` video frames (syllable bursts), as a 16-bit WAV; its per-frame
+    loudness envelope (1 = loud, 0 = pause)."""
+    import wave
+
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    env = (rng.random(voiced_frames) > 0.45).astype(float)
+    samples = np.repeat(env, rate // fps) * rng.normal(0, 0.3, voiced_frames * (rate // fps)) + 0.001
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes())
+    return env
+
+
+def _short_take(conn, store, tmp_path, cid, mouth):
+    """A talking clip of len(mouth) frames whose voice line (its audio output) covers 52 of them."""
+    job = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
+    rendered(conn, store, tmp_path, job)
+    wav = tmp_path / f"{uuid.uuid4().hex}.wav"
+    _short_line_wav(wav)
+    conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) VALUES (%s, %s, 'audio', %s, 'x', 1, %s)",
+                 (job, cid, store.put_file(wav, f"v/{wav.name}").uri, Jsonb({"seconds": 52 / 25})))
+    conn.execute("UPDATE assets SET meta = %s WHERE job_id = %s AND kind = 'video'",
+                 (Jsonb({"sync": {"corr": -0.46, "offset_frames": -5, "face_share": 1.0, "frames": len(mouth),
+                                  "fps": 25.0, "openness": [round(float(x), 4) for x in mouth]}}), job))
+    return job
+
+
+def test_a_short_line_whose_mouth_stays_parted_after_it_passes_on_its_voiced_frames(conn, policy, store, tmp_path):
+    """perf_compare segment 8 (2026-11-25): an 81-frame InfiniteTalk window for a 52-frame line; the mouth follows the
+    voice, then stays parted in a smile over the 29 silent frames the join cuts away."""
+    import numpy as np
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    env = _short_line_wav(tmp_path / "probe.wav")
+    mouth = np.concatenate([0.02 + env * 0.12, np.full(29, 0.14)])
+    job = _short_take(conn, store, tmp_path, cid, mouth)
+    llm = ClipStub(clip(), clip())
+    [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
+    assert r["lip_sync"] is True and r["sync"]["voiced"]["corr"] >= 0.3 and r["sync"]["voiced"]["voiced_frames"] == 52
+    row = conn.execute("SELECT score, details FROM reviews WHERE asset_id = %s AND gate = 'lip_sync'",
+                       (r["asset_id"],)).fetchone()
+    assert float(row["score"]) == r["sync"]["voiced"]["corr"] and "openness" not in row["details"]
+
+
+def test_an_unsynced_or_frozen_mouth_still_fails_on_its_voiced_frames(conn, policy, store, tmp_path):
+    import numpy as np
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    other = (np.random.default_rng(7).random(52) > 0.45).astype(float)      # another line's timing
+    unsynced = np.concatenate([0.02 + other * 0.12, np.full(29, 0.14)])
+    env = _short_line_wav(tmp_path / "probe.wav")
+    frozen = np.concatenate([0.002 + env * 0.002, np.full(29, 0.002)])     # in step, but the mouth never opens
+    for mouth in (unsynced, frozen):
+        job = _short_take(conn, store, tmp_path, cid, mouth)
+        llm = ClipStub(clip(), clip())
+        [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
+        assert r["lip_sync"] is False and not r["accepted"] and llm.calls == []
+
+
+def test_the_voiced_span_can_be_turned_off(conn, policy, store, tmp_path):
+    import numpy as np
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    env = _short_line_wav(tmp_path / "probe.wav")
+    job = _short_take(conn, store, tmp_path, cid, np.concatenate([0.02 + env * 0.12, np.full(29, 0.14)]))
+    pol = _with_sync(policy, voiced_span={**policy.get("review", "video", "lip_sync", "voiced_span"), "enabled": False})
+    [r] = video.review_job(conn, pol, ClipStub(clip(), clip()), store, job, tmp_path)
+    assert r["lip_sync"] is False and "voiced" not in r["sync"]
