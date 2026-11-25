@@ -10,7 +10,8 @@ into production storage as a licensed asset, a deliberate step outside this modu
 
     is_research_uri(s)          a URI (or any string) that points into the research store
     check_job(kind, payload)    the guard queue.enqueue runs: only research kinds may carry research URIs
-    research_store()            the research store, or None when RESEARCH_STORAGE_URL is not set
+    research_store(policy)      the research store: RESEARCH_STORAGE_URL, else the main bucket under research-refs/
+                                (policy intelligence.storage.fallback; none = no store)
     media_key(post_id, name)    where a post's research copy goes
     forget(conn, store, who)    delete a creator and everything about them; never collect them again
     purge(conn, policy, store)  media past its date, and records past `records_days` that nothing cites
@@ -79,10 +80,18 @@ def check_job(kind: str, payload: Any) -> None:
                                    f"(payload {', '.join(found[:5])})")
 
 
-def research_store():
+def research_store(policy: Policy | None = None):
+    """The research store: RESEARCH_STORAGE_URL when set (a separate private bucket); otherwise, with policy
+    `intelligence.storage.fallback: main_bucket` (the default), the main bucket (STORAGE_URL), where every research
+    key still sits under research-refs/ and is refused in production jobs and asset rows by that prefix; `none`: no
+    store (nothing downloads)."""
     from .. import storage
     url = os.environ.get(STORE_ENV)
-    return storage.from_url(url) if url else None
+    if url:
+        return storage.from_url(url)
+    fallback = (policy.get("intelligence", "storage", "fallback", default="main_bucket") if policy
+                else "main_bucket")
+    return storage.from_url() if fallback == "main_bucket" else None
 
 
 def media_key(post_id, name: str) -> str:

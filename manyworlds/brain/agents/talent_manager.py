@@ -62,10 +62,12 @@ class Conviction(BaseModel):
 
 
 class Request(BaseModel):
-    kind: Literal["tier_change", "research", "experiment", "production_upgrade", "escalate"]
+    kind: Literal["tier_change", "research", "experiment", "production_upgrade", "escalate", "intelligence"]
     subject: str = Field(description='what is asked, as JSON: {"tier": "standard"}, {"question": "..."}, '
                                      '{"effect": "format:carousel" | "attribute:<key>=<value>" | "dimension:<name>", '
-                                     '"hypothesis": "..."}, {"ask": "..."}')
+                                     '"hypothesis": "..."}, {"ask": "..."}; intelligence (study real public '
+                                     'creators who do what she should, into pattern cards): {"question": "...", '
+                                     '"handles": ["instagram:<handle>"]}')
     argument: str = Field(description="why, with the evidence; for money, what it buys and what it should show")
 
 

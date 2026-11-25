@@ -158,10 +158,20 @@ def build_parser() -> argparse.ArgumentParser:
     mu.add_argument("--genre", help="analyse: one genre")
     mu.add_argument("--record", action="store_true", help="analyse: record the findings (domain music)")
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
-    rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, patterns")
-    rs.add_argument("action", choices=["forget", "purge", "patterns"])
+    rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, "
+                                         "patterns, pilot (the influencer intelligence agent: scout, annotate, distill)")
+    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot"])
     rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
     rs.add_argument("--seed", action="store_true", help="patterns: also add the seed file's cards to pattern_cards")
+    rs.add_argument("--hypothesis", help="pilot: a thesis id or the hypothesis in words")
+    rs.add_argument("--usd", type=float, help="pilot: the run's spend cap (default intelligence.agent.max_usd_per_run)")
+    rs.add_argument("--handles", nargs="*", default=[], help="pilot: named reference creators (instagram:<handle>, "
+                                                             "tiktok:<handle> or @handle on every platform)")
+    rs.add_argument("--hashtags", nargs="*", default=[], help="pilot: hashtags for the candidate pool (else one plan call)")
+    rs.add_argument("--platforms", nargs="*", default=[], help="pilot: instagram, tiktok (default intelligence.agent.platforms)")
+    rs.add_argument("--creators", type=int, help="pilot: creators in the sample")
+    rs.add_argument("--posts", type=int, help="pilot: posts per creator")
+    rs.add_argument("--dry-run", action="store_true", help="pilot: print the estimate, queue nothing")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
     rv.add_argument("--batch")
@@ -917,9 +927,13 @@ def _research(args, conn, pol) -> int:
         if not args.who:
             print("usage: mw research forget <handle | profile url | post url>")
             return 2
-        _print(references.forget(conn, references.research_store(), args.who))
+        _print(references.forget(conn, references.research_store(pol), args.who))
     elif args.action == "purge":
-        _print(references.purge(conn, pol, references.research_store()))
+        _print(references.purge(conn, pol, references.research_store(pol)))
+    elif args.action == "feedback":
+        _print(patterns.feedback(conn, pol))
+    elif args.action == "pilot":
+        return _research_pilot(args, conn, pol)
     else:
         out = patterns.validate(pol)
         if args.seed and not out["problems"]:
@@ -927,6 +941,55 @@ def _research(args, conn, pol) -> int:
         _print({"cards": sorted(patterns.library(pol)["cards"]), **out})
         return 1 if out["problems"] else 0
     return 0
+
+
+def _research_pilot(args, conn, pol) -> int:
+    """mw research pilot --hypothesis <thesis id | text> --usd <cap> [--dry-run]: the influencer intelligence pilot's
+    stage 1 (scout, annotate, distill) as one brain.intelligence job in a test-iia-<run> batch (a test batch: it runs
+    while operations are paused, on the brain worker), capped at --usd. --dry-run prints the estimate only."""
+    import re
+    import uuid as uuid_mod
+
+    from . import queue
+    from .brain.agents import intelligence
+    if not args.hypothesis:
+        print("usage: mw research pilot --hypothesis <thesis id | text> --usd <cap> [--dry-run]")
+        return 2
+    cfg = pol.get("intelligence", "agent", default={}) or {}
+    cap = float(args.usd if args.usd is not None else cfg.get("max_usd_per_run", 0))
+    est = intelligence.estimate(pol, creators=args.creators, posts=args.posts, platforms=args.platforms or None,
+                                hashtags_per_platform=len(args.hashtags) if args.hashtags else None,
+                                plan=not args.hashtags)
+    est["cap_usd"] = cap
+    est["fits_cap"] = est["total_usd"] <= cap
+    is_id = re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", args.hypothesis.lower())
+    payload = {"mode": "pilot", "usd": cap, **({"thesis_id": args.hypothesis} if is_id
+                                               else {"hypothesis": args.hypothesis})}
+    for k in ("handles", "hashtags", "platforms"):
+        if getattr(args, k):
+            payload[k] = getattr(args, k)
+    for k in ("creators", "posts"):
+        if getattr(args, k):
+            payload[k] = getattr(args, k)
+    if args.dry_run:
+        _print({"dry_run": True, "estimate": est, "payload": payload,
+                "storage": references_storage(pol)})
+        return 0
+    run = uuid_mod.uuid4().hex[:8]
+    job = queue.enqueue(conn, "brain.intelligence", payload, batch=f"test-iia-{run}")
+    _print({"queued": str(job), "batch": f"test-iia-{run}", "estimate": est, "storage": references_storage(pol)})
+    return 0
+
+
+def references_storage(pol) -> str:
+    """Where this run's research media would go (references.research_store)."""
+    import os
+
+    from .research import references
+    if os.environ.get(references.STORE_ENV):
+        return "research bucket (RESEARCH_STORAGE_URL)"
+    fallback = pol.get("intelligence", "storage", "fallback", default="main_bucket")
+    return f"main bucket under {references.PREFIX}" if fallback == "main_bucket" else "none (no media downloaded)"
 
 
 if __name__ == "__main__":
