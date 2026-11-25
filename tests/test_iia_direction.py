@@ -29,9 +29,10 @@ def policy(policy):
     from conftest import approve_research_sources
     pol = approve_research_sources(policy)
     intel = pol.body["intelligence"]
+    agent = intel["agent"]
     # the mechanics run on two creators; the shipped floor (min_creators 3) is tested in test_review_fixes.py
-    return dataclasses.replace(pol, body={**pol.body, "intelligence": {**intel, "distill": {**intel["distill"],
-                                                                                         "min_creators": 1}}})
+    return dataclasses.replace(pol, body={**pol.body, "intelligence": {**intel, "agent": {
+        **agent, "distill": {**agent["distill"], "min_creators": 1}}}})
 
 FASHION = {"archetype": "quiet-luxury fashion in a small city flat", "niche": "fashion",
            "one_line": "outfits that cost less than they look"}
