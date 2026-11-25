@@ -1568,6 +1568,7 @@ intelligence:
       timespan: 1d
       max_records: 75
       min_interval_s: 6
+      retries: 3                   # on HTTP 429 (Fly's shared IP is limited at once, 2026-11-25), backing off
       queries:
         - {category: fashion, query: "(fashion OR runway OR designer) (trend OR collection OR season) sourcelang:english"}
         - {category: fashion_business, query: "(luxury OR fashion) (brand OR retail OR sales) sourcelang:english"}

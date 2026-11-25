@@ -163,7 +163,17 @@ def collect(conn, policy: Policy, *, get=None, now: datetime | None = None, slee
                 if asked_gdelt:
                     sleep(gap)
                 asked_gdelt = True
-                items = parse_gdelt(get(f["url"]))
+                items = None
+                for attempt in range(int((cfg(policy).get("gdelt") or {}).get("retries", 3)) + 1):
+                    try:   # GDELT answers 429 to a shared egress IP (Fly) at once; back off and ask again
+                        items = parse_gdelt(get(f["url"]))
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        if "429" not in str(e) and "limit requests" not in str(e).lower():
+                            raise
+                        sleep(gap * (attempt + 2))
+                if items is None:
+                    raise RuntimeError("gdelt: rate limited")
             else:
                 items = parse(get(f["url"]))
         except Exception as e:  # noqa: BLE001 - one source down never stops the others

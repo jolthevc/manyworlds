@@ -135,3 +135,18 @@ def test_the_research_budget_is_the_owners_dollar_a_day(raw_policy):
     total = raw_policy.get("intelligence", "culture", "daily_usd") + raw_policy.get("intelligence", "monitor",
                                                                                      "daily_usd")
     assert total == pytest.approx(1.0)
+
+
+def test_gdelt_rate_limits_are_backed_off_and_retried(conn, policy):
+    calls, slept = [], []
+
+    def get(u):
+        calls.append(u)
+        if len(calls) == 1:
+            raise RuntimeError("HTTP Error 429: Too Many Requests")
+        return GDELT_JSON
+    one = dataclasses.replace(policy, body={**policy.body, "intelligence": {**policy.body["intelligence"], "culture": {
+        **policy.body["intelligence"]["culture"], "gdelt": {**policy.body["intelligence"]["culture"]["gdelt"],
+                                                            "queries": [{"category": "fashion", "query": "q"}]}}}})
+    new, report = culture.collect(conn, one, get=get, now=NOW, sleep=slept.append)
+    assert len(calls) == 2 and slept and report["gdelt:fashion"] == 2
