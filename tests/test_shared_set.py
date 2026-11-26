@@ -274,3 +274,15 @@ def test_a_beats_eyeline_wins_over_the_performances_gaze(policy):
     gaze = "looking away from the camera"
     assert "looking into the lens" in with_lens and gaze not in with_lens
     assert gaze in free
+
+
+def test_a_beat_that_blocks_her_hands_wins_over_the_performances_body(policy):
+    from manyworlds.direction import ControlLevel
+    def shot(hands):
+        return {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot"},
+                "blocking": [{"at_s": 0, "action": "leans on the counter", "hands": hands}],
+                "performance": {"intent": "a teasing look", "controls": [ControlLevel(control="sass", level=2).model_dump()]}}
+    blocked = direction.compile_prompt(shot("one hand flat on the counter"), MAREN, "talk", policy)
+    free = direction.compile_prompt(shot(""), MAREN, "talk", policy)
+    assert "hand on hip" not in blocked and "one hand flat on the counter" in blocked
+    assert "hand on hip" in free
