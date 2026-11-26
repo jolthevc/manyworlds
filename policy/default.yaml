@@ -19,6 +19,15 @@ budgets:
 storage: {retention_days: 30, every_hours: 24, max_deletes_per_run: 5000}
 
 # Fixed monthly charges, accrued to the ledger daily (usd_per_month / 30, category fixed) by the autoscaler loop.
+# Infrastructure the bill does not carry yet (mw economics lists it under missing until usd_per_month is set from an
+# invoice; then move it to fixed_costs so it accrues). Owner 2026-11-25: fixed costs apart from production economics.
+infrastructure:
+  - {item: "Fly.io control plane (manyworlds-mw: machines, volumes, egress)", usd_per_month: null, needs: "Fly billing page, last full month"}
+  - {item: "Neon Postgres", usd_per_month: null, needs: "Neon plan and last invoice"}
+  - {item: "Cloudflare R2 storage and operations", usd_per_month: null, needs: "R2 usage page, last month"}
+  - {item: "Depot builds", usd_per_month: null, needs: "Depot plan"}
+  - {item: "GitHub Actions minutes beyond the free tier", usd_per_month: null, needs: "GitHub billing summary"}
+  - {item: "Apify / ScrapeCreators subscriptions (beyond per-call charges)", usd_per_month: null, needs: "plan names, if any are monthly"}
 fixed_costs:
   - {provider: "runpod:volume:mw-weights-us-nc-1", usd_per_month: 10.50}   # 150 GB standard at $0.07/GB, 2026-11-22
 

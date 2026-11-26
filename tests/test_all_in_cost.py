@@ -84,6 +84,12 @@ def test_the_economics_report_separates_development_from_recurring_production(co
     from manyworlds import economics
     _world(conn)
     r = economics.report(conn, policy, days=1, now=NOW)
-    assert r["development"] == pytest.approx(0.375 + 0.1, abs=1e-4)       # the test-batch post: machines + direction
-    assert r["production"] == pytest.approx(1.125, abs=1e-4)
-    assert r["orchestration"] == pytest.approx(0.2) and r["research"] == pytest.approx(5.0)
+    c = r["categories"]
+    assert c["development"] == pytest.approx(0.375 + 0.1, abs=1e-4)      # the test-batch post: machines + direction
+    assert c["production"] == pytest.approx(1.125, abs=1e-4)
+    assert c["orchestration"] == pytest.approx(0.2) and c["research"] == pytest.approx(5.0)
+    assert r["bill_usd"] == pytest.approx(round(sum(c.values()), 2))      # every dollar in one bucket
+    photo = r["per_format"]["photo"]                                      # production posts only
+    assert photo["posts"] == 1 and photo["marginal_per_accepted"] == pytest.approx(180 / 3600, abs=1e-4)
+    assert photo["fully_loaded_per_accepted"] == pytest.approx(1.125 + 0.2, abs=1e-4)
+    assert any("Fly" in m["item"] for m in r["missing"])
