@@ -96,8 +96,10 @@ class _Whisper:
         import torch
         from transformers import pipeline
         cuda = torch.cuda.is_available()
-        self.pipe = pipeline("automatic-speech-recognition", model=model_id,
-                             torch_dtype=torch.float16 if cuda else torch.float32, device=0 if cuda else -1)
+        from .. import hf_cache
+        self.pipe = hf_cache.load(model_id, lambda: pipeline(
+            "automatic-speech-recognition", model=model_id, torch_dtype=torch.float16 if cuda else torch.float32,
+            device=0 if cuda else -1))
         self.language = language
 
     def __call__(self, wav, sr: int) -> str:
@@ -111,8 +113,9 @@ class _Ecapa:
         import torch
         from speechbrain.inference.speaker import EncoderClassifier
         save = Path(os.environ.get("HF_HOME", "/models/hf")) / "speechbrain" / source.replace("/", "--")
-        self.clf = EncoderClassifier.from_hparams(source=source, savedir=str(save),
-                                                  run_opts={"device": "cuda" if torch.cuda.is_available() else "cpu"})
+        from .. import hf_cache
+        self.clf = hf_cache.load(source, lambda: EncoderClassifier.from_hparams(
+            source=source, savedir=str(save), run_opts={"device": "cuda" if torch.cuda.is_available() else "cpu"}))
 
     def __call__(self, wav, sr: int) -> list[float]:
         import torch
