@@ -165,6 +165,9 @@ def enqueue(conn, policy: Policy, kind: str, jobs: int, *, batch: str | None = N
     if kind.startswith(("talk.", "hosted.", "comfy.")) and not (extra or {}).get("image_uri"):
         # Otherwise a machine boots, every job fails at once, and it idles until stopped.
         raise ValueError("this benchmark needs the creator's start photo: --extra '{\"image_uri\": ...}'")
+    if kind.startswith("voice.speak") and not (extra or {}).get("ref_uri"):
+        # 2026-11-26: a cloned-voice job without its reference fails at once on a booted machine (NonRetryable)
+        raise ValueError("this benchmark needs the creator's voice reference: --extra '{\"ref_uri\": ...}'")
     if kind == DANCE_KIND:
         dance_reference(policy, extra)   # before anything is queued: dance off or a refused clip would fail every job
     edit = kind == sets.edit_kind(policy)
