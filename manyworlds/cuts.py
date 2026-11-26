@@ -118,8 +118,80 @@ def _gaps(words: Sequence[Any], a: float, b: float) -> list[float]:
     return out
 
 
-def _get(w: Any, k: str):
-    return w[k] if isinstance(w, dict) else getattr(w, k)
+def _get(w: Any, k: str, default: Any = None):
+    if isinstance(w, dict):
+        return w.get(k, default) if default is not None else w[k]
+    return getattr(w, k, default) if default is not None else getattr(w, k)
+
+
+def stressed_indices(words: Sequence[Any], *, ratio: float, min_letters: int, pause_s: float) -> set[int]:
+    """Words the voice stressed by lengthening them, in time order: in each stretch between pauses (`pause_s` of
+    silence) with two words or more, the one with the longest duration per syllable when it is at least `ratio` x
+    the stretch's median and has `min_letters` letters. Lengthening is the one stress cue word timestamps carry (no
+    loudness or pitch per word is kept); on estimated timings (shared out by syllables) it rarely fires."""
+    from statistics import median
+
+    from .captions import key, syllables
+    timed = [(float(_get(w, "start")), float(_get(w, "end")), str(_get(w, "text", ""))) for w in words]
+    groups, cur = [], []
+    for i, (s, _e, _t) in enumerate(timed):
+        if cur and s - timed[cur[-1]][1] >= pause_s:
+            groups.append(cur)
+            cur = []
+        cur.append(i)
+    if cur:
+        groups.append(cur)
+    out = set()
+    for g in groups:
+        if len(g) < 2:
+            continue
+        rate = {i: max(timed[i][1] - timed[i][0], 0.0) / syllables(timed[i][2]) for i in g}
+        mid = median(rate.values())
+        best = max(g, key=lambda i: rate[i])
+        if mid > 0 and rate[best] >= ratio * mid and len(key(timed[best][2])) >= min_letters:
+            out.add(best)
+    return out
+
+
+def meaning_marks(words: Sequence[Any], cfg: dict | None) -> dict[float, dict]:
+    """Where a cut means something (generation.talk_edit.emphasis): for each gap between words (as _gaps places it),
+    {emphasis: the next word is *emphasised* (or stressed, with `stress` on), pause: a silence of `pause_s` or more
+    before it (a new line after a breath)}; only gaps with either. {} when the block is off."""
+    cfg = cfg or {}
+    if not cfg.get("enabled"):
+        return {}
+    timed = sorted(words, key=lambda w: float(_get(w, "start")))
+    stress = (stressed_indices(timed, ratio=float(cfg.get("stress_ratio", 1.3)),
+                               min_letters=int(cfg.get("stress_min_letters", 4)),
+                               pause_s=float(cfg.get("pause_s", 0.3))) if cfg.get("stress") else set())
+    pause_s = float(cfg.get("pause_s", 0.3))
+    out = {}
+    for i in range(1, len(timed)):
+        e0, s1 = float(_get(timed[i - 1], "end")), float(_get(timed[i], "start"))
+        t = round((e0 + s1) / 2 if s1 > e0 else e0, 3)
+        emph = bool(_get(timed[i], "emphasis", False)) or i in stress
+        pause = s1 - e0 >= pause_s
+        if emph or pause:
+            out[t] = {"emphasis": emph, "pause": pause}
+    return out
+
+
+def _on_meaning(ok: list[float], target: float, marks: dict[float, dict], *, punching_in: bool,
+                cfg: dict) -> float | None:
+    """The cut among `ok` within `window_s` of `target` that lands on meaning: a punch in onto an emphasised word
+    (`emphasis_weight`; a punch out never lands on one: it would let the word go), a cut after a pause
+    (`pause_weight`, either way); the best, then the nearest. None when none does: the rhythm's own nearest gap."""
+    window = float(cfg.get("window_s", 1.0))
+    ew, pw = float(cfg.get("emphasis_weight", 2.0)), float(cfg.get("pause_weight", 1.0))
+    scored = []
+    for g in ok:
+        if abs(g - target) > window or g not in marks:
+            continue
+        m = marks[g]
+        score = (ew if m["emphasis"] and punching_in else 0.0) + (pw if m["pause"] else 0.0)
+        if score > 0:
+            scored.append((-score, abs(g - target), g))
+    return min(scored)[2] if scored else None
 
 
 def punch_plan(words: Sequence[Any], windows: Iterable[tuple[float, float]], duration: float, cfg: dict, *,
@@ -128,13 +200,20 @@ def punch_plan(words: Sequence[Any], windows: Iterable[tuple[float, float]], dur
     lip-synced take's span) the frame changes scale about every `every_s` [lo, hi] seconds (seeded), cycling
     through `scales` (the first stretch of a window at scales[0]), each cut moved to the nearest gap between words
     and kept at least `min_shot_s` from the last cut and the window's end; outside the windows, scale 1. Cut times
-    land on frame boundaries at `fps`. [] when nothing would change (no scales above 1, no words, no window)."""
+    land on frame boundaries at `fps`. [] when nothing would change (no scales above 1, no words, no window).
+
+    Punch-ins on meaning (`cfg.emphasis`, generation.talk_edit.emphasis, when on): within `window_s` of the rhythm's
+    target, a cut that punches in lands just before an *emphasised* word (or a stressed one, `stress`), and any cut
+    prefers the start of a line after a pause (meaning_marks, _on_meaning); with no such gap near, the rhythm's
+    nearest gap, as before. The seeded rhythm draws the same numbers either way."""
     scales = [float(s) for s in cfg.get("scales") or []]
     if not words or not duration or not scales or max(scales) <= 1.0:
         return []
     lo, hi = (float(v) for v in cfg.get("every_s") or (2.0, 4.0))
     min_shot = float(cfg.get("min_shot_s", 1.0))
     rng = random.Random(seed)
+    emphasis = cfg.get("emphasis") or {}
+    marks = meaning_marks(words, emphasis)
 
     def snap(t: float) -> float:
         return round(round(t * fps) / fps, 3) if fps else round(t, 3)
@@ -151,7 +230,11 @@ def punch_plan(words: Sequence[Any], windows: Iterable[tuple[float, float]], dur
             ok = [g for g in gaps if g - last >= min_shot and b - g >= min_shot]
             if not ok or target >= b - min_shot:
                 break
-            t = min(ok, key=lambda g: abs(g - target))
+            nxt = scales[(k + 1) % len(scales)]
+            t = _on_meaning(ok, target, marks, punching_in=nxt > scales[k % len(scales)], cfg=emphasis) \
+                if marks else None
+            if t is None:
+                t = min(ok, key=lambda g: abs(g - target))
             if t <= last:
                 break
             k += 1

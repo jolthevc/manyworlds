@@ -49,6 +49,7 @@ The package (one module per stage; this module re-exports every name, so `from m
   scenes      the identity LoRA, scene image jobs, start, the scene Steps (repairs)
   takes       how a talking video's script is cut into takes and which shot, photo and words each has
   voice       the designed voice: voice lines and their voice.speak.<engine> Steps
+  beats       audio-first blocking: a take's beats re-timed to its real voice line before the talk prompt
   motion      story clips, clip edits, dance / motion transfer, walk-and-talk motion clips and their joins
   talk        talk jobs, the hybrid's cutaways, long talk segments and their join
   followups   the one video made from the chosen photos (FOLLOW_UPS) and its voice and motion first
@@ -74,6 +75,10 @@ from .. import queue  # noqa: F401
 from ..creator.lab import photo_prompt, prompts  # noqa: F401
 from ..policy import Policy  # noqa: F401
 from ..review import repair  # noqa: F401
+from .beats import (  # noqa: F401
+    _beat_warp, _content_words, _mentions_any, _nearest_time, _said_words, _timed_items, beat_kind, beats_cfg, for_take,
+    pauses, related_line, retime, says_its_shot, stressed, take_key, take_rolls, timed_words,
+)
 from .captioning import (  # noqa: F401
     _audio_meta, _caption_style, _drop_unscripted, _fillers, _piece_timing, _style_keys, _transcribed, _voice_audio,
     caption_lines, caption_placement, caption_plan, caption_style, caption_words, captions_from_words, voice_words,

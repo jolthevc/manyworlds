@@ -4,6 +4,7 @@ production.finish_mode is queue); repairs of a take that failed lip sync (talk_r
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -11,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from .. import queue
 from ..policy import Policy
+from .beats import for_take as retimed_shot
 from .common import SUNG, _cfg, _seed, _shot, _with_crops, _with_prompts, _with_shot, unmarked
 from .finish import captions_burned
 from .motion import _advance_motion, _last_frame, _motion_cfg, _needs_motion, talk_v2v
@@ -70,6 +72,9 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
         body.setdefault("rerouted", {})[str(segment)] = {"image_uri": repair["image_uri"],
                                                          "reason": repair.get("reason", "")}
         return _cutaway_job(conn, policy, post, body, chosen, attempt, segment=segment, audio=audio)
+    # Audio-first: the shot's beats re-timed to the take's real voice line (production.beats), so the prompt's timed
+    # beats and the judge's shot follow the voice; the shot as it was without one.
+    shot = retimed_shot(conn, policy, post, body, shot, audio, params, segment=segment, moving=bool(motion))
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": (repair or {}).get("image_uri") or photo, "script": script,
                "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),
@@ -459,6 +464,82 @@ def join_transitions(policy: Policy, body: dict, n: int) -> list[str] | None:
     return out if any(t != "cut" for t in out) else None
 
 
+# J- and L-cuts (finishing.jl_cuts; performance direction 3.7, 2026-11-26): at a plain cut where the shot changes, the
+# next shot's sound may start a little before its picture (J: you hear her before you see her) or the shot's sound
+# run on under the next picture (L: her line finishes over the cutaway). Which one by the pair of takes either side
+# (`between`: talk_talk, talk_cutaway, cutaway_talk, cutaway_cutaway), unless the next shot's edit.transition_in
+# names one (`words`). The producer plans the wish (join_audio_cuts); the join measures each take's silent edges and
+# trims only silence (fit_audio_cuts), so no word is lost; the picture and the sound each lose the same time, so
+# they still end together, and segment_seconds records where each take's own clock starts (captions stay right).
+def _jl_cfg(policy: Policy) -> dict:
+    return policy.get("finishing", "jl_cuts", default={}) or {}
+
+
+def _plain(text) -> str:
+    return " ".join(str(text or "").lower().replace("-", " ").replace("_", " ").split())
+
+
+def join_audio_cuts(policy: Policy, body: dict, n: int, transitions: list | None) -> list | None:
+    """Per join of the n takes: the J- or L-cut wanted {cut: j | l, max_s}, or None (a plain cut). Only where the
+    shot changes and the join is a plain cut. None when there is none, or jl_cuts is off."""
+    c = _jl_cfg(policy)
+    if not c.get("enabled") or not body.get("shots") or n < 2:
+        return None
+    modes = body.get("talk_modes") or []
+    between = c.get("between") or {}
+    words = c.get("words") or {}
+    out: list = []
+    for i in range(1, n):
+        k = _take_shot(body, i)
+        if k == _take_shot(body, i - 1) or (transitions and transitions[i - 1] != "cut"):
+            out.append(None)
+            continue
+        side = ["cutaway" if (modes[j] if j < len(modes) else "talk") == "narrated" else "talk" for j in (i - 1, i)]
+        text = _plain(str((((_shot(body, k) or {}).get("edit") or {}).get("transition_in")) or ""))
+        asked = next((cut for cut in ("j", "l") if any(re.search(rf"\b{re.escape(_plain(w))}\b", text)
+                                                         for w in words.get(cut) or [] if _plain(w))), None)
+        cut = asked or between.get(f"{side[0]}_{side[1]}")
+        if cut not in ("j", "l"):
+            out.append(None)
+            continue
+        ms = c.get("lead_ms") if cut == "j" else c.get("lag_ms")
+        out.append({"cut": cut, "max_s": float(ms or 0) / 1000.0} if ms else None)
+    return out if any(out) else None
+
+
+def fit_audio_cuts(wanted: list | None, edges: list[tuple[float, float]], seconds: list[float | None], rate: float,
+                   c: dict) -> list | None:
+    """The J/L cuts the join can make: each wish cut to the silence it trims (a J the outgoing take's silent tail, an
+    L the incoming take's silent head: `edges` [(head_s, tail_s)] per take), to `max_share` of either take, and to
+    whole frames at `rate`; one under `min_ms` is a plain cut. Per join {cut, s} or None; None when none is left."""
+    if not wanted:
+        return None
+    share, floor = float(c.get("max_share", 0.25)), float(c.get("min_ms", 0)) / 1000.0
+    out: list = []
+    for k, w in enumerate(wanted, start=1):
+        if not w:
+            out.append(None)
+            continue
+        room = edges[k - 1][1] if w["cut"] == "j" else edges[k][0]
+        s = min(float(w["max_s"]), float(room))
+        for length in (seconds[k - 1], seconds[k]):
+            if length:
+                s = min(s, share * float(length))
+        s = int(s * rate) / rate if rate else s          # whole frames, rounded down: never past the silence
+        out.append({"cut": w["cut"], "s": round(s, 4)} if s > 0 and s >= floor else None)
+    return out if any(out) else None
+
+
+def shifted_segment_seconds(seconds: list, cuts: list | None) -> list:
+    """Where each take's own clock starts in the joined video, as segment lengths: a J or L cut at join k starts take
+    k that much earlier (its sound for a J, its picture for an L; captions follow the sound, which is in sync)."""
+    out = list(seconds)
+    for k, cut in enumerate(cuts or [], start=1):
+        if cut and out[k - 1] is not None:
+            out[k - 1] = round(float(out[k - 1]) - float(cut["s"]), 4)
+    return out
+
+
 # The join of a long talking video's takes is three halves, like the finish (production.finish), so its encodes can
 # leave the producer: join_plan (the database half, JSON-ready: the finish.join job's payload), render_join (ffmpeg,
 # no database: normalise each take to the hybrid's output when needed, join with the transitions, upload) and
@@ -497,6 +578,7 @@ def join_plan(policy: Policy, post: dict, videos: list[dict], body: dict) -> dic
     return {"post_id": str(post["id"]), "key": _join_key(post),
             "segments": [{"id": str(v["id"]), "uri": v["uri"]} for v in videos],
             "transitions": join_transitions(policy, body, len(videos)),
+            "audio_cuts": join_audio_cuts(policy, body, len(videos), join_transitions(policy, body, len(videos))),
             "normalize": ({"width": int(out_cfg.get("width", 720)), "height": int(out_cfg.get("height", 1280)),
                            "fps": int(out_cfg.get("fps", 30)), "lufs": float(out_cfg.get("lufs", -14))}
                           if normalize else None),
@@ -521,10 +603,32 @@ def render_join(plan: dict, policy: Policy, store, workdir) -> dict:
                                  policy=policy) for p, s in zip(paths, lengths)]
     seconds = [media.duration(p) for p in paths]   # where each segment starts in the joined video (captions)
     total = sum(s or 0 for s in (seconds if n else lengths))
+    cuts = _audio_cuts_made(plan, policy, paths, seconds) if plan.get("audio_cuts") else None
     out = media.concat(paths, d / "joined.mp4", timeout=join_timeout(plan, total),
-                       transitions=plan.get("transitions"), policy=policy)
+                       transitions=plan.get("transitions"), policy=policy, **({"audio_cuts": cuts} if cuts else {}))
     stored = store.put_file(out, plan["key"])
-    return {"uri": stored.uri, "sha256": stored.sha256, "bytes": stored.bytes, "segment_seconds": seconds}
+    made = {"uri": stored.uri, "sha256": stored.sha256, "bytes": stored.bytes,
+            "segment_seconds": shifted_segment_seconds(seconds, cuts)}
+    if cuts:
+        made["audio_cuts"] = cuts
+    return made
+
+
+def _audio_cuts_made(plan: dict, policy: Policy, paths: list, seconds: list) -> list | None:
+    """The plan's J/L cuts fitted to the takes' silent edges (fit_audio_cuts), or None (plain cuts) when the edges
+    can't be read: a join without them beats no join."""
+    from .. import media
+    from .common import log
+    c = _jl_cfg(policy)
+    try:
+        edges = [media.edge_silence(p, noise_db=float(c.get("silence_db", -40)),
+                                    min_s=float(c.get("silence_min_s", 0.05)), timeout=join_timeout(plan, s))
+                 for p, s in zip(paths, seconds)]
+        rate = media.join_rate(paths, policy)
+    except Exception as e:  # noqa: BLE001 - plain cuts instead
+        log.warning("J/L cuts skipped for %s: %s: %s", plan.get("key"), type(e).__name__, str(e)[:300])
+        return None
+    return fit_audio_cuts(plan["audio_cuts"], edges, seconds, rate, c)
 
 
 def record_join(conn, post: dict, plan: dict, made: dict) -> dict:
@@ -537,7 +641,8 @@ def record_join(conn, post: dict, plan: dict, made: dict) -> dict:
         """INSERT INTO assets (creator_id, kind, uri, sha256, bytes, meta, recipe)
            VALUES (%s, 'video', %s, %s, %s, %s, %s) RETURNING id, uri""",
         (post["creator_id"], made["uri"], made["sha256"], made["bytes"],
-         Jsonb({"lip_sync": True, "segments": [s["id"] for s in segs], "segment_seconds": made["segment_seconds"]}),
+         Jsonb({"lip_sync": True, "segments": [s["id"] for s in segs], "segment_seconds": made["segment_seconds"],
+                **({"audio_cuts": made["audio_cuts"]} if made.get("audio_cuts") else {})}),
          Jsonb({"joined": [s["uri"] for s in segs], "join": plan.get("join", "cut"),
                 "transitions": plan.get("transitions")}))).fetchone()
 
