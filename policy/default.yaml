@@ -1776,7 +1776,10 @@ operations: {mode: paused, test_batch_prefixes: [bench-, test-, research-], whil
 # GPU worker images are rebuilt with it and it has run on a GPU.
 security:
   worker_database: required
-  worker_storage: shared           # presigned passed one image job on a Vast 4090 (2026-11-24); talk/comfy/music workers untested
+  # presigned (owner 2026-11-25: rented machines must not hold unrestricted storage keys). Passed one image job on a
+  # Vast 4090 (2026-11-24); the talk/comfy families are proven by the volume verification run. Once proven, the R2 key
+  # rented machines held under `shared` is rotated (a new token from the owner; the old one revoked).
+  worker_storage: presigned
   presigned:
     link_seconds: 43200              # a link's life: queue wait plus the attempt (at least attempt + 2 x refresh_ahead)
     max_link_seconds: 604800         # S3 SigV4's limit (7 days)
