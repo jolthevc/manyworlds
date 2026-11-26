@@ -612,3 +612,12 @@ def test_review_text_never_carries_a_nul_into_postgres():
     from manyworlds.review import common
     row = common.no_nul(("a", "gate", True, 1, Jsonb({"notes": "ok\x00", "list": ["x\x00y"]})))
     assert row[4].obj == {"notes": "ok", "list": ["xy"]} and common.no_nul("a\x00b") == "ab"
+
+
+def test_equal_directed_levels_are_not_a_repeat_only_the_pose_is():
+    """2026-11-26 review: a post directs the same levels on purpose; matching them must not trigger the penalty."""
+    from manyworlds import performance
+    a = {"observed": {"sass": 2}, "descriptor": "leaning on the counter, half-smile, eyes down"}
+    b = {"observed": {"sass": 2}, "descriptor": "spinning, laughing, hair across her face"}
+    c = {"observed": {"sass": 3}, "descriptor": "leaning on the counter, half-smile, eyes down"}
+    assert not performance.similar(a, b) and performance.similar(a, c)

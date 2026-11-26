@@ -317,6 +317,11 @@ def volume_env(vol: dict) -> dict[str, str]:
         env["MW_VOLUME_MIN_FREE_GB"] = str(vol["min_free_gb"])
     if vol.get("prune_idle_minutes") is not None:
         env["MW_VOLUME_PRUNE_IDLE_MINUTES"] = str(vol["prune_idle_minutes"])
+    locks = vol.get("locks") or {}   # how long a machine waits for another's download, and when a lock is dead
+    for key, name in (("download_wait_s", "MW_VOLUME_LOCK_WAIT_S"), ("stale_s", "MW_VOLUME_LOCK_STALE_S"),
+                      ("hf_wait_s", "MW_HF_LOCK_WAIT_S")):
+        if locks.get(key) is not None:
+            env[name] = str(locks[key])
     return env
 
 

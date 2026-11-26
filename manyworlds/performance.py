@@ -459,13 +459,12 @@ def _word_set(text: str) -> set[str]:
 
 def similar(a: dict, b: dict, policy: Any = None) -> bool:
     """Whether two judged frames repeat each other (variety): their pose/expression descriptors overlap by
-    observe.variety_similarity or more (Jaccard over words), or both have the same non-empty observed levels."""
+    observe.variety_similarity or more (Jaccard over words). Equal observed levels are not a repeat: a post directs
+    the same levels on purpose, so matching them says nothing about pose (2026-11-26 review: the penalty then fell
+    on candidates by the judge's level noise)."""
     sim = float((library(policy)["observe"] or {}).get("variety_similarity", 0.6))
     wa, wb = _word_set(a.get("descriptor") or ""), _word_set(b.get("descriptor") or "")
-    if wa and wb and len(wa & wb) / len(wa | wb) >= sim:
-        return True
-    oa, ob = levels_of(a.get("observed") or {}), levels_of(b.get("observed") or {})
-    return bool(oa) and oa == ob
+    return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= sim
 
 
 def variety_penalty(policy: Any = None) -> float:

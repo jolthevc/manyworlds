@@ -301,11 +301,15 @@ def _remote_size(repo: str, name: str, token) -> int | None:
         return None
 
 
-def _volume_lock(models_dir: Path, wait_s: float = 3600, stale_s: float = 7200):
+def _volume_lock(models_dir: Path, wait_s: float | None = None, stale_s: float | None = None):
     """One downloader per weights volume: two machines writing the same files on a shared network volume broke
-    huggingface_hub's download records (2026-11-22: every story clip failed with UnboundLocalError 'metadata')."""
+    huggingface_hub's download records (2026-11-22: every story clip failed with UnboundLocalError 'metadata').
+    The waits come from policy (gpu_pools.<pool>.network_volume.locks, as MW_VOLUME_LOCK_WAIT_S / _STALE_S); a
+    machine without a volume has no other downloader and uses volume.LOCK_DEFAULTS."""
     from . import volume
-    return volume.exclusive(models_dir / ".mw-download.lock", wait_s=wait_s, stale_s=stale_s, what="weights")
+    w, s = volume.lock_waits()
+    return volume.exclusive(models_dir / ".mw-download.lock", wait_s=w if wait_s is None else wait_s,
+                            stale_s=s if stale_s is None else stale_s, what="weights")
 
 
 def prune_other_weights(models_dir: Path, *, partial: bool = True) -> list[str]:

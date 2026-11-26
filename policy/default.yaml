@@ -118,7 +118,7 @@ gpu_pools:
   runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                            score_as: runpod_secure_l40s,
                            network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
-                                            prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
+                                            prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60, locks: {download_wait_s: 3600, stale_s: 7200, hf_wait_s: 1800},
                                             headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, tts: 15,
                                                                     music: 12}}}
   # Other cards on the same volume (owner 2026-11-26: allowed when cost per accepted asset holds up). RunPod's US-NC-1
@@ -129,7 +129,7 @@ gpu_pools:
   # only; it is in no kind's pools until that measurement shows a lower all-in cost per accepted clip.
   runpod_secure_pro6000_vol: {provider: runpod, gpu: rtxpro6000, usd_per_hour: 2.69, interruptible: false, cloud: SECURE,
                               network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
-                                               prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
+                                               prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60, locks: {download_wait_s: 3600, stale_s: 7200, hf_wait_s: 1800},
                                                headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30,
                                                                        tts: 15, music: 12}}}
   # A second weights volume in another data centre (US-NC-1's L40S stock was LOW on 2026-11-22): NOT CREATED. Creating
@@ -138,7 +138,7 @@ gpu_pools:
   runpod_secure_l40s_vol2: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                             score_as: runpod_secure_l40s,
                             network_volume: {id: null, data_center: null, path: /models, size_gb: 150,
-                                             prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
+                                             prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60, locks: {download_wait_s: 3600, stale_s: 7200, hf_wait_s: 1800},
                                              headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30,
                                                                      tts: 15, music: 12}}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}

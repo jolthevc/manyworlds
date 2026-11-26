@@ -238,3 +238,26 @@ def exclusive(lock: str | os.PathLike, *, wait_s: float = 3600, stale_s: float =
     finally:
         stop.set()
         lock.unlink(missing_ok=True)
+
+
+# Lock waits come from policy (gpu_pools.<pool>.network_volume.locks) through the environment the autoscaler sets;
+# these defaults apply only where no volume is mounted (a container disk has no other machine downloading).
+LOCK_DEFAULTS = {"MW_VOLUME_LOCK_WAIT_S": 3600.0, "MW_VOLUME_LOCK_STALE_S": 7200.0, "MW_HF_LOCK_WAIT_S": 1800.0}
+
+
+def _env_seconds(name: str, env=None) -> float:
+    env = os.environ if env is None else env
+    try:
+        return float(env.get(name) or LOCK_DEFAULTS[name])
+    except ValueError:
+        return LOCK_DEFAULTS[name]
+
+
+def lock_waits(env=None) -> tuple[float, float]:
+    """(wait_s, stale_s) for the weights download lock."""
+    return _env_seconds("MW_VOLUME_LOCK_WAIT_S", env), _env_seconds("MW_VOLUME_LOCK_STALE_S", env)
+
+
+def hf_lock_wait(env=None) -> float:
+    """How long a Hugging Face load waits for another machine's download of the same repo."""
+    return _env_seconds("MW_HF_LOCK_WAIT_S", env)

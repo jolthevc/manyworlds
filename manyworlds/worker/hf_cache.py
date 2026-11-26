@@ -17,7 +17,6 @@ import os
 import shutil
 from pathlib import Path
 
-LOCK_WAIT_S = 1800   # a first download of the largest repo we load this way (Whisper large-v3, ~3 GB) fits in it
 
 
 def _hub() -> Path:
@@ -65,7 +64,7 @@ def load(repo: str, loader, *, corrupt=(ValueError,)):
     fails on a corrupt file (json.JSONDecodeError is a ValueError; safetensors header errors are too)."""
     from . import volume
     hub = _hub()
-    with volume.exclusive(hub / ".mw-locks" / f"{repo_dir(repo, hub).name}.lock", wait_s=LOCK_WAIT_S,
+    with volume.exclusive(hub / ".mw-locks" / f"{repo_dir(repo, hub).name}.lock", wait_s=volume.hf_lock_wait(),
                           what=f"loading {repo}"):
         heal(repo, hub)
         try:

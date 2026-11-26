@@ -218,3 +218,12 @@ def test_the_owner_hears_before_a_volume_fills(conn, policy):
     assert conn.execute("SELECT count(*) n FROM events WHERE type = 'volume_filling'").fetchone()["n"] == 1   # once a day
     conn.execute("UPDATE gpu_groups SET volume_free_gb = %s", (warn + 1,))
     assert autoscale.volume_filling(conn, policy, T0 + timedelta(days=1)) == []
+
+
+def test_lock_waits_come_from_the_volumes_policy(policy):
+    vol = policy.pool(VOL_POOL)["network_volume"]
+    env = autoscale.volume_env(vol)
+    assert volume.lock_waits(env) == (float(vol["locks"]["download_wait_s"]), float(vol["locks"]["stale_s"]))
+    assert volume.hf_lock_wait(env) == float(vol["locks"]["hf_wait_s"])
+    assert volume.lock_waits({}) == (volume.LOCK_DEFAULTS["MW_VOLUME_LOCK_WAIT_S"],
+                                     volume.LOCK_DEFAULTS["MW_VOLUME_LOCK_STALE_S"])
