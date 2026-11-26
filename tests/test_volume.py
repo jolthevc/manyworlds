@@ -130,3 +130,17 @@ def test_machines_that_gave_up_on_a_full_volume_do_not_trip_the_no_output_guard(
                  stopped_at=T0 - timedelta(minutes=30 + i), stop_reason="never_started",
                  image=f"{img['image']}:{img['tag']}")
     assert autoscale.no_output_streak(conn, policy, "talk", T0) is None
+
+
+def test_a_low_reading_does_not_block_a_volume_whose_pending_prune_frees_enough(conn, policy):
+    """2026-11-26: the first v26 machine found 10.3 GB free (floor 15) because the old talk engine's 77 GB of weights
+    were no longer deleted by sibling pruning; once they are on the prune list the next machine may boot and prune."""
+    from psycopg.types.json import Jsonb
+    _machine(conn, "mw-talk-l40s-runpod-inv", volume_low=True, volume_free_gb=10.3,
+             volume_checked_at=T0 - timedelta(minutes=5), stopped_at=T0 - timedelta(minutes=4), stop_reason="deadline")
+    conn.execute("UPDATE gpu_groups SET volume_inventory = %s WHERE name = 'mw-talk-l40s-runpod-inv'",
+                 (Jsonb({"mw/comfy": 51.5, "mw/Wan-AI--Wan2.1-I2V-14B-480P": 76.6}),))
+    assert autoscale.volume_low(conn, policy, VOL_POOL, T0) is None
+    conn.execute("UPDATE gpu_groups SET volume_inventory = %s WHERE name = 'mw-talk-l40s-runpod-inv'",
+                 (Jsonb({"mw/comfy": 51.5}),))
+    assert autoscale.volume_low(conn, policy, VOL_POOL, T0)          # nothing listed would free space: still low

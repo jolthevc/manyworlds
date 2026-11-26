@@ -321,16 +321,22 @@ def volume_env(vol: dict) -> dict[str, str]:
 def volume_low(conn, policy: Policy, pool: str, now: datetime) -> dict | None:
     """The pool's weights volume was last measured below its floor (by a worker at boot, gpu_groups.volume_*), within
     network_volume.recheck_hours: a machine there would die at its first download, so the pool is skipped. After the
-    window one machine may try again (its boot prunes and measures anew)."""
+    window one machine may try again (its boot prunes and measures anew). A reading is not low when the prune list
+    would now free enough: the machine's boot inventory (gpu_groups.volume_inventory) shows how much each listed path
+    holds, so a path added to network_volume.prune after the reading lets the next machine boot, prune and work."""
     vol = policy.get("gpu_pools", pool, "network_volume") or {}
     if not vol or not vol.get("id") or vol.get("min_free_gb") is None:
         return None
     sharing = _sharing(policy, vol)
     last = conn.execute(
-        """SELECT name, volume_free_gb, volume_low, volume_checked_at FROM gpu_groups
+        """SELECT name, volume_free_gb, volume_low, volume_checked_at, volume_inventory FROM gpu_groups
            WHERE pool = ANY(%s) AND volume_checked_at > %s ORDER BY volume_checked_at DESC LIMIT 1""",
         (sharing, now - timedelta(hours=float(vol.get("recheck_hours", 0))))).fetchone()
     if not last or not last["volume_low"]:
+        return None
+    inv = last.get("volume_inventory") or {}
+    pending = sum(float(inv.get(p.strip().strip("/"), 0) or 0) for p in (vol.get("prune") or []))
+    if pending and float(last["volume_free_gb"]) + pending >= float(vol["min_free_gb"]):
         return None
     return {"volume": vol.get("id"), "free_gb": float(last["volume_free_gb"]), "min_free_gb": float(vol["min_free_gb"]),
             "checked_at": last["volume_checked_at"].isoformat(), "machine": last["name"]}

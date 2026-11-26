@@ -100,10 +100,12 @@ gpu_pools:
   # .volume_skip); otherwise the next pool. tts: Qwen3 Base + VoiceDesign, judges and Whisper into HF_HOME (~14 GB;
   # IndexTTS stays on the container disk, MW_INDEXTTS_DIR). Two volume pools for the same work are tried in order of
   # holding its weights, then free space measured (volume_order).
+  # prune: the old diffusers talk engine's weights (Wan2.1 I2V 480P 77 GB, InfiniteTalk 9 GB under MW_MODEL_DIR) are
+  # unused since talk runs on ComfyUI; the first v26 machine found the volume 10 GB free because they were kept.
   runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                            score_as: runpod_secure_l40s,
                            network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
-                                            prune: [longcat], min_free_gb: 15, recheck_hours: 6,
+                                            prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6,
                                             headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10, tts: 15,
                                                                     music: 12}}}
   # A second weights volume in another data centre (US-NC-1's L40S stock was LOW on 2026-11-22): NOT CREATED. Creating
@@ -112,7 +114,7 @@ gpu_pools:
   runpod_secure_l40s_vol2: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                             score_as: runpod_secure_l40s,
                             network_volume: {id: null, data_center: null, path: /models, size_gb: 150,
-                                             prune: [longcat], min_free_gb: 15, recheck_hours: 6,
+                                             prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6,
                                              headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10,
                                                                      tts: 15, music: 12}}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
