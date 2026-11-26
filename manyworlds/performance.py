@@ -477,8 +477,9 @@ def variety_penalty(policy: Any = None) -> float:
 def record_observations(conn, rows: list[dict]) -> int:
     """Store requested vs observed per asset and review stage (performance_observations); a stage already stored for
     an asset is left as it is (idempotent). Returns how many were written."""
+    from .review.common import no_nul
     n = 0
-    for r in rows:
+    for r in (no_nul(x) for x in rows):
         cur = conn.execute(
             """INSERT INTO performance_observations (asset_id, post_id, creator_id, job_id, model, judge, stage, target,
                    intent, requested, compiled, observed, scores, descriptor, phrases, closeness, points,

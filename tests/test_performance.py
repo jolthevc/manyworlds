@@ -605,3 +605,10 @@ def test_the_image_candidate_stays_within_the_apis_measured_schema_limit():
     from manyworlds.review import gates
     assert len(gates.CandidateReview.model_fields) <= 20
     assert "performance_reads" in gates.ImageReviews.model_fields
+
+
+def test_review_text_never_carries_a_nul_into_postgres():
+    from psycopg.types.json import Jsonb
+    from manyworlds.review import common
+    row = common.no_nul(("a", "gate", True, 1, Jsonb({"notes": "ok\x00", "list": ["x\x00y"]})))
+    assert row[4].obj == {"notes": "ok", "list": ["xy"]} and common.no_nul("a\x00b") == "ab"

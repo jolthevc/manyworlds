@@ -329,13 +329,27 @@ def charged_to(llm, job_id):
         yield
 
 
+def no_nul(value):
+    """`value` without NUL characters in any string, however deep: Postgres refuses them in text and jsonb
+    (2026-11-26: a judge's note carrying one failed a whole job's review with UntranslatableCharacter)."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {no_nul(k): no_nul(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(no_nul(v) for v in value)
+    if isinstance(value, Jsonb):
+        return Jsonb(no_nul(value.obj))
+    return value
+
+
 def write_rows(conn, rows: list[tuple]) -> None:
     """All of a job's review rows at once, after every stage: anyone reading reviews (production
     choosing what to use) must never see a screen without its confirm."""
     if not rows:
         return
     with conn.transaction():
-        for row in rows:
+        for row in (no_nul(r) for r in rows):
             conn.execute("INSERT INTO reviews (asset_id, gate, passed, score, details) VALUES (%s, %s, %s, %s, %s)", row)
 
 
