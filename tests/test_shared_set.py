@@ -38,6 +38,9 @@ MAREN = {"appearance": {**BIBLE["appearance"],
 
 
 def test_a_photo_keeps_its_set_and_wardrobe_before_her_signature_details(policy):
+    from manyworlds import policy as policy_mod
+    d = policy.get("direction")
+    policy = policy_mod.from_dict({**policy.body, "direction": {**d, "prompt_budget": {**d["prompt_budget"], "photo": 400}}})
     shot = {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot", "angle": "eye level", "device": "propped"},
             "blocking": [{"at_s": 0, "action": "leans on the counter and starts the story", "eyeline": "lens"}]}
     budget = policy.get("direction", "prompt_budget", "photo")
