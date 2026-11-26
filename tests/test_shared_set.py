@@ -225,3 +225,20 @@ def test_a_hands_cutaway_is_framed_from_her_own_eyes_and_its_scene_loses_its_neg
                             identity_repairs=0)
     p = adjust({"prompt": "base"})
     assert "no face" not in p["prompt"] and "filling a kettle" in p["prompt"]
+
+
+def test_a_directed_photo_keeps_its_performance_with_her_full_appearance(policy):
+    """2026-11-26: six photos of Maren directed at different sass and candidness levels compiled to one prompt: her
+    long appearance filled the budget and the performance section was trimmed away first."""
+    from manyworlds.direction import ControlLevel
+    prompts = []
+    for level in (1, 2):
+        shot = {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot", "angle": "eye level", "device": "propped"},
+                "blocking": [{"at_s": 0, "action": "leans on the counter after closing", "eyeline": "lens"}],
+                "performance": {"intent": "a dry, knowing closing-time look",
+                                "controls": [ControlLevel(control="sass", level=level).model_dump()]}}
+        out = direction.compile_prompt(shot, MAREN, "photo", policy, trigger="mw_m", scene="behind the bar")
+        assert direction.estimate_tokens(out) <= policy.get("direction", "prompt_budget", "photo")
+        assert "dry, knowing closing-time look" in out and "scar splitting the tail of her left eyebrow" in out
+        prompts.append(out)
+    assert prompts[0] != prompts[1]                                   # the level reaches the model

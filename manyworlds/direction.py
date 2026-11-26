@@ -659,7 +659,9 @@ CHARS_PER_TOKEN = 3.6
 _SHORTEN = (("set", "set_dressing"), ("set", "props"), ("wardrobe", "outfit"))
 _DROP = (("set", "background_action"), ("set", "practical_lights"), ("wardrobe", "accessories"),
          ("wardrobe", "state"), ("set", "season"))
-_TRUNCATE = ("sound", "style", "performance", "set", "wardrobe", "subject")          # lowest priority first
+_TRUNCATE = ("sound", "style", "set", "performance", "wardrobe", "subject")          # lowest priority first
+# Performance outranks set detail (2026-11-26: with her full appearance, a directed photo of Maren lost its whole
+# performance section in every variant, so six differently directed shots compiled to one prompt).
 _LABELS = {"camera": "Camera", "subject": "Subject", "wardrobe": "Wardrobe and look", "action": "Action",
            "performance": "Performance", "set": "Set", "style": "Style", "sound": "Sound"}
 _DANGLING = frozenset({"a", "an", "the", "and", "or", "with", "of", "to", "in", "on", "at", "by", "for", "from"})
