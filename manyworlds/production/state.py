@@ -32,6 +32,8 @@ STATE: dict[str, str] = {
     "edit_grammar": "the talking edit grammar the post follows (manyworlds.cuts; a lip-sync repair reads it)",
     "rerouted": "per take index (as text), a line a lip-sync repair moved under a cutaway: {image_uri, reason}",
     "talk_segment_jobs": "per take, its talk or cutaway job ids",
+    "talk_beats": ("per take (its index as text; 'take' for a one-take video), the shot's blocking re-timed to its voice "
+                   "line (production.beats): {blocking, moves, audio_uri, words, rolls}; the talk prompt used these times"),
     # the designed voice
     "voice_jobs": "the one-take follow-up's voice.speak.<engine> job ids",
     "voice_segment_jobs": "per take, its voice.speak.<engine> job ids",

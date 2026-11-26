@@ -822,6 +822,13 @@ generation:
   # (hard shots median 1.1 s, face to camera ~1/3). Per-creator tuning comes from her own outcomes, not this table.
   talk_edit:
     default: story_time
+    # Punch-ins on meaning (manyworlds.cuts; performance direction 3.7, 2026-11-26): within window_s of the rhythm's
+    # next cut, a punch IN lands just before an *emphasised* word (emphasis_weight; with stress on, also a word the
+    # voice stretched: duration per syllable >= stress_ratio x its stretch's median), and any cut prefers a line start
+    # after >= pause_s of silence (pause_weight); otherwise the rhythm's nearest gap, as before. A punch out never
+    # lands on an emphasised word. Code only; unproven on a GPU-made take.
+    emphasis: {enabled: true, window_s: 1.0, emphasis_weight: 2.0, pause_weight: 1.0, pause_s: 0.3, stress: true,
+               stress_ratio: 1.3, stress_min_letters: 4}
     by_archetype: {storyteller: story_time, educator: story_time, beauty_grwm: story_time, lifestyle_slow: commercial,
                    food_home: commercial, maker: commercial, fashion_style: commercial, city_explorer: commercial,
                    movement: commercial}
@@ -2965,6 +2972,37 @@ production:
   # queue since 2026-11-23: the autoscaler starts the finisher with an app-scoped deploy token (Fly secret
   # FLY_API_TOKEN; the in-machine API proxy answers 403); one start/stop checked live the same day.
   finish_mode: queue
+  # Audio-first blocking (production.beats; performance direction 3.7, 2026-11-26): once a talking take's voice line
+  # exists, its shot's beats move onto the real voice before the talk prompt is compiled: the first into the lead-in,
+  # gestures onto stressed words (*emphasis*, else the word the voice stretched: duration per syllable >= stress_ratio
+  # x its stretch's median, words of >= stress_min_letters letters), head movement onto rising phrases (a line ending
+  # "?"; none stressed: rising_tail_s before its end), reactions into pauses (>= min_pause_s of silence), a beat that
+  # names a line's words onto that line (words of >= relate_min_letters letters, not relate_ignore), the last into
+  # the end hold (hold_offset_s after the last word). A beat moves at most snap_window_s from where the director's
+  # time lands on the voice (warped from the script at generation.talk_long.words_per_second, default_pause_s between
+  # lines without their own pause); beats stay min_gap_s apart, rounded to round_s. Code only, no cost: word
+  # timestamps come from the captions' cache (transcribed once when the format's captions use them). Unproven on a
+  # GPU: InfiniteTalk follows timed beats only loosely; judge the first takes.
+  beats:
+    enabled: true
+    snap_window_s: 1.5
+    min_pause_s: 0.25
+    min_gap_s: 0.4
+    round_s: 0.1
+    hold_offset_s: 0.1
+    default_pause_s: 0.4
+    rising_tail_s: 0.3
+    stress_ratio: 1.3
+    stress_min_letters: 4
+    relate_min_letters: 4
+    relate_ignore: [with, that, this, then, them, they, their, from, into, over, just, here, there, what, when, your,
+                    looks, look, says, said, camera, lens, again, back, down, while]
+    kinds:
+      reaction: [laugh, smil, grin, smirk, sigh, react, pause, beat, eye roll, rolls her eyes, gasp, wince, giggl,
+                 deadpan, bites her lip, raises an eyebrow, shrug]
+      head: [nod, tilt, shake her head, shakes her head, cocks her head]
+      gesture: [gestur, point, hold up, holds up, lift, rais, show, wave, tap, count, open palm, spread, reach,
+                touch, flick, clap, snap]
 
 # Finishing (manyworlds.finishing, 2026-11-22): grade, grain, hook text, loudness and the cover frame of a finished
 # video: production's finish stage (production.finish; on the finisher machine while production.finish_mode is queue)
@@ -3071,6 +3109,25 @@ finishing:
            xfade: {left: slideleft, right: slideright, up: slideup, down: slidedown}}
     blur: {frames: 8, sigma: 14, xfade: fade}
     flash: {frames: 4, xfade: fadewhite}
+  # J- and L-cuts (production.talk.join_audio_cuts / fit_audio_cuts, media.concat audio_cuts; performance direction
+  # 3.7, 2026-11-26): at a plain cut where the shot changes, J = the next shot's sound starts up to lead_ms before its
+  # picture, L = the shot's sound runs up to lag_ms under the next picture. Which by the takes either side (`between`:
+  # talk_talk, talk_cutaway, cutaway_talk, cutaway_cutaway; a pair left out is a plain cut), unless the next shot's
+  # edit.transition_in names one (`words`). Only silence is trimmed (a J the outgoing take's silent tail, an L the
+  # incoming take's silent head, measured with silencedetect at silence_db over runs of silence_min_s), never more
+  # than max_share of either take, in whole frames; under min_ms it stays a plain cut. Picture and sound lose the same
+  # time, so they end together; segment_seconds follows each take's clock (captions, end sync). CPU only, but a join
+  # with one re-encodes through the filter graph. Unproven on real takes: watch the first joined videos.
+  jl_cuts:
+    enabled: true
+    lead_ms: 160
+    lag_ms: 200
+    min_ms: 60
+    max_share: 0.25
+    silence_db: -40
+    silence_min_s: 0.05
+    between: {talk_talk: j, talk_cutaway: l, cutaway_talk: j}
+    words: {j: [j cut, audio first, sound first, voice leads], l: [l cut, voice carries, sound carries, voice runs on]}
   # Cover frame: the sharpest frame with the face, eyes open, mouth closed (face-mesh ratios: lid gap over eye
   # width, inner-lip gap over mouth width). Without MediaPipe here it is the sharpest frame. From the finished video
   # (finishing.pick_cover(video, avoid=...)): a frame every sample_every_s, edge_s in from both ends, at most

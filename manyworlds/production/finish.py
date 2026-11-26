@@ -246,14 +246,18 @@ def _text_fonts(plan, ovs: list, policy: Policy):
 
 def join_times(conn, video: dict) -> list[float]:
     """Where the joins are in a joined video (seconds): after each segment but the last, by the join's measured
-    lengths; [] for a single piece, or when a length is unknown from there on."""
+    lengths; [] for a single piece, or when a length is unknown from there on. A J-cut's picture changes its shift
+    after the next take's clock starts (its sound came first; meta.audio_cuts), so its join is that much later."""
     row = conn.execute("SELECT meta FROM assets WHERE id = %s", (video["id"],)).fetchone()
+    meta = (row["meta"] or {}) if row else {}
+    cuts = meta.get("audio_cuts") or []
     out, t = [], 0.0
-    for s in ((row["meta"] or {}).get("segment_seconds") or [])[:-1] if row else []:
+    for k, s in enumerate((meta.get("segment_seconds") or [])[:-1]):
         if s is None:
             break
         t += float(s)
-        out.append(round(t, 3))
+        cut = cuts[k] if k < len(cuts) else None
+        out.append(round(t + (float(cut["s"]) if cut and cut.get("cut") == "j" else 0.0), 3))
     return out
 
 
@@ -278,7 +282,11 @@ def _talk_edit(conn, policy: Policy, post: dict, body: dict) -> tuple[str | None
         return None, None
     name = cuts.choose_for(conn, policy, body, post["creator_id"])
     punch = cuts.grammar_for(policy, name, body).get("punch_in") or None   # with its pattern card's rhythm
-    return name or None, (dict(punch) if punch else None)
+    if not punch:
+        return name or None, None
+    # punch-ins on meaning (emphasised words, line starts after a pause): generation.talk_edit.emphasis
+    emphasis = policy.get("generation", "talk_edit", "emphasis", default=None)
+    return name or None, {**punch, **({"emphasis": dict(emphasis)} if emphasis else {})}
 
 
 def finish_plan(conn, policy: Policy, post: dict, body: dict, video: dict, store=None, *,

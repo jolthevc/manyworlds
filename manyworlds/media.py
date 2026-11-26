@@ -14,6 +14,12 @@ Transitions (`concat(..., transitions=[...])`, one per join, policy `finishing.t
 match (a cut that first trims each side to a given time, snapped to the nearest frame: the motion peak), whip (a
 directional blur and slide), blur (both sides blur through a dissolve) and flash (a short dip to white), each a few
 frames at the output rate. Any transition but a cut re-encodes the join through one filter graph (xfade).
+
+J- and L-cuts (`concat(..., audio_cuts=[...])`, one per join, only at a plain cut; production.talk plans and fits them
+to the takes' silent edges, `edge_silence`): a J lets the next segment's sound start before its picture, an L lets the
+segment's sound run under the next picture, by trimming whole frames of one side's picture and the same time of the
+other side's sound, so picture and sound stay in sync within each segment and end together. They also go through the
+filter graph.
 """
 
 from __future__ import annotations
@@ -133,17 +139,19 @@ def _target(infos: list[dict], width: int | None, height: int | None, fps: float
 
 
 def concat(paths: list[Path], out: Path, *, timeout: float = 600, transitions: list | None = None,
-           policy=None, width: int | None = None, height: int | None = None, fps: float | None = None) -> Path:
+           policy=None, width: int | None = None, height: int | None = None, fps: float | None = None,
+           audio_cuts: list | None = None) -> Path:
     """Join videos (with their audio) end to end into `out`. `transitions`: one per join (a name from TRANSITIONS
     or a dict {type, frames, direction, out_at, in_at}); None or all cuts is a plain join. Segments that differ in
     size, frame rate, codec or audio are first normalised to one (`width`/`height`/`fps`, else the largest size and
-    the policy rate), so a copy-join never mixes them."""
+    the policy rate), so a copy-join never mixes them. `audio_cuts`: one per join, None or {cut: "j" | "l", s}: a
+    J- or L-cut at a plain cut (with_audio_cuts, rendered by transition_graph)."""
     if not paths:
         raise ValueError("nothing to join")
     paths, out = [Path(p) for p in paths], Path(out)
     fin = _finishing(policy) if transitions else {}
-    joins = joins_for(transitions, len(paths), fin)
-    if any(j["type"] != "cut" for j in joins):
+    joins = with_audio_cuts(joins_for(transitions, len(paths), fin), audio_cuts)
+    if any(j["type"] != "cut" or j.get("jl") for j in joins):
         return join_with_transitions(paths, out, joins, timeout=timeout, policy=policy, width=width,
                                      height=height, fps=fps)
     if len(paths) > 1:
@@ -188,6 +196,72 @@ def joins_for(transitions: list | None, n: int, fin: dict | None = None) -> list
     return out
 
 
+def with_audio_cuts(joins: list[dict], audio_cuts: list | None) -> list[dict]:
+    """The joins with their J- and L-cuts: audio_cuts[k] {cut: "j" | "l", s: seconds} on join k, which must be a
+    plain cut (a transition already moves the picture across the join; a match cut trims both sides): elsewhere it is
+    ignored. J: the next shot's sound starts `s` before its picture; L: the shot's sound runs `s` under the next
+    picture."""
+    if not audio_cuts:
+        return joins
+    if len(audio_cuts) != len(joins):
+        raise ValueError(f"{len(audio_cuts)} audio cuts for {len(joins)} joins")
+    out = []
+    for j, ac in zip(joins, audio_cuts):
+        if ac and float(ac.get("s") or 0) > 0 and j["type"] == "cut":
+            if ac.get("cut") not in ("j", "l"):
+                raise ValueError(f"unknown audio cut {ac.get('cut')!r}: j or l")
+            j = {**j, "jl": str(ac["cut"]), "shift_s": float(ac["s"])}
+        out.append(j)
+    return out
+
+
+def edge_silence(path: Path, *, noise_db: float, min_s: float, timeout: float = 120) -> tuple[float, float]:
+    """Seconds of silence at the start and at the end of a file's sound (ffmpeg silencedetect at `noise_db`, runs of
+    at least `min_s`): what a J- or L-cut may trim from it without losing a word. A file without sound is all
+    silence (its length both ways)."""
+    info = probe(path, timeout=timeout)
+    total = float(info.get("seconds") or 0)
+    if not info.get("audio"):
+        return total, total
+    cmd = [ffmpeg(), "-hide_banner", "-nostats", "-i", str(path), "-map", "0:a:0",
+           "-af", f"silencedetect=noise={_fmt(noise_db)}dB:d={_fmt(min_s)}", "-f", "null", "-"]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg could not read the sound of {Path(path).name}: {(r.stderr or '')[-300:]}")
+    runs, start = [], None
+    for line in (r.stderr or "").splitlines():
+        m = re.search(r"silence_start: (-?[0-9.]+)", line)
+        if m:
+            start = max(0.0, float(m.group(1)))
+        m = re.search(r"silence_end: (-?[0-9.]+)", line)
+        if m and start is not None:
+            runs.append((start, float(m.group(1))))
+            start = None
+    if start is not None:   # silent to the end of the stream
+        runs.append((start, total))
+    edge = float(min_s)   # a run that starts (ends) within its own minimum of the edge is at the edge
+    head = next((b for a, b in runs if a <= edge), 0.0)
+    tail = next((total - a for a, b in reversed(runs) if b >= total - edge), 0.0)
+    return round(max(0.0, min(head, total)), 3), round(max(0.0, min(tail, total)), 3)
+
+
+def join_rate(paths: list[Path], policy=None, *, timeout: float = 60) -> float:
+    """The frame rate a filter-graph join of `paths` runs at (_target with no size or rate given): what a J/L cut's
+    shift is counted in."""
+    return _target([probe(Path(p), timeout=timeout) for p in paths], None, None, None, _finishing(policy))[2]
+
+
+def _span(start: float | None, end: float | None, total: float) -> float:
+    """A trimmed segment's length: from `start` (None: 0) to `end` (None: its end), never past `total` when known."""
+    stop = (min(end, total) if end is not None and total else end if end is not None else total)
+    return stop - (start or 0)
+
+
+def _shift(join: dict, rate: float) -> float:
+    """A J/L cut's shift in seconds, a whole number of frames at `rate` (at least one)."""
+    return max(1, round(float(join.get("shift_s") or 0) * rate)) / rate
+
+
 def _frames(spec: dict, block: dict, fin: dict) -> int:
     """A transition's length in frames: the join's own, else its block's, clamped to `transitions.frames_range`."""
     n = int(spec.get("frames") or block.get("frames") or 0)
@@ -229,29 +303,45 @@ def transition_graph(segments: list[dict], joins: list[dict], *, width: int, hei
         outof = joins[i] if i < len(joins) and joins[i]["type"] == "match" else {}
         start, end = _snap(into.get("in_at"), src_rate), _snap(outof.get("out_at"), src_rate)
         total = float(s.get("seconds") or 0)
-        length = (min(end, total) if end is not None and total else end if end is not None else total) - (start or 0)
-        if length <= 0:
-            raise ValueError(f"segment {i} has no length to join (trimmed to {start}-{end} of {total} s)")
+        # J- and L-cuts (with_audio_cuts) move one side's cut by whole output frames: a J trims the incoming
+        # picture's head and the outgoing sound's tail, an L the outgoing picture's tail and the incoming sound's head.
+        # Each segment's picture and sound stay in sync with each other, and the picture and the sound lose the same
+        # time in total, so they still end together.
+        before, after = (joins[i - 1] if i > 0 else {}), (joins[i] if i < len(joins) else {})
+        v_start, v_end, a_start, a_end = start, end, start, end
+        if before.get("jl") == "j":
+            v_start = (start or 0.0) + _shift(before, rate)
+        if before.get("jl") == "l":
+            a_start = (start or 0.0) + _shift(before, rate)
+        if after.get("jl") == "j":
+            a_end = (end if end is not None else total) - _shift(after, rate)
+        if after.get("jl") == "l":
+            v_end = (end if end is not None else total) - _shift(after, rate)
+        length = _span(v_start, v_end, total)
+        a_length = _span(a_start, a_end, total)
+        if length <= 0 or a_length <= 0:
+            raise ValueError(f"segment {i} has no length to join (trimmed to {v_start}-{v_end} of {total} s)")
         lengths.append(length)
         trim = ""
-        if start or end is not None:
-            trim = "trim=" + ":".join(([f"start={_fmt(start)}"] if start else [])
-                                      + ([f"end={_fmt(end)}"] if end is not None else [])) + ",setpts=PTS-STARTPTS,"
+        if v_start or v_end is not None:
+            trim = "trim=" + ":".join(([f"start={_fmt(v_start)}"] if v_start else [])
+                                      + ([f"end={_fmt(v_end)}"] if v_end is not None else [])) + ",setpts=PTS-STARTPTS,"
         step = fps_filter(s.get("fps"), rate, interp, seconds=length) or f"fps={_fmt(rate)}"
         lines.append(f"[{i}:v]setpts=PTS-STARTPTS,{trim}{step},{fit_filter(width, height, flags)},setsar=1,"
                      f"format=yuv420p,settb=AVTB[v{i}]")
         if audio:
             if s.get("audio"):
                 atrim = ""
-                if start or end is not None:
-                    atrim = "atrim=" + ":".join(([f"start={_fmt(start)}"] if start else [])
-                                                + ([f"end={_fmt(end)}"] if end is not None else [])) + ","
-                # cut or padded to the picture's length, so sound never drifts from picture across joins
+                if a_start or a_end is not None:
+                    atrim = "atrim=" + ":".join(([f"start={_fmt(a_start)}"] if a_start else [])
+                                                + ([f"end={_fmt(a_end)}"] if a_end is not None else [])) + ","
+                # cut or padded to its share of the timeline (the picture's length, give or take a J/L cut), so
+                # sound never drifts from picture across joins
                 lines.append(f"[{i}:a]asetpts=PTS-STARTPTS,{atrim}asetpts=PTS-STARTPTS,aresample={sr},"
-                             f"atrim=duration={_fmt(length)},apad=whole_dur={_fmt(length)},"
+                             f"atrim=duration={_fmt(a_length)},apad=whole_dur={_fmt(a_length)},"
                              f"aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
             else:
-                lines.append(f"anullsrc=r={sr}:cl=stereo,atrim=duration={_fmt(length)},"
+                lines.append(f"anullsrc=r={sr}:cl=stereo,atrim=duration={_fmt(a_length)},"
                              f"aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
     v, a, cur = "v0", "a0" if audio else None, lengths[0]
     for i in range(1, len(segments)):

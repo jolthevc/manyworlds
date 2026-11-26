@@ -292,6 +292,29 @@ class PullForward(_Strict):
     budget_share: Num
 
 
+class BeatKinds(_Strict):
+    reaction: list[str] = []
+    head: list[str] = []
+    gesture: list[str] = []
+
+
+class Beats(_Strict):
+    """Audio-first blocking: a take's beats re-timed to its voice line (production.beats)."""
+    enabled: bool
+    snap_window_s: Num
+    min_pause_s: Num
+    min_gap_s: Num
+    round_s: Num
+    hold_offset_s: Num
+    default_pause_s: Num
+    rising_tail_s: Num
+    stress_ratio: Num
+    stress_min_letters: int
+    relate_min_letters: int
+    relate_ignore: list[str] = []
+    kinds: BeatKinds
+
+
 class Production(_Strict):
     image_kind: str
     formats: list[str]
@@ -313,6 +336,7 @@ class Production(_Strict):
     reroute_caption: RerouteCaption | None = None   # the rerouted post's caption rewritten for a still (core)
     edit: Free
     finish_mode: Literal["queue", "inline"]   # where the finish renders (production.finish)
+    beats: Beats | None = None   # audio-first blocking (production.beats)
 
 
 # --- finishing -------------------------------------------------------------------------------------------------------
@@ -365,6 +389,19 @@ class FinishingCover(_Strict):
     avoid_margin_s: Num
 
 
+class JLCuts(_Strict):
+    """J- and L-cuts at shot changes in a talking video's join (production.talk.join_audio_cuts)."""
+    enabled: bool
+    lead_ms: Num
+    lag_ms: Num
+    min_ms: Num
+    max_share: Num
+    silence_db: Num
+    silence_min_s: Num
+    between: dict[Literal["talk_talk", "talk_cutaway", "cutaway_talk", "cutaway_cutaway"], Literal["j", "l"]] = {}
+    words: dict[Literal["j", "l"], list[str]] = {}
+
+
 class Finishing(_Strict):
     enabled: bool
     formats: list[str]
@@ -387,6 +424,7 @@ class Finishing(_Strict):
     fps: Num
     interpolate: Free
     transitions: Free
+    jl_cuts: JLCuts | None = None    # J- and L-cuts at shot changes (production.talk.join_audio_cuts)
     cover: FinishingCover
 
 
@@ -463,10 +501,23 @@ class TalkGrammar(_Strict):
     director: list[str] = []
 
 
+class PunchEmphasis(_Strict):
+    """Punch-ins on meaning (manyworlds.cuts.meaning_marks)."""
+    enabled: bool
+    window_s: Num
+    emphasis_weight: Num
+    pause_weight: Num
+    pause_s: Num
+    stress: bool = False
+    stress_ratio: Num = 1.3
+    stress_min_letters: int = 4
+
+
 class TalkEdit(_Strict):
     default: str
     by_archetype: dict[str, str]
     grammars: dict[str, TalkGrammar]
+    emphasis: PunchEmphasis | None = None
 
 
 class TalkRoute(_Strict):
