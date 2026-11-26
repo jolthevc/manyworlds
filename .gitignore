@@ -8,4 +8,4 @@ dist/
 .data/
 out/
 samples/
-review/
+/review/
