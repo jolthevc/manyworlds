@@ -871,7 +871,11 @@ def _performance(s: ShotSheet, target: Target, policy: Any, profile: dict | None
     if target == "photo" and intent:
         intent = f"in this moment, {intent[0].lower()}{intent[1:]}"
     lib = performance.library(policy)
-    channels = [c for c in ((lib.get("targets") or {}).get(target) or []) if not (no_face and c in ("face", "gaze"))]
+    # A beat that names where she looks is the more specific instruction: the performance then says nothing about
+    # gaze (2026-11-26: "looking into the lens" in the action beside "looking at something off camera").
+    eyeline = any(b.eyeline for b in (s.blocking[:1] if target == "photo" else s.blocking))
+    channels = [c for c in ((lib.get("targets") or {}).get(target) or [])
+                if not (no_face and c in ("face", "gaze")) and not (eyeline and c == "gaze")]
     out = performance.compose(intent, shot_controls(s), target, policy, context=p.context.strip() or None,
                               profile=prof, extreme_reason=p.extreme_reason, channels=channels)
     text = out["text"]

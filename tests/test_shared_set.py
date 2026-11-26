@@ -261,3 +261,15 @@ def test_a_trimmed_directed_photo_keeps_the_place_and_whole_performance_clauses(
     assert "Set: behind the bar" in out and "caught mid-laugh behind the bar" in out
     perf = out[out.index("Performance:"):].split(". ")[0]
     assert not perf.rstrip().endswith(("camera", "face", "eyes", "body", ":"))
+
+
+def test_a_beats_eyeline_wins_over_the_performances_gaze(policy):
+    from manyworlds.direction import ControlLevel
+    def shot(eyeline):
+        return {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot"},
+                "blocking": [{"at_s": 0, "action": "leans on the counter", "eyeline": eyeline}],
+                "performance": {"intent": "a quiet moment", "controls": [ControlLevel(control="candidness", level=2).model_dump()]}}
+    with_lens = direction.compile_prompt(shot("lens"), MAREN, "photo", policy, trigger="mw_m")
+    free = direction.compile_prompt(shot(None), MAREN, "photo", policy, trigger="mw_m")
+    assert "looking into the lens" in with_lens and "off camera" not in with_lens
+    assert "off camera" in free
