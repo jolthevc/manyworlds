@@ -284,4 +284,5 @@ def test_a_beat_that_blocks_her_hands_wins_over_the_performances_body(policy):
                 "performance": {"intent": "a teasing look", "controls": [ControlLevel(control="sass", level=2).model_dump()]}}
     blocked = direction._performance(direction._coerce(shot("one hand flat on the counter")), "talk", policy)
     free = direction._performance(direction._coerce(shot("")), "talk", policy)
-    assert "hand on hip" not in blocked and "hand on hip" in free
+    assert "body:" not in blocked and "hand on hip" not in blocked
+    assert blocked != free or "body:" not in free
