@@ -75,7 +75,7 @@ The wardrobe field said "silhouette, palette, formality" in prose, which a model
 - Haiku 5.5, Sonnet 5.5 and Opus 5.5 code the same assets. Our own assets come first, so rights are clean.
 - Each model is scored on per-field agreement with the reference model, schema validity, cost and latency.
 - "Sufficient" is set per field family from the first run. Coarse fields (environment, styling category, candid vs staged) should hold up on Haiku. Fine fields (jewelry, nails, composition) may need Sonnet or a two-stage read.
-- Gemini Flash-Lite sits behind the same interface. It needs an API key, which only you can create.
+- Other vendors can sit behind the same interface. Gemini was removed from the stack (owner, 2026-11-26).
 
 ## 4. Video intelligence: the economical design
 
@@ -89,7 +89,7 @@ A video read needs three layers. Only the third costs real money, and only a min
    - candid vs cinematic vs selfie;
    - product integration;
    - production complexity.
-3. **Native video understanding on a sample (Gemini Flash):** for posts whose frame reads disagree, or that sit in the top or bottom tail of the creator's distribution. It is better on temporal structure (what happens across the first three seconds, the narrative arc). It costs more per post, needs a key and a processor agreement under the data policy, and should be benchmarked against frames-plus-measure on our own videos first.
+3. **Native video understanding on a sample (Twelve Labs Pegasus, under assessment; Gemini removed 2026-11-26):** for posts whose frame reads disagree, or that sit in the top or bottom tail of the creator's distribution. To be benchmarked against frames-plus-measure on our own videos before any production use (docs/2026-11-26-learning-harness.md).
 
 **Transcription:** only for spoken formats. Whisper on our own worker, or the cheapest hosted ASR. Transcripts of third-party videos are amber data under the data policy: features are kept, text discarded.
 

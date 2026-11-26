@@ -16,15 +16,13 @@ dollar" (mean agreement x validity / $ per item).
 The run stops before an item whose expected cost (each model's dearest call so far, else the policy token estimate)
 would take the run past `usd_cap`; an item is always read by every model or by none, so comparisons stay paired.
 
-Other vendors sit behind the same small interface (`check`, `read`): `GeminiModel` is an adapter point only. It
-refuses unless GEMINI_API_KEY is set and policy llm.hosts.gemini exists, and even then refuses until its call is
-written and verified: no network call here was ever checked against the live API.
+Other vendors would sit behind the same small interface (`check`, `read`) in EXTERNAL; none is wired (Gemini was
+removed from the stack, owner 2026-11-26).
 """
 
 from __future__ import annotations
 
 import io
-import os
 import statistics
 import tempfile
 import time
@@ -39,7 +37,6 @@ from . import annotation as ann
 
 AGENT = "research:vision_bench"
 ROLE_PREFIX = "vision_bench_"
-GEMINI_KEY_ENV = "GEMINI_API_KEY"
 
 SYSTEM = """You code the images of one social media post for a creative pattern library. Describe only what is
 visible: the content, never the person's private life (nothing about health, relationships, family, religion,
@@ -146,36 +143,9 @@ class RoleModel:
         return out
 
 
-class GeminiModel:
-    """ADAPTER POINT (not implemented): Google's Gemini vision models behind the bench's interface. It refuses with
-    a clear message unless GEMINI_API_KEY is set and policy llm.hosts.gemini exists; with both it still refuses,
-    because its request has never been verified against the live API. To build it: send `system` and `content`
-    (Anthropic-style text and base64 image blocks) to the host, ask for JSON matching CodedRead, validate the
-    answer with ann.coerce_coded, and charge the ledger (category llm, agent research:vision_bench) at the host's
-    published prices from policy, including failed calls, before returning a Read."""
-    name = "gemini"
-
-    def __init__(self, llm=None, name: str = "gemini"):
-        self.name = name
-
-    def check(self, policy) -> None:
-        host = (policy.get("llm", "hosts", default={}) or {}).get("gemini")
-        missing = ([f"{GEMINI_KEY_ENV} is not set"] if not os.environ.get(GEMINI_KEY_ENV) else []) + (
-            ["policy llm.hosts.gemini is missing"] if not host else [])
-        if missing:
-            raise AdapterUnavailable("gemini adapter refused: " + "; ".join(missing))
-        raise AdapterUnavailable("gemini adapter refused: the adapter point is not implemented (no verified call "
-                                 "to the Gemini API; see manyworlds.research.vision_bench.GeminiModel)")
-
-    def model(self, policy) -> str:
-        return self.name
-
-    def read(self, conn, policy, **_) -> Read:
-        self.check(policy)
-        raise AdapterUnavailable("gemini adapter point not implemented")
-
-
-EXTERNAL = {"gemini": GeminiModel}
+# Vendors outside llm.py would sit here behind the same interface (check, read). Gemini was removed from the
+# stack by the owner (2026-11-26); native video understanding is assessed separately (Twelve Labs Pegasus).
+EXTERNAL: dict = {}
 
 
 def candidate(llm, name: str):

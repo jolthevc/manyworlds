@@ -1,6 +1,6 @@
 """Annotation iia_v2 (docs/research/2026-11-25-annotation-v2.md): a coded section of controlled vocabularies from
 policy (out-of-list values are "unknown", never a failed read), v1 records still loading, distill testing every coded
-label with an honest n_tests, and the vision benchmark (agreement math, its spend cap, the Gemini adapter point).
+label with an honest n_tests, and the vision benchmark (agreement math, its spend cap, refusing unknown models).
 Everything offline: stub LLMs, a local store."""
 
 from __future__ import annotations
@@ -227,17 +227,9 @@ def test_the_bench_refuses_research_media(conn, policy, tmp_path):
     assert out["items_read"] == 0 and "research media" in out["items_skipped"][0]["why"] and not llm.calls
 
 
-def test_the_gemini_adapter_point_refuses(conn, policy, tmp_path, monkeypatch):
-    monkeypatch.delenv(vb.GEMINI_KEY_ENV, raising=False)
-    with pytest.raises(vb.AdapterUnavailable, match="GEMINI_API_KEY is not set.*llm.hosts.gemini is missing"):
-        vb.GeminiModel().check(policy)
-    monkeypatch.setenv(vb.GEMINI_KEY_ENV, "test-key")
-    hosted = policy_mod.from_dict({**policy.body, "llm": {**policy.body["llm"], "hosts": {
-        **policy.body["llm"]["hosts"], "gemini": {"base_url": "https://example.invalid", "key_env": vb.GEMINI_KEY_ENV}}}})
-    with pytest.raises(vb.AdapterUnavailable, match="not implemented"):
-        vb.GeminiModel().check(hosted)
+def test_a_model_without_a_role_is_refused_and_the_rest_still_run(conn, policy, tmp_path):
     store, uris = _images(tmp_path, 1)
-    out = vb.run(conn, hosted, BenchLLM(conn, ANSWERS), items=uris, models=["gemini", "haiku"], usd_cap=1.0,
+    out = vb.run(conn, policy, BenchLLM(conn, ANSWERS), items=uris, models=["gemini", "haiku"], usd_cap=1.0,
                  store=store)
     assert "gemini" in out["refused"] and out["models"] == ["haiku"] and out["items_read"] == 1
 
