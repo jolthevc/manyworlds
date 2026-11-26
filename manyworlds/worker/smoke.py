@@ -777,7 +777,10 @@ def check_tts() -> list[str]:
     line = res.outputs[0].meta["lines"][0]
     if not line.get("judge") or line["judge"]["repairs"] != 1 or fake.calls[1] != 1.25:
         raise RuntimeError(f"the line check did not judge and repair: {line}")
-    metas = [o.meta for o in cast.outputs]
+    metas = [o.meta for o in cast.outputs if o.kind == "audio"]
+    spoken = [o for o in cast.outputs if o.kind == "audio_lines"]
+    if len(spoken) != 2 or not all(o.path.exists() for o in spoken):
+        raise RuntimeError(f"the cast did not keep what the engine said: {[o.meta for o in spoken]}")
     if len(metas) != 2 or not all(m["lines"] and m["who"]["gender_p"]["female"] == 0.9 for m in metas):
         raise RuntimeError(f"the cast came out wrong: {metas}")
     done.append("stand-in line (judged, one repair at the next strength) and stand-in cast (two scored candidates)")
