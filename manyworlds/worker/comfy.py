@@ -443,11 +443,22 @@ def _submit(g: dict) -> str:
         raise RuntimeError(f"ComfyUI rejected the graph: {e.read().decode(errors='replace')[:1500]}") from None
 
 
+def _saved(f: dict) -> bool:
+    """Whether a history entry is a video the prompt SAVED: an .mp4 of type `output`. ComfyUI v0.45's core LoadVideo
+    lists its input file among the prompt's outputs as a preview (type `input`), and previews are `temp`; taking the
+    first .mp4 returned the walk-and-talk SOURCE clip as the render (2026-11-26: every V2V lip sync and repair since
+    the core-node swap measured the untouched motion clip, byte-identical whatever start_step or seed)."""
+    return str(f.get("filename", "")).endswith(".mp4") and (f.get("type") or "output") == "output"
+
+
+def _videos(outputs: dict) -> list[dict]:
+    return [f for out in (outputs or {}).values() for key in ("videos", "images", "gifs") for f in out.get(key) or []
+            if _saved(f)]
+
+
 def saved_videos(outputs: dict) -> list[Path]:
     """Every .mp4 a finished prompt saved, by file name (a graph that saves several names them in order)."""
-    found = [COMFY_DIR / (f.get("type") or "output") / f.get("subfolder", "") / f["filename"]
-             for out in (outputs or {}).values() for key in ("videos", "images", "gifs") for f in out.get(key) or []
-             if str(f.get("filename", "")).endswith(".mp4")]
+    found = [COMFY_DIR / "output" / f.get("subfolder", "") / f["filename"] for f in _videos(outputs)]
     return sorted(found, key=lambda p: p.name)
 
 
@@ -482,11 +493,10 @@ def run(g: dict, *, timeout_s: float, poll_s: float = 3) -> Path:
             status = h.get("status") or {}
             if status.get("status_str") == "error":
                 raise RuntimeError(f"ComfyUI failed: {execution_error(status)}")
-            for out in (h.get("outputs") or {}).values():
-                for key in ("videos", "images", "gifs"):
-                    for f in out.get(key) or []:
-                        if str(f.get("filename", "")).endswith(".mp4"):
-                            return COMFY_DIR / (f.get("type") or "output") / f.get("subfolder", "") / f["filename"]
+            videos = _videos(h.get("outputs"))
+            if videos:   # what the save node wrote, never a LoadVideo input preview (_saved)
+                f = videos[0]
+                return COMFY_DIR / "output" / f.get("subfolder", "") / f["filename"]
             if status.get("completed"):
                 raise RuntimeError(f"ComfyUI finished with no video: {json.dumps(h.get('outputs'))[:800]}")
         if _server["proc"] is not None and _server["proc"].poll() is not None:

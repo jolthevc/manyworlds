@@ -483,3 +483,31 @@ def test_captions_of_a_talking_clip_start_after_its_lead_in(conn):
              "meta": {"seconds": 2.9, "lead_s": 0.3, "tail_s": 0.6}}
     lines, seconds = captioning._piece_timing(conn, piece, "Okay so I finally tried it.")
     assert seconds == 2.9 and lines[0][0]["start_s"] == 0.3 and abs(lines[0][0]["end_s"] - 2.3) < 1e-6
+
+
+# --- 2026-11-26: ComfyUI v0.45's LoadVideo lists its INPUT file among a prompt's outputs ---------------------------
+
+def _history(prompt_id, done):
+    return {prompt_id: {"status": {"completed": done, "status_str": "success" if done else ""},
+                        "outputs": {"motion": {"images": [{"filename": "mw_job_motion.mp4", "subfolder": "", "type": "input"}],
+                                               "animated": [True]},
+                                    **({"save": {"images": [{"filename": "mw_talk_v2v_00001_.mp4", "subfolder": "",
+                                                             "type": "output"}]}} if done else {})}}}
+
+
+def test_run_returns_the_saved_render_never_the_loaded_source_clip(monkeypatch):
+    calls = []
+    monkeypatch.setattr(comfy, "_submit", lambda g: "p1")
+    def get(path, timeout=10):
+        calls.append(path)
+        return _history("p1", done=len(calls) >= 2)        # first poll: only the input preview exists
+    monkeypatch.setattr(comfy, "_get", get)
+    monkeypatch.setattr(comfy, "time", type("T", (), {"monotonic": staticmethod(lambda: 0.0), "sleep": staticmethod(lambda s: None)}))
+    out = comfy.run({}, timeout_s=60)
+    assert out.name == "mw_talk_v2v_00001_.mp4" and out.parent.name == "output" and len(calls) == 2
+
+
+def test_saved_videos_skip_input_and_temp_previews():
+    outs = _history("p", done=True)["p"]["outputs"]
+    outs["preview"] = {"images": [{"filename": "x.mp4", "type": "temp"}]}
+    assert [p.name for p in comfy.saved_videos(outs)] == ["mw_talk_v2v_00001_.mp4"]
