@@ -157,9 +157,10 @@ def test_a_cast_designs_each_candidate_then_scores_every_line_in_the_engine(fake
     res = te.cast(payload, ctx)
     designs = [c for c in fake.calls if "design" in c]
     assert [c["seed"] for c in designs] == [11, 1011, 2011]
-    assert len(res.outputs) == 3
+    refs = [o for o in res.outputs if o.kind == "audio"]
+    assert len(refs) == 3 and len(res.outputs) == 6
     script = policy.get("voice", "casting", "script")
-    for i, out in enumerate(res.outputs):
+    for i, out in enumerate(refs):
         m = out.meta
         assert m["index"] == i and m["role"] == "cast_reference" and m["engine"] == "indextts"
         assert [x["name"] for x in m["lines"]] == [s["name"] for s in script]
@@ -203,3 +204,19 @@ def test_the_server_writes_int16_and_float_audio(tmp_path):
     assert tts_server._write(str(tmp_path / "b.wav"), np.full(SR // 2, 0.5, dtype=np.float32), SR) == 0.5
     json.dumps(tts_server.INDEXTTS_CACHE)    # never the MaskGCT codec (CC-BY-NC): only these three sub-models
     assert not any("MaskGCT" in str(v) for v in tts_server.INDEXTTS_CACHE.values())
+
+
+def test_a_cast_keeps_what_each_engine_actually_said_apart_from_the_references(fake, ctx, policy):
+    """2026-11-26: every bake-off clip the owner heard was the Qwen3 VoiceDesign reference; the engines' own lines
+    were scored and thrown away."""
+    from manyworlds.creator import voice_lab
+    payload = voice_lab.cast_payload(policy, description="A 27-year-old woman, warm", engine="indextts", seed=11, n=2)
+    res = te.cast(payload, ctx)
+    refs = [o for o in res.outputs if o.kind == "audio"]
+    spoken = [o for o in res.outputs if o.kind == "audio_lines"]
+    assert len(refs) == 2 and len(spoken) == 2 and res.outputs[:2] == refs      # references first: selection unchanged
+    script = policy.get("voice", "casting", "script")
+    for i, o in enumerate(spoken):
+        assert o.meta["index"] == i and o.meta["role"] == "cast_lines" and o.meta["engine"] == "indextts"
+        assert [x["name"] for x in o.meta["lines"]] == [s["name"] for s in script] and o.path.exists()
+        assert o.meta["lines"][1]["start_s"] >= o.meta["lines"][0]["end_s"] + payload["params"]["listen_gap_s"] - 0.01

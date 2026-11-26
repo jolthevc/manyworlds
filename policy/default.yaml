@@ -656,6 +656,12 @@ generation:
     # One take per shot (manyworlds.direction): a take longer than this (words / talk_long.words_per_second) is split
     # at the nearest sentence end, as a safety net. Production only; not sent to the worker.
     max_take_seconds: 60
+    # Silence rendered around the line (worker talk_comfy.rolls; owner 2026-11-26): she is settled and draws breath
+    # before speaking, and holds a beat after the last word instead of the clip running on into a blank stare (raw
+    # clips ran ~2.7 s past the line: InfiniteTalk renders whole windows) or cutting on the last syllable. Only a
+    # long take's first segment gets the lead-in and its last the hold. Unproven on a GPU: judge the first takes.
+    lead_in_s: 0.3
+    end_hold_s: 0.6
     voice: af_heart
   # Settings to benchmark against `talk` (mw bench talk.infinitetalk --profile NAME), merged over it. fast: the
   # README's lightx2v recipe (4 steps, text cfg 1, audio cfg 2, shift 2), ~15-30x less compute than 40 steps x 3
@@ -1077,6 +1083,9 @@ voice:
   casting:
     kind: voice.cast
     candidates: 4
+    # each candidate's casting lines as the engine spoke them are kept too (asset kind audio_lines), joined with
+    # this much silence, so a cast can be heard and not only scored (2026-11-26)
+    listen_gap_s: 0.6
     designer: qwen3_design
     at_launch: true
     max_ref_wer: 0.1

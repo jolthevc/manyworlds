@@ -530,7 +530,7 @@ def cast_payload(policy: Policy, *, description: str, engine: str, seed: int, n:
     return {"engine": engine, "designer": designer, "description": description,
             "anchor_text": (_cfg(policy).get("anchor_text") or "").strip(),
             "n": int(n or c.get("candidates", 4)), "seed": seed, "script": lines,
-            "params": engine_params(policy, engines)}
+            "params": {**engine_params(policy, engines), "listen_gap_s": float(c.get("listen_gap_s", 0.6))}}
 
 
 def cast(conn, policy: Policy, creator_id, *, engine: str | None = None, attempt: int = 0, batch: str | None = None,

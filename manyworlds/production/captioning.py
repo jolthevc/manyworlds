@@ -50,8 +50,9 @@ def _piece_timing(conn, piece: dict, script: str) -> tuple[list[tuple[dict, int]
     job = piece["job"] or {}
     payload, vmeta = job.get("payload") or {}, piece["meta"] or {}
     narrated = job.get("kind") == "image.narrated"
-    lead = float(vmeta.get("lead_s", LEAD_S)) if narrated else 0.0
-    tail = float(vmeta.get("tail_s", TAIL_S)) if narrated else 0.0
+    # a talking clip carries its own lead-in and end hold (worker talk_comfy.rolls) in its meta, like an edit's
+    lead = float(vmeta.get("lead_s", LEAD_S if narrated else 0.0))
+    tail = float(vmeta.get("tail_s", TAIL_S if narrated else 0.0))
     voice = _audio_meta(conn, uri=payload["audio_uri"]) if payload.get("audio_uri") else {}
     seconds = vmeta.get("seconds")
     if seconds is None and voice.get("seconds") is not None:

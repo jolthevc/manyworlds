@@ -444,3 +444,42 @@ def test_walk_and_talk_interpolates_the_motion_clip_instead_of_repeating_frames(
     seen.clear()
     talk_comfy.at_fps(src, tmp_path / "dup.mp4", comfy.TALK_FPS, interpolate={**interp, "enabled": False})
     assert next(c[c.index("-vf") + 1] for c in seen if "-vf" in c) == f"fps={comfy.TALK_FPS}"   # switched off
+
+
+# --- owner 2026-11-26: the clip ran ~2.7 s past the line into a blank stare -----------------------------------------
+
+def test_only_a_takes_ends_get_a_lead_in_and_a_hold():
+    p = {"lead_in_s": 0.3, "end_hold_s": 0.6}
+    assert talk_comfy.rolls({}, p) == (0.3, 0.6)                                       # a single take: both
+    assert talk_comfy.rolls({"segment": {"index": 0, "of": 3}}, p) == (0.3, 0.0)       # first of a long take
+    assert talk_comfy.rolls({"segment": {"index": 1, "of": 3}}, p) == (0.0, 0.0)       # middle: joins seamlessly
+    assert talk_comfy.rolls({"segment": {"index": 2, "of": 3}}, p) == (0.0, 0.6)       # last
+    assert talk_comfy.rolls({"video_uri": "s3://b/m.mp4"}, p) == (0.0, 0.0)            # walk-and-talk keeps its timing
+    assert talk_comfy.rolls({}, {}) == (0.0, 0.0)
+
+
+def test_the_clip_is_cut_to_the_padded_line_not_left_at_whole_render_windows(tmp_path):
+    import subprocess
+
+    import imageio_ffmpeg
+
+    from manyworlds import media
+    line = tmp_path / "line.wav"
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=2",
+                    str(line)], check=True)
+    padded = talk_comfy.pad_audio(line, tmp_path / "padded.wav", 0.3, 0.6)
+    assert abs(talk_comfy.audio_seconds(padded) - 2.9) < 0.05
+    raw = tmp_path / "raw.mp4"                                       # 9 s rendered, as InfiniteTalk's windows give
+    subprocess.run([media.ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x288:rate=25:duration=9",
+                    "-pix_fmt", "yuv420p", str(raw)], check=True)
+    out = talk_comfy.cut_to_line(raw, padded, talk_comfy.audio_seconds(padded), tmp_path / "talk.mp4")
+    frames, seconds = imageio_ffmpeg.count_frames_and_secs(str(out))
+    assert abs(seconds - 2.9) < 0.1 and frames <= 74
+
+
+def test_captions_of_a_talking_clip_start_after_its_lead_in(conn):
+    from manyworlds.production import captioning
+    piece = {"job": {"kind": "talk.infinitetalk", "payload": {}, "id": None},
+             "meta": {"seconds": 2.9, "lead_s": 0.3, "tail_s": 0.6}}
+    lines, seconds = captioning._piece_timing(conn, piece, "Okay so I finally tried it.")
+    assert seconds == 2.9 and lines[0][0]["start_s"] == 0.3 and abs(lines[0][0]["end_s"] - 2.3) < 1e-6

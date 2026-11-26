@@ -148,6 +148,51 @@ def cut_audio(src: Path, dest: Path, window, timeout: float = 600) -> Path:
     return dest
 
 
+def rolls(payload: dict, params: dict) -> tuple[float, float]:
+    """Seconds of silence the take gets before its line (params.lead_in_s: she settles and draws breath, not lips
+    moving at frame 0) and after it (params.end_hold_s: a beat to land the line). Owner 2026-11-26: the raw clips
+    ran ~2.7 s past the last word and she sank back to a blank stare; a cut on the last syllable is abrupt the other
+    way. A long take's segments join seamlessly, so only its first segment gets the lead-in and only its last the
+    hold. A walk-and-talk take (video_uri) keeps its motion clip's own timing: none."""
+    if payload.get("video_uri"):
+        return 0.0, 0.0
+    seg = payload.get("segment") or {}
+    i, n = int(seg.get("index", 0)), int(seg.get("of", 1))
+    lead = float(params.get("lead_in_s") or 0) if i == 0 else 0.0
+    hold = float(params.get("end_hold_s") or 0) if i == n - 1 else 0.0
+    return max(lead, 0.0), max(hold, 0.0)
+
+
+def pad_audio(src: Path, dest: Path, lead_s: float, hold_s: float, timeout: float = 600) -> Path:
+    """The voice line with `lead_s` of silence before it and `hold_s` after it, as 16-bit wav."""
+    import subprocess
+
+    from ...media import ffmpeg
+    steps = ([f"adelay={int(round(lead_s * 1000))}:all=1"] if lead_s > 0 else []) + (
+        [f"apad=pad_dur={hold_s:.3f}"] if hold_s > 0 else [])
+    cmd = [ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), *(["-af", ",".join(steps)] if steps else []),
+           "-c:a", "pcm_s16le", str(dest)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"padding the voice line failed: {proc.stderr[-800:]}")
+    return dest
+
+
+def cut_to_line(src: Path, audio: Path, seconds: float, dest: Path, timeout: float = 600) -> Path:
+    """The rendered clip cut to the take's length and muxed with its line. InfiniteTalk renders whole frame windows
+    (81 frames, then 72 more each), so a 6.3 s line came back as 9.0 s of video: the rest was her staring."""
+    import subprocess
+
+    from ...media import ffmpeg
+    cmd = [ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
+           "-t", f"{seconds:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-c:a", "aac",
+           "-b:a", "192k", str(dest)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"cutting the clip to its line failed: {proc.stderr[-800:]}")
+    return dest
+
+
 def voice_line(payload: dict, ctx: JobContext, work: Path) -> tuple[Path, float, list[OutputFile]]:
     """The take's voice line on this machine, its length, and the audio outputs the job adds: the Kokoro line it
     spoke itself, or the cut part of a shared line (`audio_window`), so the review hears this clip's own words."""
@@ -219,6 +264,11 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     comfy.start()
 
     audio, seconds, audio_outputs = voice_line(payload, ctx, work)
+    speech_seconds = seconds
+    lead, hold = rolls(payload, params)
+    if lead or hold:   # the model renders the silence too: she is already there before the line and after it
+        audio = pad_audio(audio, work / "voice_rolled.wav", lead, hold)
+        seconds = audio_seconds(audio)
     tag = ctx.job.id
     inp = comfy.COMFY_DIR / "input"
     inp.mkdir(parents=True, exist_ok=True)
@@ -241,7 +291,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         g = comfy.graph_v2v(video=video_name, audio=audio_name, prompt=prompt,
                             frames=math.ceil(seconds * comfy.TALK_FPS), seed=seed, params=params,
                             blocks_to_swap=_blocks_to_swap(params), negative=negative)
-        shutil.move(str(comfy.run(g, timeout_s=float(params["timeout_s"]))), clip)
+        cut_to_line(comfy.run(g, timeout_s=float(params["timeout_s"])), audio, seconds, clip)
     elif model == "longcat":
         g = comfy.graph_longcat(image=image_name, audio=audio_name, prompt=prompt,
                                 frames=math.ceil(seconds * comfy.LONGCAT_FPS[version]), seed=seed, params=params,
@@ -253,7 +303,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     else:
         g = comfy.graph(image=image_name, audio=audio_name, prompt=prompt, frames=math.ceil(seconds * 25), seed=seed,
                         params=params, blocks_to_swap=_blocks_to_swap(params), negative=negative)
-        shutil.move(str(comfy.run(g, timeout_s=float(params["timeout_s"]))), clip)
+        cut_to_line(comfy.run(g, timeout_s=float(params["timeout_s"])), audio, seconds, clip)
     render_s = round(time.monotonic() - t0, 1)
     for f in (inp / image_name, inp / audio_name, inp / video_name):
         f.unlink(missing_ok=True)
@@ -261,7 +311,8 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     sync = lipsync.score_in_venv(clip, audio, max_offset_frames=int(params.get("sync_max_offset_frames", 5)))
     outputs = [OutputFile(clip, "video", {"seconds": seconds, "width": params["width"], "height": params["height"],
                                           "lip_sync": True, "sync": sync, "engine": "comfy", "model": model,
-                                          "v2v": bool(video_uri)}),
+                                          "v2v": bool(video_uri), "lead_s": lead, "tail_s": hold,
+                                          "speech_seconds": speech_seconds}),
                *extract_keyframes(clip, work, int(payload["keyframes"]))]
     outputs += crops.crops_in_venv([o for o in outputs if o.kind == "keyframe"], work, payload.get("crops"))
     outputs += audio_outputs

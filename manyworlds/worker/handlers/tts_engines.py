@@ -262,7 +262,12 @@ def validate_cast(payload: dict) -> dict:
 def cast(payload: dict, ctx: JobContext) -> HandlerResult:
     """Each candidate: a reference designed from the description reading the anchor text (checked by WER), who it
     sounds like (gender, age), then every casting line spoken in it by the engine, trimmed and measured. One audio
-    output per candidate (the reference: what becomes the creator's voice), its meta holding every score."""
+    output per candidate (the reference: what becomes the creator's voice), its meta holding every score.
+
+    After the references, each candidate's casting lines as the engine spoke them, joined with params.listen_gap_s of
+    silence (kind `audio_lines`: candidate selection reads kind `audio` and never sees them). The owner can then hear
+    what each engine made of the voice, not only the designer's reference (2026-11-26: every bake-off clip heard so
+    far was the Qwen3 VoiceDesign reference, never an engine's own speech)."""
     from . import voice_judge
     p = validate_cast(payload)
     params, work = p["params"], Path(ctx.workdir)
@@ -282,18 +287,20 @@ def cast(payload: dict, ctx: JobContext) -> HandlerResult:
             vox._state.pop(key)
     engine = _engine(p["engine"], params)
     sr, embed = int(engine.sample_rate), vox._embedder(params)
-    outputs, total = [], 0.0
+    outputs, spoken, total = [], [], 0.0
+    gap = float(params.get("listen_gap_s", 0.6))
     for i, seed, path in refs:
         ref_wav, ref_sr = vox.read_wav(path)
         heard = asr(ref_wav, ref_sr)
         ref_emb = embed(ref_wav, ref_sr)
         judge = voice_judge.LineJudge(params, sr, ref_embedding=ref_emb, embed=embed)
-        lines = []
+        lines, pieces = [], []
         for li, line in enumerate(p["script"]):
             wav = engine.speak(text=line["text"], ref=path, ref_text=p["anchor_text"], emotion=line["emotion"],
                                strength=1.0, seed=seed + 1 + li, out=work / f"cand{i:02d}_line{li:02d}.wav")
             if trim_cfg:
                 wav = vox.trim(wav, sr, **trim_cfg)
+            pieces.append(wav)
             said = asr(wav, sr)
             scores = judge(line["text"], wav, said)
             lines.append({"name": line["name"], "text": line["text"],
@@ -306,7 +313,12 @@ def cast(payload: dict, ctx: JobContext) -> HandlerResult:
             "transcript": heard[:1000], "embedding": ref_emb, "who": voice_judge.who(ref_wav, ref_sr, params),
             "lines": lines, "seconds": seconds, "sample_rate": ref_sr}))
         total += seconds
-    return HandlerResult(outputs, recipe={"engine": p["engine"], "designer": p["designer"],
+        joined, spans = vox.assemble(pieces, [gap] * max(len(pieces) - 1, 0), sr)
+        spoken.append(OutputFile(vox.write_wav(work / f"cand{i:02d}_lines.wav", joined, sr), "audio_lines", {
+            "index": i, "role": "cast_lines", "engine": p["engine"], "designer": p["designer"],
+            "lines": [{"name": x["name"], "start_s": round(a / sr, 2), "end_s": round(b / sr, 2)}
+                      for x, (a, b) in zip(lines, spans)], "seconds": round(len(joined) / sr, 2)}))
+    return HandlerResult(outputs + spoken, recipe={"engine": p["engine"], "designer": p["designer"],
                                           "description": p["description"], "seed": p["seed"], "n": p["n"],
                                           "script": p["script"]},
                          meta={"output_seconds": round(total, 2)})
