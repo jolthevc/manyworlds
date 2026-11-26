@@ -169,7 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, "
                                          "patterns, pilot (the influencer intelligence agent: scout, annotate, distill)")
-    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor", "data-audit", "graph-check"])
+    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor", "data-audit", "graph-check",
+                                       "vision-bench"])
     rs.add_argument("--apply", action="store_true", help="data-audit: clean what the data policy no longer allows "
                                                          "(contact details in bios, caption features backfilled)")
     rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
@@ -188,6 +189,10 @@ def build_parser() -> argparse.ArgumentParser:
                                                                  "already collected; pulls nothing")
     rs.add_argument("--dry-run", action="store_true", help="pilot, monitor: print the estimate, queue nothing")
     rs.add_argument("--estimate", type=int, help="monitor: $/month for a universe of N creators at the policy tier mix")
+    rs.add_argument("--assets", type=int, help="vision-bench: accepted image assets of the sandbox creator "
+                                               "(default intelligence.vision_bench.assets)")
+    rs.add_argument("--models", help="vision-bench: candidates, comma separated (default intelligence.vision_bench.models)")
+    rs.add_argument("--creator", help="vision-bench: one sandbox creator's handle (default every sandbox creator)")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
     rv.add_argument("--batch")
@@ -1122,12 +1127,35 @@ def _research(args, conn, pol) -> int:
         return _research_pilot(args, conn, pol)
     elif args.action == "monitor":
         return _research_monitor(args, conn, pol)
+    elif args.action == "vision-bench":
+        return _research_vision_bench(args, conn, pol)
     else:
         out = patterns.validate(pol)
         if args.seed and not out["problems"]:
             out["seeded"] = patterns.seed(conn, pol)
         _print({"cards": sorted(patterns.library(pol)["cards"]), **out})
         return 1 if out["problems"] else 0
+    return 0
+
+
+def _research_vision_bench(args, conn, pol) -> int:
+    """mw research vision-bench --assets N --models haiku,sonnet,opus --usd X [--creator H] [--dry-run]: the coded
+    section read by each candidate on our own accepted images, scored against the reference model
+    (manyworlds.research.vision_bench). --dry-run prints the estimate and calls nothing."""
+    from .research import vision_bench
+    cfg = pol.get("intelligence", "vision_bench", default={}) or {}
+    models = [m.strip() for m in (args.models or "").split(",") if m.strip()] or list(cfg.get("models") or [])
+    items = vision_bench.accepted_image_assets(conn, limit=int(args.assets or cfg.get("assets", 0)),
+                                               creator=args.creator)
+    est = vision_bench.estimate(pol, items=len(items), models=models)
+    if args.dry_run or args.usd is None:
+        _print({"dry_run": True, "assets_found": len(items), "estimate": est,
+                **({} if args.dry_run else {"note": "give --usd <cap> to run"})})
+        return 0
+    from .llm import Claude
+    out = vision_bench.run(conn, pol, Claude(conn, pol), items=items, models=models, usd_cap=args.usd,
+                           keep_reads=False)
+    _print({"estimate": est, **out})
     return 0
 
 

@@ -213,29 +213,29 @@ def purge(conn, policy: Policy, store, *, now: datetime | None = None) -> dict:
     # Amber (manyworlds.research.data_policy): third-party media is held only until it has been read. Once the post
     # has its vision read (and, for a video, its measurement), the media goes after media_after_read_hours; caption
     # text goes caption_days after it was fetched once read (its caption_features stay).
-    from .annotation import ANNOTATION_SCHEMA
+    from .annotation import READ_SCHEMAS   # a read under any schema (v1 or v2) counts as read
     from .data_policy import retention
     r = retention(policy)
     if r.get("media_after_read_hours") is not None:
         read_before = now - timedelta(hours=float(r["media_after_read_hours"]))
         for p in conn.execute(
                 """SELECT p.id, p.media FROM reference_posts p WHERE p.media <> '[]'::jsonb
-                   AND EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %(s)s
+                   AND EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = ANY(%(s)s)
                                AND a.updated_at < %(t)s)
                    AND (p.media_type <> 'video' OR EXISTS (SELECT 1 FROM reference_annotations m
                         WHERE m.post_id = p.id AND m.schema LIKE 'measure_%%')
                         OR NOT p.media @> '[{"kind": "video"}]'::jsonb)
-                   LIMIT %(n)s""", {"s": ANNOTATION_SCHEMA, "t": read_before, "n": limit}).fetchall():
+                   LIMIT %(n)s""", {"s": list(READ_SCHEMAS), "t": read_before, "n": limit}).fetchall():
             conn.execute("UPDATE reference_posts SET media = %s, media_purge_after = NULL WHERE id = %s",
                          (Jsonb(drop_media(p)), p["id"]))
             out["read_media_purged"] = out.get("read_media_purged", 0) + 1
     if r.get("caption_days") is not None:
         cleared = len(conn.execute(
             """UPDATE reference_posts p SET caption = NULL WHERE p.caption IS NOT NULL AND p.fetched_at < %(t)s
-               AND (EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %(s)s)
+               AND (EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = ANY(%(s)s))
                     OR p.fetched_at < %(hard)s)
                RETURNING p.id""",
-            {"t": now - timedelta(days=float(r["caption_days"])), "s": ANNOTATION_SCHEMA,
+            {"t": now - timedelta(days=float(r["caption_days"])), "s": list(READ_SCHEMAS),
              "hard": now - timedelta(days=float(r.get("caption_max_days", r["caption_days"])))}).fetchall())
         if cleared:
             out["captions_cleared"] = cleared

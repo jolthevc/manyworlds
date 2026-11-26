@@ -1723,6 +1723,111 @@ intelligence:
     distill: {min_posts: 6, min_creators: 3, high: 1.5, low: 0.8, max_cards: 12, examples: 6}
     # Estimates (USD) the cap checks before each step and the dry run adds up.
     estimate: {plan_call: 0.25, annotate_call: 0.004, distill_call: 0.06, measure_video: 0.001}
+  # The annotation's coded section (schema iia_v2, manyworlds.research.annotation.Coded; docs/research/
+  # 2026-11-25-annotation-v2.md): every field a controlled vocabulary, so distill can count and test it. The vision
+  # read is given these lists and answers only from them; a value outside its list is stored as "unknown" (never a
+  # failed read). Single-value fields take one name; multi-label fields a list (slide_roles is ordered, one per slide).
+  # Change the lists here, not in code; a renamed value only affects annotations read after the change.
+  # The read never sees the post's numbers (blind to performance); code attaches evidence afterwards.
+  annotation:
+    # Posts annotated under an older schema (iia_v1) are read again for the coded section when true (each read is
+    # charged and capped like any other); false keeps them as they are (distill reads both, the newest per post).
+    reread_older: false
+    # distill (intelligence.cluster) tests every coded label high vs low traction. A label carried by fewer than
+    # cluster_min_share of the cluster's high+low posts, or by fewer than cluster_min_posts of them, is skipped before
+    # testing (pooled over both groups, so the skip never looks at which side the posts are on) and is not counted in
+    # n_tests; every attribute tested is counted, so the Bonferroni q in store_card stays valid.
+    cluster_min_share: 0.1
+    cluster_min_posts: 2
+    # Numbers are tested as bands: {band: [low, high]} inclusive.
+    bands:
+      aspiration: {relatable: [1, 2], middle: [3, 3], aspirational: [4, 5]}
+      setting_changes: {none: [0, 0], one: [1, 1], several: [2, 1000]}
+    vocab:
+      # fashion
+      styling_category: [casual, smart_casual, minimal, streetwear, athleisure, sporty, business, evening, party,
+                         romantic_feminine, boho, vintage, preppy, y2k, edgy, quiet_luxury, resort, swim, loungewear,
+                         costume, other]
+      garments: [tshirt, tank_top, shirt_blouse, knit_sweater, cardigan, hoodie, crop_top, bodysuit, corset_top,
+                 blazer, jacket, coat, trench, leather_jacket, dress_mini, dress_midi, dress_maxi, slip_dress, skirt,
+                 jeans, trousers, shorts, leggings, sports_bra, swimsuit, bikini, coverup, pyjamas, robe, suit, uniform,
+                 sneakers, heels, boots, sandals, flats, other]
+      fit: [fitted, relaxed, oversized, tailored, flowy, cropped, layered, mixed]
+      palette: [neutral, monochrome, black_white, earth_tones, pastel, bright_bold, warm, cool, denim_blue,
+                all_black, all_white, colour_pop, mixed]
+      # grooming
+      hair: [down_straight, down_wavy, down_curly, natural_texture, ponytail, bun, half_up, braids, slicked_back,
+             short_crop, bob, wet_look, under_hat, covered, other]
+      makeup: [not_visible, bare, natural, soft_glam, full_glam, bold_lip, graphic_eye, editorial, sporty_fresh]
+      nails: [not_visible, natural, neutral_polish, colour_polish, french, nail_art, long_almond, short_square]
+      accessories: [sunglasses, glasses, hat, cap, beanie, headband, hair_clip, scarf, earrings, necklace, rings,
+                    bracelet, watch, handbag, tote, backpack, belt, phone, headphones, other]
+      jewelry_level: [none, minimal, moderate, statement]
+      # body and face (what she does, never who she is)
+      pose: [standing_straight, standing_contrapposto, walking, sitting, sitting_floor, lying, leaning, crouching,
+             mid_motion, mirror_selfie, arm_selfie, over_shoulder, back_to_camera, hands_only, no_person, other]
+      body_language: [open_relaxed, closed, poised, playful, dynamic, intimate_close, candid_unaware, other]
+      expression: [neutral, soft_smile, big_smile, laughing, smirk, pout, serious, sultry, surprised, eyes_closed,
+                   face_hidden, not_visible]
+      # composition and camera
+      composition: [centred, rule_of_thirds, symmetric, off_centre, negative_space, frame_within_frame, flat_lay,
+                    leading_lines, layered_depth, cluttered, other]
+      subject_scale: [no_person, detail, close_up, medium, cowboy, full_body, small_in_scene]
+      camera_angle: [eye_level, high_angle, low_angle, overhead, mirror, pov, other]
+      lighting_kind: [natural_daylight, golden_hour, blue_hour, overcast, window_light, direct_flash, indoor_warm,
+                      indoor_cool, neon_night, candle_low, studio, mixed]
+      candid_level: [candid, semi_candid, posed, editorial]
+      # place and story
+      environment: [home_interior, bedroom, bathroom, kitchen, living_room, cafe, restaurant, bar_club, street_city,
+                    shop_boutique, office, gym, spa, beach, pool, nature_park, mountains, countryside, car, hotel,
+                    airport_plane, event_venue, rooftop_terrace, studio_backdrop, other]
+      travel_context: [none, local_outing, city_break, beach_resort, nature_trip, road_trip, in_transit]
+      lifestyle_narrative: [morning_routine, night_routine, get_ready, outfit_showcase, night_out, date, friends_social,
+                            fitness, wellness_self_care, beauty, food_cooking, dining_out, coffee, work_study, travel,
+                            home_cosy, shopping, hobby_creative, luxury_treat, everyday_slice, milestone]
+      emotional_tone: [joyful, calm, confident, playful, romantic, nostalgic, moody, cosy, glamorous, funny,
+                       vulnerable, energetic, dreamy, empowered]
+      # commerce
+      product_integration: [none, incidental, featured, ad]
+      product_categories: [apparel, footwear, bags, jewelry, eyewear, beauty_makeup, skincare, haircare, fragrance,
+                           food, drink, tech, home_decor, fitness_gear, travel_hospitality, other]
+      # carousel only (unknown elsewhere)
+      slide_roles: [face, outfit, detail, scene, food, text, friends, other]
+      opener_has_face: ["yes", "no"]
+      # video only (unknown elsewhere)
+      face_in_first_second: ["yes", "no"]
+      opening: [face_talking, face_silent, text_overlay, action, reveal, product, scenery, question, pov, other]
+      movement_complexity: [still, simple, complex]
+      sound: [voice, music, both, ambient]
+      production_complexity: [trivial, simple, moderate, complex]
+      # against our capabilities (policy capabilities): could our pipeline make this now
+      renderable_now: ["yes", partly, "no"]
+  # The vision benchmark (manyworlds.research.vision_bench, `mw research vision-bench`): our own accepted assets read
+  # by each candidate model (roles vision_bench_<name> in llm.roles) for the coded section only, scored against the
+  # reference model's read: exact match per single-value field, Jaccard per multi-label field, position match for
+  # slide_roles, band match for numbers. Ledger agent research:vision_bench; a run stops before its --usd cap.
+  # estimate: tokens a read is assumed to cost before the first one is measured (an image at max_side ~1100 tokens).
+  # families: fields grouped for the report; "sufficient" thresholds per family are set from the first run.
+  vision_bench:
+    models: [haiku, sonnet, opus]
+    assets: 10                     # `mw research vision-bench` without --assets
+    reference: opus
+    effort: low
+    max_side: 1024                 # longest image side sent (px); larger images are scaled down as JPEG
+    jpeg_quality: 85
+    image_max_bytes: 3000000       # after scaling; larger ones are skipped
+    images_per_item: 4
+    estimate: {image_tokens: 1100, text_tokens: 3500, output_tokens: 700}
+    families:
+      fashion: [styling_category, garments, fit, palette, accessories, jewelry_level]
+      grooming: [hair, makeup, nails]
+      body: [pose, body_language, expression]
+      composition: [composition, subject_scale, camera_angle, lighting_kind, candid_level]
+      place_story: [environment, travel_context, lifestyle_narrative, emotional_tone, aspiration]
+      commerce: [product_integration, product_categories]
+      carousel: [slide_roles, opener_has_face]
+      video: [face_in_first_second, opening, setting_changes, movement_complexity, sound, production_complexity,
+              renderable_now]
 
 creator_lab:
   # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
@@ -3614,6 +3719,11 @@ llm:
     research_deep: claude-sonnet-5-5    # research desk, deep questions (web search and fetch)
     desk_claims: claude-haiku-5-5       # sorts a researched answer into classified claims
     iia_synthesize: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
+    # The vision benchmark (manyworlds.research.vision_bench): one role per candidate, no fallback (a fallback would
+    # hide which model answered). Add a candidate as vision_bench_<name> and pass --models <name>.
+    vision_bench_haiku: claude-haiku-5-5
+    vision_bench_sonnet: claude-sonnet-5-5
+    vision_bench_opus: claude-opus-5-5
     # Casting (manyworlds.brain.casting): 3-5 concepts in one call (judgement and taste: Opus, once per launch) and one
     # judge call scoring them on the rubric (another model than the writer's, so it does not grade its own work).
     casting: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
