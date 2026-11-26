@@ -206,6 +206,12 @@ def brief(conn, policy: Policy, *, use: str, tags: list[str] | None = None, k: i
         mix = ", ".join(f"{kinds.count(kd)} {kd.replace('_', ' ')}" for kd in KINDS if kinds.count(kd))
         lines.append(f"- {r['implications'].get(use)} (from: {r['summary'][:160]}; evidence: {mix or 'none'}; "
                      f"{r['created_at']:%Y-%m-%d})")
+    # The research questions answered for this use (brain.research_questions: tested on annotated posts, labelled
+    # confirmed or UNCONFIRMED), so every agent that reads the desk also reads what the data said.
+    from ..brain import research_questions
+    answered = research_questions.brief(conn, policy, use)
+    if answered:
+        lines.append("Research questions answered (correlation in public posts, never proof for ours):\n" + answered)
     return "\n".join(lines)
 
 

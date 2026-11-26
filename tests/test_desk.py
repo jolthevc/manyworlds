@@ -139,3 +139,12 @@ def test_a_question_that_found_no_sources_is_not_stored_and_is_asked_again(conn,
     assert conn.execute("SELECT count(*) n FROM research_findings").fetchone()["n"] == 0
     desk.ask(conn, policy, llm, "anything new?")
     assert llm.web_calls == 2
+
+
+def test_agents_reading_the_desk_also_get_answered_research_questions(conn, policy):
+    from psycopg.types.json import Jsonb
+    conn.execute("INSERT INTO research_questions (requester, question, spec, kind, status, result, answered_at) "
+                 "VALUES ('casting', 'Do candid travel photos outperform?', %s, 'data', 'answered', %s, now())",
+                 (Jsonb({"uses": ["casting"]}), Jsonb({"results": []})))
+    text = desk.brief(conn, policy, use="casting")
+    assert "Research questions answered" in text and "candid travel" in text
