@@ -1394,8 +1394,18 @@ research:
               profile_posts: 12}          # apify~instagram-profile-scraper embeds the latest 12 posts in one item
       scrapecreators: {env: SCRAPECREATORS_API_KEY, platforms: [instagram, tiktok], terms: public_unstated,
                        usd_per_credit: 0.00188, max_pages: 5}   # $47 for 25,000 credits (2026-11-24); 12 posts a page
+      # Business Discovery (docs/research/2026-11-25-business-discovery-notes.md; Graph v27). Fields are policy so the
+      # first live call can correct them without a deploy: name and profile_picture_url are no longer marked Public
+      # (asking for a field we may not read can fail the whole call), and like_count / comments_count appear in Meta's
+      # examples but are not marked Public. UNVERIFIED until our professional account is connected: run
+      # `mw research graph-check <handle>` and record what came back.
       graph: {env: META_SYSTEM_USER_TOKEN, platforms: [instagram], terms: official, profile_posts: 12, max_pages: 5,
-              max_calls_per_hour: 180}    # platform rate limit: 200 calls/user/hour; a margin kept
+              max_calls_per_hour: 180,    # platform rate limit: 200 calls/user/hour; a margin kept
+              user_fields: [username, biography, followers_count, media_count, website],
+              media_fields: [id, shortcode, caption, like_count, comments_count, media_type, media_product_type,
+                             media_url, thumbnail_url, permalink, timestamp, view_count, reposts_count,
+                             media_audio_type, is_shared_to_feed],
+              child_fields: [media_url, media_type]}
       hikerapi: {enabled: false, platforms: [instagram], terms: private_api}   # not built (see the research doc)
 
 # Trend watcher (manyworlds.research.trends; `mw trends tick|loop|brief <niche>|spend`; Fly process `trends`).

@@ -206,7 +206,14 @@ def graph_post(m: dict, handle: str, followers=None) -> dict | None:
     return {"external_id": str(ext), "shortcode": code, "url": m.get("permalink"), "media_type": media,
             "posted_at": _ts(m.get("timestamp")), "caption": caption[:2000],
             "metrics": _clean({"likes": m.get("like_count"), "comments": m.get("comments_count"),
-                               "views": m.get("view_count") if media == "video" else None}),
+                               "views": m.get("view_count") if media == "video" else None,
+                               "reposts": m.get("reposts_count")}),
+            # What Business Discovery withheld for this post (hidden likes; no media_url for licensed audio or
+            # downloads off): analysis treats it as missing, never as zero.
+            "missing": [k for k, present in (("likes", "like_count" in m), ("comments", "comments_count" in m),
+                                             ("views", media != "video" or "view_count" in m),
+                                             ("media", bool(m.get("media_url") or kids))) if not present],
+            "audio_type": m.get("media_audio_type"),
             "images": [k.get("media_url") for k in kids if k.get("media_url") and k.get("media_type") != "VIDEO"]
                       or ([m.get("thumbnail_url") or m.get("media_url")] if media != "carousel"
                           and (m.get("thumbnail_url") or m.get("media_url")) else []),
@@ -418,10 +425,32 @@ class GraphProvider(Provider):
         token = os.environ[self.cat.get("env", "META_SYSTEM_USER_TOKEN")]
         return instagram.graph("GET", f"/{self._ig_id(conn)}", {"fields": fields}, token=token)
 
+    def _media_fields(self) -> str:
+        media = self.cat.get("media_fields")
+        if not media:
+            return GRAPH_MEDIA
+        kids = ",".join(self.cat.get("child_fields") or ["media_url", "media_type"])
+        return ",".join(media) + f",children{{{kids}}}"
+
     def _user(self, handle: str, n: int, after: str | None = None) -> str:
         page = f".after({after})" if after else ""
-        return (f"business_discovery.username({handle}){{username,name,biography,followers_count,media_count,"
-                f"media{page}.limit({n}){{{GRAPH_MEDIA}}}}}")
+        user = ",".join(self.cat.get("user_fields") or ["username", "biography", "followers_count", "media_count"])
+        return f"business_discovery.username({handle}){{{user},media{page}.limit({n}){{{self._media_fields()}}}}}"
+
+    def check(self, handle: str, n: int = 3) -> dict:
+        """One live call on a known Business/Creator account: which requested fields came back (profile and posts),
+        so the unverified parts of the integration (docs/research/2026-11-25-business-discovery-notes.md) are settled
+        by evidence. Nothing is stored."""
+        bd = (self._get(self.conn, self._user(handle, n)) or {}).get("business_discovery") or {}
+        media = (bd.get("media") or {}).get("data") or []
+        wanted_user = list(self.cat.get("user_fields") or [])
+        wanted_media = list(self.cat.get("media_fields") or [])
+        return {"handle": handle, "profile_fields_returned": sorted(k for k in bd if k != "media"),
+                "profile_fields_missing": [f for f in wanted_user if f not in bd],
+                "posts": len(media),
+                "media_fields_seen": sorted({k for m in media for k in m}),
+                "media_fields_never_seen": [f for f in wanted_media if not any(f in m for m in media)],
+                "paging": bool(((bd.get("media") or {}).get("paging") or {}).get("cursors"))}
 
     def fetch_profiles(self, platform: str, handles: list[str]):
         out = []

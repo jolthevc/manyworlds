@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reap", help="mark jobs dead whose final lease expired")
     rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, "
                                          "patterns, pilot (the influencer intelligence agent: scout, annotate, distill)")
-    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor", "data-audit"])
+    rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor", "data-audit", "graph-check"])
     rs.add_argument("--apply", action="store_true", help="data-audit: clean what the data policy no longer allows "
                                                          "(contact details in bios, caption features backfilled)")
     rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
@@ -1099,6 +1099,13 @@ def _research(args, conn, pol) -> int:
     """mw research forget|purge|patterns (manyworlds.research.references, manyworlds.brain.patterns)."""
     from .brain import patterns
     from .research import references
+    if args.action == "graph-check":   # one live Business Discovery call: which fields Meta returns to us
+        from .research.providers import GraphProvider
+        if not args.who:
+            print("usage: mw research graph-check <business or creator handle>")
+            return 2
+        _print(GraphProvider(pol, conn=conn).check(args.who.lstrip("@")))
+        return 0
     if args.action == "forget":
         if not args.who:
             print("usage: mw research forget <handle | profile url | post url>")
