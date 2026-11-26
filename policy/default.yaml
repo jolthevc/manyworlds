@@ -111,19 +111,34 @@ gpu_pools:
   # holding its weights, then free space measured (volume_order).
   # prune: the old diffusers talk engine's weights (Wan2.1 I2V 480P 77 GB, InfiniteTalk 9 GB under MW_MODEL_DIR) are
   # unused since talk runs on ComfyUI; the first v26 machine found the volume 10 GB free because they were kept.
+  # prune_idle_minutes: a listed path written to this recently is in use by a machine still running and is kept until a
+  # later boot (owner 2026-11-26: no worker touches another worker's active files). The owner is warned (event
+  # volume_filling, once a day) when the latest reading leaves less than min_free_gb plus the largest family headroom:
+  # a family not yet on the volume could no longer be placed there.
   runpod_secure_l40s_vol: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                            score_as: runpod_secure_l40s,
                            network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
-                                            prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6,
+                                            prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
                                             headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10, tts: 15,
                                                                     music: 12}}}
+  # Other cards on the same volume (owner 2026-11-26: allowed when cost per accepted asset holds up). RunPod's US-NC-1
+  # carried only four GPU types on 2026-11-26: L40S, RTX PRO 6000 Blackwell Server (96 GB, $2.69/h), H200 ($5.29/h)
+  # and RTX 4090 (24 GB, $0.89/h); no A40, A6000, L40 or RTX 6000 Ada there. The Blackwell clears the talk/comfy floor
+  # (44 GB) but costs 2.5x the L40S an hour, so it pays only if it renders 2.5x faster: unmeasured, and the image's
+  # attention kernels are untested on Blackwell (sm_120). Defined for a pinned measurement (`mw bench ... --pools`)
+  # only; it is in no kind's pools until that measurement shows a lower all-in cost per accepted clip.
+  runpod_secure_pro6000_vol: {provider: runpod, gpu: rtxpro6000, usd_per_hour: 2.69, interruptible: false, cloud: SECURE,
+                              network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
+                                               prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
+                                               headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10,
+                                                                       tts: 15, music: 12}}}
   # A second weights volume in another data centre (US-NC-1's L40S stock was LOW on 2026-11-22): NOT CREATED. Creating
   # it is a provider resource and costs ~$10.50/month: the owner's decision. Until `id` is set the pool is skipped
   # (volume_not_created) and nothing is rented for it; then set id and data_center, and add it to fixed_costs.
   runpod_secure_l40s_vol2: {provider: runpod, gpu: l40s, usd_per_hour: 1.09, interruptible: false, cloud: SECURE,
                             score_as: runpod_secure_l40s,
                             network_volume: {id: null, data_center: null, path: /models, size_gb: 150,
-                                             prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6,
+                                             prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
                                              headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10,
                                                                      tts: 15, music: 12}}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
@@ -288,6 +303,7 @@ gpu_names:
   a40:      {vast: "A40", runpod: "NVIDIA A40"}
   l40s:     {vast: "L40S", runpod: "NVIDIA L40S"}
   h100:     {vast: "H100 SXM", runpod: "NVIDIA H100 80GB HBM3"}
+  rtxpro6000: {runpod: "NVIDIA RTX PRO 6000 Blackwell Server Edition"}
 
 # The autoscaler starts machines when jobs are waiting and stops them when the queue
 # drains. A provider is skipped when its API key isn't configured.
@@ -1949,11 +1965,10 @@ operations: {mode: paused, test_batch_prefixes: [bench-, test-, research-], whil
              test_overlay: {path: policy/test_overlay.yaml, batches: [test-breadth-]}}
 
 # What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).
-# required: no machine starts without the scoped credential; shared: fall back to the control plane's own.
-# worker_storage is shared until a bucket-scoped R2 token exists (WORKER_AWS_ACCESS_KEY_ID/_SECRET_ACCESS_KEY).
-# worker_storage: presigned gives machines no storage key at all: every job carries presigned links for what it reads
-# and writes (manyworlds.deploy.presign), signed on the control plane by the autoscaler tick. Off (shared) until both
-# GPU worker images are rebuilt with it and it has run on a GPU.
+# required: no machine starts without the scoped credential (WORKER_DATABASE_URL; for storage a bucket-scoped
+# WORKER_AWS_ACCESS_KEY_ID/_SECRET_ACCESS_KEY). presigned (storage only): machines hold no storage key at all; every job
+# carries presigned links for what it reads and writes (manyworlds.deploy.presign), signed on the control plane by the
+# autoscaler tick. There is no fallback to the control plane's own credentials (owner 2026-11-26).
 security:
   worker_database: required
   # presigned (owner 2026-11-25: rented machines must not hold unrestricted storage keys). Passed one image job on a

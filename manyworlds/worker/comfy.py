@@ -304,38 +304,8 @@ def _remote_size(repo: str, name: str, token) -> int | None:
 def _volume_lock(models_dir: Path, wait_s: float = 3600, stale_s: float = 7200):
     """One downloader per weights volume: two machines writing the same files on a shared network volume broke
     huggingface_hub's download records (2026-11-22: every story clip failed with UnboundLocalError 'metadata')."""
-    import contextlib
-
-    @contextlib.contextmanager
-    def held():
-        lock = models_dir / ".mw-download.lock"
-        models_dir.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + wait_s
-        while True:
-            try:
-                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                try:
-                    os.write(fd, str(os.getpid()).encode())
-                    os.close(fd)
-                except OSError:   # a full volume: never leave a lock behind that blocks every machine for hours
-                    lock.unlink(missing_ok=True)
-                    raise
-                break
-            except FileExistsError:
-                try:
-                    if time.time() - lock.stat().st_mtime > stale_s:   # a machine died holding it
-                        lock.unlink(missing_ok=True)
-                        continue
-                except FileNotFoundError:
-                    continue
-                if time.monotonic() > deadline:
-                    raise RuntimeError("another machine has been downloading weights for too long") from None
-                time.sleep(10)
-        try:
-            yield
-        finally:
-            lock.unlink(missing_ok=True)
-    return held()
+    from . import volume
+    return volume.exclusive(models_dir / ".mw-download.lock", wait_s=wait_s, stale_s=stale_s, what="weights")
 
 
 def prune_other_weights(models_dir: Path, *, partial: bool = True) -> list[str]:
@@ -356,8 +326,14 @@ def prune_other_weights(models_dir: Path, *, partial: bool = True) -> list[str]:
 def ensure_weights(models_dir: Path, weights: dict | None = None, download=None, remote_size=None,
                    prune: bool = False) -> None:
     """Every weight file in place, complete (its remote size), downloaded once per volume. A failed download
-    clears huggingface_hub's records for that file and the partial file, then tries once more from scratch."""
-    from . import weights_log
+    clears huggingface_hub's records for that file and the partial file, then tries once more from scratch.
+
+    Safe on a shared volume (owner 2026-11-26): one downloader at a time (volume.exclusive); before fetching, the bytes
+    still missing plus the volume's floor must fit (volume.room, else the job is released as a machine fault rather
+    than dying half-written); after fetching, a file whose size differs from the remote size is deleted and the
+    download fails, so a truncated file is never left in place for the next machine to load. huggingface_hub writes
+    to a temporary file and renames it into place, so a reader never sees a partial file under the real name."""
+    from . import volume, weights_log
     token = os.environ.get("HF_TOKEN") or None
     if download is None:
         from huggingface_hub import hf_hub_download as download
@@ -368,7 +344,7 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
             target = models_dir / folder / name
             size = remote_size(repo, name, token)
             if not (target.is_file() and (size is None or target.stat().st_size == size)):
-                todo.append((folder, repo, name))
+                todo.append((folder, repo, name, size))
             else:
                 weights_log.note(folder, name, "reused", target.stat().st_size / 1024 ** 3)
     if not todo:
@@ -380,7 +356,10 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
             removed = prune_other_weights(models_dir)
             if removed:
                 print(f"pruned from the weights volume: {', '.join(removed[:20])}", flush=True)
-        for folder, repo, name in todo:
+        need = sum(max((s or 0) - ((models_dir / f / n).stat().st_size if (models_dir / f / n).is_file() else 0), 0)
+                   for f, _r, n, s in todo)
+        volume.room(models_dir, need)
+        for folder, repo, name, _size in todo:
             local = models_dir / folder
             target = local / name
             size = remote_size(repo, name, token)
@@ -396,6 +375,10 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
                     p.unlink(missing_ok=True)
                 target.unlink(missing_ok=True)
                 download(repo, name, local_dir=str(local), token=token, force_download=True)
+            got = target.stat().st_size if target.is_file() else None
+            if got is None or (size is not None and got != size):
+                target.unlink(missing_ok=True)
+                raise RuntimeError(f"weights download incomplete: {folder}/{name} is {got} bytes, expected {size}")
             weights_log.note(folder, name, "downloaded",
                              target.stat().st_size / 1024 ** 3 if target.is_file() else None, time.monotonic() - t0)
 

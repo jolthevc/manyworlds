@@ -39,3 +39,14 @@ def test_a_load_that_still_fails_on_a_corrupt_file_forgets_the_repo_and_retries_
     assert hf_cache.load("openbmb/VoxCPM2", loader) == "model" and calls == [True, False]
     with pytest.raises(RuntimeError):
         hf_cache.load("openbmb/VoxCPM2", lambda: (_ for _ in ()).throw(RuntimeError("cuda")))   # not a corrupt file
+
+
+def test_a_load_holds_the_repos_lock_and_never_touches_a_blob_being_written(tmp_path, monkeypatch):
+    root = _cache(tmp_path, empty_config=False)
+    (root / "blobs" / "next.incomplete").write_bytes(b"")          # another download, just started
+    monkeypatch.setattr(hf_cache, "_hub", lambda: tmp_path)
+    lock = tmp_path / ".mw-locks" / f"{root.name}.lock"
+    seen = []
+    assert hf_cache.load("openbmb/VoxCPM2", lambda: seen.append(lock.exists()) or "model") == "model"
+    assert seen == [True] and not lock.exists()                    # held while loading, released after
+    assert (root / "blobs" / "next.incomplete").exists()

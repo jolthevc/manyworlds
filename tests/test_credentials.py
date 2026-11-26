@@ -79,11 +79,25 @@ def test_no_machine_starts_without_the_scoped_login(conn, policy, monkeypatch):
         a for a in actions if a.get("reason") == "worker_credentials").items()
 
 
-def test_shared_mode_falls_back_for_development(conn, policy, monkeypatch):
+def test_control_plane_credentials_never_reach_a_rented_machine(policy, monkeypatch):
+    # owner 2026-11-26: the old `shared` mode handed out the control plane's own database URL and R2 key
+    import pytest
     monkeypatch.delenv("WORKER_DATABASE_URL", raising=False)
-    monkeypatch.setenv("DATABASE_URL", "postgresql://dev:dev@localhost/mw")
+    monkeypatch.delenv("WORKER_AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("WORKER_AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://owner:cp@db/mw")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "cp-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "cp-secret")
     pol = policy_mod.from_dict({**policy.body, "security": {"worker_database": "shared", "worker_storage": "shared"}})
-    assert credentials.worker_env(pol)["DATABASE_URL"] == "postgresql://dev:dev@localhost/mw"
+    assert len(credentials.missing(pol)) == 2
+    with pytest.raises(credentials.MissingWorkerCredentials):
+        credentials.worker_env(pol)
+    monkeypatch.setenv("WORKER_DATABASE_URL", "postgresql://w:w@db/mw")
+    monkeypatch.setenv("WORKER_AWS_ACCESS_KEY_ID", "scoped-key")
+    monkeypatch.setenv("WORKER_AWS_SECRET_ACCESS_KEY", "scoped-secret")
+    env = credentials.worker_env(pol)
+    assert env["DATABASE_URL"] == "postgresql://w:w@db/mw" and env["AWS_ACCESS_KEY_ID"] == "scoped-key"
+    assert not {"cp-key", "cp-secret", "postgresql://owner:cp@db/mw"} & set(env.values())
 
 
 def test_a_rented_host_cannot_queue_brain_work_forge_the_ledger_or_extend_its_deadline(conn):

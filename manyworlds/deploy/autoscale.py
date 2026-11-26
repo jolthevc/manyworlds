@@ -315,7 +315,37 @@ def volume_env(vol: dict) -> dict[str, str]:
         env["MW_VOLUME_SIZE_GB"] = str(vol["size_gb"])
     if vol.get("min_free_gb") is not None:
         env["MW_VOLUME_MIN_FREE_GB"] = str(vol["min_free_gb"])
+    if vol.get("prune_idle_minutes") is not None:
+        env["MW_VOLUME_PRUNE_IDLE_MINUTES"] = str(vol["prune_idle_minutes"])
     return env
+
+
+def volume_filling(conn, policy: Policy, now: datetime) -> list[dict]:
+    """Volumes whose latest reading (any machine's boot check, last 24 h) leaves less than min_free_gb plus the largest
+    family headroom: still usable, but a family not yet on the volume could no longer be placed there. Each is told to
+    the owner once a day (event volume_filling) before it becomes volume_low."""
+    from .. import notify
+    out, seen = [], set()
+    for pool, p in (policy.get("gpu_pools", default={}) or {}).items():
+        vol = (p or {}).get("network_volume") or {}
+        if not vol.get("id") or vol["id"] in seen or vol.get("min_free_gb") is None:
+            continue
+        seen.add(vol["id"])
+        warn = float(vol["min_free_gb"]) + max([float(v) for v in (vol.get("headroom_gb_by_family") or {}).values()]
+                                               or [0.0])
+        last = conn.execute(
+            """SELECT name, volume_free_gb, volume_low, volume_checked_at FROM gpu_groups
+               WHERE pool = ANY(%s) AND volume_checked_at > %s ORDER BY volume_checked_at DESC LIMIT 1""",
+            (_sharing(policy, vol), now - timedelta(hours=24))).fetchone()
+        if not last or last["volume_low"] or float(last["volume_free_gb"]) >= warn:
+            continue
+        item = {"volume": vol["id"], "pool": pool, "free_gb": float(last["volume_free_gb"]), "warn_below_gb": warn,
+                "size_gb": vol.get("size_gb"), "machine": last["name"],
+                "checked_at": last["volume_checked_at"].isoformat()}
+        notify.owner_event(conn, "volume_filling", subject={"volume": vol["id"]}, payload=item,
+                           dedupe_key=f"volume_filling:{vol['id']}:{now:%Y-%m-%d}")
+        out.append({"action": "volume_filling", **item})
+    return out
 
 
 def volume_low(conn, policy: Policy, pool: str, now: datetime) -> dict | None:
@@ -1063,9 +1093,10 @@ def notify_owner(conn, policy: Policy, actions: list[dict], now: datetime | None
     from .. import notify
     now = now or datetime.now(timezone.utc)
     try:
+        filling = volume_filling(conn, policy, now)
         notify.from_autoscaler(conn, policy, actions, now)
         sent = notify.deliver(conn, policy, now=now)
-        return [{"action": "notified", "items": len(sent)}] if sent else []
+        return filling + ([{"action": "notified", "items": len(sent)}] if sent else [])
     except Exception as e:  # noqa: BLE001
         return [{"action": "notify_failed", "error": redact(f"{type(e).__name__}: {e}")[:300]}]
 

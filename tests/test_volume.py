@@ -74,6 +74,9 @@ def test_a_worker_on_a_full_volume_records_it_and_gives_its_machine_up(conn, dat
     monkeypatch.setenv("MW_GROUP", "mw-talk-l40s-runpod-v1")
     monkeypatch.setattr(runner, "gpu_memory_gb", lambda: None)
     _file(tmp_path / "longcat" / "w", size=1024)
+    import os, time
+    old = time.time() - 3 * 3600
+    os.utime(tmp_path / "longcat" / "w", (old, old)); os.utime(tmp_path / "longcat", (old, old))   # idle: no machine writes it
     for k, v in autoscale.volume_env({**policy.pool(VOL_POOL)["network_volume"], "path": str(tmp_path)}).items():
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(volume.shutil, "disk_usage", lambda p: type("U", (), {"free": 3 * GB})())
@@ -101,6 +104,7 @@ def test_a_volume_machine_is_told_how_to_check_its_volume(conn, policy):
     assert env["MW_VOLUME_PATH"] == vol["path"] and env["MW_VOLUME_PRUNE"] == ",".join(vol["prune"])
     assert float(env["MW_VOLUME_MIN_FREE_GB"]) == vol["min_free_gb"]
     assert float(env["MW_VOLUME_SIZE_GB"]) == vol["size_gb"]
+    assert float(env["MW_VOLUME_PRUNE_IDLE_MINUTES"]) == vol["prune_idle_minutes"]
 
 
 def test_the_autoscaler_routes_around_a_low_volume_and_tells_the_owner(conn, policy):
@@ -144,3 +148,73 @@ def test_a_low_reading_does_not_block_a_volume_whose_pending_prune_frees_enough(
     conn.execute("UPDATE gpu_groups SET volume_inventory = %s WHERE name = 'mw-talk-l40s-runpod-inv'",
                  (Jsonb({"mw/comfy": 51.5}),))
     assert autoscale.volume_low(conn, policy, VOL_POOL, T0)          # nothing listed would free space: still low
+
+
+# --- owner 2026-11-26: proactive capacity, atomic downloads, no worker touching another's active files --------------
+
+def test_prune_keeps_a_listed_path_another_machine_is_writing(tmp_path):
+    import os
+    import time
+    _file(tmp_path / "longcat" / "fresh.safetensors")              # written just now: a machine still uses it
+    _file(tmp_path / "old" / "w")
+    old = time.time() - 3 * 3600
+    for p in (tmp_path / "old" / "w", tmp_path / "old"):
+        os.utime(p, (old, old))
+    out = volume.prune(tmp_path, ["longcat", "old"], idle_minutes=60)
+    assert (tmp_path / "longcat" / "fresh.safetensors").exists() and not (tmp_path / "old").exists()
+    assert [o for o in out if o.get("active")][0]["path"].endswith("longcat")
+
+
+def test_a_download_that_cannot_fit_is_refused_before_it_starts_as_a_machine_fault(tmp_path, monkeypatch):
+    from manyworlds.worker import comfy
+    monkeypatch.setattr(volume.shutil, "disk_usage", lambda p: type("U", (), {"free": 20 * GB})())
+    for k, v in {"MW_VOLUME_PATH": str(tmp_path), "MW_VOLUME_MIN_FREE_GB": "15"}.items():
+        monkeypatch.setenv(k, v)
+    calls = []
+    with pytest.raises(volume.VolumeFull) as e:
+        comfy.ensure_weights(tmp_path / "mw" / "comfy", {"vae": [("r", "big.safetensors")]},
+                             download=lambda *a, **k: calls.append(a), remote_size=lambda *a: 10 * GB)
+    assert calls == [] and runner.is_worker_fault(e.value) and not runner.is_code_fault(e.value)
+    assert not (tmp_path / "mw" / "comfy" / ".mw-download.lock").exists()
+    assert volume.room(tmp_path / "mw", 4 * GB) == 20             # 4 + 15 fits in 20
+
+
+def test_a_truncated_download_is_deleted_never_left_for_the_next_machine(tmp_path):
+    from manyworlds.worker import comfy
+
+    def short(repo, name, local_dir, token, **k):
+        _file(tmp_path / "vae" / name, 7)
+    with pytest.raises(RuntimeError, match="incomplete"):
+        comfy.ensure_weights(tmp_path, {"vae": [("r", "w.safetensors")]}, download=short,
+                             remote_size=lambda *a: 10)
+    assert not (tmp_path / "vae" / "w.safetensors").exists() and not (tmp_path / ".mw-download.lock").exists()
+
+
+def test_a_lock_is_kept_fresh_while_held_and_a_dead_holders_lock_is_taken_over(tmp_path):
+    import os
+    import time
+    lock = tmp_path / "x.lock"
+    lock.write_text("dead")
+    os.utime(lock, (time.time() - 100, time.time() - 100))
+    with volume.exclusive(lock, wait_s=5, stale_s=2, poll_s=0.05):
+        assert lock.exists()
+        before = lock.stat().st_mtime
+        time.sleep(1.2)
+        assert lock.stat().st_mtime > before                       # the holder's heartbeat
+        with pytest.raises(RuntimeError, match="too long"):        # a live holder is waited on, never taken over
+            with volume.exclusive(lock, wait_s=0.3, poll_s=0.05):
+                pass
+    assert not lock.exists()
+
+
+def test_the_owner_hears_before_a_volume_fills(conn, policy):
+    vol = policy.pool(VOL_POOL)["network_volume"]
+    warn = vol["min_free_gb"] + max(vol["headroom_gb_by_family"].values())
+    _machine(conn, "mw-talk-l40s-runpod-f1", volume_low=False, volume_free_gb=warn - 5,
+             volume_checked_at=T0 - timedelta(minutes=5))
+    out = autoscale.volume_filling(conn, policy, T0)
+    assert out and out[0]["free_gb"] == warn - 5 and out[0]["warn_below_gb"] == warn
+    autoscale.volume_filling(conn, policy, T0 + timedelta(hours=1))
+    assert conn.execute("SELECT count(*) n FROM events WHERE type = 'volume_filling'").fetchone()["n"] == 1   # once a day
+    conn.execute("UPDATE gpu_groups SET volume_free_gb = %s", (warn + 1,))
+    assert autoscale.volume_filling(conn, policy, T0 + timedelta(days=1)) == []

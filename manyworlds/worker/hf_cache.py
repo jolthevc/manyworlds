@@ -4,13 +4,20 @@ When the volume filled on 2026-11-24 ("Disk quota exceeded"), downloads in progr
 HF_HOME/hub. huggingface_hub treats a present file as downloaded, so every later machine loaded an empty config.json
 and failed (VoxCPM2: JSONDecodeError at from_pretrained). `heal(repo)` deletes a repo's zero-byte blobs and the
 snapshot links that point at them, so the next load fetches just those files again; `forget(repo)` drops the
-repo's whole cache entry, for a load that still fails on a corrupt file. Public model files only."""
+repo's whole cache entry, for a load that still fails on a corrupt file. Public model files only.
+
+`load(repo, loader)` holds a per-repo lock on the volume while it heals and loads (worker.volume.exclusive): two
+machines sharing the volume never fetch the same repo at once, and one machine's healing never deletes a file
+another is still writing (huggingface_hub's own file locks are unreliable on a network filesystem). A blob still
+being written (`*.incomplete`) is never touched."""
 
 from __future__ import annotations
 
 import os
 import shutil
 from pathlib import Path
+
+LOCK_WAIT_S = 1800   # a first download of the largest repo we load this way (Whisper large-v3, ~3 GB) fits in it
 
 
 def _hub() -> Path:
@@ -27,6 +34,8 @@ def heal(repo: str, hub: Path | None = None) -> list[str]:
     root = repo_dir(repo, hub)
     removed = []
     for blob in (root / "blobs").glob("*") if (root / "blobs").is_dir() else []:
+        if blob.name.endswith(".incomplete"):
+            continue   # being written: by this machine's own earlier attempt or, without the lock, another machine
         if blob.is_file() and blob.stat().st_size == 0:
             blob.unlink(missing_ok=True)
             removed.append(f"blobs/{blob.name}")
@@ -52,12 +61,16 @@ def forget(repo: str, hub: Path | None = None) -> bool:
 
 
 def load(repo: str, loader, *, corrupt=(ValueError,)):
-    """`loader()` after healing the repo's cache; once more after forgetting it if it fails on a corrupt file
-    (json.JSONDecodeError is a ValueError; safetensors header errors are too)."""
-    heal(repo)
-    try:
-        return loader()
-    except corrupt:
-        if not forget(repo):
-            raise
-        return loader()
+    """`loader()` after healing the repo's cache, under the repo's lock; once more after forgetting the repo if it
+    fails on a corrupt file (json.JSONDecodeError is a ValueError; safetensors header errors are too)."""
+    from . import volume
+    hub = _hub()
+    with volume.exclusive(hub / ".mw-locks" / f"{repo_dir(repo, hub).name}.lock", wait_s=LOCK_WAIT_S,
+                          what=f"loading {repo}"):
+        heal(repo, hub)
+        try:
+            return loader()
+        except corrupt:
+            if not forget(repo, hub):
+                raise
+            return loader()

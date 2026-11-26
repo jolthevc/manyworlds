@@ -10,8 +10,10 @@ they never get the control plane's own credentials:
             for exactly the objects it reads and writes (manyworlds.deploy.presign).
 
 Policy `security.worker_database` / `security.worker_storage`: `required` refuses to launch a machine without
-the scoped credential; `shared` falls back to the control plane's own (development only); `presigned`
-(storage only) satisfies the scoping with no credential.
+the scoped credential; `presigned` (storage only) satisfies the scoping with no credential. There is no fallback to
+the control plane's own database URL or storage key (owner 2026-11-26: unrestricted credentials never reach a rented
+machine again); the old `shared` mode is refused like a missing credential. Local development never calls this: its
+worker containers get their environment from docker compose.
 """
 
 from __future__ import annotations
@@ -35,18 +37,14 @@ class MissingWorkerCredentials(RuntimeError):
     pass
 
 
-def _required(policy: Policy, what: str) -> bool:
-    return str(policy.get("security", f"worker_{what}", default="required")) == "required"
-
-
 def missing(policy: Policy) -> list[str]:
-    """Scoped credentials the policy requires that this environment lacks."""
+    """Scoped credentials this environment lacks for launching a rented machine."""
     out = []
-    if _required(policy, "database") and not os.environ.get("WORKER_DATABASE_URL"):
+    if not os.environ.get("WORKER_DATABASE_URL"):
         out.append("WORKER_DATABASE_URL")
-    if _required(policy, "storage") and not (os.environ.get("WORKER_AWS_ACCESS_KEY_ID")
-                                             and os.environ.get("WORKER_AWS_SECRET_ACCESS_KEY")):
-        out.append("WORKER_AWS_ACCESS_KEY_ID/WORKER_AWS_SECRET_ACCESS_KEY")
+    if not presign.enabled(policy) and not (os.environ.get("WORKER_AWS_ACCESS_KEY_ID")
+                                            and os.environ.get("WORKER_AWS_SECRET_ACCESS_KEY")):
+        out.append("WORKER_AWS_ACCESS_KEY_ID/WORKER_AWS_SECRET_ACCESS_KEY (or security.worker_storage: presigned)")
     return out
 
 
@@ -56,16 +54,13 @@ def worker_env(policy: Policy) -> dict[str, str]:
     if gaps:
         raise MissingWorkerCredentials("scoped worker credentials not configured: " + ", ".join(gaps))
     env = {k: os.environ[k] for k in SHARED if os.environ.get(k)}
-    db_url = os.environ.get("WORKER_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if db_url:
-        env["DATABASE_URL"] = db_url
+    env["DATABASE_URL"] = os.environ["WORKER_DATABASE_URL"]
     if presign.enabled(policy):   # no storage key: the machine reads and writes only through its jobs' links
         env[presign.MODE_ENV] = presign.MODE
         return env
-    key =os.environ.get("WORKER_AWS_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = os.environ.get("WORKER_AWS_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
-    if key and secret:
-        env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"] = key, secret
+    # a bucket-scoped token only, never the control plane's AWS_ACCESS_KEY_ID
+    env["AWS_ACCESS_KEY_ID"] = os.environ["WORKER_AWS_ACCESS_KEY_ID"]
+    env["AWS_SECRET_ACCESS_KEY"] = os.environ["WORKER_AWS_SECRET_ACCESS_KEY"]
     return env
 
 

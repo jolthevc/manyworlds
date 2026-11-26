@@ -60,13 +60,13 @@ def _payload(conn, job_id):
 # --- mode off -------------------------------------------------------------------------------------------------------
 
 def test_mode_off_changes_nothing(conn, policy, tmp_path, monkeypatch):
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "cp-key")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "cp-secret")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://dev:dev@localhost/mw")
-    pol = policy_mod.from_dict({**policy.body, "security": {**policy.body["security"], "worker_database": "shared",
-                                                                 "worker_storage": "shared"}})
+    monkeypatch.setenv("WORKER_AWS_ACCESS_KEY_ID", "scoped-key")
+    monkeypatch.setenv("WORKER_AWS_SECRET_ACCESS_KEY", "scoped-secret")
+    monkeypatch.setenv("WORKER_DATABASE_URL", "postgresql://w:w@localhost/mw")
+    pol = policy_mod.from_dict({**policy.body, "security": {**policy.body["security"], "worker_database": "required",
+                                                                 "worker_storage": "required"}})
     env = credentials.worker_env(pol)
-    assert env["AWS_ACCESS_KEY_ID"] == "cp-key" and presign.MODE_ENV not in env
+    assert env["AWS_ACCESS_KEY_ID"] == "scoped-key" and presign.MODE_ENV not in env
     job = queue.enqueue(conn, "fake.image", {"image_uri": "s3://bucket/refs/a.png"})
     assert presign.refresh(conn, pol, SigningStore(tmp_path)) == 0
     assert autoscale.refresh_links(conn, pol, SigningStore(tmp_path)) == []
