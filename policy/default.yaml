@@ -249,26 +249,26 @@ worker_images:
   # MW_LONGCAT_DIR: LongCat's ~47 GB on the container disk. The image's default (/models/longcat) is under the volume
   # mount (/models), so the 90 s test of 2026-11-24 filled the 150 GB volume and the next three volume machines died
   # at their first download (Disk quota exceeded).
-  talk: {image: mw-worker-talkcomfy, tag: v26, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
+  talk: {image: mw-worker-talkcomfy, tag: v27, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 100, download_gb: 35,
          env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True",
                MW_LONGCAT_DIR: /root/longcat}}
   # comfy: story clips on the same ComfyUI image (Wan 2.2 I2V A14B high + low experts, fp8-scaled, ~28 GB).
-  comfy: {image: mw-worker-talkcomfy, tag: v26, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  comfy: {image: mw-worker-talkcomfy, tag: v27, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # dance: Wan-Animate-2 (comfy.wan_animate2, off) on the ComfyUI image; needs the image with handlers/dance_animate.py
   # (talkcomfy v11 and later). int8 model (~18 GB), UMT5 fp8 (~7 GB), CLIP vision, VAE, distill LoRA.
-  dance: {image: mw-worker-talkcomfy, tag: v26, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
+  dance: {image: mw-worker-talkcomfy, tag: v27, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
   # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
   # voxcpm in it (v9 and later).
-  voice: {image: mw-worker-talkcomfy, tag: v26, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
+  voice: {image: mw-worker-talkcomfy, tag: v27, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
           env: {HF_HUB_DISABLE_XET: 1}}
   # tts: expressive voices and automatic casting (voice.speak.indextts, voice.speak.qwen3, voice.cast) on the talk
   # image with the IndexTTS-2.5 and Qwen3-TTS venvs and the judges (UTMOS22, wav2vec2 gender, speaker age). v21 is
   # NOT BUILT YET: build and smoke-test it (check_tts) before any of these jobs is queued. Weights on first use:
   # IndexTTS-2.5 + sub-models ~8 GB into MW_INDEXTTS_DIR (container disk), Qwen3 Base + VoiceDesign ~9 GB, judges
   # ~2 GB, Whisper ~3 GB.
-  tts: {image: mw-worker-talkcomfy, tag: v26, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 80, download_gb: 25,
+  tts: {image: mw-worker-talkcomfy, tag: v27, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 80, download_gb: 25,
         env: {HF_HUB_DISABLE_XET: 1, MW_INDEXTTS_DIR: /root/indextts-2.5}}
   # music: original songs (music.song) on the ComfyUI image: ACE-Step 1.5 split files (~10 GB) + Demucs htdemucs
   # (~80 MB) + Whisper for the bench's lyric check. Needs a talkcomfy image with handlers/music_song.py and demucs in
