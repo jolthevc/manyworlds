@@ -80,7 +80,7 @@ def parse_levels(value) -> list[dict]:
     import re
     if isinstance(value, str):
         return [{"control": m.group(1).lower(), "level": int(m.group(2))}
-                for m in re.finditer(r"([a-z_]+)s*[=:]s*([0-4])", value.lower())]
+                for m in re.finditer(r"([a-z_]+)\s*[=:]\s*([0-4])", value.lower())]
     out = []
     for o in value or []:
         c = o.get("control") if isinstance(o, dict) else getattr(o, "control", None)
