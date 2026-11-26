@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from psycopg.types.json import Jsonb
+from pydantic import BaseModel, Field
 
 from .. import direction, logs
 from ..storage import ObjectStore
@@ -47,6 +48,122 @@ DETAIL_RULE = ("styling and detail defects an ordinary viewer would notice, wors
                "(seams, straps or buttons that make no sense); empty if none")
 CONTEXT_FIELDS = ("brand_alignment", "distribution_risk", "distribution_label", "detail_defects")
 CONTEXT_SCORES = {"brand": "brand_alignment", "distribution": "distribution_risk"}
+
+
+# --- performance (manyworlds.performance; owner 2026-11-26): observed in the call we already make, rank only ---------
+# Among candidates that pass the defect gates, selection prefers appeal, charisma, personality, expression and
+# variety; nothing here ever rejects. Naturalness is judged on every asset: more expressive is not better.
+class ObservedLevel(BaseModel):
+    control: str = Field(default="", description="a control named in PERFORMANCE")
+    level: int | None = Field(default=None, description="the level you see, 0-4")
+
+
+PERFORMANCE_FIELDS = ("observed_levels", "appeal", "charisma", "expression", "naturalness", "pose_expression")
+APPEAL_RULE = ("only when PERFORMANCE is asked: 1-10, how much a viewer would stop for and want to look at this: "
+               "attractiveness, presence, style, the moment; null otherwise")
+CHARISMA_RULE = ("only when PERFORMANCE is asked: 1-10, the personality and magnetism that come through; null without "
+                 "a face")
+EXPRESSION_RULE = ("only when PERFORMANCE is asked: 1-10, does the face carry the intended feeling, alive and specific "
+                   "rather than blank; null without a face")
+NATURAL_RULE = ("only when PERFORMANCE is asked: 1-10, believable human behaviour: 10 = a real person caught in a real "
+                "moment; exaggerated, theatrical, stiff, frozen or uncanny behaviour scores low EVEN when it matches "
+                "the request (more expressive is not better); null otherwise")
+POSE_RULE = ("only when PERFORMANCE is asked: a few words for the pose and expression, e.g. 'leaning on the counter, "
+             "half-smile, eyes down' (for variety between frames); null otherwise")
+LEVELS_RULE = "only when PERFORMANCE lists controls: the level 0-4 you see for each control listed; [] otherwise"
+
+
+def observe_enabled(policy) -> bool:
+    return bool((policy.get("performance", "observe", default={}) or {}).get("enabled")) if policy is not None else False
+
+
+def performance_controls(shot: dict | None, policy) -> list[str]:
+    """The shot's directed controls a judge observes (manyworlds.performance.observe_controls), most salient first."""
+    from .. import performance
+    if not shot:
+        return []
+    try:
+        controls = direction.shot_controls(shot)
+        base = (((shot.get("performance") or {}).get("profile") or {}).get("baseline")
+                if isinstance(shot, dict) else None)
+    except Exception:  # noqa: BLE001 - a malformed sheet is judged without performance
+        return []
+    return performance.observe_controls(controls, policy, baseline=base)
+
+
+def performance_prompt(shot: dict | None, policy, *, still: bool) -> str:
+    """The judge's PERFORMANCE block: the scores (appeal, charisma, expression, naturalness, a pose descriptor) and,
+    for a directed shot, the controls to observe with what each means. Blind to the requested levels. '' when
+    observation is off."""
+    from .. import performance
+    if not observe_enabled(policy):
+        return ""
+    lib = performance.library(policy)
+    names = performance_controls(shot, policy)
+    intent = ""
+    if shot:
+        try:
+            intent = direction.ShotSheet.model_validate(shot).performance.intent.strip()
+        except Exception:  # noqa: BLE001
+            intent = ""
+    what = "each candidate" if still else "the clip"
+    text = (f"PERFORMANCE (rank only, never a reason to reject): for {what} also give appeal, charisma, expression and "
+            f"naturalness (1-10) and pose_expression. Naturalness: exaggerated, theatrical or uncanny behaviour scores "
+            f"low even when it is what was asked; a natural, specific, alive moment scores high.")
+    if intent:
+        text += f" The intended performance (for expression): {intent}."
+    if names:
+        levels = ", ".join(f"{k} {v}" for k, v in (lib.get("levels") or {}).items())
+        means = "; ".join(f"{n}: {((lib['controls'].get(n) or {}).get('means') or '')}" for n in names)
+        text += f" observed_levels: the level you see ({levels}) for each of these controls: {means}."
+    return text
+
+
+def performance_result(r, shot: dict | None, policy, *, target: str) -> dict | None:
+    """What a judged candidate says of its performance: {points, requested, compiled, observed, scores, descriptor,
+    closeness, intent, phrases, target} (manyworlds.performance: closeness, selection points), or None when the judge
+    gave no performance score. Observed levels only for the controls asked."""
+    from .. import performance
+    if not observe_enabled(policy) or r is None:
+        return None
+    scores = {}
+    for k in ("appeal", "charisma", "expression", "naturalness"):
+        v = getattr(r, k, None)
+        if v is not None:
+            try:
+                scores[k] = max(1, min(10, int(v)))
+            except (TypeError, ValueError):
+                continue
+    asked = performance_controls(shot, policy)
+    observed = {k: v for k, v in performance.levels_of(
+        [{"control": o.control, "level": o.level} for o in (getattr(r, "observed_levels", None) or [])
+         if getattr(o, "level", None) is not None]).items() if k in asked}
+    if not scores and not observed:
+        return None
+    requested = direction.shot_controls(shot) if shot else {}
+    close = performance.closeness({k: requested[k] for k in asked if k in requested}, observed)
+    used, intent, phrases = {}, "", {}
+    if shot:
+        try:
+            s = direction.ShotSheet.model_validate(shot)
+            intent = s.performance.intent.strip()
+            out = performance.compose(intent, requested, target, policy, context=s.performance.context or None,
+                                      profile=s.performance.profile or {}, extreme_reason=s.performance.extreme_reason)
+            used, phrases = {u["control"]: u["compiled"] for u in out["used"]}, out["phrases"]
+        except Exception:  # noqa: BLE001 - the record is still useful without the compiled view
+            pass
+    return {"points": performance.selection_points(scores, close, policy), "requested": requested,
+            "compiled": used, "observed": observed, "scores": scores,
+            "descriptor": " ".join(str(getattr(r, "pose_expression", None) or "").split())[:200],
+            "closeness": close, "intent": intent, "phrases": phrases, "target": target,
+            "library_version": performance.library(policy).get("version")}
+
+
+def performance_row(asset_id, perf: dict, details: dict) -> tuple:
+    """The `performance` review row: always passes (rank only), its score the selection points."""
+    return (asset_id, "performance", True, perf["points"],
+            Jsonb({**details, "report_only": True,
+                   "performance": {k: perf[k] for k in ("observed", "scores", "closeness", "descriptor")}}))
 
 
 def major_details(r, cfg: dict | None = None) -> list[str]:

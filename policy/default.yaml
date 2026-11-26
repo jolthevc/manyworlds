@@ -2091,7 +2091,7 @@ brain:
                                           established: 7, paused: 30},
                    editable: [look.wardrobe, look.situational_looks, look.makeup, persona.traits, persona.humour,
                               content, content_system, arc, story, audience_insight, positioning, dials.tone_mix,
-                              brand_core, brand_world, brand_commerce],
+                              brand_core, brand_world, brand_commerce, performance],
                    # The brand bible (dossier sections brand_core, brand_world, brand_commerce). brand_core is her
                    # stable core: a review may change it only once she has core_change_min_real_posts real published
                    # posts and its last change is at least core_change_days old (code-checked; refused otherwise).
@@ -2683,6 +2683,27 @@ on_screen_text:
 
 # Direction (manyworlds.direction, owner 2026-11-22): the words the shot-sheet compiler adds to every directed
 # prompt. Moves not in camera_moves are dropped; the planner offers only moves whose readiness is offered.
+# Performance direction (manyworlds.performance; docs/2026-11-26-performance-direction.md, owner 2026-11-26). The
+# control language (14 controls x 5 levels), its per-channel lexicon, voice mapping, contexts, compose rules, edges,
+# observation weights and calibration floors live in the library file (policy/performance/<file>, versioned). Here:
+# the switches.
+performance:
+  file: performance-v1.yaml
+  # The model each target's prompts are written for: calibration offsets are kept per (model, target) and the
+  # director directs a shot under those of these models (job kinds, as performance_observations.model records them).
+  models: {photo: image.zimage, i2v: comfy.wan_i2v, talk: talk.infinitetalk}
+  # The judges we already call also observe the directed controls and score appeal, charisma, expression and
+  # naturalness (rank only, never a rejection; a few output tokens per candidate).
+  observe: {enabled: true}
+  # Calibration adjusts a model's level offsets only from reliable observations (the library's floors, judge
+  # agreement measured first). Off until the owner turns it on; `mw performance report` shows why it would or wouldn't.
+  calibration: {enabled: false}
+  # Our own accepted assets coded in the research engine's vocabulary (research.annotation iia_v2) in
+  # reference_annotations (source own), so own vs external joins (manyworlds.review.own_annotation). Off until the
+  # owner turns it on. role: the cheapest vision role (the research read's); batched, idempotent, charged to `agent`.
+  own_annotation: {enabled: false, role: iia_annotate, effort: low, agent: own_annotation, assets_per_call: 4,
+                   max_assets_per_run: 40, keyframes_per_clip: 3, image_max_bytes: 400000, caption_chars: 600}
+
 # Phone-native realism (2026-11-23, docs/research/2026-11-23-readiness-and-craft.md): the top clips are bright, flat,
 # ordinary rooms lit by a window or lamp, real skin, no cinematic grade. The AI tells are waxy skin, unmotivated
 # studio light, a dead stare, a gimbal-smooth "phone" and a glossy ad look. Words are short: they share the budgets.

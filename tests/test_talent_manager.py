@@ -59,6 +59,15 @@ SECTION_OUT = {
     "BrandCommerce": {"categories": ["home_interiors", "not_a_category"], "why_categories": "her kitchen",
                       "product_integration": "a kettle on the counter", "will_do": ["tea"], "wont_do": ["hauls"],
                       "will_wear": ["knits"], "wont_wear": ["logos"], "will_promote": ["tea"], "wont_promote": ["diets"]},
+    # the performance profile (2026-11-26, manyworlds.performance)
+    "PerformanceProfile": {"baseline": [{"control": "warmth", "level": 2}, {"control": "energy", "level": 1}],
+                           "natural_range": [{"control": "energy", "low": 0, "high": 2}],
+                           "signature": {"resting_expression": "calm", "smile": "slow", "gaze_habits": "down",
+                                         "posture": "curled", "walk": "slow", "hands": "around a mug",
+                                         "vocal_cadence": "soft", "laugh": "quiet", "mannerisms": ["sighs"]},
+                           "opening": "already mid-sip", "closing": "a small nod",
+                           "context_shifts": [{"context": "quiet_morning",
+                                               "offsets": [{"control": "energy", "level": -1}]}]},
 }
 
 

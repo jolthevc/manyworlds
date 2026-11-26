@@ -42,7 +42,10 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .performance import CONTROL_NAMES
+
 Target = Literal["photo", "i2v", "talk"]
+ControlName = Literal[CONTROL_NAMES]  # type: ignore[valid-type]   # manyworlds.performance (a test keeps them equal)
 
 
 def _union_args(annotation) -> tuple:
@@ -151,7 +154,30 @@ class Line(_Sheet):
                                                                   "the default pause")
 
 
+class ControlLevel(_Sheet):
+    """One performance control at a level (manyworlds.performance: 0 none, 1 subtle, 2 moderate, 3 strong, 4 extreme).
+    A list of these, not a dict: the director answers in a strict JSON schema."""
+    control: ControlName | None = Field(default=None, description="a control name from the performance vocabulary")
+    level: int = Field(default=2, description="0 none, 1 subtle, 2 moderate, 3 strong, 4 extreme")
+
+
 class PerformanceSpec(_Sheet):
+    # The performance (manyworlds.performance, owner 2026-11-26): one sentence of intent first, then only the controls
+    # moved on purpose from her baseline under the format's context. The director's edit pass writes these
+    # (DirectedEdits.performances); code fills `profile` (her baseline, range, edges and calibration offsets).
+    intent: str = Field(default="", description="one sentence: the overall performance of this shot, in plain "
+                                                "behaviour ('dry, amused confidence that warms at the end')")
+    context: str = Field(default="", description="the context shift applied (a performance context name, e.g. "
+                                                 "outfit_check, luxury, grwm); empty for none")
+    controls: list[ControlLevel] = Field(default_factory=list, description="the few controls moved on purpose, at "
+                                                                           "their levels for this shot")
+    extreme_reason: str = Field(default="", description="why a control is at level 4 (comedy, a reveal, a dare); "
+                                                        "empty when none is")
+    opening: str = Field(default="", description="how a video shot begins, in behaviour; empty for her own")
+    closing: str = Field(default="", description="how a video shot ends, in behaviour; empty for her own")
+    profile: dict = Field(default_factory=dict, description="filled by code: the creator's performance profile "
+                                                            "(baseline, natural_range, contexts, opening, closing, "
+                                                            "calibration offsets)")
     emotion_arc: str = Field(default="", description="how her mood moves through the shot: 'bored to amused'")
     energy: Literal["low", "medium", "high"] | None = Field(default=None, description="overall energy: low, "
                                                                                        "medium or high")
@@ -251,6 +277,9 @@ class ContinuitySpec(_Sheet):
                                                     "'the next morning'")
 
 
+PERFORMANCE_FIELDS = ("intent", "context", "controls", "extreme_reason", "opening", "closing")
+
+
 class ShotSheet(_Sheet):
     set: SetSpec = Field(default_factory=SetSpec, description="the place and its light")
     wardrobe: WardrobeSpec = Field(default_factory=WardrobeSpec, description="what she wears")
@@ -282,16 +311,33 @@ class DirectedShots(BaseModel):
     strict_required: ClassVar[bool] = True
     # Each shot's `edit` (text on screen, cuts, caption style) is a second, small call (DirectedEdits): with it the
     # grammar is too large again (HTTP 400, measured 2026-11-23: any list nested in a shot, even of strings, failed).
-    strict_omit: ClassVar[tuple] = (("shots", "edit"), ("shots", "subject"), ("shots", "grade"))
+    # The performance controls (a nested list each) ride in the edit pass for the same reason (DirectedEdits).
+    strict_omit: ClassVar[tuple] = (("shots", "edit"), ("shots", "subject"), ("shots", "grade"),
+                                    *(("shots", "performance", k) for k in (*PERFORMANCE_FIELDS, "profile")))
     shots: list[ShotSheet] = Field(description="one shot sheet per scene, in the same order as the scenes")
     move_shot: int = Field(default=-1, description="the index (from 0) of the shot that performs the move; "
                                                    "-1 when there is no move")
 
 
+class ShotPerformance(_Sheet):
+    """A shot's performance as the edit pass writes it (copied into its PerformanceSpec)."""
+    intent: str = Field(default="", description="one sentence: the overall performance of this shot, in plain "
+                                                "behaviour, positive words")
+    context: str = Field(default="", description="the performance context applied, or empty")
+    controls: list[ControlLevel] = Field(default_factory=list, description="only the 1-4 controls moved on purpose "
+                                                                           "from her baseline plus the context")
+    extreme_reason: str = Field(default="", description="why a control is at level 4; empty when none is")
+    opening: str = Field(default="", description="video: how it begins, in behaviour; empty for her own")
+    closing: str = Field(default="", description="video: how it ends, in behaviour; empty for her own")
+
+
 class DirectedEdits(BaseModel):
-    """The edit of each shot, in the shots' order: the on-screen text, the cut into it, the caption style."""
+    """The edit and the performance of each shot, in the shots' order: the on-screen text, the cut into it, the
+    caption style; then the performance intent and controls."""
     strict_required: ClassVar[bool] = True
     edits: list[EditSpec] = Field(description="one edit per shot, in the same order as the shots")
+    performances: list[ShotPerformance] = Field(default_factory=list, description="one performance per shot, in "
+                                                                                  "the same order as the shots")
 
 
 def _join(parts, sep: str = ", ") -> str:
@@ -372,12 +418,34 @@ def spoken_lines(shot: "ShotSheet | dict | None") -> list[dict]:
     """The shot's lines that say something, in order: {text (as `spoken` reads it), delivery, pause_after_s}.
     What the designed voice speaks (production, voice.speak), line by line with its delivery."""
     s = _coerce(shot)
+    controls = shot_controls(s)
     out = []
     for line in s.performance.lines:
         text = " ".join(_PAREN.sub(" ", line.text).split())
         if text:
-            out.append({"text": text, "delivery": line.delivery.strip(), "pause_after_s": line.pause_after_s})
+            out.append({"text": text, "delivery": line.delivery.strip(), "pause_after_s": line.pause_after_s,
+                        **({"controls": controls} if controls else {})})
     return out
+
+
+def shot_controls(shot: "ShotSheet | dict | None") -> dict[str, int]:
+    """The shot's directed performance levels {control: level} (manyworlds.performance), with its legacy `energy`
+    word as the energy control when the controls don't name energy; {} for a shot without directed controls."""
+    from . import performance
+    s = _coerce(shot)
+    out = performance.levels_of([c.model_dump() for c in s.performance.controls])
+    if out and "energy" not in out and s.performance.energy:
+        lvl = performance.energy_level(s.performance.energy)
+        if lvl is not None:
+            out["energy"] = int(lvl)
+    return out
+
+
+def performance_directed(shot: "ShotSheet | dict | None") -> bool:
+    """Whether a shot carries performance direction (an intent or controls): its prompt then says the performance
+    through the library (manyworlds.performance.compose); an older sheet keeps its adjective line."""
+    s = _coerce(shot)
+    return bool(s.performance.intent.strip() or s.performance.controls)
 
 
 def spoken(shot: "ShotSheet | dict | None") -> str:
@@ -532,6 +600,9 @@ def _idle(s: ShotSheet, target: Target, policy: Any) -> str:
         return ""
     idle = _policy(policy, "direction", "idle", default={}) or {}
     energy = s.performance.energy or ""
+    if not energy and "energy" in shot_controls(s):
+        from . import performance
+        energy = performance.energy_word(shot_controls(s)["energy"])
     if not energy:
         body = s.performance.body_language.lower()
         for level, words in (idle.get("keywords") or {}).items():
@@ -585,9 +656,9 @@ CHARS_PER_TOKEN = 3.6
 _SHORTEN = (("set", "set_dressing"), ("set", "props"), ("wardrobe", "outfit"))
 _DROP = (("set", "background_action"), ("set", "practical_lights"), ("wardrobe", "accessories"),
          ("wardrobe", "state"), ("set", "season"))
-_TRUNCATE = ("sound", "style", "set", "wardrobe", "subject")          # lowest priority first
+_TRUNCATE = ("sound", "style", "performance", "set", "wardrobe", "subject")          # lowest priority first
 _LABELS = {"camera": "Camera", "subject": "Subject", "wardrobe": "Wardrobe and look", "action": "Action",
-           "set": "Set", "style": "Style", "sound": "Sound"}
+           "performance": "Performance", "set": "Set", "style": "Style", "sound": "Sound"}
 _DANGLING = frozenset({"a", "an", "the", "and", "or", "with", "of", "to", "in", "on", "at", "by", "for", "from"})
 _CLAUSE_END = re.compile(r"[.;:!?](?=\s|$)|\s[—–-]\s")
 
@@ -770,12 +841,44 @@ def _stand_ins(items: list[str], policy: Any) -> str:
     return _capitalised(_join(phrases))
 
 
+def _performance(s: ShotSheet, target: Target, policy: Any, profile: dict | None = None) -> str:
+    """The shot's performance for one target (manyworlds.performance.compose): the intent sentence, then only the
+    most salient controls' behaviour for the target's channels, a few phrases each; a photo is one moment, so it
+    says that moment's expression. A talk or i2v shot with her in it also gets a natural beginning and end
+    (performance.edges: the shot's own, else her signature entrance and exit, else the library's), never a blank
+    stare. A shot without her face gets no face or gaze. `profile`: her performance profile, else the one the
+    director put on the shot (performance.profile)."""
+    from . import performance
+    p = s.performance
+    prof = profile if profile is not None else (p.profile or {})
+    no_face = faceless(s)
+    intent = p.intent.strip() or (f"mood {p.emotion_arc.strip()}" if p.emotion_arc.strip() else "")
+    if target == "photo" and intent:
+        intent = f"in this moment, {intent[0].lower()}{intent[1:]}"
+    lib = performance.library(policy)
+    channels = [c for c in ((lib.get("targets") or {}).get(target) or []) if not (no_face and c in ("face", "gaze"))]
+    out = performance.compose(intent, shot_controls(s), target, policy, context=p.context.strip() or None,
+                              profile=prof, extreme_reason=p.extreme_reason, channels=channels)
+    text = out["text"]
+    if target in ("talk", "i2v") and not no_face:
+        e = performance.edges(prof, policy, target)
+        opening, closing = p.opening.strip() or e["opening"], p.closing.strip() or e["closing"]
+        text = _join([text, f"opening: {opening}" if opening else "", f"closing: {closing}" if closing else ""], "; ")
+    return text
+
+
 def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target, policy: Any, *,
-                    trigger: str | None = None, scene: str = "", motion: str = "") -> dict[str, str]:
+                    trigger: str | None = None, scene: str = "", motion: str = "",
+                    profile: dict | None = None) -> dict[str, str]:
     """{prompt, negative} for one shot on one target model (photo, image-to-video, or lip-synced talk).
 
     `scene` and `motion` are the post's plain-text scene and movement, used only where the shot leaves the
-    set or the blocking empty; `trigger` is the creator's LoRA trigger word (photos).
+    set or the blocking empty; `trigger` is the creator's LoRA trigger word (photos); `profile` her performance
+    profile (else the one the director put on the shot).
+
+    A shot with performance direction (an intent or controls) gets a Performance section after the action
+    (`_performance`: manyworlds.performance.compose and edges); an older sheet keeps its adjective line
+    ("high energy, ...") in the action, exactly as before.
 
     The prompt never carries a negation. `negative` is for the job payload's `negative_prompt` (the Wan graphs'
     negative text encode); it is "" for a target without a negative channel, whose prompt gets the positive
@@ -814,8 +917,12 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
         beats = motion.strip()
     if target == "talk":
         beats = _join(["talking to the camera naturally" if not beats else "talking", beats], "; ")
-    perf = _join([f"{p.energy} energy" if p.energy else "", p.body_language,
-                  f"mood {p.emotion_arc}" if video and p.emotion_arc.strip() else ""])
+    directed = performance_directed(s)
+    if directed:   # the performance is its own section (_performance); the body language stays with the blocking
+        perf = p.body_language
+    else:
+        perf = _join([f"{p.energy} energy" if p.energy else "", p.body_language,
+                      f"mood {p.emotion_arc}" if video and p.emotion_arc.strip() else ""])
     # eyes and idle movement only in video with the creator in shot; both empty leave the action as it was
     action = _join([_join([beats, perf]), _eyes(s, target, policy), _idle(s, target, policy)], "; ")
 
@@ -834,6 +941,7 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
     no_face = faceless(s)
     sections = {"camera": camera, "subject": _faceless_subject(s, bible, policy) if no_face else appearance_prompt(bible),
                 "wardrobe": wardrobe, "action": action,
+                "performance": _performance(s, target, policy, profile) if directed else "",
                 "set": set_, "style": style, "sound": sound}
     items = negative_items(s, target, policy, positive=_render(head, sections, ""))
     channel = has_negative_channel(target, policy)

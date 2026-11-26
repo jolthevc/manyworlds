@@ -305,6 +305,13 @@ def build_parser() -> argparse.ArgumentParser:
     vq.add_argument("--days", type=int, default=30)
     vbo = vsub.add_parser("bakeoff-decide", help="score a finished voice bake-off run and record the default engine")
     vbo.add_argument("run")
+
+    pf2 = sub.add_parser("performance", help="performance direction: requested vs observed levels, judge agreement, "
+                                             "calibration state (manyworlds.performance)")
+    pfsub = pf2.add_subparsers(dest="performance_cmd", required=True)
+    pfr = pfsub.add_parser("report", help="requested vs observed per model, target, control and level; why "
+                                          "calibration does or doesn't adjust")
+    pfr.add_argument("--creator", help="one creator's observations only (handle or id)")
     return p
 
 
@@ -473,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
         return _test(args, conn, pol)
     elif args.cmd == "voice":
         return _voice(args, conn, pol)
+    elif args.cmd == "performance":
+        return _performance(args, conn, pol)
     elif args.cmd == "research":
         return _research(args, conn, pol)
     elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce", "trends"):
@@ -526,6 +535,16 @@ def _test(args, conn, pol) -> int:
                 llm.spent = spent
     _print({**out, **({"llm_usd": llm.spent} if llm is not None else {})})
     return 0
+
+
+def _performance(args, conn, pol) -> int:
+    """`mw performance report [--creator H]` (manyworlds.performance.report)."""
+    from . import performance
+    if args.performance_cmd == "report":
+        cid = _creator_id(conn, args.creator) if args.creator else None
+        _print(performance.report(conn, pol, creator_id=cid))
+        return 0
+    raise SystemExit(f"unknown performance command {args.performance_cmd!r}")
 
 
 def _voice(args, conn, pol) -> int:
@@ -734,6 +753,15 @@ def _review(args, conn, pol, llm) -> int:
             else:
                 result = {"images": gates.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch),
                           "clips": video_review.run_pending(conn, pol, llm, store, Path(tmp), batch=args.batch)}
+                if not args.batch:   # our accepted assets in the research vocabulary (performance.own_annotation)
+                    from .review import own_annotation
+                    try:
+                        own = own_annotation.run_pending(conn, pol, llm, store, Path(tmp) / "own")
+                    except Exception as e:  # noqa: BLE001 - learning must never stop review
+                        logging.getLogger("manyworlds.review").warning("own annotation failed: %s", e)
+                        own = {"error": str(e)[:300]}
+                    if own.get("enabled") is not False:
+                        result["own_annotation"] = own
                 if any(v for r in result.values() for v in r.values()) or not args.loop:
                     _print({**result, "llm_usd": llm.spent})
         if not args.loop:

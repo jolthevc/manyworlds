@@ -24,6 +24,14 @@ appearance and the style director's style and world):
     brand_commerce    her natural commercial categories (the registry: manyworlds.brain.commerce), how products
                       would enter her world, and what she will and won't do, wear and promote
 
+and her performance profile (owner 2026-11-26; manyworlds.performance), how she behaves on camera in the shared control
+language: baseline level per control, natural range, signature behaviours (resting expression, smile, gaze habits,
+posture, walk, hands, vocal cadence, laugh, conversational mannerisms), how she opens and closes a clip, and her
+context shifts as level offsets. Identity is the signature; behaviour varies within the range.
+
+    performance       saved as {baseline: {control: level}, natural_range: {control: [low, high]}, signature: {...},
+                      opening, closing, contexts: {name: {control: offset}}}; the director and the compiler read it
+
 Each section is its own small structured call (cheap, retried alone, versioned as its own profile change), in
 order, each seeing the ones before. Code checks what a model can't be trusted with: archetype names exist,
 capabilities exist and render now, the mix sums to 1, repertoire formats are on the capability card, commercial
@@ -36,7 +44,7 @@ from __future__ import annotations
 import json
 import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .. import direction
 from ..brain import archetypes as arch
@@ -45,7 +53,7 @@ from ..policy import Policy
 from . import profile as profile_mod
 
 SECTIONS = ("archetypes", "positioning", "brand_core", "audience_insight", "story", "brand_world", "content_system",
-            "brand_commerce")
+            "brand_commerce", "performance")
 BRAND_SECTIONS = ("brand_core", "brand_world", "brand_commerce")
 
 SYSTEM = """You are the talent manager of a Manyworlds creator: an original fictional social media creator, openly
@@ -225,9 +233,67 @@ class BrandCommerce(BaseModel):
     wont_promote: list[str]
 
 
+class ControlLevelPick(BaseModel):
+    control: str = Field(description="a control name from the performance vocabulary")
+    level: int = Field(description="0 none, 1 subtle, 2 moderate, 3 strong, 4 extreme")
+
+
+class ControlRange(BaseModel):
+    control: str = Field(description="a control name from the performance vocabulary")
+    low: int = Field(description="the lowest level that is still her, 0-4")
+    high: int = Field(description="the highest level that is still her, 0-4")
+
+
+class ContextShift(BaseModel):
+    context: str = Field(description="a situation or format, snake_case: a vocabulary context or one of her own")
+    offsets: list[ControlLevelPick] = Field(description="level offsets from her baseline, -2..+2 (the level field "
+                                                        "holds the offset)")
+
+
+class Signature(BaseModel):
+    resting_expression: str
+    smile: str = Field(description="what her smile is like and when it arrives")
+    gaze_habits: str
+    posture: str
+    walk: str
+    hands: str = Field(description="what her hands habitually do")
+    vocal_cadence: str = Field(description="rhythm, pauses, where emphasis falls, how sentences end")
+    laugh: str
+    mannerisms: list[str] = Field(description="2-4 conversational mannerisms or tics")
+
+
+class PerformanceProfile(BaseModel):
+    """Her performance profile in the shared control language (manyworlds.performance). The stored form is a mapping
+    ({control: level}); the model answers lists, and a stored profile validates again (checked_change)."""
+    baseline: list[ControlLevelPick] = Field(description="her everyday level for every control in the vocabulary")
+    natural_range: list[ControlRange] = Field(description="per control, the levels that are still her")
+    signature: Signature
+    opening: str = Field(description="how she typically enters a clip, in behaviour (never a blank stare)")
+    closing: str = Field(description="how she typically ends a clip, in behaviour (never a return to a blank stare)")
+    context_shifts: list[ContextShift] = Field(description="how she shifts by context: 3-6 situations, few offsets "
+                                                           "each")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_stored(cls, data):
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if isinstance(out.get("baseline"), dict):
+            out["baseline"] = [{"control": k, "level": v} for k, v in out["baseline"].items()]
+        if isinstance(out.get("natural_range"), dict):
+            out["natural_range"] = [{"control": k, "low": (v or [0, 4])[0], "high": (v or [0, 4])[-1]}
+                                    for k, v in out["natural_range"].items()]
+        if "contexts" in out and "context_shifts" not in out:
+            ctx = out.pop("contexts") or {}
+            out["context_shifts"] = [{"context": k, "offsets": [{"control": c, "level": o} for c, o in (v or {}).items()]}
+                                     for k, v in ctx.items()]
+        return out
+
+
 SCHEMAS = {"archetypes": ArchetypePick, "positioning": Positioning, "audience_insight": AudienceInsight,
            "story": Story, "content_system": ContentSystem, "brand_core": BrandCore, "brand_world": BrandWorld,
-           "brand_commerce": BrandCommerce}
+           "brand_commerce": BrandCommerce, "performance": PerformanceProfile}
 
 ASK = {
     "archetypes": "Choose her archetypes from the library: the one her content is mostly built on, and a secondary "
@@ -266,6 +332,14 @@ ASK = {
                       "travel across the portfolio, how products enter her world organically, and what she will and "
                       "won't do, wear and promote. She is openly virtual: never claims first-hand experience of a "
                       "product. Her influence creates the opportunities; she never reads as an advertisement.",
+    "performance": "Write her performance profile as an acting coach and a photographer who know her would: in the "
+                   "performance vocabulary given, her baseline level for every control (how she is on an ordinary "
+                   "day), her natural range per control (the levels that are still her: a quiet creator may never "
+                   "reach flamboyance 4), her signature behaviours (resting expression, smile, gaze habits, posture, "
+                   "walk, hands, vocal cadence, laugh, 2-4 conversational mannerisms), how she opens and closes a clip "
+                   "(natural, in behaviour, never a blank stare), and 3-6 context shifts as small level offsets. "
+                   "Specific and natural beats expressive: charisma comes from consistency and timing, not from "
+                   "turning every control up. It follows from her personality, presentation and archetype.",
 }
 
 
@@ -413,6 +487,8 @@ def clean(policy: Policy, section: str, out: BaseModel, prof: dict) -> dict:
         formats = set(card_formats(policy))
         d["repertoire"] = [r for r in d.get("repertoire") or [] if not formats or r.get("format") in formats]
         return {"brand_world": d}
+    if section == "performance":
+        return {"performance": clean_performance(policy, d)}
     if section == "brand_commerce":
         known = set(registry_keys(policy))
         d["categories"] = [c for c in dict.fromkeys(d.get("categories") or []) if not known or c in known]
@@ -420,6 +496,56 @@ def clean(policy: Policy, section: str, out: BaseModel, prof: dict) -> dict:
             raise ValueError(f"no known commercial category in {out.model_dump().get('categories')!r}")
         return {"brand_commerce": d}
     return {section: d}
+
+
+def clean_performance(policy: Policy, d: dict) -> dict:
+    """Her performance profile as saved: control names from the library only, levels 0-4, a range low <= high that
+    contains her baseline, context offsets clamped to the library's max_context_offset and nonzero; text trimmed."""
+    from .. import performance
+    lib = performance.library(policy)
+    known = set(lib["controls"])
+    if not known:
+        raise ValueError("no performance library: policy performance.file names no file")
+    lvl = lambda v: max(0, min(4, int(round(float(v)))))  # noqa: E731
+    baseline = {}
+    for c in d.get("baseline") or []:
+        if c.get("control") in known:
+            try:
+                baseline[c["control"]] = lvl(c.get("level"))
+            except (TypeError, ValueError):
+                continue
+    if not baseline:
+        raise ValueError(f"no known control in the baseline (known: {sorted(known)})")
+    rng = {}
+    for r in d.get("natural_range") or []:
+        if r.get("control") not in known:
+            continue
+        try:
+            lo, hi = sorted((lvl(r.get("low")), lvl(r.get("high"))))
+        except (TypeError, ValueError):
+            continue
+        b = baseline.get(r["control"])
+        if b is not None:
+            lo, hi = min(lo, b), max(hi, b)
+        rng[r["control"]] = [lo, hi]
+    cap = int((lib["compose"] or {}).get("max_context_offset", 2))
+    contexts = {}
+    for c in d.get("context_shifts") or []:
+        name = re.sub(r"[^a-z0-9_]+", "_", str(c.get("context") or "").strip().lower()).strip("_")
+        offs = {}
+        for o in c.get("offsets") or []:
+            try:
+                off = max(-cap, min(cap, int(round(float(o.get("level"))))))
+            except (TypeError, ValueError):
+                continue
+            if o.get("control") in known and off:
+                offs[o["control"]] = off
+        if name and offs:
+            contexts[name] = offs
+    sig = {k: (v if isinstance(v, list) else " ".join(str(v or "").split())) for k, v in (d.get("signature") or {}).items()}
+    return {"baseline": baseline, "natural_range": rng, "signature": sig,
+            "opening": " ".join(str(d.get("opening") or "").split()),
+            "closing": " ".join(str(d.get("closing") or "").split()), "contexts": contexts}
 
 
 def section_prompt(conn, policy: Policy, creator_id, section: str, prof: dict, *, extra: str = "") -> str:
@@ -439,6 +565,10 @@ def section_prompt(conn, policy: Policy, creator_id, section: str, prof: dict, *
                      f"{json.dumps({f'{g}.{n}': e.get('description', '') for g, es in usable.items() for n, e in es.items()})}")
     if section in BRAND_SECTIONS:
         parts.append(strategy_text(policy))
+    if section == "performance":
+        from .. import performance
+        parts.append(f"The performance vocabulary (controls, levels 0-4, example context shifts as level offsets): "
+                     f"{json.dumps(performance.vocabulary(policy))}")
     if section in ("brand_world", "content_system"):
         from ..brain import capability_card
         parts.append(f"What production makes reliably and cheaply now, per post format (the capability card; design "
@@ -511,7 +641,16 @@ def planning_view(prof: dict | None) -> dict:
     if st:
         view["story"] = {k: st[k] for k in ("routines", "small_goals", "quirks") if k in st}
     view.update(brand_view(prof))
+    perf = performance_view(prof)
+    if perf:
+        view["performance"] = perf
     return view
+
+
+def performance_view(prof: dict | None) -> dict:
+    """Her performance profile as planners need it (manyworlds.performance.profile_view)."""
+    from .. import performance
+    return performance.profile_view((prof or {}).get("performance"))
 
 
 def brand_view(prof: dict | None) -> dict:

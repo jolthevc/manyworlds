@@ -18,6 +18,13 @@ archetype hooks, edit grammar and pitfalls, her talent manager's focus and stop,
 known sets, and the idea with its reasoning, attributes, series (premise, hook), pillar, tone and canon. The edit pass
 sends the same blocks plus the directed shots, so it reads the static part from the cache too.
 
+Performance (manyworlds.performance, owner 2026-11-26) rides in the edit pass: for each shot one sentence of intent,
+the context shift it is in, and only the few controls moved on purpose from her baseline (levels 0-4, level 4 only with
+a reason), plus how a video shot begins and ends when it should differ from her own. The static brief carries the
+control vocabulary; the creator brief her performance profile (dossier section `performance`). Code checks the names
+and levels, drops an unknown context, and puts her profile and the calibration offsets on each shot
+(`performance.profile`), so the compiler (direction.compile_prompts) writes the same performance wherever the shot goes.
+
 What comes back is checked before it is used: one shot per scene, a move's shot defaults (policy
 `moves.library.<move>.shot`) fill what the director left empty in the shot that performs the move, the shots'
 lines and overlays keep the voice rules, a motion reference not in `dance.references` is cleared, and a talking
@@ -296,6 +303,7 @@ def static_brief(policy, fmt: str) -> str:
     refs = names.pop("motion_references")
     notes = policy.get("planner", "format_notes", default={}) or {}
     from ..creator import dossier
+    from .. import performance
     guidelines = policy.get("strategy", "platform_guidelines", default={}) or {}
     return (f"THE STUDIO'S BRIEF (the same for every {fmt} post)\n"
             f"{dossier.desirability_text(policy)} Platform guidelines (keep each post within its platform's): "
@@ -309,7 +317,9 @@ def static_brief(policy, fmt: str) -> str:
             f"Names you may use: {json.dumps(names)}\n"
             + (f"Motion references (motion_reference, only these ids): {json.dumps(refs)}\n" if refs else
                "Motion references: none now (leave motion_reference empty).\n")
-            + f"What a {fmt} is: {json.dumps(notes.get(fmt, ''))}\n")
+            + f"What a {fmt} is: {json.dumps(notes.get(fmt, ''))}\n"
+            + f"The performance vocabulary (controls, levels 0-4, context shifts as level offsets): "
+              f"{json.dumps(performance.vocabulary(policy))}\n")
 
 
 def _idea_extras(conn, body: dict) -> dict:
@@ -353,6 +363,7 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
     plays = [{"archetype": p.get("archetype"), **{k: p[k] for k in ("hooks", "edit_grammar", "pitfalls") if p.get(k)}}
              for p in archetypes.playbooks(policy, prof or bible)]
     dossier_view = dossier.planning_view(prof)
+    perf_view = (dossier_view or {}).pop("performance", None)
     brief = talent_manager.latest_brief(conn, creator_id)
     manager = {k: (brief["output"] or {}).get(k) for k in ("focus", "stop") if (brief["output"] or {}).get(k)} \
         if brief else {}
@@ -401,6 +412,9 @@ def creator_brief(conn, policy, body: dict, creator_id, fmt: str, scenes: list[s
                f"{json.dumps(_capped(dossier_view, items), default=str)}\n" if dossier_view else "")
             + (f"Her talent manager's current focus and what to stop: {json.dumps(_capped(manager, items), default=str)}\n"
                if manager else "")
+            + (f"Her performance profile (baseline levels, natural range, signature behaviours, how she opens and "
+               f"closes, her context shifts; direct every shot from it): {json.dumps(perf_view, default=str)}\n"
+               if perf_view else "")
             + dossier.presentation_line(prof)
             + dossier.styling_line(prof)
             + cut_rules
@@ -511,6 +525,9 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None,
     else:
         shots = styled(policy, shots, {}, {})
     shots = [ShotSheet.model_validate(s).model_dump(mode="json") for s in shots]
+    prof = performance_profile(conn, policy, creator_id)
+    for s in shots:   # the compiler reads her profile and the calibration offsets from the shot itself
+        s["performance"]["profile"] = prof
     usable_refs = motion_references(policy)
     for s in shots:
         if s.get("motion_reference") and s["motion_reference"] not in usable_refs:
@@ -538,12 +555,59 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None,
 
 EDIT_ASK = ("THE SHOTS ARE DIRECTED (below). Now write each shot's edit, one per shot in order: the on-screen text "
             "(hook, labels, timestamps, question bubbles, in her voice), how the shot is cut into, the caption style, "
-            "and whether its frame is the cover. Follow the brief above; most shots need little or no text.")
+            "and whether its frame is the cover. Follow the brief above; most shots need little or no text.\n"
+            "Then each shot's performance, one per shot in order, as an acting coach would direct her: start from "
+            "her performance profile's baseline plus the context shift that fits the shot (`context`, a vocabulary "
+            "context or one of hers; empty for none), then move only the 1-4 controls this moment needs, on purpose "
+            "(`controls`; leave everything else at her baseline). Write `intent` first: one sentence of the "
+            "overall performance in plain, positive behaviour, so the controls read as one coherent performance, "
+            "never a list of separate or contradictory instructions. Prefer natural behaviour: more expressive is "
+            "not better, and an exaggerated or theatrical performance reads as fake. Level 4 only with a reason in "
+            "`extreme_reason` (comedy, a reveal, a dare). Stay inside her natural range. For a video shot, "
+            "`opening` and `closing` say how it begins and ends when it should differ from her own signature "
+            "(empty otherwise); it never starts from or returns to a blank stare. A shot without her face directs "
+            "only body and camera behaviour.")
+
+
+def directed_performance(policy, perf, contexts: set[str]) -> dict:
+    """A shot's performance from the edit pass, checked: control names and levels through the library (unknown names
+    dropped, levels 0-4, a repeated name once), a context that is neither the vocabulary's nor hers cleared."""
+    from .. import performance
+    d = perf.model_dump(mode="json") if hasattr(perf, "model_dump") else dict(perf or {})
+    levels = performance.levels_of(d.get("controls") or [], performance.library(policy))
+    ctx = str(d.get("context") or "").strip()
+    if ctx and ctx not in contexts:
+        log.warning("director named performance context %r, which is not known; cleared", ctx)
+        ctx = ""
+    return {"intent": " ".join(str(d.get("intent") or "").split()), "context": ctx,
+            "controls": [{"control": k, "level": v} for k, v in levels.items()],
+            "extreme_reason": str(d.get("extreme_reason") or "").strip(),
+            "opening": str(d.get("opening") or "").strip(), "closing": str(d.get("closing") or "").strip()}
+
+
+def performance_profile(conn, policy, creator_id) -> dict:
+    """What the compiler needs of her on every shot (PerformanceSpec.profile): her performance profile (dossier section
+    `performance`) and the calibration offsets of the models each target compiles for (performance.profile_offsets).
+    Never raises: a shot without it compiles from the library alone."""
+    from .. import performance
+    from ..creator import profile as profile_mod
+    try:
+        cur = profile_mod.current(conn, creator_id)
+        out = performance.profile_view(((cur[1] if cur else None) or {}).get("performance"))
+        cal = performance.profile_offsets(conn, policy)
+    except Exception as e:  # noqa: BLE001
+        log.warning("performance profile unavailable for creator %s (%s)", creator_id, type(e).__name__)
+        return {}
+    return {**out, **({"calibration": cal} if cal else {})}
 
 
 def _edit(conn, policy, llm, content, shots: list[dict], creator_id, agent: str, cfg: dict) -> None:
     """The edit pass (DirectedEdits): a second, small call that sees the brief and the directed shots and fills each
-    shot's `edit`. If it fails, the shots keep an empty edit (no text, cuts by default) rather than losing direction."""
+    shot's `edit` and its performance (intent, context, controls). If it fails, the shots keep an empty edit (no
+    text, cuts by default) and their first-pass performance words rather than losing direction."""
+    from .. import performance
+    prof = performance_profile(conn, policy, creator_id)
+    contexts = set(performance.library(policy)["contexts"]) | set(prof.get("contexts") or {})
     view = [{"shot_type": s.get("shot_type") or "", "location": (s.get("set") or {}).get("location") or "",
              **{k: s.get(k) for k in ("framing", "blocking", "performance", "sound", "cutaway", "motion_reference")}}
             for s in shots]
@@ -559,6 +623,8 @@ def _edit(conn, policy, llm, content, shots: list[dict], creator_id, agent: str,
         return
     for s, e in zip(shots, getattr(out, "edits", None) or []):
         s["edit"] = e.model_dump(mode="json")
+    for s, perf in zip(shots, getattr(out, "performances", None) or []):
+        s.setdefault("performance", {}).update(directed_performance(policy, perf, contexts))
 
 
 def _register(conn, policy, creator_id, shots: list[dict], post_id) -> None:

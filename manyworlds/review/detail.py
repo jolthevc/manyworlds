@@ -78,6 +78,8 @@ def unasked(review, shot: dict | None) -> set[str] | None:
     out = ({"direction"} if not shot else set()) | {n for n in JUDGED if getattr(review, n, None) is None}
     from .common import CONTEXT_FIELDS   # brand alignment, distribution and detail defects only when given
     out |= {n for n in CONTEXT_FIELDS if hasattr(review, n) and getattr(review, n) in (None, [])}
+    from .common import PERFORMANCE_FIELDS   # the performance scores only when given (manyworlds.performance)
+    out |= {n for n in PERFORMANCE_FIELDS if hasattr(review, n) and getattr(review, n) in (None, [])}
     return out or None
 
 

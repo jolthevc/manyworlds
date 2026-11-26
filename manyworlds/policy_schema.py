@@ -1,5 +1,7 @@
 """The policy file's schema for its hot sections (queue, gpu_runs, autoscale, review, production, finishing,
-generation): the sections whose numbers decide what machines run, what is judged and what is made.
+generation, performance): the sections whose numbers decide what machines run, what is judged and what is made.
+(performance holds only switches: the performance library itself, policy/performance/<file>, is checked by
+manyworlds.performance.problems.)
 
 `Policy.get` falls back to a code default when a key is missing, so a misspelt key in the YAML (or one dropped from
 it) silently runs on whatever the code says. Each model here forbids unknown keys at the levels it defines, so a
@@ -23,7 +25,7 @@ Num = float                     # ints are accepted where a float is declared
 NumMap = dict[str, float]       # {family|kind|provider: number}
 Free = dict[str, Any]           # free-form block (passed through to a worker, or keyed by names)
 
-SECTIONS = ("queue", "gpu_runs", "autoscale", "review", "production", "finishing", "generation")
+SECTIONS = ("queue", "gpu_runs", "autoscale", "review", "production", "finishing", "generation", "performance")
 
 
 class PolicyInvalid(ValueError):
@@ -498,6 +500,32 @@ class Generation(_Strict):
     borrowed_motion: bool = False
 
 
+# --- performance (the switches; the library is policy/performance/<file>) ---------------------------------------
+
+class PerformanceSwitch(_Strict):
+    enabled: bool
+
+
+class PerformanceOwnAnnotation(_Strict):
+    enabled: bool
+    role: str
+    effort: str
+    agent: str
+    assets_per_call: int
+    max_assets_per_run: int
+    keyframes_per_clip: int
+    image_max_bytes: int
+    caption_chars: int
+
+
+class Performance(_Strict):
+    file: str
+    models: dict[str, str]
+    observe: PerformanceSwitch
+    calibration: PerformanceSwitch
+    own_annotation: PerformanceOwnAnnotation
+
+
 # --- voice (not a hot section: only its engine choice is checked) ------------------------------------------------------
 
 
@@ -544,6 +572,7 @@ class PolicySchema(BaseModel):
     production: Production
     finishing: Finishing
     generation: Generation
+    performance: Performance
     voice: Voice | None = None
 
 

@@ -60,7 +60,9 @@ def _marked_voice_lines(body: dict, segment: int | None = None) -> list[dict]:
             for li, group in groupby(part, key=lambda x: x[1]):
                 group = list(group)
                 out.append({"text": " ".join(w for w, _, _ in group), "delivery": lines[li]["delivery"] or None,
-                            "pause_after_s": lines[li]["pause_after_s"] if group[-1][2] else None})
+                            "pause_after_s": lines[li]["pause_after_s"] if group[-1][2] else None,
+                            # the shot's performance levels (voice_lab.speak_payload: emotion strength, pauses)
+                            **({"controls": lines[li]["controls"]} if lines[li].get("controls") else {})})
             return out
     return _sentence_lines(text)
 

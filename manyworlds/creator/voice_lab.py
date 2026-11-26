@@ -169,18 +169,30 @@ def speak_payload(policy: Policy, voice: dict, lines: list[dict], *, seed: int |
     """A voice.speak.<engine> payload for a creator's designed voice (anchors.voice): the words only (an inline
     parenthetical becomes the delivery), each line's emotion from its delivery, the creator's reference clip as the
     timbre, `takes` per line, and the per-line check (policy voice.line_check). A voice a retired engine made is
-    refused (ValueError): it must be cast again."""
+    refused (ValueError): it must be cast again.
+
+    A line with performance controls (the shot's levels, direction.spoken_lines `controls`; manyworlds.performance
+    .voice_params): IndexTTS's emotion strength follows vocal_expressiveness and energy adds to its happy and
+    surprised weights; the shot's pauses scale with pace; an engine whose policy says `instruct: true` also gets the
+    voice phrases as its instruction (Qwen3-TTS Base takes none, so as shipped nothing is sent)."""
+    from .. import performance
     engine = _usable(policy, voice.get("engine"))
     out = []
     for line in lines:
         inline, words = voices.split_instruction(line.get("text") or "")
         delivery = (line.get("delivery") or "").strip() or inline
         spoken: dict = {"text": words}
+        params = performance.voice_params(line.get("controls") or {}, engine, policy) if line.get("controls") else None
         if line.get("pause_after_s") is not None:
-            spoken["pause_after_s"] = line["pause_after_s"]
+            spoken["pause_after_s"] = (round(float(line["pause_after_s"]) * params["pause_scale"], 3)
+                                       if params else line["pause_after_s"])
         if delivery:
             spoken["delivery"] = delivery
         emotion = emotion_for(policy, engine, delivery)
+        if params:
+            emotion = performance.apply_voice(emotion, params, engine, policy)
+            if params.get("instruct") and engine_cfg(policy, engine).get("instruct"):
+                spoken["instruct"] = params["instruct"]
         if emotion:
             spoken["emotion"] = emotion
         out.append(spoken)

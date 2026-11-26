@@ -1,5 +1,16 @@
 # Directing performance: what we have, what's missing, the simplest way forward (2026-11-26)
 
+> **Status (2026-11-26, branch `performance-controls`):** steps 1 and 2 of §6 are built with stubbed tests: the
+> library (`policy/performance/performance-v1.yaml`, `manyworlds/performance.py`), the dossier `performance`
+> section, shot-sheet `intent`/`controls` (in the director's edit pass: the shots call's strict grammar has no room
+> for another nested list), the compiler step with natural edges, IndexTTS voice mapping, observation in the existing
+> image and clip judges (rank only), selection by appeal/naturalness/closeness with a variety penalty,
+> `performance_observations`, calibration (off; waits for measured judge agreement) and own-content annotation in the
+> iia_v2 vocabulary (off). Owner refinements added: photo selection prefers appeal, charisma, expression and variety
+> among acceptable candidates; one intent sentence first and only the salient controls; naturalness scored, level 4
+> only with a reason; natural beginnings and endings. Not yet run against a real model or a GPU; step 3 (audio-first
+> re-timing) is another branch; the Maren experiments (§5) wait for the owner's go.
+
 The owner's brief asks for directed virtual talent rather than technically correct media: expression, charisma, emotional range, vocal and physical coherence, and context-dependent behaviour. The control is to be expressed in a shared creative language that the existing agents use, and learned from results.
 
 This document covers:

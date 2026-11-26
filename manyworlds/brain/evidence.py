@@ -243,6 +243,40 @@ def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], c
     return out
 
 
+def own_annotations(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], creator_ids=None) -> list[dict]:
+    """Our own accepted assets coded in the research vocabulary (reference_annotations source own; manyworlds.review
+    .own_annotation), joined with what was directed and achieved and what it cost, so own and external posts compare
+    on the same coded attributes: {asset_id, post_id, creator_id, format, status, schema, observed (the coded read),
+    performance (the newest observation: requested, observed, scores, closeness), job_usd (the asset's job's ledger
+    cost)}. Outcomes join by post_id through the mode's readers (real metrics never mix with simulated ones). A
+    sandbox creator's posts are left out of `real`."""
+    if mode not in ("real", "sandbox"):
+        raise ValueError(f"unknown evidence mode {mode!r}")
+    ids = [str(c) for c in creator_ids] if creator_ids is not None else None
+    rows = conn.execute(
+        """SELECT DISTINCT ON (a.own_asset_id) a.own_asset_id, a.own_post_id, a.schema, a.observed,
+                  p.creator_id, p.format, p.status, s.job_id,
+                  o.requested, o.observed AS perf_observed, o.scores, o.closeness,
+                  (SELECT coalesce(sum(c.usd), 0) FROM cost_entries c WHERE c.job_id = s.job_id) AS job_usd
+           FROM reference_annotations a JOIN posts p ON p.id = a.own_post_id
+           JOIN creators cr ON cr.id = p.creator_id
+           JOIN assets s ON s.id = a.own_asset_id
+           LEFT JOIN LATERAL (SELECT requested, observed, scores, closeness FROM performance_observations po
+                              WHERE po.asset_id = a.own_asset_id
+                              ORDER BY (po.stage = 'confirm') DESC, po.created_at DESC LIMIT 1) o ON true
+           WHERE a.source = 'own' AND a.schema = ANY(%s) AND (%s::uuid[] IS NULL OR p.creator_id = ANY(%s::uuid[]))
+             AND (%s = 'sandbox' OR cr.publish_mode = 'instagram')
+           ORDER BY a.own_asset_id, array_position(%s::text[], a.schema)""",
+        (list(schemas), ids, ids, mode, list(schemas))).fetchall()
+    return [{"asset_id": str(r["own_asset_id"]), "post_id": str(r["own_post_id"]), "creator_id": str(r["creator_id"]),
+             "format": r["format"], "status": r["status"], "schema": r["schema"], "observed": r["observed"] or {},
+             "performance": ({"requested": r["requested"] or {}, "observed": r["perf_observed"] or {},
+                              "scores": r["scores"] or {},
+                              "closeness": float(r["closeness"]) if r["closeness"] is not None else None}
+                             if r["requested"] is not None else None),
+             "job_usd": float(r["job_usd"] or 0)} for r in rows]
+
+
 _MENTION = re.compile(r"@[\w.]+")
 _LINK = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
 

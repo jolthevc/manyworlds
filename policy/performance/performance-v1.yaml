@@ -1,0 +1,276 @@
+# The performance library (manyworlds.performance; policy `performance.file`). Owner 2026-11-26: the agents direct
+# virtual talent the way a photographer, an acting coach and a voice director would. They share one control language
+# and translate it into observable behaviour, never into piles of adjectives. Design:
+# docs/2026-11-26-performance-direction.md.
+#
+# controls: the creative console. Every agent reads and writes these names (the talent manager's performance profile,
+# the director's shot sheet, the judges' observations, calibration). Each control has 5 levels:
+#   0 none/absent, 1 subtle, 2 moderate, 3 strong, 4 extreme.
+# Levels are creative intent, not a promise the models resolve finely. Calibration (manyworlds.performance
+# .refresh_calibration) learns per model which requested level produces which observed level, and asks one level
+# higher where a model undershoots, only on reliable observations (`calibration` below).
+#
+# Each control:
+#   means       one line the agents and the judges share
+#   bipolar     true: level 0 is itself a behaviour (stillness, slow pace) and is compiled; false: 0 says nothing
+#   leaks       controls expected to move with it. The leakage check tolerates them; anything else moving is leakage
+#   levels      per level, observable behaviour per channel:
+#                 face (brow, eyes, mouth, smile), gaze (eye contact, glances), body (posture, shoulders, hands,
+#                 weight), walk (stride, hips, pace, turns), voice (pitch, pace, emphasis, pauses, laughter),
+#                 camera (framing, stillness, polish)
+#               A channel a target doesn't use is ignored (`targets` below).
+# Phrases are positive (a test checks): Z-Image runs at guidance 0, so a negative prompt does nothing, and a negation
+# in any prompt tends to summon the thing.
+version: performance-v1
+
+levels: {0: none, 1: subtle, 2: moderate, 3: strong, 4: extreme}
+
+# The channels each target model is told about, in the order they are written after the intent sentence.
+targets:
+  photo: [face, gaze, body, camera]
+  i2v: [body, walk, gaze, camera]
+  talk: [face, gaze, body]
+  voice: [voice]
+
+controls:
+  energy:
+    means: "how much life and drive she brings to the moment"
+    bipolar: true
+    leaks: [movement, gesture, vocal_expressiveness, pace]
+    levels:
+      0: {face: "soft, rested face, lids slightly heavy", body: "still, weight settled, shoulders dropped", walk: "unhurried amble", voice: "low, slow, close to a murmur", camera: "locked off, the frame perfectly still"}
+      1: {face: "calm, small easy expressions", body: "relaxed, an occasional small shift of weight", walk: "easy steady walk", voice: "relaxed, even pitch"}
+      2: {face: "bright eyes, a ready smile", body: "upright and engaged, hands occasionally lift", walk: "purposeful walk", voice: "lively, natural rises"}
+      3: {face: "animated, brows lift often, quick smiles", body: "leaning in, hands moving near the chest", walk: "quick bouncy stride", voice: "bright, quicker, wide pitch swings"}
+      4: {face: "buzzing, laughing eyes, big open reactions", body: "bouncing on her feet, restless with excitement, big hands", walk: "almost skipping, spins", voice: "fast, loud bursts, laughter breaking through"}
+  confidence:
+    means: "how sure of herself she looks and sounds"
+    bipolar: true
+    leaks: [elegance, sass]
+    levels:
+      0: {face: "an uncertain half-smile", gaze: "eyes drop away from the lens", body: "shoulders curled in, holding one elbow", voice: "tentative, trailing off"}
+      1: {face: "easy, unbothered", gaze: "holds the lens briefly", body: "comfortable, weight on one hip"}
+      2: {face: "settled, direct", gaze: "steady eye contact", body: "tall spine, open chest, chin level", walk: "even, unhurried stride", voice: "clear, unhurried, sentences land"}
+      3: {face: "assured, a slight closed smile", gaze: "holds the lens a beat longer than needed", body: "takes up space, hand on hip, feet apart", walk: "strong stride, eyes forward", voice: "low, deliberate, emphasis on key words"}
+      4: {face: "commanding, chin slightly raised", gaze: "a steady unbroken stare into the lens", body: "power stance, shoulders back", walk: "runway stride straight at the camera", voice: "slow, weighty, pauses she owns"}
+  playfulness:
+    means: "how much she is having fun with the moment"
+    bipolar: false
+    leaks: [energy, warmth, candidness]
+    levels:
+      1: {face: "a smile tugging at one corner", gaze: "a glint, a quick look at the lens", voice: "a smile you can hear"}
+      2: {face: "scrunched-nose grin, eyes creased", body: "a small shrug, a tilt of the head", walk: "a little bounce", voice: "a teasing lilt"}
+      3: {face: "laughing at herself, tongue at the teeth", body: "a mock pose, a hair flick done as a joke", walk: "a twirl mid-walk", voice: "sing-song phrases, a laugh between lines"}
+      4: {face: "clowning, exaggerated faces", body: "a silly dance, playing to the camera", walk: "skipping, a spin and a stumble she laughs at", voice: "voices and impressions, giggles"}
+  sass:
+    means: "knowing, teasing self-assurance with an edge"
+    bipolar: false
+    leaks: [confidence, playfulness]
+    levels:
+      1: {face: "a knowing half-smile", gaze: "a sideways glance that lands on the lens", voice: "dry, a beat before the punchline"}
+      2: {face: "one brow lifted, lips pressed in a smirk", gaze: "chin tilted down, eyes up at the lens", body: "hand on hip, weight thrown to one side", walk: "hips swing, a look back over the shoulder", voice: "drawn-out vowels on the key word"}
+      3: {face: "a slow smirk, the eyebrow raise held", gaze: "a deliberate once-over glance", body: "a hair flick, a shoulder pop", walk: "a strut with a sharp turn and a glance back", voice: "pointed, every word placed"}
+      4: {face: "an eye roll into a smirk", gaze: "looks away, then back as if to say 'please'", body: "a finger snap, a hand flip, a hip pop", walk: "full strut, stop, pose, walk off", voice: "a theatrical drawl, a scoff"}
+  flamboyance:
+    means: "how large and theatrical her expression is"
+    bipolar: false
+    leaks: [energy, gesture, movement]
+    levels:
+      1: {body: "a little flourish of the hand", walk: "a small spin at the end"}
+      2: {face: "big expressive brows", body: "sweeping arm gestures, posing with flair", walk: "turns with the skirt flaring"}
+      3: {face: "dramatic expressions held for effect", body: "theatrical poses, arms wide", walk: "catwalk turns, a dramatic pause and pose", voice: "big dynamic swings, dramatic pauses"}
+      4: {face: "full drama, a mock gasp", body: "grand gestures, a dip, a twirl with arms out", walk: "dance-walk, several spins", voice: "performing to the back row"}
+  elegance:
+    means: "controlled, refined grace"
+    bipolar: false
+    leaks: [polish, confidence]
+    levels:
+      1: {body: "straight spine, relaxed shoulders", walk: "smooth, even steps"}
+      2: {face: "composed, a soft closed-mouth smile", gaze: "measured, unhurried glances", body: "long neck, hands loose and slow", walk: "a slow gliding walk, light footfall", voice: "measured, softly articulated"}
+      3: {face: "serene, minimal movement", body: "deliberate, controlled gestures, fingertips lead", walk: "a slow runway glide, head still", camera: "clean composition, generous negative space", voice: "low, slow, every consonant placed"}
+      4: {face: "still, sculptural", body: "statuesque, poised, every movement unhurried", walk: "slow, perfectly balanced, a pause at each turn", camera: "editorial stillness"}
+  warmth:
+    means: "how open, kind and close she feels"
+    bipolar: true
+    leaks: [playfulness]
+    levels:
+      0: {face: "cool, unreadable", body: "closed, contained", voice: "flat and cool"}
+      1: {face: "soft eyes, a gentle smile", voice: "gentle"}
+      2: {face: "a real smile reaching the eyes", gaze: "soft eye contact", body: "open arms, leaning a little toward the lens", voice: "warm, rounded, a smiling tone"}
+      3: {face: "beaming, eyes creased", body: "a hand to her chest, leaning in close", voice: "tender, close-mic intimacy"}
+      4: {face: "moved, a glassy-eyed smile", body: "hugging herself, both hands to her heart", voice: "emotional, her voice catching"}
+  facial_expressiveness:
+    means: "how much the face moves and shows what she feels"
+    bipolar: true
+    leaks: [energy]
+    levels:
+      0: {face: "a neutral, almost still face"}
+      1: {face: "small micro-expressions, a flicker of a smile"}
+      2: {face: "brows and mouth move with every thought, natural reactions"}
+      3: {face: "big readable reactions: wide eyes, raised brows, an open grin"}
+      4: {face: "cartoonishly big reactions, every beat on the face"}
+  gesture:
+    means: "how much the hands and arms talk"
+    bipolar: true
+    leaks: [energy, flamboyance]
+    levels:
+      0: {body: "hands at rest, out of the way"}
+      1: {body: "an occasional small hand movement"}
+      2: {body: "hands move with the words, near the chest"}
+      3: {body: "animated hands illustrating each point"}
+      4: {body: "big two-handed gestures, arms wide"}
+  movement:
+    means: "how much the whole body moves through the shot"
+    bipolar: true
+    leaks: [energy]
+    levels:
+      0: {body: "planted in place", walk: "standing still", camera: "a static frame"}
+      1: {body: "small shifts of weight", walk: "a step or two"}
+      2: {body: "turns, leans, sits and stands", walk: "walks through the frame"}
+      3: {body: "continuous movement, turning to show the outfit", walk: "walks toward and past the camera, turns"}
+      4: {body: "dancing, spinning, jumping", walk: "runs, spins, moves through the whole space"}
+  vocal_expressiveness:
+    means: "how much the voice moves: pitch, loudness, colour"
+    bipolar: true
+    leaks: [energy]
+    levels:
+      0: {voice: "monotone, even, little pitch movement"}
+      1: {voice: "natural conversational movement"}
+      2: {voice: "clear rises and falls, words leaned on"}
+      3: {voice: "wide pitch swings, dynamic loudness, emotional colour"}
+      4: {voice: "theatrical: whispers to exclamations, laughter, big swings"}
+  pace:
+    means: "speaking and moving tempo"
+    bipolar: true
+    leaks: []
+    levels:
+      0: {voice: "very slow, long pauses", walk: "slow"}
+      1: {voice: "unhurried, comfortable pauses"}
+      2: {voice: "a natural conversational pace"}
+      3: {voice: "quick, short pauses", walk: "brisk"}
+      4: {voice: "rapid-fire, barely a breath", walk: "rushing"}
+  candidness:
+    means: "how caught-in-the-moment versus posed it feels"
+    bipolar: true
+    leaks: [polish]
+    levels:
+      0: {face: "a posed, camera-aware expression", gaze: "direct to the lens", body: "posed, symmetrical", camera: "centred, formal composition"}
+      1: {face: "relaxed, natural", body: "a natural stance, almost posed", camera: "composed but casual"}
+      2: {face: "mid-expression, mid-word or mid-laugh", gaze: "looking at something off camera", body: "mid-action, hands busy", camera: "slightly off-centre, a friend's snapshot"}
+      3: {face: "caught unaware, a real reaction", gaze: "looking away from the camera", body: "mid-movement, an imperfect pose, hair across the face", camera: "tilted, a partly obstructed foreground, motion blur at the edges"}
+      4: {face: "unguarded, eyes half shut mid-laugh", gaze: "turned away", body: "in motion, slightly blurred", camera: "accidental framing, cropped limbs, a flash snapshot"}
+  polish:
+    means: "how produced and editorial the image and sound feel"
+    bipolar: true
+    leaks: [elegance, candidness]
+    levels:
+      0: {camera: "a raw phone snapshot, natural mixed light, casual styling"}
+      1: {camera: "a good phone photo, decent light"}
+      2: {camera: "considered composition, flattering natural light"}
+      3: {camera: "editorial composition, shaped light, a clean background"}
+      4: {camera: "campaign-grade: controlled golden-hour light, immaculate styling, perfect composition"}
+
+# A shot sheet's legacy `energy` word (direction.PerformanceSpec.energy) as the energy control's level, when the shot's
+# controls don't name energy; and back (the idle-movement line still reads the word).
+energy_alias: {low: 1, medium: 2, high: 3}
+
+# How the voice engines take the voice-channel controls (performance.voice_params). IndexTTS-2.5: the line's emotion
+# vector (from its delivery) is scaled by vocal_expressiveness (emo_alpha), and energy adds to the "happy" and
+# "surprised" weights per level above `energy_from` (capped by the engine's max_emotion on the worker). Qwen3-TTS
+# Base takes no instruction (voice.engines.qwen3): the voice-channel phrases go to an `instruct` hook only for an
+# engine whose policy says `instruct: true`; whether a cloned voice follows them is for the listening cast.
+# pace scales the pauses the shot sheet sets between lines.
+voice:
+  indextts:
+    vector_order: [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+    emo_alpha_by_level: {0: 0.35, 1: 0.55, 2: 0.75, 3: 0.9, 4: 1.0}
+    energy_from: 2
+    energy_boost: {happy: 0.08, surprised: 0.05}
+  pause_scale_by_pace: {0: 1.6, 1: 1.25, 2: 1.0, 3: 0.75, 4: 0.55}
+
+# Context shifts: level offsets from the creator's baseline by format or situation (examples, not rules). The talent
+# manager may write her own (her profile's contexts win); the director applies one and then moves a few controls on
+# purpose.
+contexts:
+  outfit_check:    {confidence: +1, sass: +1, movement: +1, polish: +1}
+  grwm:            {warmth: +1, playfulness: +1, candidness: +1, facial_expressiveness: +1, vocal_expressiveness: +1}
+  luxury:          {elegance: +2, polish: +2, gesture: -1, energy: -1, candidness: -1}
+  photo_dump:      {candidness: +2, playfulness: +1, polish: -1}
+  story_time:      {facial_expressiveness: +1, vocal_expressiveness: +1, gesture: +1}
+  quiet_morning:   {energy: -1, warmth: +1, movement: -1, pace: -1, candidness: +1}
+
+# Combination, not concatenation (owner 2026-11-26). A shot's performance is first one sentence of intent
+# (direction.PerformanceSpec.intent: "dry, amused confidence that warms at the end"); the controls refine it. The
+# compiler (manyworlds.performance.compose):
+#   1. level 4 only with a stated reason (`max_level_without_reason`), within the creator's natural range;
+#   2. resolves conflicts: for each pair below, when both are at or above `at`, the one the context favours keeps its
+#      level and the other is capped at `cap`; without a favourite, the higher requested level wins, ties to the first
+#      of the pair (the notes say what happened);
+#   3. ranks controls by salience (distance from the creator's baseline under the context, then from `neutral_level`)
+#      and keeps the top `max_controls`; a control at her baseline and at neutral says nothing;
+#   4. per channel takes at most `per_channel` phrases, from the most salient controls first, so a face is not told
+#      five things at once;
+#   5. writes the intent sentence first, then the channels in the target's order, so it reads as one performance.
+compose:
+  max_controls: 4
+  per_channel: 2
+  neutral_level: 2
+  max_level_without_reason: 3
+  max_context_offset: 2          # a context shift moves a control at most this many levels
+  channel_labels: {face: "face", gaze: "eyes", body: "body", walk: "movement", camera: "camera", voice: "voice"}
+  conflicts:
+    - {pair: [elegance, flamboyance], at: 3, cap: 2}
+    - {pair: [elegance, playfulness], at: 4, cap: 2}
+    - {pair: [candidness, polish], at: 3, cap: 1}
+    - {pair: [energy, elegance], at: 4, cap: 2}
+    - {pair: [warmth, sass], at: 4, cap: 2}
+    - {pair: [movement, elegance], at: 4, cap: 2}
+  favours:
+    luxury: [elegance, polish]
+    outfit_check: [sass, confidence, flamboyance]
+    photo_dump: [candidness, playfulness]
+    story_time: [facial_expressiveness, vocal_expressiveness]
+
+# Natural beginnings and endings (talk and i2v): never a start from a blank stare or a return to one. A shot's own
+# `opening`/`closing` wins; else the creator's signature entrance and exit (performance profile `opening`/`closing`),
+# else these, per target.
+edges:
+  talk:
+    opening: "already mid-thought as the clip starts, settling into the frame, a breath before the first word"
+    closing: "after the last word she holds a small reaction (a half-smile, a glance away, a nod) and stays in the moment, eyes alive"
+  i2v:
+    opening: "already in motion as the clip starts, mid-gesture, settling into the moment"
+    closing: "ends on a small natural beat (a half-smile, a glance away, a breath) and stays in the moment, eyes alive"
+
+# Observation (the existing judges, rank only, never a rejection). Naturalness is scored on every judged asset,
+# because more is not better: exaggerated, theatrical or uncanny behaviour scores low even when it matches a high
+# requested level.
+observe:
+  max_controls: 6
+  scores: [appeal, charisma, expression, naturalness]
+  # Among candidates that pass the defect gates: the ranked gates' sum plus these (each score 1-10; closeness 0-1 is
+  # counted on the same 10-point scale). naturalness weighs as much as appeal; closeness to the request counts half
+  # (a compelling surprise can still win).
+  selection_weights: {appeal: 1.0, charisma: 0.5, expression: 0.5, naturalness: 1.0, closeness: 0.5}
+  # Variety among a carousel's or a post's chosen frames: a candidate whose pose and expression repeat a frame already
+  # chosen for an earlier scene of the post (descriptor word overlap at or above `variety_similarity`, or the same
+  # observed levels on every directed control) loses `variety_penalty` points.
+  variety_penalty: 3.0
+  variety_similarity: 0.6
+
+# Calibration only from enough reliable observations: a (model, target, control, requested level) cell adjusts only
+# with at least `min_samples` observations from at least `min_assets` distinct posts, a mean shortfall of at least
+# `min_shift` levels whose confidence interval (mean +/- `z` standard errors) excludes zero, and only from a judge whose
+# agreement with the owner's own ratings, or with a judge of another model family on the same assets, is at least
+# `min_judge_agreement` over at least `min_agreement_pairs` paired observations (agreement: the share of pairs within
+# `agreement_tolerance` levels). One step per refresh, never more than `max_offset` levels in total; every change is a
+# decision row.
+calibration:
+  min_samples: 12
+  min_assets: 6
+  min_shift: 0.75
+  z: 1.96
+  min_judge_agreement: 0.6
+  min_agreement_pairs: 20
+  agreement_tolerance: 0
+  max_offset: 1

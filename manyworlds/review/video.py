@@ -18,6 +18,8 @@ per gate, written against the video asset:
   dance_identity
             (motion transfer: comfy.wan_animate2, or a payload `reference` motion clip) identity per keyframe over
             `dance.identity.keyframes` keyframes, decided by manyworlds.dance.identity_check (worst and mean)
+  performance (policy performance.observe) rank only, always passes: observed levels of the directed controls,
+            appeal, charisma, expression and naturalness, stored per clip (performance_observations)
   finer checks (manyworlds.review.detail, policy review.detail; each rejects only when enforced):
     lip_closure, background  free, before the judge: lips closing on b/p/m (talking clips with a mouth series),
                              background edge flicker across the keyframes
@@ -83,6 +85,13 @@ class ClipReview(BaseModel):
     distribution_risk: int | None = Field(default=None, description=common.DISTRIBUTION_RULE)
     distribution_label: str | None = Field(default=None, description="only with distribution_risk: a few words")
     detail_defects: list[str] = Field(default_factory=list, description=common.DETAIL_RULE)
+    # owner 2026-11-26 (manyworlds.performance): rank only, never a reason to reject (common.performance_prompt)
+    observed_levels: list[common.ObservedLevel] = Field(default_factory=list, description=common.LEVELS_RULE)
+    appeal: int | None = Field(default=None, description=common.APPEAL_RULE)
+    charisma: int | None = Field(default=None, description=common.CHARISMA_RULE)
+    expression: int | None = Field(default=None, description=common.EXPRESSION_RULE)
+    naturalness: int | None = Field(default=None, description=common.NATURAL_RULE)
+    pose_expression: str | None = Field(default=None, description=common.POSE_RULE)
     notes: str = Field(description="one sentence")
 
 
@@ -180,6 +189,9 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
         content.append({"type": "text", "text": f"PER-KEYFRAME IDENTITY: also give `identity_per_frame`, one 1-10 "
                                                 f"score per keyframe ({len(frames)} numbers, in order) for how "
                                                 f"clearly that keyframe shows the REFERENCE person."})
+    perf = common.performance_prompt(shot, policy, still=False)
+    if perf:
+        content.append({"type": "text", "text": perf})
     content.append({"type": "text", "text": "Review the clip as a whole from these keyframes."})
     r = llm.structured(role, system=SYSTEM, content=content, schema=ClipReview, effort=effort,
                        creator_id=creator["id"])
@@ -201,7 +213,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     clip (comfy.wan_animate2, or any job driven by a `reference` motion clip) also gets the `dance_identity` gate:
     the judge scores identity per keyframe (`dance.identity.keyframes` of them, cut from the clip when the worker
     stored fewer) and manyworlds.dance.identity_check decides."""
-    job = conn.execute("SELECT creator_id, kind, batch, payload FROM jobs WHERE id = %s", (job_id,)).fetchone()
+    job = conn.execute("SELECT creator_id, kind, post_id, batch, payload FROM jobs WHERE id = %s",
+                       (job_id,)).fetchone()
     policy = common.policy_for(policy, job.get("batch"))
     cfg = policy.get("review", "video", default={})
     stages = common.stages(cfg)
@@ -233,7 +246,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
     crops = detail.crop_blocks(crop_rows, store, workdir, image_block, policy)
     warp = detail.background_flicker([b for b, _ in frames], policy)   # free, so measured before any paid judge
 
-    rows, out = [], []
+    rows, out, observations = [], [], []
+    target = "talk" if str(job.get("kind") or "").startswith("talk.") else "i2v"
     for v in videos:
         res = {"asset_id": str(v["id"]), "uri": v["uri"], "accepted": True, "stages": [], **{g: True for g in gates}}
         if heard is not None:   # the voice says the script (checked before anything paid per clip)
@@ -293,6 +307,14 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                        "stage": stage, "clear_pass": clear, **({"dance_identity": held} if held else {})}
             rows += [(v["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
             rows += [(v["id"], g, ok, getattr(r, g), Jsonb({**details, **info})) for g, (ok, info) in checks.items()]
+            perf = common.performance_result(r, shot, policy, target=target)
+            if perf is not None:   # rank only: never part of the verdict
+                if perf["points"] is not None:
+                    rows.append(common.performance_row(v["id"], perf, details))
+                observations.append({**perf, "asset_id": v["id"], "post_id": job.get("post_id"),
+                                     "creator_id": job["creator_id"], "job_id": job_id, "model": job.get("kind"),
+                                     "judge": details["model"], "stage": stage,
+                                     "policy_version": getattr(policy, "version", None)})
             res["stages"].append({"stage": stage, "model": details["model"], **scores,
                                   **{g: getattr(r, g) for g in checks}, "drift_from": r.drift_from,
                                   "defects": r.defects, "passed": passed})
@@ -308,6 +330,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         out.append(res)
     if write:
         common.write_rows(conn, rows)
+        from .. import performance
+        performance.record_observations(conn, observations)
         if motion_ref:
             for res in out:
                 if res.get("dance_identity") is False:

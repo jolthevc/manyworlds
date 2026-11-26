@@ -12,16 +12,14 @@ class DropPost(Exception):
     """Raised by a step's job maker when the post must not be retried (e.g. unsafe output)."""
 
 
-# What ranks accepted candidates: the core gates' scores only. Report rows (distribution_risk, where higher is worse;
-# hands or teeth, present only when visible) once ranked riskier photos first (review 2026-11-25).
-RANKED_GATES = ["identity", "realism", "scene", "direction"]
+# What ranks accepted candidates: the core gates' scores, plus `performance` (manyworlds.performance, owner 2026-11-26):
+# among candidates that pass every defect gate, appeal, charisma, expression, naturalness and closeness to the
+# directed performance (a passing, rank-only row whose score is its selection points). Report rows (distribution_risk,
+# where higher is worse; hands or teeth, present only when visible) once ranked riskier photos first (review
+# 2026-11-25).
+RANKED_GATES = ["identity", "realism", "scene", "direction", "performance"]
 
-
-def _best_confirmed(conn, job_ids: list[str]) -> dict | None:
-    """The best image of these jobs that passed every review row and was confirmed, or cleared the screen by the
-    clear-pass margin (no confirm needed: review.image.clear_pass_margin)."""
-    return conn.execute(
-        """SELECT a.id, a.uri,
+_CANDIDATES = """SELECT a.id, a.uri,
                   coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm' AND r.gate = ANY(%s)),
                            sum(r.score) FILTER (WHERE r.details->>'clear_pass' = 'true' AND r.gate = ANY(%s))) AS score
            FROM assets a JOIN reviews r ON r.asset_id = a.id
@@ -29,7 +27,51 @@ def _best_confirmed(conn, job_ids: list[str]) -> dict | None:
            GROUP BY a.id, a.uri
            HAVING bool_and(r.passed)
               AND bool_or(r.details->>'stage' = 'confirm' OR r.details->>'clear_pass' = 'true')
-           ORDER BY score DESC NULLS LAST, a.uri LIMIT 1""", (RANKED_GATES, RANKED_GATES, job_ids)).fetchone()
+           ORDER BY score DESC NULLS LAST, a.uri"""
+
+
+def _best_confirmed(conn, job_ids: list[str], policy=None) -> dict | None:
+    """The best image of these jobs that passed every review row and was confirmed, or cleared the screen by the
+    clear-pass margin (no confirm needed: review.image.clear_pass_margin). Variety (manyworlds.performance): a
+    candidate whose pose and expression repeat the frame chosen for an earlier scene of the same post loses the
+    library's observe.variety_penalty points, so a carousel's frames differ when the candidates allow it."""
+    rows = conn.execute(_CANDIDATES, (RANKED_GATES, RANKED_GATES, job_ids)).fetchall()
+    if len(rows) <= 1:
+        return rows[0] if rows else None
+    from .. import performance
+    penalty = performance.variety_penalty(policy)
+    chosen = _chosen_before(conn, job_ids) if penalty else []
+    if not chosen:
+        return rows[0]
+    seen = list(performance.observations_for(conn, chosen).values())
+    mine = performance.observations_for(conn, [r["id"] for r in rows])
+    if not seen or not mine:
+        return rows[0]
+
+    def adjusted(r) -> float:
+        base = float(r["score"]) if r["score"] is not None else float("-inf")
+        o = mine.get(str(r["id"]))
+        return base - (penalty if o and any(performance.similar(o, c, policy) for c in seen) else 0.0)
+    return sorted(rows, key=lambda r: (-adjusted(r), r["uri"]))[0]
+
+
+def _chosen_before(conn, job_ids: list[str]) -> list[str]:
+    """The images chosen for the post's earlier scenes (by score alone: a scene's choice never depends on a later
+    one), for the variety penalty. [] for jobs that are not a post's scene."""
+    row = conn.execute("SELECT p.body->'scene_jobs' AS scene_jobs FROM jobs j JOIN posts p ON p.id = j.post_id "
+                       "WHERE j.id = %s::uuid", (str(job_ids[0]),)).fetchone() if job_ids else None
+    scenes = (row or {}).get("scene_jobs") or []
+    mine = {str(j) for j in job_ids}
+    here = next((i for i, js in enumerate(scenes) if mine & {str(j) for j in (js or [])}), None)
+    if not here:
+        return []
+    out = []
+    for js in scenes[:here]:
+        if js:
+            best = conn.execute(_CANDIDATES + " LIMIT 1", (RANKED_GATES, RANKED_GATES, [str(j) for j in js])).fetchone()
+            if best:
+                out.append(str(best["id"]))
+    return out
 
 
 # Every piece of a post (each scene's image, then the edit or clip made from them) is a Step:

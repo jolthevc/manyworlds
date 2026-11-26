@@ -10,6 +10,8 @@ Each tick (the producer's Brain steps, while operations are live):
   - an agent whose jobs keep failing (>= `failing_jobs` failures in `window_hours`) is reported once a day
   - an agent that spent LLM money in the window and recorded no decision is reported (spend with nothing to show)
   - requests waiting on the owner for longer than `owner_wait_days` are reported again, once a day
+  - performance calibration takes one step from reliable observations (manyworlds.performance.refresh_calibration,
+    while policy performance.calibration.enabled; nothing changes until judge agreement is measured)
 """
 
 from __future__ import annotations
@@ -40,6 +42,10 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     card = capability_card.refresh(conn, policy, now=now)
     out["capability_card"] = {f: c.get("source") for f, c in card.items()}
     commerce.categories(conn, policy)   # an empty registry is seeded from strategy.commercial.seed
+    from .. import performance
+    cal = performance.refresh_calibration(conn, policy)   # one step, only from reliable observations
+    out["performance_calibration"] = {k: cal.get(k) for k in ("enabled", "judge", "reason") if cal.get(k)} | {
+        "changed": len(cal.get("changed") or [])}
     if out["expired_requests"]:
         notify.owner_event(conn, "requests_expired", payload={"n": out["expired_requests"]},
                            dedupe_key=f"requests_expired:{now:%Y-%m-%dT%H}")

@@ -15,6 +15,11 @@ asset gets one `reviews` row per gate:
   hands, teeth, consistency
             finer checks (manyworlds.review.detail, policy review.detail): a row each when the judge scores them;
             they reject only when enforced
+  performance
+            (policy performance.observe) rank only, always passes: the same call observes the shot's directed
+            controls and scores appeal, charisma, expression and naturalness; the row's score is the selection points
+            (manyworlds.performance.selection_points) production adds among candidates that pass every gate, and
+            requested vs observed is stored per asset (performance_observations)
 
 An asset is accepted only if every gate passes. Thresholds, the model role and limits
 are in policy `review`. Cost per accepted output (manyworlds.deploy.scoring) counts
@@ -79,6 +84,13 @@ class CandidateReview(BaseModel):
                                    "true when a person has more than two hands or two arms, or a hand or arm belongs "
                                    "to nobody in the picture (for example hands holding a phone plus two more hands "
                                    "holding something else)")
+    # owner 2026-11-26 (manyworlds.performance): rank only, never a reason to reject (common.performance_prompt)
+    observed_levels: list[common.ObservedLevel] = Field(default_factory=list, description=common.LEVELS_RULE)
+    appeal: int | None = Field(default=None, description=common.APPEAL_RULE)
+    charisma: int | None = Field(default=None, description=common.CHARISMA_RULE)
+    expression: int | None = Field(default=None, description=common.EXPRESSION_RULE)
+    naturalness: int | None = Field(default=None, description=common.NATURAL_RULE)
+    pose_expression: str | None = Field(default=None, description=common.POSE_RULE)
     face_visible: bool | None = Field(default=None, description="true when any human face is in the picture, even "
                                       "partly or out of focus")
     person_visible: bool | None = Field(default=None, description="true when any part of a person (face, hand, arm, "
@@ -153,7 +165,7 @@ def decide(r: CandidateReview, cfg: dict, scene: str | None = None, *, shot: dic
 def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str, creator, refs: list[bytes],
            candidates: list[bytes], scene: str | None = None,
            shot: dict | None = None, extra: tuple[list, list[str]] = ([], []),
-           presentation: dict | None = None) -> tuple[str, list[CandidateReview | None]]:
+           presentation: dict | None = None, observe: bool = True) -> tuple[str, list[CandidateReview | None]]:
     """One vision call: the creator's references (cached prefix), then the candidates. With her `presentation`
     (brand_core.presentation) the same call scores brand alignment and distribution risk."""
     min_age = int(policy.get("scope", "creator_min_age", default=21))
@@ -176,6 +188,9 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
         content.append({"type": "text", "text": ask})
     if presentation:
         content.append({"type": "text", "text": common.presentation_prompt(policy, presentation)})
+    perf = common.performance_prompt(shot, policy, still=True) if observe else ""
+    if perf:
+        content.append({"type": "text", "text": perf})
     content.append({"type": "text", "text": f"Review all {len(candidates)} candidates, one entry each."})
     out = llm.structured(role, system=SYSTEM, content=content, schema=ImageReviews, effort=effort,
                          creator_id=creator["id"])
@@ -203,7 +218,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
 
     A job in a test-overlay batch (operations.test_overlay.batches, e.g. test-breadth-*) is judged under that
     overlay (policy.for_batch: the breadth test's direction gate is report-only), wherever it is reviewed."""
-    job = conn.execute("SELECT creator_id, batch, payload->>'scene' AS scene, payload->'shot' AS shot, "
+    job = conn.execute("SELECT creator_id, kind, post_id, batch, payload->>'scene' AS scene, payload->'shot' AS shot, "
                        "payload->'references' AS refs, payload->'plate' AS plate, payload->'shared_set' AS shared_set "
                        "FROM jobs WHERE id = %s",
                        (job_id,)).fetchone()
@@ -230,7 +245,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                          "defects": []}
                for a in assets}
 
-    remaining, rows = list(assets), []
+    remaining, rows, observations = list(assets), [], []
     plan, backlog = list(stages), []
     walks = int(cfg.get("confirm_walk_max", 3))
     while plan:
@@ -240,7 +255,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
         with common.charged_to(llm, job_id):   # review counts in this output's cost
             model, reviews = _judge(llm, policy, cfg, stage_role, effort, creator, refs,
                                     [images[a["id"]] for a in remaining], scene, shot, extra,
-                                    presentation=presentation)
+                                    presentation=presentation, observe=not plate)
         still = []
         for a, r in zip(remaining, reviews):
             checks = {}
@@ -261,6 +276,13 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                 checks.update(body_checks(policy, r, shot, plate))   # extra hands; a face where none belongs
             details.update(model=model, stage=stage)
             rows += [(a["id"], g, verdict[g], scores.get(g), Jsonb(details)) for g in gates]
+            perf = None if plate else common.performance_result(r, shot, policy, target="photo")
+            if perf is not None:   # rank only: a passing row whose score production adds among passing candidates
+                if perf["points"] is not None:
+                    rows.append(common.performance_row(a["id"], perf, details))
+                observations.append({**perf, "asset_id": a["id"], "post_id": job.get("post_id"),
+                                     "creator_id": job["creator_id"], "job_id": job_id, "model": job.get("kind"),
+                                     "judge": model, "stage": stage, "policy_version": getattr(policy, "version", None)})
             rows += [(a["id"], g, ok, _check_score(r, g), Jsonb({**details, **info})) for g, (ok, info) in checks.items()]
             res = results[a["id"]]
             res["stages"].append({"stage": stage, "model": model, **scores,
@@ -307,6 +329,8 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
              if str(aid) in clear and j.obj.get("stage") == "screen" else j) for aid, g, ok, sc, j in rows]
     if write:
         common.write_rows(conn, rows)
+        from .. import performance
+        performance.record_observations(conn, observations)
     for r in results.values():
         r["confirmed"] = r["accepted"] and (len(r["stages"]) == len(stages) or bool(r.get("clear_pass")))
     return [results[a["id"]] for a in assets]
