@@ -60,6 +60,10 @@ class ObservedLevel(BaseModel):
 
 PERFORMANCE_FIELDS = ("performance_read",)
 SCORE_NAMES = ("appeal", "charisma", "expression", "naturalness")
+READS_RULE = ("only when PERFORMANCE is asked: one string per candidate, in candidate order, each in exactly this "
+              "form: 'appeal=N; charisma=N; expression=N; naturalness=N; levels: control=L, control=L; pose: a few "
+              "words' (N 1-10, or 0 when there is no face to judge; levels only for the controls PERFORMANCE lists, "
+              "L 0-4); [] otherwise")
 READ_RULE = ("only when PERFORMANCE is asked, in exactly this form, else empty: "
              "'appeal=N; charisma=N; expression=N; naturalness=N; levels: control=L, control=L; pose: a few words' "
              "(N 1-10, or 0 when there is no face to judge; levels only for the controls PERFORMANCE lists, L 0-4)")
@@ -150,7 +154,7 @@ def performance_prompt(shot: dict | None, policy, *, still: bool) -> str:
             intent = ""
     what = "each candidate" if still else "the clip"
     text = (f"PERFORMANCE (rank only, never a reason to reject): for {what} also give appeal, charisma, expression and "
-            f"naturalness (1-10) and a pose descriptor, all in performance_read. Naturalness: exaggerated, theatrical or uncanny behaviour scores "
+            f"naturalness (1-10) and a pose descriptor, in performance_read(s). Naturalness: exaggerated, theatrical or uncanny behaviour scores "
             f"low even when it is what was asked; a natural, specific, alive moment scores high.")
     if intent:
         text += f" The intended performance (for expression): {intent}."
@@ -168,7 +172,7 @@ def performance_result(r, shot: dict | None, policy, *, target: str) -> dict | N
     from .. import performance
     if not observe_enabled(policy) or r is None:
         return None
-    read = parse_read(getattr(r, "performance_read", "") or "")
+    read = parse_read(getattr(r, "performance_read", None) or getattr(r, "_performance_read", "") or "")
     scores = {}
     for k in SCORE_NAMES:
         v = read["scores"].get(k)

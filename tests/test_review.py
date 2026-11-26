@@ -32,7 +32,10 @@ class JudgeStub:
         self.calls.append({"role": role, "content": content, "effort": effort, "n": n})
         first = len(self.calls) == 1
         scores = self.scores if first else (self.confirm or [ok()] * n)
-        return schema(reviews=[gates.CandidateReview(index=i, **x) for i, x in enumerate(scores[:n])])
+        rows = [dict(x) for x in scores[:n]]
+        reads = [r.pop("performance_read", "") for r in rows]
+        extra = {"performance_reads": reads} if any(reads) and "performance_reads" in schema.model_fields else {}
+        return schema(reviews=[gates.CandidateReview(index=i, **x) for i, x in enumerate(rows)], **extra)
 
 
 def ok(**kw):

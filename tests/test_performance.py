@@ -597,3 +597,11 @@ def test_the_performance_block_adds_no_branches_to_the_judges_strict_schema():
     read = common.parse_read("Appeal=7; naturalness = 8; levels: sass=2, warmth=3; pose: leaning in, half-smile; junk")
     assert read == {"scores": {"appeal": 7, "naturalness": 8}, "levels": [{"control": "sass", "level": 2},
                     {"control": "warmth", "level": 3}], "pose": "leaning in, half-smile"}
+
+
+def test_the_image_candidate_stays_within_the_apis_measured_schema_limit():
+    """2026-11-26, measured against the API: messages.parse refused the image judge ("Schema is too complex") with 21
+    properties per candidate and accepted 20. New judge outputs go beside the reviews (ImageReviews), not inside."""
+    from manyworlds.review import gates
+    assert len(gates.CandidateReview.model_fields) <= 20
+    assert "performance_reads" in gates.ImageReviews.model_fields

@@ -31,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from ..creator.lab import appearance_prompt
 from ..llm import StructuredLLM, image_block
@@ -48,6 +48,7 @@ GATES = ("identity", "realism", "safety")
 
 
 class CandidateReview(BaseModel):
+    _performance_read: str = PrivateAttr(default="")   # from ImageReviews.performance_reads (see there)
     index: int = Field(description="0-based candidate index")
     identity: int = Field(description="is this the same PERSON as the REFERENCE photos, judged by the face: "
                           "10 = unmistakably her (face shape and features, apparent age, skin); 0 = a different "
@@ -85,9 +86,6 @@ class CandidateReview(BaseModel):
                                    "to nobody in the picture (for example hands holding a phone plus two more hands "
                                    "holding something else)")
     # owner 2026-11-26 (manyworlds.performance): rank only, never a reason to reject (common.performance_prompt)
-    # One string, parsed in code (common.parse_read): six more properties per candidate made the API refuse the image
-    # judge ("Schema is too complex", 2026-11-26); the strict grammar's size grows with every property.
-    performance_read: str = Field(default="", description=common.READ_RULE)
     face_visible: bool | None = Field(default=None, description="true when any human face is in the picture, even "
                                       "partly or out of focus")
     person_visible: bool | None = Field(default=None, description="true when any part of a person (face, hand, arm, "
@@ -97,6 +95,10 @@ class CandidateReview(BaseModel):
 
 class ImageReviews(BaseModel):
     reviews: list[CandidateReview]
+    # Beside the reviews, not inside them (2026-11-26): the candidate object is at the API's limit for
+    # messages.parse ("Schema is too complex" with one more property, measured); one string per candidate, in
+    # candidate order, parsed in code (common.parse_read).
+    performance_reads: list[str] = Field(default_factory=list, description=common.READS_RULE)
 
 
 def gates_for(scene: str | None, shot: dict | None = None, *, plate: bool = False) -> tuple[str, ...]:
@@ -192,10 +194,12 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
     out = llm.structured(role, system=SYSTEM, content=content, schema=ImageReviews, effort=effort,
                          creator_id=creator["id"])
     by_index = {r.index: r for r in out.reviews}
+    reads = list(getattr(out, "performance_reads", None) or [])
     reviews = []
     for i in range(len(candidates)):
         r = by_index.get(i)
         if r is not None:
+            r._performance_read = reads[i] if i < len(reads) else ""
             r.identity, r.realism = max(0, min(10, r.identity)), max(0, min(10, r.realism))
             r.scene = max(0, min(10, r.scene)) if (scene and r.scene is not None) else None
             r.direction = max(1, min(10, r.direction)) if (shot and r.direction is not None) else None
