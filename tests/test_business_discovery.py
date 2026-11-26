@@ -47,10 +47,11 @@ def test_the_live_check_reports_which_fields_came_back(policy):
     assert "like_count" in r["media_fields_seen"] and "is_shared_to_feed" in r["media_fields_never_seen"]
 
 
-def test_uses_pending_counsel_are_refused_in_code(conn, policy):
+def test_uses_pending_counsel_are_refused_in_code(conn, policy, monkeypatch):
     """Owner 2026-11-26: where permission is materially uncertain the function stays off. The monitor's repeated
     per-creator snapshots are `history`, pending counsel for Business Discovery; a one-off research read is not."""
     from manyworlds.research import data_policy
+    monkeypatch.setenv("META_SYSTEM_USER_TOKEN", "test")
     assert "pending counsel" in data_policy.refused(policy, "graph", "posts", "history")
     assert data_policy.refused(policy, "graph", "posts", None) is None
     g = providers.GraphProvider(policy, call=lambda path, params: _answer(None))
