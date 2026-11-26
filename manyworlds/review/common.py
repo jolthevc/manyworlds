@@ -58,7 +58,11 @@ class ObservedLevel(BaseModel):
     level: int | None = Field(default=None, description="the level you see, 0-4")
 
 
-PERFORMANCE_FIELDS = ("observed_levels", "appeal", "charisma", "expression", "naturalness", "pose_expression")
+PERFORMANCE_FIELDS = ("performance_read",)
+SCORE_NAMES = ("appeal", "charisma", "expression", "naturalness")
+READ_RULE = ("only when PERFORMANCE is asked, in exactly this form, else empty: "
+             "'appeal=N; charisma=N; expression=N; naturalness=N; levels: control=L, control=L; pose: a few words' "
+             "(N 1-10, or 0 when there is no face to judge; levels only for the controls PERFORMANCE lists, L 0-4)")
 APPEAL_RULE = ("only when PERFORMANCE is asked: 1-10, how much a viewer would stop for and want to look at this: "
                "attractiveness, presence, style, the moment; 0 otherwise")
 CHARISMA_RULE = ("only when PERFORMANCE is asked: 1-10, the personality and magnetism that come through; 0 without "
@@ -72,6 +76,27 @@ POSE_RULE = ("only when PERFORMANCE is asked: a few words for the pose and expre
              "half-smile, eyes down' (for variety between frames); empty otherwise")
 LEVELS_RULE = ("only when PERFORMANCE lists controls: the level 0-4 you see for each control listed, as "
                "'control=level' pairs separated by commas, e.g. 'sass=2, warmth=3'; empty otherwise")
+
+
+def parse_read(text: str) -> dict:
+    """The judge's performance_read ('appeal=7; charisma=6; expression=8; naturalness=7; levels: sass=2, warmth=3;
+    pose: leaning on the counter, half-smile') as {scores: {name: int}, levels: [{control, level}], pose: str}.
+    Parts may come in any order; anything unreadable is skipped."""
+    import re
+    out = {"scores": {}, "levels": [], "pose": ""}
+    for part in str(text or "").split(";"):
+        key, sep, val = part.partition(":")
+        k = key.strip().lower()
+        if sep and k == "levels":
+            out["levels"] = parse_levels(val)
+            continue
+        if sep and k == "pose":
+            out["pose"] = val.strip()
+            continue
+        m = re.fullmatch(r"\s*([a-z]+)\s*=\s*(\d+)\s*", part.lower())
+        if m and m.group(1) in SCORE_NAMES:
+            out["scores"][m.group(1)] = int(m.group(2))
+    return out
 
 
 def parse_levels(value) -> list[dict]:
@@ -125,14 +150,14 @@ def performance_prompt(shot: dict | None, policy, *, still: bool) -> str:
             intent = ""
     what = "each candidate" if still else "the clip"
     text = (f"PERFORMANCE (rank only, never a reason to reject): for {what} also give appeal, charisma, expression and "
-            f"naturalness (1-10) and pose_expression. Naturalness: exaggerated, theatrical or uncanny behaviour scores "
+            f"naturalness (1-10) and a pose descriptor, all in performance_read. Naturalness: exaggerated, theatrical or uncanny behaviour scores "
             f"low even when it is what was asked; a natural, specific, alive moment scores high.")
     if intent:
         text += f" The intended performance (for expression): {intent}."
     if names:
         levels = ", ".join(f"{k} {v}" for k, v in (lib.get("levels") or {}).items())
         means = "; ".join(f"{n}: {((lib['controls'].get(n) or {}).get('means') or '')}" for n in names)
-        text += f" observed_levels: the level you see ({levels}) for each of these controls: {means}."
+        text += f" levels: the level you see ({levels}) for each of these controls: {means}."
     return text
 
 
@@ -143,16 +168,17 @@ def performance_result(r, shot: dict | None, policy, *, target: str) -> dict | N
     from .. import performance
     if not observe_enabled(policy) or r is None:
         return None
+    read = parse_read(getattr(r, "performance_read", "") or "")
     scores = {}
-    for k in ("appeal", "charisma", "expression", "naturalness"):
-        v = getattr(r, k, None)
-        if v:   # 0 or empty: not asked, or no face to judge
+    for k in SCORE_NAMES:
+        v = read["scores"].get(k)
+        if v:   # 0 or missing: not asked, or no face to judge
             try:
                 scores[k] = max(1, min(10, int(v)))
             except (TypeError, ValueError):
                 continue
     asked = performance_controls(shot, policy)
-    observed = {k: v for k, v in performance.levels_of(parse_levels(getattr(r, "observed_levels", None))).items()
+    observed = {k: v for k, v in performance.levels_of(read["levels"]).items()
                 if k in asked}
     if not scores and not observed:
         return None
@@ -170,7 +196,7 @@ def performance_result(r, shot: dict | None, policy, *, target: str) -> dict | N
             pass
     return {"points": performance.selection_points(scores, close, policy), "requested": requested,
             "compiled": used, "observed": observed, "scores": scores,
-            "descriptor": " ".join(str(getattr(r, "pose_expression", None) or "").split())[:200],
+            "descriptor": " ".join(read["pose"].split())[:200],
             "closeness": close, "intent": intent, "phrases": phrases, "target": target,
             "library_version": performance.library(policy).get("version")}
 

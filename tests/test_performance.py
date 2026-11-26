@@ -358,9 +358,10 @@ def test_the_image_judge_observes_the_shot_and_ranks_by_appeal_without_rejecting
     from manyworlds.production.steps import _best_confirmed
     from manyworlds.review import gates
     _, job, _ = _image_job(conn, store, tmp_path, shot=DIRECTED_SHOT)
-    perf = {"observed_levels": "sass=3, warmth=1, polish=4", "pose_expression": "hip on the counter, smirk"}
-    judge = JudgeStub([ok(), ok()], confirm=[ok(appeal=3, charisma=3, expression=3, naturalness=1, **perf),
-                                             ok(appeal=9, charisma=8, expression=8, naturalness=9, **perf)])
+    tail = "levels: sass=3, warmth=1, polish=4; pose: hip on the counter, smirk"
+    judge = JudgeStub([ok(), ok()], confirm=[
+        ok(performance_read=f"appeal=3; charisma=3; expression=3; naturalness=1; {tail}"),
+        ok(performance_read=f"appeal=9; charisma=8; expression=8; naturalness=9; {tail}")])
     results = gates.review_job(conn, policy, judge, store, job, tmp_path)
     assert all(r["accepted"] for r in results)                       # naturalness 1 ranks low, never rejects
     ask = " ".join(str(b.get("text", "")) for b in judge.calls[0]["content"])
@@ -405,12 +406,12 @@ def test_variety_prefers_a_frame_that_does_not_repeat_an_earlier_scene(conn, pol
                         "RETURNING id", (cid, Jsonb({"scene_jobs": [[str(first)], [str(second)]]}))).fetchone()["id"]
     conn.execute("UPDATE jobs SET post_id = %s WHERE id = ANY(%s)", (post, [first, second]))
     same = "leaning on the counter, half-smile, eyes down"
-    gates.review_job(conn, policy, JudgeStub([ok()], confirm=[ok(appeal=7, pose_expression=same)]), store, first,
+    gates.review_job(conn, policy, JudgeStub([ok()], confirm=[ok(performance_read=f"appeal=7; pose: {same}")]), store, first,
                      tmp_path)
     a, b = _uris(conn, second)
-    gates.review_job(conn, policy, JudgeStub([ok(), ok()], confirm=[ok(appeal=8, pose_expression=same),
-                                                                     ok(appeal=7, pose_expression="spinning, laughing, "
-                                                                                                  "hair across her face")]),
+    gates.review_job(conn, policy, JudgeStub([ok(), ok()], confirm=[ok(performance_read=f"appeal=8; pose: {same}"),
+                                                                     ok(performance_read="appeal=7; pose: spinning, "
+                                                                                         "laughing, hair across her face")]),
                      store, second, tmp_path)
     assert _best_confirmed(conn, [str(second)])["id"] == b               # appeal 8 repeats scene 1; 7 is new
     no_penalty = conn.execute("SELECT id FROM assets WHERE id = %s", (a,)).fetchone()
@@ -426,7 +427,7 @@ def test_the_clip_judge_observes_too(conn, policy, store, tmp_path):
     job = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
     conn.execute("UPDATE jobs SET payload = payload || %s WHERE id = %s", (Jsonb({"shot": DIRECTED_SHOT}), job))
     rendered(conn, store, tmp_path, job)
-    llm = ClipStub(clip(appeal=7, naturalness=8, observed_levels="sass=2"))
+    llm = ClipStub(clip(performance_read="appeal=7; naturalness=8; levels: sass=2"))
     [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
     assert r["accepted"] is not None
     assert "PERFORMANCE (rank only" in " ".join(str(b.get("text", "")) for b in llm.calls[0]["content"])
@@ -538,7 +539,7 @@ def test_accepted_own_assets_are_coded_once_in_the_research_vocabulary(conn, pol
     from manyworlds.research import annotation as ann
     from manyworlds.review import gates, own_annotation
     _, job, post = _image_job(conn, store, tmp_path, n=2, shot=DIRECTED_SHOT, post_body={"caption": "tea at 2am"})
-    gates.review_job(conn, policy, JudgeStub([ok(), ok(identity=1)], confirm=[ok(appeal=8)]), store, job, tmp_path)
+    gates.review_job(conn, policy, JudgeStub([ok(), ok(identity=1)], confirm=[ok(performance_read="appeal=8")]), store, job, tmp_path)
     assert own_annotation.run_pending(conn, policy, ReadLLM(), store, tmp_path) == {"enabled": False}
     on = _with(policy, own_annotation={"enabled": True})
     llm = ReadLLM()
@@ -593,3 +594,6 @@ def test_the_performance_block_adds_no_branches_to_the_judges_strict_schema():
     assert common.parse_levels("sass=2, Warmth: 3, nonsense") == [{"control": "sass", "level": 2},
                                                                    {"control": "warmth", "level": 3}]
     assert common.parse_levels([{"control": "sass", "level": 1}]) == [{"control": "sass", "level": 1}]
+    read = common.parse_read("Appeal=7; naturalness = 8; levels: sass=2, warmth=3; pose: leaning in, half-smile; junk")
+    assert read == {"scores": {"appeal": 7, "naturalness": 8}, "levels": [{"control": "sass", "level": 2},
+                    {"control": "warmth", "level": 3}], "pose": "leaning in, half-smile"}
