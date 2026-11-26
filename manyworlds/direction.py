@@ -257,6 +257,9 @@ class EditSpec(_Sheet):
     transition_in: str = Field(default="", description="how this shot starts after the previous one: cut, match "
                                                        "(cut inside a motion both shots share: a spin, a hair flip, "
                                                        "a hand over the lens), whip, blur or flash")
+    audio_cut: Literal["j", "l"] | None = Field(
+        default=None, description="talking video, at a plain cut into this shot: j (her next line starts under the "
+                                  "previous shot) or l (the previous line carries over this shot); empty for none")
     cover: bool = Field(default=False, description="true if this shot's frame should be the post's cover")
 
     @field_validator("on_screen_text", mode="before")
@@ -957,9 +960,11 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
 
 
 def compile_prompt(shot: "ShotSheet | dict | None", bible: dict, target: Target, policy: Any, *,
-                   trigger: str | None = None, scene: str = "", motion: str = "") -> str:
+                   trigger: str | None = None, scene: str = "", motion: str = "",
+                   profile: dict | None = None) -> str:
     """The positive prompt alone (compile_prompts' `prompt`), for callers with no negative channel to fill."""
-    return compile_prompts(shot, bible, target, policy, trigger=trigger, scene=scene, motion=motion)["prompt"]
+    return compile_prompts(shot, bible, target, policy, trigger=trigger, scene=scene, motion=motion,
+                           profile=profile)["prompt"]
 
 
 def _capitalised(text: str) -> str:

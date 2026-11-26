@@ -119,7 +119,7 @@ from .scenes import (  # noqa: F401
 )
 from .state import BRIEF, BRIEF_KEYS, STATE, STATE_KEYS, STATE_PREFIXES, declared  # noqa: F401
 from .steps import (  # noqa: F401
-    DropPost, Step, _best_confirmed, _clip_state, _edit_state, _scene_state, _status, advance_step,
+    DropPost, Step, _best_confirmed, _chosen_before, _clip_state, _edit_state, _scene_state, _status, advance_step,
 )
 from .takes import (  # noqa: F401
     _directed, _hybrid_cfg, _photo_per_shot, _take_index, _take_photo, _take_script, _take_shot, _talk_long_cfg,

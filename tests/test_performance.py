@@ -279,12 +279,11 @@ def test_the_performance_section_is_checked_and_reaches_the_planners(policy):
 
 
 def test_an_existing_creator_without_the_section_is_onboarded_on_the_next_review(conn, policy):
+    from test_talent_manager import _creator
     from manyworlds.brain.agents import talent_manager
     from manyworlds.creator import dossier, profile
-    cid = conn.execute("INSERT INTO creators (handle, status, bible) VALUES ('maren_p', 'active', '{}') RETURNING id"
-                       ).fetchone()["id"]
     body = {s: {"x": 1} for s in dossier.SECTIONS if s != "performance"}
-    profile.save(conn, policy, cid, {**body, "archetypes": ["lifestyle_slow"]}, author="test", reason="seed")
+    cid = _creator(conn, policy, **{**body, "archetypes": ["lifestyle_slow"]})
     assert dossier.missing(profile.current(conn, cid)[1]) == ["performance"]
     [job] = talent_manager.ensure_reviews(conn, policy)
     assert conn.execute("SELECT payload->>'mode' m FROM jobs WHERE id = %s", (job,)).fetchone()["m"] == "onboard"
@@ -294,13 +293,10 @@ def test_an_existing_creator_without_the_section_is_onboarded_on_the_next_review
 
 def test_the_director_writes_intent_and_controls_in_the_edit_pass(conn, policy):
     from test_director import DirectorLLM, text
-    from test_production import creator
+    from test_talent_manager import _creator
     from manyworlds.brain import director
-    from manyworlds.creator import profile
 
-    cid = creator(conn)
-    profile.save(conn, policy, cid, {"performance": {"baseline": {"warmth": 2, "sass": 1}, "opening": "mid-thought"}},
-                 author="test", reason="seed")
+    cid = _creator(conn, policy, performance={"baseline": {"warmth": 2, "sass": 1}, "opening": "mid-thought"})
     conn.execute("INSERT INTO performance_calibration (model, target, control, level, level_offset) "
                  "VALUES ('image.zimage', 'photo', 'sass', 3, 1)")
 
@@ -568,3 +564,12 @@ def test_a_reference_annotation_must_say_whose_it_is(conn):
     with pytest.raises(psycopg.errors.CheckViolation):
         with conn.transaction():
             conn.execute("INSERT INTO reference_annotations (schema, source) VALUES ('iia_v2', 'external')")
+
+
+def test_an_explicit_audio_cut_asks_for_a_j_or_l_cut(policy):
+    from manyworlds.production import talk
+    on = dataclasses.replace(policy, body={**policy.body, "finishing": {
+        **policy.body["finishing"], "jl_cuts": {**(policy.body["finishing"].get("jl_cuts") or {}), "enabled": True}}})
+    body = {"shots": [{"edit": {}}, {"edit": {"audio_cut": "l"}}], "talk_shots": [0, 1]}
+    assert direction.EditSpec.model_validate({"audio_cut": ""}).audio_cut is None
+    assert talk.join_audio_cuts(on, body, 2, ["cut"])[0]["cut"] == "l"   # talk_talk alone would be j

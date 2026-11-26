@@ -495,9 +495,12 @@ def join_audio_cuts(policy: Policy, body: dict, n: int, transitions: list | None
             out.append(None)
             continue
         side = ["cutaway" if (modes[j] if j < len(modes) else "talk") == "narrated" else "talk" for j in (i - 1, i)]
-        text = _plain(str((((_shot(body, k) or {}).get("edit") or {}).get("transition_in")) or ""))
-        asked = next((cut for cut in ("j", "l") if any(re.search(rf"\b{re.escape(_plain(w))}\b", text)
-                                                         for w in words.get(cut) or [] if _plain(w))), None)
+        edit = (_shot(body, k) or {}).get("edit") or {}
+        text = _plain(str(edit.get("transition_in") or ""))
+        # the director's explicit edit.audio_cut first, else words in its transition_in
+        asked = edit.get("audio_cut") if edit.get("audio_cut") in ("j", "l") else next(
+            (cut for cut in ("j", "l") if any(re.search(rf"\b{re.escape(_plain(w))}\b", text)
+                                              for w in words.get(cut) or [] if _plain(w))), None)
         cut = asked or between.get(f"{side[0]}_{side[1]}")
         if cut not in ("j", "l"):
             out.append(None)
