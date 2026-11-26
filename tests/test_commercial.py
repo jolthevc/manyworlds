@@ -48,3 +48,15 @@ def test_the_brand_bible_has_a_commercial_thesis_and_optional_paths_to_owned_pro
 def test_the_content_mix_is_allocated_by_return_per_dollar():
     assert "expected return per dollar" in dossier.ASK["content_system"]
     assert "signature associations" in dossier.ASK["brand_commerce"]
+
+
+def test_casting_is_commercially_informed_and_execution_is_growth_led(raw_policy):
+    """Owner 2026-11-25: commercial intelligence picks the personality; growth runs it; monetisation is opportunistic."""
+    assert "Never trade growth for early monetisation" in strategist.SYSTEM
+    thesis = raw_policy.get("strategy", "thesis")
+    assert "growth-led execution" in thesis and "never constrains growth" in thesis
+    principles = raw_policy.get("strategy", "economics", "principles")
+    assert "viral growth" in principles and "longevity" in principles
+    crit = raw_policy.get("strategy", "rubric", "criteria")
+    assert crit["surface_area"]["weight"] > crit["commercial"]["weight"]
+    assert "viral" in crit["surface_area"]["ask"]

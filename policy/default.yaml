@@ -1154,8 +1154,10 @@ strategy:
     a portfolio of highly desirable, aspirational, commercially valuable virtual lifestyle personalities, openly AI.
     Desirability in many forms, across ages, demographics and cultures. Each one embodies a life people want, is
     worth following for its taste and world, and is built to carry fashion, travel, beauty, home and accessories
-    work from day one. Commercial value is the objective and audiences are the asset it is built on: we build talent
-    whose influence creates natural commercial opportunities, never talent that reads as advertising.
+    work from day one. Commercially informed casting, growth-led execution, opportunistic monetisation (owner
+    2026-11-25): commercial intelligence decides which personalities we develop; once chosen, the objective is to make
+    each one extraordinarily successful, because a very large, engaged audience creates the commercial opportunities.
+    Monetisation never constrains growth before the audience exists; influence, never talent that reads as advertising.
   # The commercial operating model (owner 2026-11-25): every agent that shapes the portfolio, a brand or a format
   # reasons with it (dossier.strategy_text). Principles, not a template: evidence decides each case.
   economics:
@@ -1166,9 +1168,12 @@ strategy:
       step; the portfolio is a distribution platform, so a product that fits one personality may fit many.
     principles: >-
       Think like a talent agency executive, commercial strategist and portfolio manager, not only a creative
-      studio. Ask of every personality, format and decision: how large is the demonstrated demand, how valuable is
-      the audience it builds, how broad are the natural commercial adjacencies, and what does it cost to produce,
-      reliably and quickly. Repeating a commercially proven archetype is good strategy: many original personalities
+      studio. Choose personalities with enormous audience surface area, strong desirability and viral growth
+      potential, many natural commercial adjacencies, creative surface area and longevity (years of things to post),
+      attractive production economics and plausible paths to sponsorship, licensing, affiliate and eventually owned
+      products. Then run each one for growth: reach, follower gain, shares and saves come first, and commercial
+      considerations shape positioning and adjacency without slowing growth; take monetisation when it is
+      opportunistic and on-brand, never at the audience's expense. Repeating a commercially proven archetype is good strategy: many original personalities
       can share one archetype if each is distinct enough to own its audience; never be different only for the sake
       of it, and never copy a real person's likeness, identity or creative work. Give each personality commercial
       optionality from inception: signature associations (a recurring hat, jewelry, a fragrance, a kind of luggage)
@@ -1240,9 +1245,9 @@ strategy:
     criteria:
       desirability: {weight: 0.30, floor: 6,
                      ask: "how attractive, magnetic, stylish, charismatic and aspirational they are in their own register; what desire they embody, why someone would follow; memorable, not generic"}
-      surface_area: {weight: 0.20, floor: 4,
-                     ask: "audience size, appeal across demographics and cultures, adjacent lifestyle categories"}
-      commercial: {weight: 0.20, floor: 5,
+      surface_area: {weight: 0.25, floor: 4,
+                     ask: "growth potential: audience size, appeal across demographics and cultures, viral and shareable potential (would strangers send it to a friend), creative surface area and longevity (years of fresh things to post), adjacent lifestyle categories"}
+      commercial: {weight: 0.15, floor: 5,
                    ask: "demonstrated demand for the archetype; consumer categories, market size, advertiser density, influencer-marketing activity; fit for sponsorship, affiliate, licensing and commercial photography; signature associations that could become product affinities and a path to owned products; organic integration"}
       feasibility: {weight: 0.15, floor: 6, hard_gate: true,
                     ask: "can our production render their world reliably and cheaply today (photography, consistent character, environments, fashion, carousels); what it would need that we can't do"}

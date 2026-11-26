@@ -224,8 +224,9 @@ def develop(conn, policy: Policy, llm, t: dict) -> list[dict]:
         f"Develop exactly {n} candidates for this brief, clearly different from each other and each distinct enough "
         f"from the portfolio's creators to own its own audience (sharing a proven archetype with them is fine). "
         f"Each a compact concept: who they are, the desire they embody, their look and styling direction, their "
-        f"audience, the core of their brand bible, 2-5 commercial categories (registry keys), their commercial case "
-        f"(why this is a valuable commercial asset, its signature associations), and a content mix that "
+        f"audience and why it could grow very large (viral potential, years of things to post), the core of their brand "
+        f"bible, 2-5 commercial categories (registry keys), their commercial case (why a large audience of theirs "
+        f"would be valuable, its signature associations), and a content mix that "
         f"leans on what production does reliably (photography first; a minority of cheap motion for discovery)."])
     out = llm.structured(str(cfg.get("role", "casting")), system=lab.persona_system(policy, SYSTEM), content=prompt,
                          schema=Concepts, effort=str(cfg.get("effort", "high")))
