@@ -271,6 +271,6 @@ def test_a_beats_eyeline_wins_over_the_performances_gaze(policy):
                 "performance": {"intent": "a quiet moment", "controls": [ControlLevel(control="candidness", level=3).model_dump()]}}
     with_lens = direction.compile_prompt(shot("lens"), MAREN, "photo", policy, trigger="mw_m")
     free = direction.compile_prompt(shot(None), MAREN, "photo", policy, trigger="mw_m")
-    gaze = "not looking at the camera at all"
+    gaze = "looking away from the camera"
     assert "looking into the lens" in with_lens and gaze not in with_lens
     assert gaze in free
