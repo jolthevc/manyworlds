@@ -533,11 +533,11 @@ class Router:
     def _run(self, task: str, platform: str, call: Callable[[Provider], tuple], *, check: str | None = None):
         """The first complete answer on the route; else the first incomplete one (already paid for); else none."""
         errors, partial = [], None
-        from .data_policy import refused
+        from .data_policy import purpose_of, refused
         for name in self.route(task, platform):
             a = self.adapters.get(name)
             # the data policy first: a source or task not approved there is never called (manyworlds.research.data_policy)
-            why = refused(self.policy, name, task) or ("no adapter" if a is None else a.available(self.conn, platform))
+            why = refused(self.policy, name, task, purpose_of(self.policy, self.agent)) or ("no adapter" if a is None else a.available(self.conn, platform))
             if why:
                 errors.append({"provider": name, "skipped": why})
                 continue

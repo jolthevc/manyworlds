@@ -1462,6 +1462,8 @@ trends:
 # media and caption text, held only until read; red = never collected (below). Enforced in code: a source or task not
 # approved here is refused by the provider router and the direct pulls; an unlisted source is refused.
 data_policy:
+  # The purpose of each research caller (agent tag), checked against a source's pending_counsel.
+  purposes: {"intelligence:monitor": history}
   sources:
     # status: approved | paused (rights unclear: nothing runs until clarified) | blocked. basis: why we may use it.
     # Owner 2026-11-25 (later): no third-party media downloads while the just-in-time redesign and the rights audit
@@ -1482,6 +1484,14 @@ data_policy:
       basis: "Instagram Graph API Business Discovery through our own professional account (Meta Platform Terms): factual metadata; media (media_url) uncertain under Platform Terms 3.a.v until counsel reviews"
       tasks: [profiles, posts]
       transient_media: false
+      # Uses whose permission is materially uncertain under Platform Terms 3.a.iii/3.a.v (no "user profiles", no
+      # surveillance; derived data is Platform Data): off until counsel answers the questions in
+      # docs/research/2026-11-26-business-discovery-scope.md. Allowed meanwhile: per-post metrics, handles as lookup
+      # keys, annotations about content, aggregated findings over cohorts. Never: joining it with other sources.
+      pending_counsel:
+        history: "repeated per-creator snapshots over time (the monitor)"
+        ranking: "ranking named creators against each other"
+        media_to_processor: "media_url sent to Anthropic or Google for analysis"
     hikerapi:
       status: blocked
       why: "private mobile API through logged-in sessions; its terms need written permission for commercial use"
@@ -1750,6 +1760,10 @@ intelligence:
     # n_tests; every attribute tested is counted, so the Bonferroni q in store_card stays valid.
     cluster_min_share: 0.1
     cluster_min_posts: 2
+    # Each read stores a short hash of every field's list (annotation.vocab_versions); the recipe analysis uses a field
+    # only from reads under the current list. When values were only ADDED to a list, name the older hash here
+    # ({field: [hash, ...]}) so older reads of that field still count (removing or renaming a value is never compatible).
+    vocab_compatible: {}
     # Numbers are tested as bands: {band: [low, high]} inclusive.
     bands:
       aspiration: {relatable: [1, 2], middle: [3, 3], aspirational: [4, 5]}

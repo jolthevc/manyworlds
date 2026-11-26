@@ -33,9 +33,16 @@ def source(policy: Policy, name: str) -> dict:
     return (cfg(policy).get("sources") or {}).get(name) or {}
 
 
-def refused(policy: Policy, name: str, task: str) -> str | None:
+def purpose_of(policy: Policy, agent: str | None) -> str | None:
+    """The research purpose of a caller (data_policy.purposes: agent tag -> purpose, e.g. the monitor's repeated
+    snapshots are `history`)."""
+    return (policy.get("data_policy", "purposes", default={}) or {}).get(agent or "")
+
+
+def refused(policy: Policy, name: str, task: str, purpose: str | None = None) -> str | None:
     """Why `name` may not do `task` (profiles, posts, posts_media, search, feed), or None. Unlisted sources are
-    refused: a new source needs an entry, with its basis, before any code may use it."""
+    refused: a new source needs an entry, with its basis, before any code may use it. A purpose the source lists
+    under `pending_counsel` (owner 2026-11-26: uncertain uses stay off until clarified) is refused too."""
     s = source(policy, name)
     if not s:
         return f"{name}: not in data_policy.sources"
@@ -44,6 +51,9 @@ def refused(policy: Policy, name: str, task: str) -> str | None:
         return f"{name}: {status or 'unreviewed'} ({s.get('why') or s.get('basis') or 'no basis recorded'})"
     if task not in (s.get("tasks") or []):
         return f"{name}: task {task} not approved"
+    pending = s.get("pending_counsel") or {}
+    if purpose and purpose in pending:
+        return f"{name}: {purpose} pending counsel ({pending[purpose]})"
     return None
 
 
