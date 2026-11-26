@@ -40,7 +40,8 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/llm.py` — the only place LLMs are called: per role Claude or an open-weight model on an OpenAI-compatible host (`llm.hosts`, `llm.open_models`, `{model, fallback}` roles); structured outputs, cost recorded per call; shadow tests of candidates into `llm_shadow`, compared by `shadow.py` (`mw llm shadow-report <role>`); `selection.py` proposes a role's cheapest candidate that holds up (agreement, rubric quality, or blind preference judged by another model family for open-ended roles: `mw llm judge <role> --usd N`), the owner approves
 - `manyworlds/llm_batch.py` — on the brain worker every brain job's calls are journaled (a rerun replays them free) and the roles in `llm.batch.roles` go through Anthropic's Message Batches at half price: the job steps aside (`queue.defer`) until its answer lands; direct call after `max_wait_minutes` or a batch error; `mw llm batches`
 - `manyworlds/notify.py` — owner alerts: `owner_event()` is how code tells the owner something; the owner reads them with `mw inbox` (alerts, pending approvals, requests to the owner; `--done` clears; `mw status` counts them). No phone channel (owner, 2026-11-23); ntfy push only if `NTFY_TOPIC` is ever set
-- `manyworlds/ledger.py` — cost entries (GPU seconds, tokens, data items)
+- `manyworlds/ledger.py` — cost entries (GPU seconds, tokens, data items); `economics.py` (`mw economics`): the bill in five categories (marginal and fully loaded per accepted post, development, research, fixed), reconciled with `gpu_billed` and provider actuals; the capability card is all-in (`deploy/report.machine_cost_by_job`: whole machine bills over the jobs that ran)
+- `manyworlds/brain/recipes.py` + `brain/research_questions.py` — recipes, not ingredients: creator-level effects, interactions, conditional effects, discovery/holdout split by creator with BH FDR, per-field vocabulary versions; questions agents file (pre-registered spec) answered on annotated posts or by the desk, read back through `desk.brief`; annotation iia_v2 (33 coded attributes, vocabularies in policy) and `mw research vision-bench`
 - `manyworlds/budget.py` — the daily caps for starting new work (`budgets.daily_usd`, `gpu_runs.daily_gpu_usd`) plus one-day owner grants (`mw budget grant --usd X --reason R`, table `budget_grants`; the policy never changes), and the completion headroom (`budgets.completion_usd`): above a cap, only posts already in production (one finished job) may still start machines
 - `manyworlds/deploy/autoscale.py` — starts GPU machines when jobs wait, stops them when the queue drains; runs always-on
 - `manyworlds/deploy/providers.py` — SaladCloud, Vast.ai, RunPod adapters (launch, list, destroy, self-destroy)
@@ -99,7 +100,9 @@ Commands: `mw migrate`, `mw discover`, `mw choose`, `mw launch-creator`, `mw anc
 Live services run on Fly only (`fly deploy --remote-only --ha=false`, or the deploy workflow); the autoscaler
 applies migrations at start. Never start a second autoscaler anywhere else.
 
-## Status (2026-11-23)
+## Status (2026-11-23; latest notes 2026-11-26)
+
+- 2026-11-26: growth-led CEO (commercially informed casting); all-in costs; family-safe volume pruning, boot inventory and per-job weight notes (`mw weights-reuse`, talkcomfy v26); rented machines hold no storage key (`security.worker_storage: presigned`); Business Discovery prepared (policy field lists, `mw research graph-check`), uses pending counsel refused by purpose (`data_policy.sources.graph.pending_counsel`); docs: `docs/2026-11-25-intelligence-assessment.md`, `docs/2026-11-26-validation-designs.md`.
 
 - Built and running on Fly (paused): research → theses → creator lab (bible, references, LoRA, voice, profile, dossier) →
   showrunner ideas (scored) → director shot sheets → production (photo, carousel, Story, narrated edit, story clip,
