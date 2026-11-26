@@ -132,6 +132,7 @@ from .talk import (  # noqa: F401
     take_seconds,
     talk_routes,
     advance_join, join_plan, join_talk, join_timeout, join_transitions, record_join, render_join, talk_repair,
+    _audio_cuts_made, _jl_cfg, _plain, fit_audio_cuts, join_audio_cuts, shifted_segment_seconds,
 )
 from .voice import (  # noqa: F401
     _advance_voice, _designed_voice, _marked_voice_lines, _sentence_lines, _voice_job, _voice_state, _with_audio,
