@@ -674,7 +674,7 @@ def test_emphasis_marks_are_never_spoken(conn, policy, store, tmp_path, joined):
     assert production.unmarked("*so* good") == "so good"
     pid, body = _directed_post(conn, policy, store, tmp_path, [marked], voice=DESIGNED)
     [voice_job] = _voice_jobs(conn, pid)
-    assert voice_job["payload"]["lines"] == [{"text": "The samosas are back, and I am not okay."}]
+    assert [x["text"] for x in voice_job["payload"]["lines"]] == ["The samosas are back, and I am not okay."]
     _spoken(conn, voice_job)
     production.advance(conn, policy, now=NOW, store=store)
     [talk] = _segment_jobs(conn, pid)

@@ -37,7 +37,8 @@ def test_the_plan_casts_each_engine_for_two_voices_within_two_dollars(conn, poli
     for i in items.values():
         (job,) = i["estimate"]["jobs"]
         assert job["kind"] == "voice.cast" and job["source"].startswith("policy (voice.cast:")
-    assert [m["family"] for m in out["machines"]] == ["tts"]           # one machine for the whole bake-off
+    # one machine for the whole bake-off: tts is merged with comfy, talk and dance under the test overlay
+    assert [m["family"] for m in out["machines"]] == ["talkcomfy"]
     plan = breadth.test_policy(policy).get("breadth", "plans", "voicebake")
     assert plan["max_usd"] <= 2.0 and out["estimated_usd"] <= plan["max_usd"]
 
