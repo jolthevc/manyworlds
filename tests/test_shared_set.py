@@ -282,7 +282,6 @@ def test_a_beat_that_blocks_her_hands_wins_over_the_performances_body(policy):
         return {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot"},
                 "blocking": [{"at_s": 0, "action": "leans on the counter", "hands": hands}],
                 "performance": {"intent": "a teasing look", "controls": [ControlLevel(control="sass", level=2).model_dump()]}}
-    blocked = direction.compile_prompt(shot("one hand flat on the counter"), MAREN, "talk", policy)
-    free = direction.compile_prompt(shot(""), MAREN, "talk", policy)
-    assert "hand on hip" not in blocked and "one hand flat on the counter" in blocked
-    assert "hand on hip" in free
+    blocked = direction._performance(direction._coerce(shot("one hand flat on the counter")), "talk", policy)
+    free = direction._performance(direction._coerce(shot("")), "talk", policy)
+    assert "hand on hip" not in blocked and "hand on hip" in free
