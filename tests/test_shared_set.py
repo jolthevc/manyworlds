@@ -293,7 +293,7 @@ def test_walk_phrases_only_when_she_moves_through_the_space(policy):
     def shot(action):
         return {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot"},
                 "blocking": [{"at_s": 0, "action": action}],
-                "performance": {"intent": "teasing", "controls": [ControlLevel(control="sass", level=2).model_dump()]}}
+                "performance": {"intent": "teasing", "controls": [ControlLevel(control="sass", level=3).model_dump()]}}
     standing = direction._performance(direction._coerce(shot("leans on the counter")), "i2v", policy)
     walking = direction._performance(direction._coerce(shot("walks along the bar toward the camera")), "i2v", policy)
-    assert "hips swing" not in standing and "hips swing" in walking
+    assert "strut" not in standing and "strut" in walking
