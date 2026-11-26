@@ -410,6 +410,8 @@ class Talk(_Strict):
     blocks_to_swap: int
     timeout_s: Num
     max_take_seconds: Num
+    lead_in_s: Num = 0.0            # rendered silence before and after the line (worker talk_comfy.rolls)
+    end_hold_s: Num = 0.0
     voice: str
     model: str | None = None        # read by production (walk-and-talk); absent = infinitetalk
 

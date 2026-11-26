@@ -57,6 +57,8 @@ def stubbed(tmp_path, monkeypatch):
     monkeypatch.setattr(talk_comfy, "audio_seconds", lambda path: 2.0)
     monkeypatch.setattr(talk_comfy, "at_fps", lambda src, dest, fps, **k: dest)
     monkeypatch.setattr(talk_comfy, "join_windows", lambda clips, audio, seconds, dest: dest.write_bytes(b"v") and dest)
+    monkeypatch.setattr(talk_comfy, "cut_to_line", lambda src, audio, seconds, dest: dest.write_bytes(b"v") and dest)
+    monkeypatch.setattr(talk_comfy, "pad_audio", lambda src, dest, lead, hold: dest.write_bytes(b"a") and dest)
     monkeypatch.setattr(talk_comfy.lipsync, "score_in_venv", lambda *a, **k: {"frames": 50})
     return seen
 
