@@ -1853,6 +1853,46 @@ intelligence:
       carousel: [slide_roles, opener_has_face]
       video: [face_in_first_second, opening, setting_changes, movement_complexity, sound, production_complexity,
               renderable_now]
+  # Recipes (manyworlds.brain.recipes; docs/research/2026-11-26-recipes.md): which combinations of coded attributes
+  # go with engagement over each creator's own median, for whom and in what context. The creator is the unit: an
+  # effect is estimated within each creator (and medium, and any `covariates`), then combined across creators;
+  # bootstrap over creators for the CI, a sign-flip permutation test for p (exact up to exact_flip_max_creators,
+  # else bootstrap.iterations random flips), a sign test reported beside it. Creators are split by a hash of their
+  # id (split_salt) into discovery and holdout (holdout_share); every test runs on discovery first, Benjamini-Hochberg
+  # at fdr_q over the run's whole declared family; only what passes is retested on holdout (BH over those again, same
+  # direction) and only holdout-confirmed results may back a `correlation` card.
+  recipes:
+    min_ratio: 0.05                # an over_own_median below this (near-zero engagement) is clipped here before the log
+    min_creators: 6                # creators with eligible posts (metric present, fields known) for a test to run
+    min_posts_per_arm: 3           # posts in each arm (each cell of an interaction) within one creator x medium stratum
+    min_creators_both_arms: 5      # creators that contribute an effect (every arm filled)
+    bootstrap: {iterations: 2000, seed: 20261126, ci: 0.95}
+    exact_flip_max_creators: 12
+    holdout_share: 0.5
+    split_salt: recipes-v1         # changing it reshuffles discovery and holdout: never after results were read
+    fdr_q: 0.1
+    max_recipe_attrs: 3
+    max_contexts: 6                # a conditional test looks at the most common context values, at most this many
+    covariates: []                 # extra strata within creator x medium: any of month, age_band, platform
+    # the bounded data-driven screen: attributes held by between prevalence_floor and 1 - prevalence_floor of the
+    # discovery posts that know the field (outcome-blind), the most balanced max_attributes of them; main effects
+    # (when main_effects) and pairwise interactions between different fields, at most max_pairs; all in the family
+    screen: {prevalence_floor: 0.15, max_attributes: 30, max_pairs: 60, main_effects: true}
+    age_bands_days: {fresh: [0, 7], settled: [7, 60], old: [60, 100000]}       # post age when its counts were read
+    follower_bands: {nano: [0, 9999], micro: [10000, 99999], mid: [100000, 999999], macro: [1000000, 1000000000000]}
+  # Research questions (manyworlds.brain.research_questions, table research_questions): agents file questions;
+  # the intelligence agent's `questions` mode answers them (data: the recipe analysis; web: the research desk).
+  # A data question without a spec gets one translator call (role) into tests over the coded catalogue; propose asks
+  # for at most max_per_propose questions. Calls are charged to agent research:questions within daily_usd, each
+  # checked against est_usd_per_call first.
+  questions:
+    role: research_question
+    max_per_propose: 5
+    max_per_run: 10
+    max_tests_per_question: 12
+    daily_usd: 0.1
+    est_usd_per_call: 0.005
+    brief_k: 6
 
 creator_lab:
   # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
@@ -3743,6 +3783,7 @@ llm:
     research_quick: claude-haiku-5-5    # research desk, quick questions (research.desk; web search)
     research_deep: claude-sonnet-5-5    # research desk, deep questions (web search and fetch)
     desk_claims: claude-haiku-5-5       # sorts a researched answer into classified claims
+    research_question: claude-haiku-5-5 # turns a research question into tests over the coded catalogue; proposes some
     iia_synthesize: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
     # The vision benchmark (manyworlds.research.vision_bench): one role per candidate, no fallback (a fallback would
     # hide which model answered). Add a candidate as vision_bench_<name> and pass --models <name>.

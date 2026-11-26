@@ -27,6 +27,9 @@ manyworlds.brain.proposals, accepted at once within the requester's allowance an
               category hashtag; the share of posts carrying a sponsorship marker sets its influencer-marketing activity
               and is kept as research evidence. No model call. While intelligence.commerce.enabled is false it only
               says what it would pull and cost (nothing is fetched or charged)
+    questions the research questions agents filed (manyworlds.brain.research_questions): data questions answered by
+              the recipe analysis (manyworlds.brain.recipes: creator-level effects, discovery then holdout), web ones
+              by the research desk; within intelligence.questions.daily_usd
 
 Every Apify item is charged to the ledger (category data, agent intelligence:<mode>, this job); every LLM call is
 charged by the runtime to this job. Before each paid step the run's spend so far plus the step's estimate (policy
@@ -58,7 +61,7 @@ from .. import aesthetics, archetypes, patterns
 from ..agent import AgentContext, register, remember
 
 AGENT = "intelligence"
-MODES = ("scout", "annotate", "distill", "pilot", "commerce", "monitor", "resume", "desk")
+MODES = ("scout", "annotate", "distill", "pilot", "commerce", "monitor", "resume", "desk", "questions")
 STEPS = {"pilot": ["scout", "annotate", "distill"], "resume": ["annotate", "distill"]}
 CLUSTER_FIELDS = (("visual", "situation"), ("visual", "nearest_shot_type"), ("visual", "device"), ("visual", "gaze"),
                   ("performance", "format"), ("performance", "movement"), ("craft", "hook"),
@@ -339,7 +342,8 @@ class Intelligence:
         cfg = _cfg(ctx.policy)
         default_cap = (watch.cfg(ctx.policy).get("daily_usd", 0) if mode == "monitor" else
                        (ctx.policy.get("intelligence", "desk", "daily_usd", default=0) if mode == "desk" else
-                        cfg.get("max_usd_per_run", 0)))
+                        (ctx.policy.get("intelligence", "questions", "daily_usd", default=0)
+                         if mode == "questions" else cfg.get("max_usd_per_run", 0))))
         spend = Spend(ctx.conn, ctx.job.id, float(p.get("usd") or default_cap))
         steps = STEPS.get(mode, [mode])
         out: dict = {"mode": mode, "cap_usd": spend.cap}
@@ -362,7 +366,8 @@ class Intelligence:
 
     def _step(self, ctx, step: str, p: dict, spend: Spend, scope: list) -> dict:
         res = {"scout": self.scout, "annotate": self.annotate, "distill": self.distill,
-               "commerce": self.commerce, "monitor": self.monitor, "desk": self.desk}[step](ctx, p, spend, scope)
+               "commerce": self.commerce, "monitor": self.monitor, "desk": self.desk,
+               "questions": self.questions}[step](ctx, p, spend, scope)
         res["capped"] = bool(res.get("capped") or spend.capped)
         if spend.held:
             res["held_for_reserve"] = True       # stopped at its ceiling: the rest of the cap is the next steps'
@@ -562,7 +567,10 @@ class Intelligence:
                WHERE reference_annotations.content_hash IS DISTINCT FROM EXCLUDED.content_hash
                  AND EXCLUDED.content_hash IS NOT NULL AND reference_annotations.content_hash IS NOT NULL""",
             (post["id"], ann.ANNOTATION_SCHEMA, model, Jsonb(self._measured(conn, post["id"]) or {}),
-             Jsonb(a.observed.model_dump(mode="json")), Jsonb(notes(a.mechanism)), Jsonb(notes(a.speculation)),
+             # the lists the coded section was read under (manyworlds.brain.recipes uses a field only from reads
+             # whose hash matches the current list)
+             Jsonb({**a.observed.model_dump(mode="json"), "vocab_versions": ann.vocab_versions(ctx.policy)}),
+             Jsonb(notes(a.mechanism)), Jsonb(notes(a.speculation)),
              Jsonb(ev.model_dump(mode="json")), float(a.confidence), post.get("content_hash")))
 
     # --- distill --------------------------------------------------------------------------------------------------
@@ -616,6 +624,13 @@ class Intelligence:
     def desk(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:
         from ...research import desk
         return desk.run_topics(ctx.conn, ctx.policy, ctx.llm)
+
+    # --- questions: the Brain's research questions (manyworlds.brain.research_questions) ---------------------------
+    def questions(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:
+        """Answers the queued research questions: data questions by the recipe analysis (manyworlds.brain.recipes)
+        on the annotated posts, web questions by the research desk, within intelligence.questions.daily_usd."""
+        from .. import research_questions
+        return research_questions.run_due(ctx.conn, ctx.policy, ctx.llm, limit=p.get("limit"))
 
     # --- commerce -------------------------------------------------------------------------------------------------
     def commerce(self, ctx: AgentContext, p: dict, spend: Spend, scope: list) -> dict:

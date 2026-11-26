@@ -16,7 +16,9 @@ controlled vocabulary read from policy `intelligence.annotation.vocab`, so disti
 pose, wardrobe, lighting and expression were free text no statistic could use). The read gets the lists in its prompt;
 `coerce_coded` (with the run's vocab) turns any value outside a field's list into "unknown" instead of failing the
 read. A v1 record still loads: its `coded` is all unknown. The read is blind to performance: the model sees media and
-caption only; code attaches evidence afterwards.
+caption only; code attaches evidence afterwards. Each new read stores `observed["vocab_versions"]` (a short hash of
+every field's list, `vocab_versions`); the recipe analysis (manyworlds.brain.recipes) uses a field only from reads
+whose hash matches the current list or one declared compatible (`intelligence.annotation.vocab_compatible`).
 
 The batcher that fills these is `iia_annotate` (Haiku, Message Batches; manyworlds.brain.agents.intelligence).
 `ANNOTATION_SCHEMA` names the stored version (reference_annotations.schema); `READ_SCHEMAS` every version a post may
@@ -25,6 +27,8 @@ already carry (distill reads them all, the newest per post; retention counts any
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Literal
 
 from pydantic import BaseModel as _PydanticModel, Field, ValidationInfo, field_validator, model_validator
@@ -151,6 +155,40 @@ def vocab(policy) -> dict[str, list[str]]:
     yes/no read as a boolean comes back as "yes"/"no")."""
     raw = (policy.get("intelligence", "annotation", "vocab", default={}) if policy is not None else {}) or {}
     return {str(k): [_norm(v) for v in (vals or [])] for k, vals in raw.items()}
+
+
+VERSION_CHARS = 8      # a vocabulary hash's length: short, still unique across the edits a list will see
+
+
+def _short_hash(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:VERSION_CHARS]
+
+
+def vocab_versions(policy) -> dict[str, str]:
+    """{field: short hash of the values it may take} for every coded field: the list in policy
+    intelligence.annotation.vocab for enums and label lists, the field's own scale for numbers. Stored with each read
+    (observed["vocab_versions"]) so an analysis uses a field only from reads made under the same list
+    (manyworlds.brain.recipes): a value renamed or removed changes what "absent" means."""
+    voc = vocab(policy)
+    out = {f: _short_hash(voc.get(f) or []) for f in ENUM_FIELDS + MULTI_FIELDS}
+    out["aspiration"] = _short_hash(["scale", *ASPIRATION_SCALE])
+    out["setting_changes"] = _short_hash(["count", 0])
+    return out
+
+
+def vocab_compatible(policy) -> dict[str, set[str]]:
+    """Older hashes the owner declared compatible per field (policy intelligence.annotation.vocab_compatible: values
+    only added, so a read under the older list still means what it meant)."""
+    raw = (policy.get("intelligence", "annotation", "vocab_compatible", default={}) if policy is not None else {}) or {}
+    return {str(f): {str(h) for h in (hs or [])} for f, hs in raw.items()}
+
+
+def current_fields(stored: dict | None, current: dict[str, str], compatible: dict[str, set[str]]) -> set[str]:
+    """The coded fields a read may be used for: those whose stored hash is the current one or a compatible one. A read
+    without stored versions (iia_v1, or v2 before versioning) has none."""
+    stored = stored or {}
+    return {f for f, h in current.items() if stored.get(f) is not None
+            and (stored[f] == h or stored[f] in compatible.get(f, set()))}
 
 
 def _norm(v: Any) -> str:

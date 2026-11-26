@@ -209,6 +209,40 @@ def niche_trends(conn, creator_id, policy) -> dict | None:
     return None
 
 
+def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], creator_ids=None) -> list[dict]:
+    """The research reference posts with their newest annotation (schemas: newest first, e.g. annotation.READ_SCHEMAS)
+    for the recipe analysis (manyworlds.brain.recipes): {post_id, creator_id, platform, media_type, posted_at,
+    fetched_at, schema, observed, over_own_median (the post's latest, else the one stored with its read), metrics
+    (the public counts present), archetype (the creator's scores.archetype, else its cluster), followers}.
+
+    Research evidence: other people's public posts, correlation never proof, and never simulated (there are no
+    simulated reference posts), so `real` and `sandbox` read the same rows; the mode is still named and checked like
+    every reader's. Post-level comments and commenters are not read."""
+    if mode not in ("real", "sandbox"):
+        raise ValueError(f"unknown evidence mode {mode!r}")
+    ids = [str(c) for c in creator_ids] if creator_ids is not None else None
+    rows = conn.execute(
+        """SELECT DISTINCT ON (a.post_id) a.post_id, a.schema, a.observed, a.evidence, a.created_at AS read_at,
+                  p.creator_id, p.platform, p.media_type, p.posted_at, p.fetched_at, p.metrics,
+                  coalesce(c.scores->>'archetype', c.cluster) AS archetype, c.followers
+           FROM reference_annotations a JOIN reference_posts p ON p.id = a.post_id
+           JOIN reference_creators c ON c.id = p.creator_id
+           WHERE a.schema = ANY(%s) AND (%s::uuid[] IS NULL OR p.creator_id = ANY(%s::uuid[]))
+           ORDER BY a.post_id, array_position(%s::text[], a.schema)""",
+        (list(schemas), ids, ids, list(schemas))).fetchall()
+    keys = ("views", "likes", "comments", "shares", "saves")
+    out = []
+    for r in rows:
+        m, ev = r["metrics"] or {}, r["evidence"] or {}
+        ratio = m.get("over_own_median") if m.get("over_own_median") is not None else ev.get("over_own_median")
+        out.append({"post_id": str(r["post_id"]), "creator_id": str(r["creator_id"]), "platform": r["platform"],
+                    "media_type": r["media_type"], "posted_at": r["posted_at"], "fetched_at": r["fetched_at"],
+                    "schema": r["schema"], "observed": r["observed"] or {}, "over_own_median": ratio,
+                    "metrics": {k: m[k] for k in keys if m.get(k) is not None},
+                    "archetype": r["archetype"], "followers": r["followers"]})
+    return out
+
+
 _MENTION = re.compile(r"@[\w.]+")
 _LINK = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
 
