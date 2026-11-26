@@ -60,17 +60,34 @@ class ObservedLevel(BaseModel):
 
 PERFORMANCE_FIELDS = ("observed_levels", "appeal", "charisma", "expression", "naturalness", "pose_expression")
 APPEAL_RULE = ("only when PERFORMANCE is asked: 1-10, how much a viewer would stop for and want to look at this: "
-               "attractiveness, presence, style, the moment; null otherwise")
-CHARISMA_RULE = ("only when PERFORMANCE is asked: 1-10, the personality and magnetism that come through; null without "
+               "attractiveness, presence, style, the moment; 0 otherwise")
+CHARISMA_RULE = ("only when PERFORMANCE is asked: 1-10, the personality and magnetism that come through; 0 without "
                  "a face")
 EXPRESSION_RULE = ("only when PERFORMANCE is asked: 1-10, does the face carry the intended feeling, alive and specific "
-                   "rather than blank; null without a face")
+                   "rather than blank; 0 without a face")
 NATURAL_RULE = ("only when PERFORMANCE is asked: 1-10, believable human behaviour: 10 = a real person caught in a real "
                 "moment; exaggerated, theatrical, stiff, frozen or uncanny behaviour scores low EVEN when it matches "
-                "the request (more expressive is not better); null otherwise")
+                "the request (more expressive is not better); 0 otherwise")
 POSE_RULE = ("only when PERFORMANCE is asked: a few words for the pose and expression, e.g. 'leaning on the counter, "
-             "half-smile, eyes down' (for variety between frames); null otherwise")
-LEVELS_RULE = "only when PERFORMANCE lists controls: the level 0-4 you see for each control listed; [] otherwise"
+             "half-smile, eyes down' (for variety between frames); empty otherwise")
+LEVELS_RULE = ("only when PERFORMANCE lists controls: the level 0-4 you see for each control listed, as "
+               "'control=level' pairs separated by commas, e.g. 'sass=2, warmth=3'; empty otherwise")
+
+
+def parse_levels(value) -> list[dict]:
+    """The judge's observed levels as [{control, level}]: from 'sass=2, warmth=3', or from an older list of
+    {control, level} (objects or dicts). Anything unreadable is skipped."""
+    import re
+    if isinstance(value, str):
+        return [{"control": m.group(1).lower(), "level": int(m.group(2))}
+                for m in re.finditer(r"([a-z_]+)s*[=:]s*([0-4])", value.lower())]
+    out = []
+    for o in value or []:
+        c = o.get("control") if isinstance(o, dict) else getattr(o, "control", None)
+        l = o.get("level") if isinstance(o, dict) else getattr(o, "level", None)
+        if c and l is not None:
+            out.append({"control": str(c), "level": l})
+    return out
 
 
 def observe_enabled(policy) -> bool:
@@ -129,15 +146,14 @@ def performance_result(r, shot: dict | None, policy, *, target: str) -> dict | N
     scores = {}
     for k in ("appeal", "charisma", "expression", "naturalness"):
         v = getattr(r, k, None)
-        if v is not None:
+        if v:   # 0 or empty: not asked, or no face to judge
             try:
                 scores[k] = max(1, min(10, int(v)))
             except (TypeError, ValueError):
                 continue
     asked = performance_controls(shot, policy)
-    observed = {k: v for k, v in performance.levels_of(
-        [{"control": o.control, "level": o.level} for o in (getattr(r, "observed_levels", None) or [])
-         if getattr(o, "level", None) is not None]).items() if k in asked}
+    observed = {k: v for k, v in performance.levels_of(parse_levels(getattr(r, "observed_levels", None))).items()
+                if k in asked}
     if not scores and not observed:
         return None
     requested = direction.shot_controls(shot) if shot else {}

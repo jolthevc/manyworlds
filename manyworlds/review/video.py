@@ -86,12 +86,14 @@ class ClipReview(BaseModel):
     distribution_label: str | None = Field(default=None, description="only with distribution_risk: a few words")
     detail_defects: list[str] = Field(default_factory=list, description=common.DETAIL_RULE)
     # owner 2026-11-26 (manyworlds.performance): rank only, never a reason to reject (common.performance_prompt)
-    observed_levels: list[common.ObservedLevel] = Field(default_factory=list, description=common.LEVELS_RULE)
-    appeal: int | None = Field(default=None, description=common.APPEAL_RULE)
-    charisma: int | None = Field(default=None, description=common.CHARISMA_RULE)
-    expression: int | None = Field(default=None, description=common.EXPRESSION_RULE)
-    naturalness: int | None = Field(default=None, description=common.NATURAL_RULE)
-    pose_expression: str | None = Field(default=None, description=common.POSE_RULE)
+    # Plain fields, no nulls or nested objects: each nullable field is a branch in the strict grammar, and this block as
+    # nullable ints plus a list of objects made the API refuse the image judge ("Schema is too complex", 2026-11-26).
+    observed_levels: str = Field(default="", description=common.LEVELS_RULE)
+    appeal: int = Field(default=0, description=common.APPEAL_RULE)
+    charisma: int = Field(default=0, description=common.CHARISMA_RULE)
+    expression: int = Field(default=0, description=common.EXPRESSION_RULE)
+    naturalness: int = Field(default=0, description=common.NATURAL_RULE)
+    pose_expression: str = Field(default="", description=common.POSE_RULE)
     notes: str = Field(description="one sentence")
 
 

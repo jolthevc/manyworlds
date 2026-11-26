@@ -358,8 +358,7 @@ def test_the_image_judge_observes_the_shot_and_ranks_by_appeal_without_rejecting
     from manyworlds.production.steps import _best_confirmed
     from manyworlds.review import gates
     _, job, _ = _image_job(conn, store, tmp_path, shot=DIRECTED_SHOT)
-    perf = {"observed_levels": [{"control": "sass", "level": 3}, {"control": "warmth", "level": 1},
-                                {"control": "polish", "level": 4}], "pose_expression": "hip on the counter, smirk"}
+    perf = {"observed_levels": "sass=3, warmth=1, polish=4", "pose_expression": "hip on the counter, smirk"}
     judge = JudgeStub([ok(), ok()], confirm=[ok(appeal=3, charisma=3, expression=3, naturalness=1, **perf),
                                              ok(appeal=9, charisma=8, expression=8, naturalness=9, **perf)])
     results = gates.review_job(conn, policy, judge, store, job, tmp_path)
@@ -427,7 +426,7 @@ def test_the_clip_judge_observes_too(conn, policy, store, tmp_path):
     job = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
     conn.execute("UPDATE jobs SET payload = payload || %s WHERE id = %s", (Jsonb({"shot": DIRECTED_SHOT}), job))
     rendered(conn, store, tmp_path, job)
-    llm = ClipStub(clip(appeal=7, naturalness=8, observed_levels=[{"control": "sass", "level": 2}]))
+    llm = ClipStub(clip(appeal=7, naturalness=8, observed_levels="sass=2"))
     [r] = video.review_job(conn, policy, llm, store, job, tmp_path)
     assert r["accepted"] is not None
     assert "PERFORMANCE (rank only" in " ".join(str(b.get("text", "")) for b in llm.calls[0]["content"])
@@ -573,3 +572,24 @@ def test_an_explicit_audio_cut_asks_for_a_j_or_l_cut(policy):
     body = {"shots": [{"edit": {}}, {"edit": {"audio_cut": "l"}}], "talk_shots": [0, 1]}
     assert direction.EditSpec.model_validate({"audio_cut": ""}).audio_cut is None
     assert talk.join_audio_cuts(on, body, 2, ["cut"])[0]["cut"] == "l"   # talk_talk alone would be j
+
+
+
+def test_the_performance_block_adds_no_branches_to_the_judges_strict_schema():
+    """2026-11-26: nullable ints plus a list of objects made the API refuse the image judge ("Schema is too
+    complex"); every performance field is a plain string or integer."""
+    from manyworlds.llm import strict_json_schema
+    from manyworlds.review import common, gates, video
+    for model in (gates.ImageReviews, video.ClipReview if hasattr(video, "ClipReview") else None):
+        if model is None:
+            continue
+        schema = strict_json_schema(model)
+        text = repr(schema)
+        props = (schema.get("$defs") or {}).get("CandidateReview", schema).get("properties") or schema.get("properties")
+        for name in common.PERFORMANCE_FIELDS:
+            p = (props or {}).get(name)
+            if p is not None:
+                assert "anyOf" not in p and p.get("type") in ("string", "integer"), (model.__name__, name, p)
+    assert common.parse_levels("sass=2, Warmth: 3, nonsense") == [{"control": "sass", "level": 2},
+                                                                   {"control": "warmth", "level": 3}]
+    assert common.parse_levels([{"control": "sass", "level": 1}]) == [{"control": "sass", "level": 1}]
