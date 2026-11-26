@@ -109,3 +109,40 @@ tokens for rules, vocabularies and schema; 700 output tokens; standard prices in
 batch discount): Haiku 5.5 about $0.0008, Sonnet 5.5 about $0.016, Opus 5.5 about $0.032. All three together cost
 about $0.05 per item, so a 20-item run is about $1. The system prompt is cached after the first call, so real input
 cost should come in lower.
+
+## First benchmark run (2026-11-26, live, $0.31)
+
+**Setup**
+- 12 of Maren's own accepted photos (our assets, so rights are clean).
+- One coded read per model.
+- Opus 5.5 is the reference, so agreement means agreement with Opus, not with the truth.
+
+**Results**
+
+| Model | $ per photo | Mean latency | Valid schema | In vocabulary | Agreement with Opus |
+|---|---|---|---|---|---|
+| Haiku 5.5 | $0.00074 | 4.4 s | 12/12 | 99.7% | 0.81 |
+| Sonnet 5.5 | $0.0085 | 2.5 s | 12/12 | 100% | 0.85 |
+| Opus 5.5 (reference) | $0.017 | — | 12/12 | — | — |
+
+**By field**
+
+| Haiku agreement | Fields |
+|---|---|
+| Near-perfect (≥ 0.9) | styling category, fit, jewelry level, expression, body language, camera angle, lighting, environment, product integration, aspiration |
+| Usable (0.75–0.9) | makeup, composition, garments, accessories, pose, travel context |
+| Weak (< 0.7) | nails 0.25, candid level 0.50, emotional tone 0.58, lifestyle narrative 0.63, palette 0.67, hair 0.67, subject scale 0.67 |
+
+Sonnet is also weak on nails (0.25), hair (0.42) and subject scale (0.33). That suggests those vocabularies are ambiguous, not that Haiku is blind. Sonnet beats Haiku on palette, tone and narrative.
+
+**Reading**
+- Haiku delivers about 95% of Sonnet's agreement at about 1/11 of the cost. Broad annotation goes to Haiku.
+- The weak fields need clearer vocabularies before they get a more expensive model:
+  - nails: "not visible" should be its own value;
+  - candid level and subject scale: one-line definitions per value.
+- Tone and narrative could take a Sonnet second pass on a sample.
+
+**Caveats**
+- One creator, 12 photos, and our own generated images, not real creators' photos.
+- No carousel or video items yet.
+- The next run should cover carousels and video frames, with a 3-way human spot check on the weak fields.
