@@ -173,6 +173,9 @@ Until then the media pause stays. When the account exists, metadata and metrics 
 | Stalled-post reaper | yes | yes | deployed, ran (nothing stuck) | — |
 | Family-safe volume pruning, weight-reuse notes, boot inventory | yes (talkcomfy v27) | yes | yes | **yes (2026-11-26, $1.36, 6 machines):** talk reused 5/5 weight files twice with 0 GB downloaded; voice and talk weights both intact across each other's machines; ready in ~5 min |
 | Presigned storage (no key on rented machines) | yes | yes | yes | **yes** for image, talk and voice jobs; the old R2 key can be rotated |
+| No control-plane credential can reach a rented machine (2026-11-26 audit: no fallback in code; public images hold code and policy only; no secret in any database column; no live machine at any provider) | yes | yes | deployed | — (the owner rotates the R2 key) |
+| Volume safeguards: download lock with heartbeat, free-space check before a download, size check after, per-repo lock for Hugging Face loads, prune skips paths in use, owner warning before the volume fills | yes | yes | needs talkcomfy v28 on a GPU | no |
+| Other cards on the weights volume | US-NC-1 has no other 48 GB card; RTX PRO 6000 Blackwell (96 GB, $2.69/h) defined for one pinned measurement | — | — | no |
 | Research desk (layer A) | yes | yes | yes ($0.11 live, 7 questions) | yes, for briefs; consumption by agents unmeasured |
 | Business Discovery (layer B) | yes | yes (fixtures) | no account | no |
 | Annotation v2 and vision benchmark (layer C) | in progress | — | — | — |
