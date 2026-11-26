@@ -286,3 +286,14 @@ def test_a_beat_that_blocks_her_hands_wins_over_the_performances_body(policy):
     free = direction._performance(direction._coerce(shot("")), "talk", policy)
     assert "body:" not in blocked and "hand on hip" not in blocked
     assert blocked != free or "body:" not in free
+
+
+def test_walk_phrases_only_when_she_moves_through_the_space(policy):
+    from manyworlds.direction import ControlLevel
+    def shot(action):
+        return {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot"},
+                "blocking": [{"at_s": 0, "action": action}],
+                "performance": {"intent": "teasing", "controls": [ControlLevel(control="sass", level=2).model_dump()]}}
+    standing = direction._performance(direction._coerce(shot("leans on the counter")), "i2v", policy)
+    walking = direction._performance(direction._coerce(shot("walks along the bar toward the camera")), "i2v", policy)
+    assert "hips swing" not in standing and "hips swing" in walking
