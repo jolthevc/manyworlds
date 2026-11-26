@@ -171,8 +171,8 @@ Until then the media pause stays. When the account exists, metadata and metrics 
 | All-in capability card, `mw economics` | yes | yes | deployed; no live numbers read yet | no |
 | Run caps enforced by the autoscaler | yes | yes | deployed | no capped run yet |
 | Stalled-post reaper | yes | yes | deployed, ran (nothing stuck) | — |
-| Family-safe volume pruning, weight-reuse notes, boot inventory | yes (talkcomfy v26) | yes | image built and smoke-tested | **verification run in progress** |
-| Presigned storage (no key on rented machines) | yes | yes | image family proven once (2026-11-24); talk family in today's run | no; R2 key rotation waits on this |
+| Family-safe volume pruning, weight-reuse notes, boot inventory | yes (talkcomfy v27) | yes | yes | **yes (2026-11-26, $1.36, 6 machines):** talk reused 5/5 weight files twice with 0 GB downloaded; voice and talk weights both intact across each other's machines; ready in ~5 min |
+| Presigned storage (no key on rented machines) | yes | yes | yes | **yes** for image, talk and voice jobs; the old R2 key can be rotated |
 | Research desk (layer A) | yes | yes | yes ($0.11 live, 7 questions) | yes, for briefs; consumption by agents unmeasured |
 | Business Discovery (layer B) | yes | yes (fixtures) | no account | no |
 | Annotation v2 and vision benchmark (layer C) | in progress | — | — | — |
