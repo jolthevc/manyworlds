@@ -245,3 +245,19 @@ def test_a_directed_photo_keeps_its_performance_with_her_full_appearance(policy)
         assert "dry, knowing closing-time look" in out and "scar splitting the tail of her left eyebrow" in out
         prompts.append(out)
     assert prompts[0] != prompts[1]                                   # the level reaches the model
+
+
+def test_a_trimmed_directed_photo_keeps_the_place_and_whole_performance_clauses(policy):
+    from manyworlds import policy as policy_mod
+    from manyworlds.direction import ControlLevel
+    d = policy.get("direction")
+    tight = policy_mod.from_dict({**policy.body, "direction": {**d, "prompt_budget": {**d["prompt_budget"], "photo": 380}}})
+    shot = {"set": BAR, "wardrobe": TEE, "framing": {"shot_size": "medium shot", "angle": "eye level", "device": "propped"},
+            "blocking": [{"at_s": 0, "action": "leans on the counter after closing", "eyeline": "lens"}],
+            "performance": {"intent": "caught mid-laugh behind the bar",
+                            "controls": [ControlLevel(control="candidness", level=4).model_dump()],
+                            "extreme_reason": "an unguarded snapshot is the point"}}
+    out = direction.compile_prompt(shot, MAREN, "photo", tight, trigger="mw_m", scene="behind the bar")
+    assert "Set: behind the bar" in out and "caught mid-laugh behind the bar" in out
+    perf = out[out.index("Performance:"):].split(". ")[0]
+    assert not perf.rstrip().endswith(("camera", "face", "eyes", "body", ":"))

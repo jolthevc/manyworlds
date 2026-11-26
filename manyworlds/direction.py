@@ -759,10 +759,20 @@ def _fit(s: ShotSheet, sections: dict[str, str], *, head: str, tail: str, budget
     order = list(_TRUNCATE)
     if subject_floor and "set" in order:   # her signature details go before the set and the wardrobe
         order.insert(order.index("set"), "signature")
+    trim = _policy(policy, "direction", "prompt_trim", default={}) or {}
     for key in order:                                                 # (4) cut at a word boundary, lowest first
         floor = 0
         if key == "signature":
             key, floor = "subject", len(subject_floor.split())
+        elif key == "set":   # the place itself stays (2026-11-26: directed photos lost their whole set)
+            floor = int(trim.get("set_floor_words", 10) or 0)
+        elif key == "performance":   # whole clauses go, last first: never half a channel ("camera.")
+            clauses = [c for c in sections.get(key, "").split("; ") if c]
+            while len(clauses) > 1 and not fits():
+                clauses.pop()
+                sections[key] = "; ".join(clauses).rstrip(",;:.")
+            if fits():
+                break
         kept = sections.get(key, "").split()
         while len(kept) > floor and not fits():
             kept.pop()

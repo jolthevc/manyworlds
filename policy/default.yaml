@@ -2802,6 +2802,7 @@ direction:
   prompt_budget: {photo: 440, i2v: 300, talk: 300}   # photo 440 (2026-11-26): room for the performance under 512
   prompt_trim:
     clause_words: 20
+    set_floor_words: 10        # a trimmed set keeps its first words: the place itself (2026-11-26)
   # The director (manyworlds.brain.director): when an accepted idea becomes a post, one LLM call writes a shot sheet
   # per scene (body.shots) for the formats below. A failed call never drops the post: it is made undirected.
   enabled: true
