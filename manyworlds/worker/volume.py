@@ -100,12 +100,36 @@ def check(env=None) -> dict | None:
     floor = float(env["MW_VOLUME_MIN_FREE_GB"]) if env.get("MW_VOLUME_MIN_FREE_GB") else None
     low = floor is not None and free < floor
     (log.error if low else log.info)("volume %s: %.1f GB free (floor %s GB)", mount, free, floor)
-    return {"path": mount, "pruned": pruned, "free_gb": free, "min_free_gb": floor, "low": low}
+    return {"path": mount, "pruned": pruned, "free_gb": free, "min_free_gb": floor, "low": low,
+            "inventory": inventory(mount)}
+
+
+def inventory(mount: str | os.PathLike, depth: int = 2, min_gb: float = 0.1) -> dict:
+    """{path under the mount: GB} for folders up to `depth` levels down holding at least `min_gb`: what the volume
+    held when this machine booted, so successive machines show which weights persisted."""
+    root = Path(mount)
+    out: dict[str, float] = {}
+
+    def walk(p: Path, level: int):
+        try:
+            children = [c for c in p.iterdir() if c.is_dir() and not c.is_symlink() and not c.name.startswith(".")]
+        except OSError:
+            return
+        for c in children:
+            gb = _bytes_under(c) / GB
+            if gb >= min_gb:
+                out[str(c.relative_to(root))] = round(gb, 2)
+                if level < depth:
+                    walk(c, level + 1)
+    walk(root, 1)
+    return out
 
 
 def record(conn, group: str | None, result: dict) -> None:
     """The measurement on this machine's own row (the worker role may write only these columns and its deadline)."""
     if not group:
         return
-    conn.execute("UPDATE gpu_groups SET volume_free_gb = %s, volume_low = %s, volume_checked_at = now() "
-                 "WHERE name = %s", (result["free_gb"], result["low"], group))
+    from psycopg.types.json import Jsonb
+    conn.execute("UPDATE gpu_groups SET volume_free_gb = %s, volume_low = %s, volume_checked_at = now(), "
+                 "volume_inventory = %s WHERE name = %s",
+                 (result["free_gb"], result["low"], Jsonb(result.get("inventory") or {}), group))

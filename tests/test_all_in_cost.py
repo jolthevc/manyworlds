@@ -18,9 +18,9 @@ def _machine(conn, name, *, usd, family="image", start=None):
     start = start or NOW - timedelta(hours=3)
     conn.execute(
         """INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, started_at,
-                                   billed_until, billed_usd, cost_usd, stopped_at, stop_reason, family)
-           VALUES (%s, 'vast', 'p', 1, %s, %s, 5, %s, %s, %s, %s, %s, 'idle', %s)""",
-        (name, [f"{family}.x"], start + timedelta(hours=2), start, start + timedelta(hours=1), usd, usd,
+                                   billed_until, billed_usd, stopped_at, stop_reason, family)
+           VALUES (%s, 'vast', 'p', 1, %s, %s, 5, %s, %s, %s, %s, 'idle', %s)""",
+        (name, [f"{family}.x"], start + timedelta(hours=2), start, start + timedelta(hours=1), usd,
          start + timedelta(hours=1), family))
     return start
 

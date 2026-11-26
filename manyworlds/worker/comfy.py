@@ -339,17 +339,14 @@ def _volume_lock(models_dir: Path, wait_s: float = 3600, stale_s: float = 7200):
 
 
 def prune_other_weights(models_dir: Path, *, partial: bool = True) -> list[str]:
-    """Free the weights volume of what this worker no longer uses: the siblings of `models_dir` (the research
-    script's ~82 GB under MW_MODEL_DIR/<repo>) and half-finished downloads. 2026-11-22: the 150 GB volume filled
-    ("Disk quota exceeded") and every story clip failed. Public model files only; they can be fetched again."""
-    import shutil
+    """Free the weights volume of this worker's own half-finished downloads, nothing else.
+
+    It used to delete every sibling of `models_dir` (2026-11-22: the research script's ~82 GB filled the volume), but
+    the siblings are other families' weights on a shared volume (MW_MODEL_DIR/svc, /longcat, /<org>--<repo> from
+    worker.models): a talk job deleted the voice and image families' weights, and the next machine downloaded them
+    again (owner 2026-11-25: families must never delete one another's weights). Stray paths are now named in policy
+    (gpu_pools.<pool>.network_volume.prune) and removed at boot by worker.volume, which refuses the shared cache."""
     removed = []
-    parent = models_dir.parent
-    if parent.exists():
-        for p in parent.iterdir():
-            if p.name != models_dir.name and p.is_dir() and not p.name.startswith("."):
-                shutil.rmtree(p, ignore_errors=True)
-                removed.append(p.name)
     for p in models_dir.rglob("*.incomplete") if partial and models_dir.exists() else []:
         p.unlink(missing_ok=True)
         removed.append(p.name)
@@ -360,6 +357,7 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
                    prune: bool = False) -> None:
     """Every weight file in place, complete (its remote size), downloaded once per volume. A failed download
     clears huggingface_hub's records for that file and the partial file, then tries once more from scratch."""
+    from . import weights_log
     token = os.environ.get("HF_TOKEN") or None
     if download is None:
         from huggingface_hub import hf_hub_download as download
@@ -371,13 +369,12 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
             size = remote_size(repo, name, token)
             if not (target.is_file() and (size is None or target.stat().st_size == size)):
                 todo.append((folder, repo, name))
+            else:
+                weights_log.note(folder, name, "reused", target.stat().st_size / 1024 ** 3)
     if not todo:
         return
-    if prune:   # before the lock: on a full volume even the lock file cannot be written (2026-11-22, image v7).
-        # Siblings are never used by this worker, so no other machine can be writing them; partial files can.
-        removed = prune_other_weights(models_dir, partial=False)
-        if removed:
-            print(f"pruned from the weights volume: {', '.join(removed[:20])}", flush=True)
+    # A full volume is caught at boot (worker.volume: free space under the floor gives the machine up), before any
+    # lock file needs writing.
     with _volume_lock(models_dir):
         if prune:
             removed = prune_other_weights(models_dir)
@@ -388,7 +385,9 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
             target = local / name
             size = remote_size(repo, name, token)
             if target.is_file() and (size is None or target.stat().st_size == size):
+                weights_log.note(folder, name, "reused", target.stat().st_size / 1024 ** 3)
                 continue   # another machine finished it while we waited
+            t0 = time.monotonic()
             try:
                 download(repo, name, local_dir=str(local), token=token)
             except Exception:  # noqa: BLE001 - stale or broken download records: start this file over
@@ -397,6 +396,8 @@ def ensure_weights(models_dir: Path, weights: dict | None = None, download=None,
                     p.unlink(missing_ok=True)
                 target.unlink(missing_ok=True)
                 download(repo, name, local_dir=str(local), token=token, force_download=True)
+            weights_log.note(folder, name, "downloaded",
+                             target.stat().st_size / 1024 ** 3 if target.is_file() else None, time.monotonic() - t0)
 
 
 def start(*, args: tuple[str, ...] = (), wait_s: float = 600) -> None:

@@ -245,3 +245,33 @@ def machine_cost_by_job(conn, *, since: datetime, now: datetime | None = None) -
     if left:
         out["_unallocated"] = left
     return out
+
+
+def weights_reuse(conn, *, hours: float = 72, now: datetime | None = None) -> list[dict]:
+    """Per machine on a weights volume, oldest first: what the volume held at its boot (gpu_groups.volume_inventory,
+    GB per folder), its free space, and what its jobs did with their weights (job result `weights`: files reused or
+    downloaded, GB downloaded). Reuse is proven when a later machine of a family downloads nothing its predecessor
+    fetched, and no family's folder shrinks between machines."""
+    now = now or datetime.now(timezone.utc)
+    rows = conn.execute(
+        """SELECT g.name, g.pool, g.family, g.started_at, g.volume_free_gb::float AS free_gb, g.volume_inventory,
+                  coalesce(jsonb_agg(jsonb_build_object('kind', j.kind, 'weights', j.result->'weights'))
+                           FILTER (WHERE j.result ? 'weights'), '[]') AS jobs
+           FROM gpu_groups g
+           LEFT JOIN attempts a ON a.gpu_group = g.name AND a.outcome = 'done'
+           LEFT JOIN jobs j ON j.id = a.job_id
+           WHERE g.started_at > %s AND g.volume_inventory IS NOT NULL
+           GROUP BY g.name, g.pool, g.family, g.started_at, g.volume_free_gb, g.volume_inventory
+           ORDER BY g.started_at""", (now - timedelta(hours=hours),)).fetchall()
+    out, prev = [], None
+    for r in rows:
+        inv = r["volume_inventory"] or {}
+        shrunk = {k: [v, inv.get(k)] for k, v in (prev or {}).items() if inv.get(k, 0) < 0.9 * v} if prev else {}
+        ws = [j["weights"] for j in r["jobs"] or [] if j.get("weights")]
+        out.append({"machine": r["name"], "pool": r["pool"], "family": r["family"], "started_at": r["started_at"],
+                    "free_gb": r["free_gb"], "inventory": inv, "shrunk_since_previous": shrunk,
+                    "files_reused": sum(w.get("reused", 0) for w in ws),
+                    "files_downloaded": sum(w.get("downloaded", 0) for w in ws),
+                    "downloaded_gb": round(sum(w.get("downloaded_gb", 0) for w in ws), 2)})
+        prev = inv
+    return out

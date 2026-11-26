@@ -143,8 +143,9 @@ def test_a_broken_download_record_is_cleared_and_the_file_fetched_again(tmp_path
     assert not (tmp_path / ".mw-download.lock").exists()
 
 
-def test_a_full_volume_is_pruned_of_weights_the_worker_no_longer_uses(tmp_path):
-    """2026-11-22: the research script's weights filled the 150 GB volume (Disk quota exceeded)."""
+def test_pruning_clears_only_its_own_partial_downloads_never_another_familys_weights(tmp_path):
+    """Owner 2026-11-25: a comfy job deleted the voice and image families' weights on the shared volume (every sibling
+    of its folder); strays are named in policy and pruned at boot by worker.volume instead."""
     from manyworlds.worker import comfy
     root = tmp_path / "mw"
     (root / "Wan-AI" / "Wan2.1-I2V-14B-480P").mkdir(parents=True)
@@ -154,7 +155,7 @@ def test_a_full_volume_is_pruned_of_weights_the_worker_no_longer_uses(tmp_path):
     comfy.ensure_weights(root / "comfy", {"vae": [("r", "new.safetensors")]}, prune=True,
                          download=lambda repo, name, local_dir, token, **k: (root / "comfy" / "vae" / name).write_bytes(b"x"),
                          remote_size=lambda repo, name, token: None)
-    assert sorted(p.name for p in root.iterdir()) == ["comfy"]
+    assert sorted(p.name for p in root.iterdir()) == ["Wan-AI", "comfy"]          # another family's weights stay
     assert sorted(p.name for p in (root / "comfy" / "vae").iterdir()) == ["keep.safetensors", "new.safetensors"]
 
 
@@ -184,7 +185,7 @@ def test_a_full_volume_is_pruned_before_the_lock_and_a_lock_that_cannot_be_writt
     with pytest.raises(OSError):
         comfy.ensure_weights(root / "comfy", {"vae": [("r", "new.safetensors")]}, prune=True,
                              download=lambda *a, **k: None, remote_size=lambda repo, name, token: None)
-    assert not (root / "old-research").exists()
+    assert (root / "old-research").exists()                                     # siblings are never touched
     assert not (root / "comfy" / ".mw-download.lock").exists()
     monkeypatch.setattr(comfy.os, "write", real_write)
 

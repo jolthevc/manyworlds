@@ -128,6 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     ib.add_argument("--done", nargs="*", type=int, metavar="ID", help="mark these alert ids done (no ids: all of them)")
     ib.add_argument("--type", help="with --done: only alerts of this type")
     ib.add_argument("--limit", type=int, default=50)
+    wr = sub.add_parser("weights-reuse", help="per machine on a weights volume: what it held at boot, what its jobs reused or downloaded")
+    wr.add_argument("--hours", type=float, default=72)
     ec = sub.add_parser("economics", help="the bill split: production, development (test/bench), research, agency, idle machines")
     ec.add_argument("--days", type=float, default=30)
     bg = sub.add_parser("budget", help="today's caps, spend and grants; `grant --usd X --reason R`: a one-day owner exception")
@@ -428,6 +430,9 @@ def main(argv: list[str] | None = None) -> int:
             _print({"marked_done": n, **notify.counts(conn)})
         else:
             _print(notify.inbox(conn, limit=args.limit))
+    elif args.cmd == "weights-reuse":
+        from .deploy import report as machine_report
+        _print(machine_report.weights_reuse(conn, hours=args.hours))
     elif args.cmd == "economics":
         from . import economics
         _print(economics.report(conn, pol, days=args.days))

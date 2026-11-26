@@ -74,6 +74,13 @@ class NonRetryable(Exception):
     """Raise from a handler when retrying cannot help (bad payload, policy violation)."""
 
 
+def _weights_meta() -> dict:
+    """The job's weights notes (worker.weights_log: reused or downloaded), drained so the next job starts empty."""
+    from . import weights_log
+    w = weights_log.drain()
+    return {"weights": w} if w else {}
+
+
 class WorkerUnhealthy(RuntimeError):
     """The worker hit too many consecutive machine faults and is exiting so the platform
     can restart it (often on a different node)."""
@@ -415,6 +422,7 @@ class Worker:
             with tempfile.TemporaryDirectory(prefix="mw-") as tmp:
                 job, store = self._job_store(job)
                 ctx = JobContext(job=job, workdir=Path(tmp), store=store, charges=charges)
+                _weights_meta()   # a failed job's notes never land on the next one
                 result = self.handlers[job.kind](job.payload, ctx)
                 # A long job (hours of LoRA training) leaves this connection idle; poolers and
                 # Neon drop idle connections, and losing it here would throw away the result.
@@ -427,7 +435,7 @@ class Worker:
             self._charge(job, attempt_id, gpu_seconds)
             if queue.complete(self.conn, job.id, self.worker_id,
                               {"asset_ids": [str(a) for a in asset_ids], "gpu_seconds": round(gpu_seconds, 3),
-                               "pool": self.pool, **result.meta}):
+                               "pool": self.pool, **result.meta, **_weights_meta()}):
                 outcome = "done"
                 self.consecutive_faults = 0
             else:
