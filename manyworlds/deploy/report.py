@@ -187,3 +187,61 @@ def _median(values: list[float]) -> float | None:
 
 def _round(x: float | None, digits: int) -> float | None:
     return None if x is None else round(x, digits)
+
+
+def machine_cost_by_job(conn, *, since: datetime, now: datetime | None = None) -> dict:
+    """All-in GPU cost per job (owner 2026-11-25: cost per accepted output must carry boot, downloads, idle and
+    failed machines, not only the seconds a job ran).
+
+    Each machine started since `since` splits its whole billed cost (gpu_groups.cost_usd: metered time plus
+    reconciled extras) over the jobs that ran attempts on it, by attempt time clipped to its life (a retried or failed
+    attempt is charged to its job too). Machines that ran no attempt at all (never came up, broke on the hardware)
+    are spread over their family's jobs in the same window, pro rata to what those jobs were already charged, so no
+    billed dollar is lost. Returns {job_id (str): usd}; a family whose every machine ran nothing leaves that money in
+    `unallocated` (key "_unallocated": {family: usd})."""
+    now = now or datetime.now(timezone.utc)
+    ms = conn.execute(
+        """SELECT name, coalesce(family, '') AS family, started_at, coalesce(stopped_at, %(now)s) AS ended,
+                  coalesce(cost_usd, 0)::float AS usd FROM gpu_groups WHERE started_at > %(since)s""",
+        {"now": now, "since": since}).fetchall()
+    if not ms:
+        return {}
+    att = conn.execute(
+        "SELECT job_id, gpu_group, started_at, finished_at FROM attempts WHERE gpu_group = ANY(%s) "
+        "AND started_at IS NOT NULL", ([m["name"] for m in ms],)).fetchall()
+    by_machine: dict[str, list] = {}
+    for a in att:
+        by_machine.setdefault(a["gpu_group"], []).append(a)
+    per_job: dict[str, float] = {}
+    job_family: dict[str, str] = {}
+    orphan: dict[str, float] = {}
+    for m in ms:
+        mine = by_machine.get(m["name"], [])
+        secs = {}
+        for a in mine:
+            s = max((min(a["finished_at"] or m["ended"], m["ended"]) - a["started_at"]).total_seconds(), 0.0)
+            secs[str(a["job_id"])] = secs.get(str(a["job_id"]), 0.0) + s
+        total = sum(secs.values())
+        if not mine:
+            orphan[m["family"]] = orphan.get(m["family"], 0.0) + m["usd"]
+            continue
+        for job, s in secs.items():
+            share = s / total if total else 1 / len(secs)
+            per_job[job] = per_job.get(job, 0.0) + m["usd"] * share
+            job_family[job] = m["family"]
+    allocated: dict[str, float] = {}
+    for job, usd in per_job.items():
+        allocated[job_family[job]] = allocated.get(job_family[job], 0.0) + usd
+    left = {}
+    for fam, usd in orphan.items():
+        base = allocated.get(fam, 0.0)
+        if base <= 0:
+            left[fam] = round(usd, 4)
+            continue
+        for job in per_job:
+            if job_family[job] == fam:
+                per_job[job] *= 1 + usd / base
+    out: dict = {j: round(u, 6) for j, u in per_job.items()}
+    if left:
+        out["_unallocated"] = left
+    return out

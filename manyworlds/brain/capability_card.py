@@ -5,8 +5,8 @@ with it and the CEO reads it. Per format:
 
     reliability        accepted / judged posts (accepted: intelligence.feedback.accepted_statuses, dropped: its
                        dropped_statuses) over strategy.capability_card.window_days
-    usd_per_accepted   every ledger entry booked to those posts or their jobs (attributed GPU time, LLM, data...)
-                       over accepted posts
+    usd_per_accepted   all-in cost over accepted posts: tagged calls, the whole bill of the machines their jobs ran on
+                       (boot, downloads, idle, failures) and untagged orchestration calls (see measure)
     status, limits     from policy
     source             `measured` once a format has min_tried judged posts in the window, else `policy` (its defaults)
 
@@ -39,27 +39,68 @@ def _statuses(policy: Policy) -> tuple[list[str], list[str]]:
 
 
 def measure(conn, policy: Policy, *, now: datetime | None = None) -> dict:
-    """{format: {tried, accepted, dropped, usd, reliability, usd_per_accepted}} over the window, real and test posts
-    alike (a breadth or casting render is as good a measure of production as a live one); simulated posts are not
-    renders and are left out."""
+    """{format: {tried, accepted, dropped, usd, usd_nominal, reliability, usd_per_accepted, nominal_per_accepted,
+    breakdown, development_share}} over the window, real and test posts alike (a breadth or casting render is as good
+    a measure of production as a live one); simulated posts are not renders and are left out.
+
+    usd is all-in (owner 2026-11-25): every non-GPU ledger entry booked to the post or its jobs (LLM direction,
+    review, voice, data), plus its jobs' share of the whole bill of every machine they ran on (boot, model downloads,
+    idle, retries, failed attempts, and machines of that family that never ran a job: deploy.report.machine_cost_by_job),
+    plus its share of the orchestration agents' calls booked to no post (strategy.capability_card.spread_agents),
+    spread evenly over the window's posts. usd_nominal is the old figure (attributed job seconds plus tagged calls),
+    kept beside it to show the gap. development_share: the share of the posts that ran in test or bench batches."""
+    from ..deploy import report
     now = now or datetime.now(timezone.utc)
-    since = now - timedelta(days=float(_cfg(policy).get("window_days", 30)))
+    cfg = _cfg(policy)
+    since = now - timedelta(days=float(cfg.get("window_days", 30)))
     ok, bad = _statuses(policy)
+    dev = [f"{p}%" for p in policy.get("operations", "test_batch_prefixes", default=["bench-", "test-"]) or []]
     rows = conn.execute(
-        """SELECT p.format, p.status,
+        """SELECT p.id, p.format, p.status,
                   (SELECT coalesce(sum(c.usd), 0) FROM cost_entries c
-                    WHERE c.post_id = p.id OR c.job_id IN (SELECT j.id FROM jobs j WHERE j.post_id = p.id)) AS usd
-           FROM posts p WHERE p.updated_at > %s AND p.status = ANY(%s)""", (since, ok + bad)).fetchall()
+                    WHERE c.post_id = p.id OR c.job_id IN (SELECT j.id FROM jobs j WHERE j.post_id = p.id)) AS nominal,
+                  (SELECT coalesce(sum(c.usd), 0) FROM cost_entries c
+                    WHERE (c.post_id = p.id OR c.job_id IN (SELECT j.id FROM jobs j WHERE j.post_id = p.id))
+                      AND c.category NOT IN ('gpu', 'gpu_billed') AND c.category <> 'llm') AS other,
+                  (SELECT coalesce(sum(c.usd), 0) FROM cost_entries c
+                    WHERE (c.post_id = p.id OR c.job_id IN (SELECT j.id FROM jobs j WHERE j.post_id = p.id))
+                      AND c.category = 'llm') AS llm,
+                  (SELECT array_agg(j.id::text) FROM jobs j WHERE j.post_id = p.id) AS jobs,
+                  EXISTS (SELECT 1 FROM jobs j WHERE j.post_id = p.id AND j.batch LIKE ANY(%s)) AS dev
+           FROM posts p WHERE p.updated_at > %s AND p.status = ANY(%s)""", (dev, since, ok + bad)).fetchall()
+    machine = report.machine_cost_by_job(conn, since=since - timedelta(days=1), now=now)
+    agents = list(cfg.get("spread_agents") or [])
+    shared = 0.0
+    if agents and rows:
+        shared = float(conn.execute(
+            "SELECT coalesce(sum(usd), 0) u FROM cost_entries WHERE post_id IS NULL AND job_id IS NULL "
+            "AND split_part(coalesce(agent, ''), ':', 1) = ANY(%s) AND created_at > %s",
+            (agents, since)).fetchone()["u"])
+    share = shared / len(rows) if rows else 0.0
     out: dict[str, dict] = {}
     for r in rows:
-        m = out.setdefault(r["format"], {"tried": 0, "accepted": 0, "dropped": 0, "usd": 0.0})
+        m = out.setdefault(r["format"], {"tried": 0, "accepted": 0, "dropped": 0, "usd": 0.0, "usd_nominal": 0.0,
+                                         "dev": 0, "breakdown": {"gpu_machines": 0.0, "llm": 0.0, "other": 0.0,
+                                                                 "orchestration": 0.0}})
+        gpu = sum(float(machine.get(j, 0.0)) for j in (r["jobs"] or []))
         m["tried"] += 1
+        m["dev"] += bool(r["dev"])
         m["accepted" if r["status"] in ok else "dropped"] += 1
-        m["usd"] += float(r["usd"] or 0)
+        m["usd_nominal"] += float(r["nominal"] or 0)
+        bd = m["breakdown"]
+        bd["gpu_machines"] += gpu
+        bd["llm"] += float(r["llm"] or 0)
+        bd["other"] += float(r["other"] or 0)
+        bd["orchestration"] += share
+        m["usd"] += gpu + float(r["llm"] or 0) + float(r["other"] or 0) + share
     for m in out.values():
         m["usd"] = round(m["usd"], 4)
+        m["usd_nominal"] = round(m["usd_nominal"], 4)
+        m["breakdown"] = {k: round(v, 4) for k, v in m["breakdown"].items()}
+        m["development_share"] = round(m.pop("dev") / m["tried"], 3) if m["tried"] else None
         m["reliability"] = round(m["accepted"] / m["tried"], 3) if m["tried"] else None
         m["usd_per_accepted"] = round(m["usd"] / m["accepted"], 4) if m["accepted"] else None
+        m["nominal_per_accepted"] = round(m["usd_nominal"] / m["accepted"], 4) if m["accepted"] else None
     return out
 
 
@@ -77,6 +118,8 @@ def compose(policy: Policy, measured: dict) -> dict:
                                           else d.get("usd_per_accepted")),
                      "status": d.get("status"), "limits": d.get("limits"),
                      "source": "measured" if enough else "policy", "n": int(m.get("tried") or 0)}
+        if enough:
+            card[fmt].update({k: m.get(k) for k in ("nominal_per_accepted", "breakdown", "development_share")})
         if m and not enough:
             card[fmt]["measured_so_far"] = {k: m.get(k) for k in ("tried", "accepted", "reliability")}
     for fmt, m in measured.items():

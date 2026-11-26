@@ -1260,6 +1260,9 @@ strategy:
   # defaults (from the 2026-11-24 breadth test and the ledger). status: reliable | promising | unproven.
   capability_card:
     window_days: 30
+    # Orchestration agents whose calls are booked to no post (ideas, evaluations, revisions made before a post
+    # exists): spread evenly over the window's posts so the card is all-in (agent tag before any ':').
+    spread_agents: [showrunner, evaluator, idea_reviser, director, caption_rewrite]
     min_tried: 12
     formats:
       photo: {reliability: 0.85, usd_per_accepted: 0.04, status: reliable,

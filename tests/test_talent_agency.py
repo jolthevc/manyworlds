@@ -51,7 +51,7 @@ def _post(conn, cid, fmt="photo", status="ready", usd=0.0):
                        (cid, fmt, status)).fetchone()["id"]
     if usd:
         conn.execute("INSERT INTO cost_entries (post_id, creator_id, category, provider, quantity, unit, usd) "
-                     "VALUES (%s, %s, 'gpu', 'test', 1, 'gpu_second', %s)", (pid, cid, usd))
+                     "VALUES (%s, %s, 'llm', 'test', 1, 'token', %s)", (pid, cid, usd))
     return pid
 
 
