@@ -66,7 +66,10 @@ _state: dict[str, Any] = {}
 class _VoxCPM:
     def __init__(self, model_id: str, optimize: bool):
         from voxcpm import VoxCPM
-        self.model = VoxCPM.from_pretrained(model_id, load_denoiser=False, optimize=optimize)
+        from .. import hf_cache
+        # a zero-byte config left by the full volume of 2026-11-24 failed every load on it (JSONDecodeError)
+        self.model = hf_cache.load(model_id, lambda: VoxCPM.from_pretrained(model_id, load_denoiser=False,
+                                                                            optimize=optimize))
         self.sample_rate = int(self.model.tts_model.sample_rate)
 
     def generate(self, *, seed: int, **kwargs):

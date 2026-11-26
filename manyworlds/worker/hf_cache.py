@@ -1,0 +1,63 @@
+"""Healing the Hugging Face cache on a shared weights volume (2026-11-26).
+
+When the volume filled on 2026-11-24 ("Disk quota exceeded"), downloads in progress left zero-byte files in
+HF_HOME/hub. huggingface_hub treats a present file as downloaded, so every later machine loaded an empty config.json
+and failed (VoxCPM2: JSONDecodeError at from_pretrained). `heal(repo)` deletes a repo's zero-byte blobs and the
+snapshot links that point at them, so the next load fetches just those files again; `forget(repo)` drops the
+repo's whole cache entry, for a load that still fails on a corrupt file. Public model files only."""
+
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+
+
+def _hub() -> Path:
+    home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    return Path(os.environ.get("HF_HUB_CACHE") or Path(home) / "hub")
+
+
+def repo_dir(repo: str, hub: Path | None = None) -> Path:
+    return (hub or _hub()) / f"models--{repo.replace('/', '--')}"
+
+
+def heal(repo: str, hub: Path | None = None) -> list[str]:
+    """Delete the repo's empty blobs and every snapshot entry that is empty or points at a missing or empty blob."""
+    root = repo_dir(repo, hub)
+    removed = []
+    for blob in (root / "blobs").glob("*") if (root / "blobs").is_dir() else []:
+        if blob.is_file() and blob.stat().st_size == 0:
+            blob.unlink(missing_ok=True)
+            removed.append(f"blobs/{blob.name}")
+    for p in (root / "snapshots").rglob("*") if (root / "snapshots").is_dir() else []:
+        if p.is_symlink() and not p.exists():
+            p.unlink(missing_ok=True)
+            removed.append(str(p.relative_to(root)))
+        elif p.is_file() and not p.is_symlink() and p.stat().st_size == 0:
+            p.unlink(missing_ok=True)
+            removed.append(str(p.relative_to(root)))
+    if removed:
+        print(f"hf cache {repo}: removed {len(removed)} empty or dangling files", flush=True)
+    return removed
+
+
+def forget(repo: str, hub: Path | None = None) -> bool:
+    root = repo_dir(repo, hub)
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+        print(f"hf cache {repo}: dropped the whole entry", flush=True)
+        return True
+    return False
+
+
+def load(repo: str, loader, *, corrupt=(ValueError,)):
+    """`loader()` after healing the repo's cache; once more after forgetting it if it fails on a corrupt file
+    (json.JSONDecodeError is a ValueError; safetensors header errors are too)."""
+    heal(repo)
+    try:
+        return loader()
+    except corrupt:
+        if not forget(repo):
+            raise
+        return loader()
