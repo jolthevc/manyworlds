@@ -215,7 +215,7 @@ def skip_reason(policy: Policy, item: Item, creator) -> str | None:
         from . import voices
         have = voices.engine(anchors)
         if have != want:
-            return f"creator {creator['handle']} speaks with {have}; this item needs {want} (mw voice design/pick)"
+            return f"creator {creator['handle']} speaks with {have}; this item needs {want} (mw voice cast)"
     return None
 
 
@@ -260,7 +260,7 @@ def expected_jobs(policy: Policy, item: Item, creator, *, shared_done: bool = Fa
     anchors = (creator or {}).get("anchors") if creator else None
     designed = voices.designed(anchors)
     from .creator import voice_lab
-    speak = voice_lab.speak_kind(policy, voices.engine(anchors)) if designed else "voice.speak"
+    speak = voice_lab.speak_kind(policy, voices.engine(anchors)) if designed else None
     if item.format == "story_clip":
         routing = (prod.get("routing") or {}).get("story_clip") or {}
         kind = (routing.get("kinds") or [prod.get("video_kind", "comfy.wan_i2v")])[0]

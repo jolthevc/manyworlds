@@ -45,7 +45,7 @@ def expected_job(policy: Policy, bench: dict) -> dict:
     the expected pace)), priced per output second by the engine's rate (breadth.estimate.seconds_per_output_second
     `voice.cast:<engine>`: generation, transcription, judging and repairs included)."""
     extra = bench.get("extra") or {}
-    engine = extra.get("engine") or policy.get("voice", "engine", default="indextts")
+    engine = extra.get("engine") or policy.get("voice", "engine", default="qwen3")
     n = int(extra.get("n") or _cfg(policy).get("candidates", 2))
     wps = float(_cfg(policy).get("estimate_wps", 3.8))
     lines = script(policy)
@@ -69,7 +69,7 @@ def bench_payload(conn, policy: Policy, extra: dict, i: int) -> tuple[dict, obje
     description = extra.get("description") or voice_lab.describe(bible)
     if not description:
         raise ValueError("a bake-off cast needs a creator with a bible or --extra description")
-    engine = str(extra.get("engine") or policy.get("voice", "engine", default="indextts"))
+    engine = str(extra.get("engine") or policy.get("voice", "engine", default="qwen3"))
     if engine not in (policy.get("voice", "engines", default={}) or {}):
         raise ValueError(f"no policy voice.engines.{engine}")
     payload = voice_lab.cast_payload(policy, description=description, engine=engine,
@@ -148,7 +148,7 @@ def decide(conn, policy: Policy, run: str) -> dict:
     if waiting:
         return {"run": run, "decided": False, "reason": f"casts still running for {sorted(set(waiting))}",
                 "engines": per_engine}
-    cfg = {**_cfg(policy), "incumbent": policy.get("voice", "engine_gate", "until_bakeoff", default="voxcpm")}
+    cfg = {**_cfg(policy), "incumbent": policy.get("voice", "engine_gate", "until_bakeoff", default="qwen3")}
     result = voice_eval.bakeoff_winner(per_engine, cfg)
     out = {"run": run, "decided": result["winner"] is not None, **result, "engines": per_engine}
     if result["winner"] is None:

@@ -36,7 +36,7 @@ def test_a_single_stock_voice_passes_through_and_a_blend_is_mixed_by_weight():
     assert voices.voice_arg(Pipe(), "af_bella:0.75+af_sky:0.25") == 12.5
 
 
-# --- the delivery bank: which clip a line's delivery asks for (policy voice.delivery_bank) ------------------------
+# --- the named deliveries: which one a line's delivery asks for (policy voice.deliveries) ---------------------------
 BANK = {"excited": ["excited", "upbeat", "fast"], "deadpan": ["flat", "dry", "tired", "matter of fact"],
         "amused": ["amused", "laugh", "playful"], "confiding": ["quiet", "sincere"]}
 

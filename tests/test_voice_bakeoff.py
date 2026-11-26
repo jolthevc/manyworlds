@@ -32,7 +32,7 @@ def test_the_plan_casts_each_engine_for_two_voices_within_two_dollars(conn, poli
     out = breadth.run(conn, _paused(policy), "voicebake", creator=handle, dry_run=True)
     assert not out["skipped"], out["skipped"]
     items = {i["id"]: i for i in out["items"]}
-    assert {i.split("_")[-1] for i in items} == {"indextts", "qwen3", "voxcpm"}
+    assert {i.split("_")[-1] for i in items} == {"indextts", "qwen3"}          # VoxCPM2 retired 2026-11-26
     assert {i.split("_")[1] for i in items} == {"maren", "other"}
     for i in items.values():
         (job,) = i["estimate"]["jobs"]
@@ -64,7 +64,7 @@ def test_the_decision_flips_the_default_engine(conn, policy):
     run = "vb1"
     batch = breadth.batch_name(breadth.test_policy(policy), run)
     fit = {"gender": "female", "age": 27.0}
-    for engine, mos, usd in (("voxcpm", 3.4, 0.06), ("indextts", 4.3, 0.06), ("qwen3", 3.9, 0.06)):
+    for engine, mos, usd in (("qwen3", 3.4, 0.06), ("indextts", 4.3, 0.06)):
         job = conn.execute(
             "INSERT INTO jobs (kind, status, creator_id, batch, payload) VALUES ('voice.cast', 'done', %s, %s, %s) "
             "RETURNING id", (cid, f"{batch}-cast_maren_{engine}",
@@ -74,7 +74,7 @@ def test_the_decision_flips_the_default_engine(conn, policy):
                       job_id=job)
         conn.execute("INSERT INTO cost_entries (job_id, category, provider, quantity, unit, usd) "
                      "VALUES (%s, 'gpu', 'runpod', 100, 'gpu_second', %s)", (job, usd))
-    assert voice_lab.default_engine(conn, policy) == "voxcpm"
+    assert voice_lab.default_engine(conn, policy) == "qwen3"                    # the incumbent
     out = voice_bakeoff.decide(conn, policy, run)
     assert out["decided"] and out["winner"] == "indextts"
     e = out["engines"]["indextts"]

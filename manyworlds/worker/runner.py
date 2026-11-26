@@ -572,8 +572,6 @@ def handlers_for(kinds: list[str]) -> dict[str, Handler]:
         elif kind == "voice.cast" or kind.startswith("voice.speak."):
             # IndexTTS-2.5 / Qwen3-TTS voices and automatic casting (worker family tts: talkcomfy v21 and later)
             from .handlers import tts_engines as mod
-        elif family == "voice":          # designed voices (VoxCPM2), also on the talk worker image
-            from .handlers import tts_voxcpm as mod
         elif family == "sound":          # generated effects and music beds (policy sound, off)
             from .handlers import sound_gen as mod
         elif kind in ("music.convert_voice", "music.train_voice"):   # one voice per artist (policy music.voice, off)

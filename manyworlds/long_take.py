@@ -6,8 +6,9 @@ creator's designed voice and one still, rendered two ways so the owner can compa
   - our segment chain: InfiniteTalk (talk.infinitetalk on ComfyUI) in segments of at most `max_segment_seconds`,
     each starting from the previous segment's last frame, joined on the control plane (production's `chain` join).
 
-Both speak the SAME voice line (one voice.speak job, shared by every take of a run with the same script): a chained
-segment gets its part of it as `audio_window`, cut between the line's sentences (voice.speak's meta.lines timings),
+Both speak the SAME voice line (one voice.speak.<engine> job in the creator's engine, shared by every take of a run
+with the same script): a chained segment gets its part of it as `audio_window`, cut between the line's sentences (its
+meta.lines timings),
 so the comparison isolates the video model. A creator without a designed voice is refused, with the reason.
 
 A take is a breadth-test item (`take:` in a plan of policy/test_overlay.yaml; manyworlds.breadth drives it: its
@@ -20,7 +21,7 @@ per-keyframe identity, 1-10, against the creator's references: one screen call p
 
 The same item benchmarks any model as one take (plan `candidates`): `kind: comfy.graph` with `graph` (a named ComfyUI
 workflow, policy comfy_graphs; worker/handlers/comfy_graph.py), `audio: "@shared:<key>"` (speak the voice line a
-production comparison already made for this script: the voice.speak job of body.shared_key <key> whose lines say it,
+production comparison already made for this script: the voice.speak.* job of body.shared_key <key> whose lines say it,
 so every model speaks the very same audio; nothing is voiced again), or `audio: none` (a graph that makes its own
 sound: its length comes from the script), and `pools` (this take's own pools, over the plan's per family).
 """
@@ -43,7 +44,7 @@ from .policy import Policy
 log = logging.getLogger("manyworlds.long_take")
 
 ROLE = "long_take"
-VOICE_KIND = "voice.speak"
+VOICE_KINDS = "voice.speak.%"   # every designed-voice engine's kind (voice_lab.speak_kind)
 GRAPH_KIND = "comfy.graph"
 NO_AUDIO = "none"      # take.audio: the graph makes its own sound
 SHARED = "@shared:"     # take.audio: the voice line a production comparison made (its body.shared_key)
@@ -81,8 +82,19 @@ def shared_key(take: dict) -> str | None:
 
 
 def voiced_here(take: dict) -> bool:
-    """The take speaks a voice line of its own (one voice.speak job), not a reused one or the graph's own sound."""
+    """The take speaks a voice line of its own (one voice.speak.<engine> job), not a reused one or the graph's own
+    sound."""
     return take.get("audio") is None
+
+
+def voice_kind(policy: Policy, creator=None) -> str:
+    """The kind that voices a take's line: the creator's engine's (voice_lab.speak_kind), else, for a dry estimate
+    without her, the default engine's (policy voice.engine)."""
+    from . import voices
+    from .creator import voice_lab
+    anchors = (creator or {}).get("anchors")
+    engine = voices.engine(anchors) if voices.designed(anchors) else policy.get("voice", "engine")
+    return voice_lab.speak_kind(policy, engine)
 
 
 def graph_spec(policy: Policy, take: dict) -> dict | None:
@@ -115,7 +127,7 @@ def skip_reason(policy: Policy, take: dict, creator, env=None) -> str | None:
     gets this environment's), or a creator without a designed voice when the take voices its own line."""
     from . import voices
     kinds = policy.get("job_kinds", default={}) or {}
-    for kind in (take["kind"], *([VOICE_KIND] if voiced_here(take) else [])):
+    for kind in (take["kind"], *([voice_kind(policy, creator)] if voiced_here(take) else [])):
         if kind not in kinds:
             return f"job kind {kind} is not in job_kinds"
     if take.get("graph"):
@@ -125,10 +137,10 @@ def skip_reason(policy: Policy, take: dict, creator, env=None) -> str | None:
     profile = take.get("profile")
     if profile and profile not in (policy.get("generation", "talk_profiles", default={}) or {}):
         return f"talk profile {profile} is not in generation.talk_profiles"
-    if voiced_here(take) and voices.engine((creator or {}).get("anchors")) != "voxcpm":
+    if voiced_here(take) and not voices.designed((creator or {}).get("anchors")):
         return (f"creator {creator['handle']} has no designed voice (speaks with Kokoro): the long-take comparison "
-                f"speaks one line in the designed voice (voice.speak, VoxCPM2). Design and pick one first: "
-                f"mw voice design {creator['handle']}, then mw voice pick {creator['handle']}")
+                f"speaks one line in the designed voice (voice.speak.<engine>). Cast one first: "
+                f"mw voice cast {creator['handle']}")
     return None
 
 
@@ -172,12 +184,12 @@ def expected_jobs(policy: Policy, take: dict) -> list[dict]:
         if (source or {}).get("download_gb"):
             render.update(weights=(source or {}).get("weights_set") or name,
                           download_gb=float(source["download_gb"]))
-    voice = [{"kind": VOICE_KIND, "n": 1, "output_seconds": None}] if voiced_here(take) else []
+    voice = [{"kind": voice_kind(policy), "n": 1, "output_seconds": None}] if voiced_here(take) else []
     return [*voice, *(dict(render) for _ in range(n))]
 
 
 def shared_audio(conn, key: str, script: str):
-    """The newest finished voice line of a production comparison (body.shared_key `key`: its voice.speak jobs are
+    """The newest finished voice line of a production comparison (body.shared_key `key`: its voice.speak.* jobs are
     keyed shared:<key>:voice:...) whose lines say `script`, as its audio asset {id, uri, meta}; None when there is
     none (that comparison hasn't voiced this line yet)."""
     want = " ".join(str(script).lower().split())
@@ -185,10 +197,10 @@ def shared_audio(conn, key: str, script: str):
         """SELECT j.payload, a.id, a.uri, a.meta FROM jobs j
              JOIN LATERAL (SELECT id, uri, meta FROM assets WHERE job_id = j.id AND kind = 'audio'
                            ORDER BY uri LIMIT 1) a ON true
-            WHERE j.kind = %s AND j.status = 'done' AND j.idempotency_key LIKE %s
+            WHERE j.kind LIKE %s AND j.status = 'done' AND j.idempotency_key LIKE %s
             ORDER BY j.updated_at DESC""",
         # the breadth driver scopes a run's shared key (shared:<key>:<run>:voice:...), so match either form
-        (VOICE_KIND, f"shared:{key}:%voice:%")).fetchall()
+        (VOICE_KINDS, f"shared:{key}:%voice:%")).fetchall()
     for r in rows:
         said = " ".join(" ".join(str(ln.get("text") or "") for ln in (r["payload"] or {}).get("lines") or [])
                         .lower().split())
@@ -203,7 +215,7 @@ def audio_status(conn, take: dict) -> str:
     if key:
         return f"reused from shared_key {key}" if shared_audio(conn, key, take["script"]) else \
             f"MISSING: no finished voice line of shared_key {key} says this script (run that comparison first)"
-    return "the graph's own sound" if take.get("audio") == NO_AUDIO else "voiced by this run (voice.speak)"
+    return "the graph's own sound" if take.get("audio") == NO_AUDIO else "voiced by this run (voice.speak.<engine>)"
 
 
 # ------------------------------------------------------------------------------------------------- the voice line
@@ -218,14 +230,16 @@ def voice_batch(batch: str) -> str:
 
 def voice_job(conn, policy: Policy, *, run: str, batch: str, take: dict, creator, pools: list[str] | None = None,
               meta: dict | None = None):
-    """The shared voice line: one voice.speak job per run and script (an idempotency key), every sentence a line."""
+    """The shared voice line: one voice.speak.<engine> job per run and script (an idempotency key), every sentence a
+    line."""
     from .creator import voice_lab
     from .talk_segments import sentences
     d = digest(take["script"])
     payload = voice_lab.speak_payload(policy, (creator["anchors"] or {})["voice"],
                                       [{"text": s} for s in sentences(take["script"])], seed=int(d[:7], 16))
     payload["breadth"] = {**(meta or {}), "item": "take-voice", "exercises": ["designed_voice"]}
-    return queue.enqueue(conn, VOICE_KIND, payload, batch=voice_batch(batch), pools=pools, creator_id=creator["id"],
+    return queue.enqueue(conn, voice_kind(policy, creator), payload, batch=voice_batch(batch), pools=pools,
+                         creator_id=creator["id"],
                          idempotency_key=f"breadth:{run}:take-voice:{d}",
                          max_attempts=int(policy.get("queue", "max_attempts", default=3)))
 
@@ -277,7 +291,7 @@ def take_asset(conn, run: str, item_id: str):
 
 def _voice_line(conn, policy: Policy, *, run: str, batch: str, take: dict, creator, pins: dict, meta: dict):
     """(None, the take's audio {uri, meta}) once its line is there, else ({state...}, None): voiced here (one
-    voice.speak job), reused (take.audio @shared:<key>), or none for a graph that makes its own sound (its length
+    voice.speak.<engine> job), reused (take.audio @shared:<key>), or none for a graph that makes its own sound (its length
     then comes from the script)."""
     if take.get("audio") == NO_AUDIO:
         return None, {"uri": None, "meta": {"seconds": script_seconds(policy, take)}}
@@ -289,7 +303,7 @@ def _voice_line(conn, policy: Policy, *, run: str, batch: str, take: dict, creat
                                                  f"(run that comparison first)"}, None
         return None, audio
     voice = voice_job(conn, policy, run=run, batch=batch, take=take, creator=creator,
-                      pools=pins.get(policy.family(VOICE_KIND)), meta=meta)
+                      pools=pins.get(policy.family(voice_kind(policy, creator))), meta=meta)
     v = conn.execute("SELECT status, error FROM jobs WHERE id = %s", (voice,)).fetchone()
     if v["status"] in FAILED:
         return {"state": "failed", "reason": f"the voice line failed: {v['error']}"[:300]}, None

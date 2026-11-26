@@ -62,10 +62,10 @@ def voice_arg(pipe, spec: str):
     return sum(pipe.load_single_voice(name) * w for name, w in parts)
 
 
-# --- designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, creator/voice_lab.py) -------------------------------
-# VoxCPM2 reads an instruction in parentheses at the start of the text: a voice description when designing, a
-# delivery ("slightly faster, cheerful tone") on a cloned voice. The instruction is never spoken, so it never
-# belongs in the text a transcript is checked against.
+# --- designed voices (worker/handlers/tts_engines.py, creator/voice_lab.py) ----------------------------------------
+# A script line may open with a delivery in parentheses ("(softly, amused) I knew it."). The delivery is never
+# spoken (an engine takes it as its own emotion control, or not at all), so it never belongs in the text a transcript
+# is checked against.
 _LEADING_INSTRUCTION = re.compile(r"^\s*(?:\([^()]*\)\s*)+")
 
 
@@ -83,14 +83,6 @@ def split_instruction(text: str) -> tuple[str, str]:
 def strip_delivery(text: str) -> str:
     """The words to be spoken: `text` without leading parenthetical instructions."""
     return split_instruction(text)[1]
-
-
-def with_instruction(instruction: str | None, text: str) -> str:
-    """What VoxCPM2 is given: '(instruction)text', or the bare words when there is no instruction. Parentheses
-    inside the instruction would end it early, so they become commas."""
-    words = strip_delivery(text)
-    instruction = re.sub(r"\s*[()]\s*", ", ", (instruction or "").strip().strip("()")).strip(" ,")
-    return f"({instruction}){words}" if instruction else words
 
 
 # --- natural speech: clauses and the pauses between them (plan 2026-11-22-video-quality-autonomous, item 7) ---------
@@ -191,13 +183,17 @@ def gap_s(rng, span: tuple[float, float]) -> float:
     return round(lo if hi <= lo else rng.uniform(lo, hi), 4)
 
 
-DESIGNED_ENGINES = ("voxcpm", "indextts", "qwen3")   # voices cloned from a reference clip (creator/voice_lab)
+DESIGNED_ENGINES = ("qwen3", "indextts")   # voices cloned from a reference clip (creator/voice_lab)
+# Retirement note: VoxCPM2 was retired 2026-11-26 by the owner ("the voxcpm2 sounds bad, do away with that model
+# entirely"). A creator whose stored voice still names it is never spoken with it: `engine` says kokoro (her stock
+# voice, kept in anchors.voice.voice) and `needs_recast` says she must be cast again (mw voice cast).
+RETIRED_ENGINES = ("voxcpm",)
 
 
 def engine(anchors: dict | None) -> str:
-    """The creator's voice engine: the stored one ('voxcpm', 'indextts', 'qwen3') once a designed voice is stored
+    """The creator's voice engine: the stored one ('qwen3', 'indextts') once a designed voice is stored
     (anchors.voice with a reference clip), otherwise 'kokoro' (a stock voice or blend), so creators made before
-    designed voices keep speaking."""
+    designed voices, and creators whose stored voice a retired engine made, keep speaking."""
     v = (anchors or {}).get("voice") or {}
     e = v.get("engine")
     return e if e in DESIGNED_ENGINES and v.get("ref_uri") and v.get("ref_text") else "kokoro"
@@ -206,6 +202,12 @@ def engine(anchors: dict | None) -> str:
 def designed(anchors: dict | None) -> bool:
     """Does the creator speak in a designed (cloned) voice, whatever its engine?"""
     return engine(anchors) in DESIGNED_ENGINES
+
+
+def needs_recast(anchors: dict | None) -> bool:
+    """Was the creator's stored voice made by a retired engine (RETIRED_ENGINES)? She speaks with Kokoro until she is
+    cast again."""
+    return ((anchors or {}).get("voice") or {}).get("engine") in RETIRED_ENGINES
 
 
 def cosine_distance(a: list[float], b: list[float]) -> float:
@@ -219,10 +221,10 @@ def cosine_distance(a: list[float], b: list[float]) -> float:
 
 
 def nearest_delivery(delivery: str | None, bank: dict[str, list[str]]) -> str | None:
-    """Which delivery-bank clip a line's delivery asks for (policy voice.delivery_bank): `bank` maps each delivery
-    name to its keywords. The name whose keywords the delivery mentions most wins; on a tie, the one mentioned
-    first ("flat, tired, then a small laugh" is deadpan before amused). Keywords match whole words or phrases,
-    case-insensitively. None when no keyword is mentioned: the line keeps the base clip."""
+    """Which named delivery a line's delivery asks for (policy voice.deliveries): `bank` maps each delivery name to
+    its keywords. The name whose keywords the delivery mentions most wins; on a tie, the one mentioned first ("flat,
+    tired, then a small laugh" is deadpan before amused). Keywords match whole words or phrases, case-insensitively.
+    None when no keyword is mentioned: the line keeps the reference's own tone."""
     text = " ".join(re.findall(r"[a-z']+", (delivery or "").lower()))
     if not text:
         return None

@@ -14,7 +14,7 @@ import pytest
 
 from manyworlds.storage import LocalStore
 from manyworlds.worker.handlers import tts_engines as te
-from manyworlds.worker.handlers import tts_voxcpm as vox
+from manyworlds.worker.handlers import speech_audio as vox
 from manyworlds.worker.handlers import voice_judge as vj
 from manyworlds.worker.runner import JobContext, NonRetryable, handlers_for
 

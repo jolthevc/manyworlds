@@ -108,7 +108,7 @@ def test_links_cover_inputs_outputs_and_mirrors(conn, policy, tmp_path):
     assert f"assets/unassigned/{job}/00.png" in links["put"] and f"assets/unassigned/{job}/03.mp4" in links["put"]
     assert links["claim_by"] < links["expires"] and links["prefix"] == "s3://bucket/"
     # a family with no mirror: nothing signed for models; a keyed kind: no links at all
-    voice = queue.enqueue(conn, "voice.speak", {"text": "hi"})
+    voice = queue.enqueue(conn, "voice.speak.qwen3", {"text": "hi"})
     fin = queue.enqueue(conn, "finish.video", {"video_uri": "s3://bucket/v.mp4"})
     presign.refresh(conn, pol, store)
     assert not [k for k in _payload(conn, voice)[presign.FIELD]["get"] if k.startswith("models/")]

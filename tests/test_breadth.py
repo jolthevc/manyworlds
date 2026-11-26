@@ -131,7 +131,7 @@ def test_items_whose_capability_or_format_is_not_wired_are_skipped_with_a_reason
     later = breadth.parse_item({"id": "y", "exercises": ["photo"], "format": "grwm", "body": {"scenes": ["a"]}})
     assert "not a post format" in breadth.skip_reason(pol, later, cr)
     voice = breadth.parse_item({"id": "z", "exercises": ["talking"], "format": "talking_video",
-                                "body": {"scenes": ["a"], "script": "hi"}, "options": {"voice_engine": "voxcpm"}})
+                                "body": {"scenes": ["a"], "script": "hi"}, "options": {"voice_engine": "qwen3"}})
     assert "kokoro" in breadth.skip_reason(pol, voice, cr)
     assert "no creator" in breadth.skip_reason(pol, voice, None)
     bad = breadth.parse_item({"id": "s", "exercises": ["photo"], "format": "photo",
@@ -245,7 +245,7 @@ def registry(monkeypatch):
 def test_test_work_across_voice_comfy_and_talk_starts_one_merged_machine(conn, policy, registry):
     pol = _paused(policy)
     pools = ["runpod_secure_l40s_vol"]
-    queue.enqueue(conn, "voice.speak", {}, batch="test-breadth-r3", pools=pools, priority=1)
+    queue.enqueue(conn, "voice.speak.qwen3", {}, batch="test-breadth-r3", pools=pools, priority=1)
     queue.enqueue(conn, "comfy.wan_i2v", {}, batch="test-breadth-r3", pools=pools, priority=1)
     queue.enqueue(conn, "talk.infinitetalk", {}, batch="test-breadth-r3", pools=pools, priority=1)
     ps = providers()
@@ -255,9 +255,10 @@ def test_test_work_across_voice_comfy_and_talk_starts_one_merged_machine(conn, p
     name, spec = ps["runpod"].launched[0]
     assert name.startswith("mw-talkcomfy-")
     kinds = set(spec.env["MW_WORKER_KINDS"].split(","))
-    assert {"voice.speak", "voice.design", "comfy.wan_i2v", "talk.infinitetalk", "comfy.wan_animate2"} <= kinds
-    assert spec.env["MW_WORKER_FAMILIES"] == "voice,comfy,talk,dance"
-    imgs = [pol.get("worker_images", f) for f in ("voice", "comfy", "talk", "dance")]
+    assert {"voice.speak.qwen3", "voice.speak.indextts", "voice.cast", "comfy.wan_i2v", "talk.infinitetalk",
+            "comfy.wan_animate2"} <= kinds
+    assert spec.env["MW_WORKER_FAMILIES"] == "tts,comfy,talk,dance"
+    imgs = [pol.get("worker_images", f) for f in ("tts", "comfy", "talk", "dance")]
     newest = max((i["tag"] for i in imgs), key=autoscale._tag_order)
     assert spec.image == f"docker.io/example/mw-worker-talkcomfy:{newest}"
     assert spec.ram_gb == breadth.test_policy(pol).get("autoscale", "merge_families", "talkcomfy", "ram_gb")   # its own size
@@ -266,7 +267,7 @@ def test_test_work_across_voice_comfy_and_talk_starts_one_merged_machine(conn, p
     runs = pol.get("gpu_runs")
     assert g["family"] == "talkcomfy"
     assert float(g["max_attempt_minutes"]) == max(float(runs["max_attempt_minutes_by_family"].get(
-        f, runs["max_attempt_minutes_by_family"]["default"])) for f in ("voice", "comfy", "talk", "dance"))
+        f, runs["max_attempt_minutes_by_family"]["default"])) for f in ("tts", "comfy", "talk", "dance"))
     group = breadth.test_policy(pol).get("autoscale", "merge_families", "talkcomfy")
     assert float(g["max_usd"]) == float(group["max_usd"])   # the merged machine's own cap, not its members'
     autoscale.tick(conn, pol, ps, now=NOW)   # the merged machine serves all three: nothing else starts
@@ -275,13 +276,13 @@ def test_test_work_across_voice_comfy_and_talk_starts_one_merged_machine(conn, p
 
 def test_without_the_overlay_each_family_keeps_its_own_machine(conn, policy, registry):
     pol = _paused(policy)
-    queue.enqueue(conn, "voice.speak", {}, batch="bench-voice.speak-x", pools=["runpod_secure_l40s_vol"])
+    queue.enqueue(conn, "voice.speak.qwen3", {}, batch="bench-voice.speak.qwen3-x", pools=["runpod_secure_l40s_vol"])
     ps = providers()
     autoscale.tick(conn, pol, ps, now=NOW)
     name, spec = ps["runpod"].launched[0]
-    assert name.startswith("mw-voice-") and spec.env["MW_WORKER_FAMILIES"] == "voice"
-    assert set(spec.env["MW_WORKER_KINDS"].split(",")) == set(autoscale._family_kinds(pol, "voice"))
-    assert autoscale.machine_family(pol, "voice.speak") == "voice"
+    assert name.startswith("mw-tts-") and spec.env["MW_WORKER_FAMILIES"] == "tts"
+    assert set(spec.env["MW_WORKER_KINDS"].split(",")) == set(autoscale._family_kinds(pol, "tts"))
+    assert autoscale.machine_family(pol, "voice.speak.qwen3") == "tts"
 
 
 def test_merged_images_must_share_one_image(policy):
@@ -293,10 +294,10 @@ def test_merged_images_must_share_one_image(policy):
 
 
 def test_a_worker_serves_its_families_kinds_from_the_environment(policy):
-    assert runner.kinds_from_env(policy, {"MW_WORKER_KINDS": "talk.infinitetalk, voice.speak"}) == \
-        ["talk.infinitetalk", "voice.speak"]
-    kinds = runner.kinds_from_env(policy, {"MW_WORKER_FAMILIES": "voice,talk"})
-    assert set(kinds) == {k for k in policy.get("job_kinds") if policy.family(k) in ("voice", "talk")}
+    assert runner.kinds_from_env(policy, {"MW_WORKER_KINDS": "talk.infinitetalk, voice.speak.qwen3"}) == \
+        ["talk.infinitetalk", "voice.speak.qwen3"]
+    kinds = runner.kinds_from_env(policy, {"MW_WORKER_FAMILIES": "tts,talk"})
+    assert set(kinds) == {k for k in policy.get("job_kinds") if policy.family(k) in ("tts", "talk")}
     with pytest.raises(SystemExit):
         runner.kinds_from_env(policy, {})
 
@@ -340,7 +341,7 @@ def test_the_producer_never_touches_breadth_posts(conn, policy, store):
 def test_the_merged_machine_has_its_own_caps_and_a_small_disk_on_the_volume(policy, tmp_path):
     pol = breadth.test_policy(policy)
     img = autoscale.merged_image(pol, "talkcomfy")
-    members = [pol.get("worker_images", f) for f in ("voice", "comfy", "talk", "dance")]
+    members = [pol.get("worker_images", f) for f in ("tts", "comfy", "talk", "dance")]
     assert img["volume_disk_gb"] == max(int(m["disk_gb"]) for m in members) < img["disk_gb"]
     assert autoscale._limit(pol, "talkcomfy", "max_hours_by_family", "max_hours", "default_max_hours", 2) == 6
     assert "runpod_secure_l40s_vol" not in breadth._cfg(pol)["pools_by_family"]["edit"]   # Qwen edit off the volume
@@ -366,11 +367,11 @@ def test_a_missing_overlay_starts_no_machine_for_test_work_and_tells_the_owner_o
     pol = _without_overlay(_paused(policy), tmp_path)
     pools = ["runpod_secure_l40s_vol"]
     queue.enqueue(conn, "comfy.wan_i2v", {}, batch="test-breadth-r9", pools=pools, priority=1)
-    queue.enqueue(conn, "voice.speak", {}, batch="bench-voice.speak-y", pools=pools)   # unrelated work still runs
+    queue.enqueue(conn, "voice.speak.qwen3", {}, batch="bench-voice.speak.qwen3-y", pools=pools)   # unrelated work still runs
     ps = providers()
     actions = autoscale.tick(conn, pol, ps, now=NOW)
     assert [a["kind"] for a in actions if a.get("action") == "overlay_missing"] == ["comfy.wan_i2v"]
-    assert [n for n, _ in ps["runpod"].launched] and all(n.startswith("mw-voice-") for n, _ in ps["runpod"].launched)
+    assert [n for n, _ in ps["runpod"].launched] and all(n.startswith("mw-tts-") for n, _ in ps["runpod"].launched)
     autoscale.tick(conn, pol, ps, now=NOW)
     n = conn.execute("SELECT count(*) n FROM events WHERE type = 'test_overlay_missing'").fetchone()["n"]
     assert n == 1

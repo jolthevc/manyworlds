@@ -32,14 +32,12 @@ RUN python -c "import torch; print(f'torch=={torch.__version__.split(\"+\")[0]}'
  && pip install --no-cache-dir -c /tmp/constraints.txt "sageattention==${SAGEATTENTION}" \
       "misaki[en]" soundfile "kokoro>=0.9" pyloudnorm "brotli>=1.2" "huggingface_hub[cli]" imageio imageio-ffmpeg \
       "runpod>=1.7,<2"
-# Designed voices (handlers/tts_voxcpm.py, job kinds voice.*): VoxCPM2 (Apache-2.0) and SpeechBrain's ECAPA speaker
-# embedding (Apache-2.0). voxcpm goes in without its dependencies: it lists gradio, funasr, modelscope, datasets and
-# torchcodec, which only its web demo, training and denoiser use (torchcodec must also match torch exactly); what
-# its inference imports is installed here under the same constraints, so torch and transformers 4.57.6 stay put.
-ARG VOXCPM=2.0.3
+# The designed voices' shared speech tooling (handlers/speech_audio.py: Whisper transcripts, SpeechBrain's ECAPA
+# speaker embedding (Apache-2.0), pitch tracking, joining) for the engines below and the music handlers, under the
+# same constraints, so torch and transformers 4.57.6 stay put. VoxCPM2 was retired 2026-11-26 (the owner): the
+# voxcpm package is no longer installed.
 ARG SPEECHBRAIN=1.1.2
-RUN pip install --no-cache-dir --no-deps "voxcpm==${VOXCPM}" \
- && pip install --no-cache-dir -c /tmp/constraints.txt einops librosa tqdm pydantic safetensors soundfile \
+RUN pip install --no-cache-dir -c /tmp/constraints.txt einops librosa tqdm pydantic safetensors soundfile \
       "speechbrain==${SPEECHBRAIN}" \
  && python -c "import transformers, torch; assert transformers.__version__ == '4.57.6', transformers.__version__; print(torch.__version__)"
 # Original songs (handlers/music_song.py, job kind music.song, family music): ACE-Step 1.5 runs in ComfyUI core (no

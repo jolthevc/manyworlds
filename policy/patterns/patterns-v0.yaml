@@ -8,7 +8,7 @@
 # Names a card uses are checked against the libraries the pipeline renders from (manyworlds.brain.patterns.validate):
 # shot types (policy/aesthetics; a new one goes under proposed_shot_types until the aesthetics library takes it),
 # grades, archetypes, moves (policy moves.library), talking-edit grammars (generation.talk_edit.grammars), voice
-# deliveries (voice.delivery_bank.deliveries), motion-reference moves (dance.references), devices (direction).
+# deliveries (voice.deliveries), motion-reference moves (dance.references), devices (direction).
 #
 # signature_ok: the card's element (a pose, a set, an outfit) may recur across posts and carousels; the variety
 # rules don't apply to it (aesthetics rules.signature).

@@ -122,7 +122,7 @@ def _names(policy: Policy | None) -> dict[str, set[str]]:
     from . import aesthetics, archetypes
     p = policy
     talk_edit = (p.get("generation", "talk_edit", "grammars", default={}) if p else {}) or {}
-    deliveries = (p.get("voice", "delivery_bank", "deliveries", default={}) if p else {}) or {}
+    deliveries = (p.get("voice", "deliveries", default={}) if p else {}) or {}
     refs = (p.get("dance", "references", default=[]) if p else []) or []
     moves = (p.get("moves", "library", default={}) if p else {}) or {}
     devices = {d for d in get_args(get_args(direction.FramingSpec.model_fields["device"].annotation)[0])}
@@ -183,7 +183,7 @@ def validate(policy: Policy | None, lib: dict | None = None) -> dict:
                 problems.append(f"{where}: recipe {field} {recipe[field]!r} is unknown")
         for d in recipe.get("deliveries") or []:
             if d not in known["deliveries"]:
-                problems.append(f"{where}: delivery {d!r} is not in voice.delivery_bank.deliveries")
+                problems.append(f"{where}: delivery {d!r} is not in voice.deliveries")
         for m in recipe.get("motion_moves") or []:
             if m not in known["motion_moves"]:
                 problems.append(f"{where}: motion move {m!r} has no licensed reference in dance.references")

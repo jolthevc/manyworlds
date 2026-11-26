@@ -90,7 +90,7 @@ def test_research_uris_are_recognised_by_prefix_and_by_the_research_bucket(monke
 
 
 @pytest.mark.parametrize("kind", ["image.zimage", "image.qwen_edit", "comfy.wan_i2v", "comfy.wan_animate2",
-                                  "talk.infinitetalk", "voice.speak", "voice.design", "train.lora", "finish.video",
+                                  "talk.infinitetalk", "voice.speak.qwen3", "voice.cast", "train.lora", "finish.video",
                                   "music.song", "hosted.video"])
 def test_no_production_job_may_carry_research_media(conn, kind):
     payload = {"scene": "x", "refs": [{"uri": "s3://manyworlds/research-refs/posts/1/frames/f01.jpg"}]}

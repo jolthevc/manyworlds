@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from manyworlds import voices
@@ -29,8 +30,8 @@ def anchors(conn, cid):
 
 
 def test_casting_waits_for_the_bakeoff_then_uses_its_winner(conn, policy):
-    assert policy.get("voice", "engine") == "indextts"
-    assert voice_lab.default_engine(conn, policy) == policy.get("voice", "engine_gate", "until_bakeoff")
+    assert policy.get("voice", "engine") == "qwen3"                     # owner 2026-11-26: Qwen3-TTS by default
+    assert voice_lab.default_engine(conn, policy) == policy.get("voice", "engine_gate", "until_bakeoff") == "qwen3"
     conn.execute("INSERT INTO decisions (kind, output, step) VALUES ('voice_engine', %s, 'voice_engine:x')",
                  (Jsonb({"winner": "indextts"}),))
     assert voice_lab.default_engine(conn, policy) == "indextts"
@@ -109,21 +110,22 @@ def test_an_indextts_voice_speaks_through_its_own_kind_with_emotions_never_words
     assert "emotions" not in p["params"]["engines"]["indextts"]
 
 
-def test_a_voxcpm_voice_keeps_its_payload_and_gains_the_line_check(policy):
-    voice = {"engine": "voxcpm", "ref_uri": "s3://b/v.wav", "ref_text": "Okay so."}
+def test_a_qwen3_voice_speaks_through_its_own_kind_with_the_line_check(policy):
+    voice = {"engine": "qwen3", "ref_uri": "s3://b/v.wav", "ref_text": "Okay so."}
     p = voice_lab.speak_payload(policy, voice, [{"text": "Hi.", "delivery": "softly"}])
-    assert p["lines"] == [{"text": "Hi."}] and p["params"]["line_check"]["enabled"] is True
-    assert voice_lab.speak_kind(policy) == voice_lab.speak_kind(policy, "voxcpm") == "voice.speak"
+    assert p["lines"] == [{"text": "Hi.", "delivery": "softly"}] and p["params"]["line_check"]["enabled"] is True
+    assert voice_lab.speak_kind(policy, "qwen3") == "voice.speak.qwen3"
 
 
-def test_production_voices_an_indextts_creator_with_its_kind(conn, policy):
+@pytest.mark.parametrize("engine", ["indextts", "qwen3"])
+def test_production_voices_a_designed_creator_with_her_engines_kind(conn, policy, engine):
     from manyworlds.production import voice as pv
-    cid = creator(conn, {"voice": {"engine": "indextts", "ref_uri": "s3://b/v.wav", "ref_text": "Okay so."}})
+    cid = creator(conn, {"voice": {"engine": engine, "ref_uri": "s3://b/v.wav", "ref_text": "Okay so."}})
     post = conn.execute("INSERT INTO posts (creator_id, format, status, body) VALUES (%s, 'talking_video', 'planned', "
                         "'{}') RETURNING *", (cid,)).fetchone()
-    assert pv._designed_voice(conn, post)["engine"] == "indextts"
+    assert pv._designed_voice(conn, post)["engine"] == engine
     job = pv._voice_job(conn, policy, post, pv._designed_voice(conn, post), [{"text": "Hi there."}], 1)
-    assert conn.execute("SELECT kind FROM jobs WHERE id = %s", (job,)).fetchone()["kind"] == "voice.speak.indextts"
+    assert conn.execute("SELECT kind FROM jobs WHERE id = %s", (job,)).fetchone()["kind"] == f"voice.speak.{engine}"
 
 
 def test_the_new_kinds_run_on_their_own_worker_family(policy):

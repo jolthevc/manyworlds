@@ -1,12 +1,12 @@
 """The voice worker's own ears (manyworlds/voice_eval.py judges what they measure). Heavy imports only here.
 
 Inside the voice job, on the same GPU (no extra job or machine), every spoken line is measured:
-  clarity         Whisper large-v3 (the speech gate's model, handlers/tts_voxcpm._asr) -> WER over the words asked for
+  clarity         Whisper large-v3 (the speech gate's model, handlers/speech_audio._asr) -> WER over the words asked for
   naturalness     UTMOS22 strong (sarulab-speech/UTMOS22 via tarepan/SpeechMOS v1.2.0; code and weights MIT, checked
                   2026-11-25) -> a 1-5 MOS estimate
   expressiveness  pitch (librosa pYIN: std, 5-95% range and median, in semitones) and loudness movement (std of frame
                   RMS in dB over the voiced frames); CPU is fine
-  consistency     ECAPA-TDNN (handlers/tts_voxcpm._embedder) -> cosine distance to the creator's reference clip
+  consistency     ECAPA-TDNN (handlers/speech_audio._embedder) -> cosine distance to the creator's reference clip
   pacing          scripted words per second of trimmed speech
 Casting also asks who it sounds like (voice_lab.cast; never to identify anyone, only to match the bible):
   gender          alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech (Apache-2.0; trained on
@@ -29,7 +29,7 @@ _state: dict[str, Any] = {}
 
 
 def _to16k(wav, sr: int):
-    from .tts_voxcpm import _resample
+    from .speech_audio import _resample
     return _resample(wav, sr, RATE)
 
 

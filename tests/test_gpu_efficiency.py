@@ -28,8 +28,8 @@ def test_a_code_bug_uses_one_attempt_not_three(conn, database_url, store, policy
 
 def test_kinds_below_their_memory_floor_are_not_served(policy):
     floor = policy.get("job_kinds", "comfy.wan_animate2", "min_vram_gb")
-    kinds = ["comfy.wan_animate2", "voice.speak"]
-    assert runner.kinds_that_fit(kinds, policy, floor - 20) == ["voice.speak"]
+    kinds = ["comfy.wan_animate2", "voice.speak.qwen3"]
+    assert runner.kinds_that_fit(kinds, policy, floor - 20) == ["voice.speak.qwen3"]
     assert runner.kinds_that_fit(kinds, policy, floor) == kinds
     assert runner.kinds_that_fit(kinds, policy, None) == kinds          # no nvidia-smi: unknown, serve all
 
@@ -45,11 +45,11 @@ def test_a_worker_prefers_the_loaded_models_kind_within_a_priority(conn):
 def test_switching_family_releases_the_last_engine(policy, monkeypatch):
     freed = []
     voice = lambda: freed.append("voice")                                # one module's release()
-    monkeypatch.setitem(runner.RELEASE, "voice.speak", voice)
-    monkeypatch.setitem(runner.RELEASE, "voice.design", voice)
+    monkeypatch.setitem(runner.RELEASE, "voice.speak.qwen3", voice)
+    monkeypatch.setitem(runner.RELEASE, "voice.cast", voice)
     w = runner.Worker.__new__(runner.Worker)
     w.policy, w.last_kind, w.ran = policy, None, []
-    for kind in ("voice.speak", "voice.design", "talk.infinitetalk", "talk.infinitetalk"):
+    for kind in ("voice.speak.qwen3", "voice.cast", "talk.infinitetalk", "talk.infinitetalk"):
         w._switch_to(kind)
     assert freed == ["voice"]                                            # once, at the voice -> talk switch
 

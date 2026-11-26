@@ -53,7 +53,7 @@ gpu_runs:
   stuck_minutes: 10            # started work, jobs waiting, no heartbeat or attempt this long -> stop
   # One attempt running longer than this stops its machine (a stalled model download heartbeats
   # fine but never finishes). A first image job, model download included, takes ~5-6 min on Vast.
-  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, voice: 45, tts: 75, edit: 60, finish: 30}   # talk: first boot downloads ~90 GB of weights; voice: ~8 GB; edit: ~58 GB
+  max_attempt_minutes_by_family: {default: 20, video: 45, train: 240, talk: 90, comfy: 60, tts: 75, edit: 60, finish: 30}   # talk: first boot downloads ~90 GB of weights; edit: ~58 GB
   # image.mirror: one-time copy into our bucket; resumes across machines. talk.longcat: one continuous take of up to
   # generation.talk_profiles.longcat16.max_seconds (a 90 s line: ~47 GB of weights, then ~28 segments; estimate
   # ~60-100 min on an L40S, unmeasured), so its render timeout_s plus the download fit inside it.
@@ -119,7 +119,7 @@ gpu_pools:
                            score_as: runpod_secure_l40s,
                            network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
                                             prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
-                                            headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10, tts: 15,
+                                            headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, tts: 15,
                                                                     music: 12}}}
   # Other cards on the same volume (owner 2026-11-26: allowed when cost per accepted asset holds up). RunPod's US-NC-1
   # carried only four GPU types on 2026-11-26: L40S, RTX PRO 6000 Blackwell Server (96 GB, $2.69/h), H200 ($5.29/h)
@@ -130,7 +130,7 @@ gpu_pools:
   runpod_secure_pro6000_vol: {provider: runpod, gpu: rtxpro6000, usd_per_hour: 2.69, interruptible: false, cloud: SECURE,
                               network_volume: {id: 2pu9smb8gw, data_center: US-NC-1, path: /models, size_gb: 150,
                                                prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
-                                               headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10,
+                                               headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30,
                                                                        tts: 15, music: 12}}}
   # A second weights volume in another data centre (US-NC-1's L40S stock was LOW on 2026-11-22): NOT CREATED. Creating
   # it is a provider resource and costs ~$10.50/month: the owner's decision. Until `id` is set the pool is skipped
@@ -139,7 +139,7 @@ gpu_pools:
                             score_as: runpod_secure_l40s,
                             network_volume: {id: null, data_center: null, path: /models, size_gb: 150,
                                              prune: [longcat, mw/Wan-AI--Wan2.1-I2V-14B-480P, mw/MeiGen-AI--InfiniteTalk], min_free_gb: 15, recheck_hours: 6, prune_idle_minutes: 60,
-                                             headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30, voice: 10,
+                                             headroom_gb_by_family: {talk: 35, comfy: 30, dance: 30,
                                                                      tts: 15, music: 12}}}
   local:             {provider: local,  gpu: none,    usd_per_hour: 0.0,  interruptible: false}
   # Hosted APIs (Together): jobs run on the control plane (fly.toml process `hosted`); the host bills per output
@@ -207,12 +207,10 @@ job_kinds:
   # candidates and the talk route ltx25 pin each graph to its own pools). min_vram_gb is the smallest graph floor;
   # each graph has its own.
   comfy.graph:     {min_vram_gb: 20, pools: [runpod_secure_l40s, vast_4090, runpod_comm_4090, vast_5090], outputs_per_job: 1}
-  # Designed voices (VoxCPM2, worker/handlers/tts_voxcpm.py, policy `voice`) on the talk image, in the talk pools.
-  voice.design:    {pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 4}
-  voice.speak:     {pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
-  # Expressive engines and casting (worker/handlers/tts_engines.py, policy voice.engines / voice.casting): their own
-  # worker family `tts` (talkcomfy v21 and later: IndexTTS-2.5 and Qwen3-TTS venvs, the judges), so a machine on an
-  # older image is never handed a kind it has no handler for. IndexTTS-2.5 bf16 ~10 GB + Whisper large-v3 ~3 GB +
+  # Designed voices: the engines and casting (worker/handlers/tts_engines.py, policy voice.engines / voice.casting;
+  # VoxCPM2's voice.design / voice.speak were retired 2026-11-26): their own worker family `tts` (talkcomfy v21 and
+  # later: IndexTTS-2.5 and Qwen3-TTS venvs, the judges), so a machine on an older image is never handed a kind it has
+  # no handler for. IndexTTS-2.5 bf16 ~10 GB + Whisper large-v3 ~3 GB +
   # the judges ~2 GB (+ Qwen3 VoiceDesign ~5 GB while casting).
   voice.speak.indextts: {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
   voice.speak.qwen3:    {family: tts, min_vram_gb: 16, pools: [runpod_secure_l40s_vol, runpod_secure_l40s_vol2, runpod_comm_3090, vast_4090, runpod_secure_l40s, vast_5090, runpod_secure_a40, runpod_comm_4090, runpod_secure_h100], outputs_per_job: 1}
@@ -274,10 +272,6 @@ worker_images:
   # (talkcomfy v11 and later). int8 model (~18 GB), UMT5 fp8 (~7 GB), CLIP vision, VAE, distill LoRA.
   dance: {image: mw-worker-talkcomfy, tag: v30, min_cuda: 12.8, cpu: 8, ram_gb: 48, disk_gb: 120, download_gb: 45,
           env: {HF_HUB_DISABLE_XET: 1, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}}
-  # voice: designed voices (VoxCPM2 ~5 GB, Whisper large-v3 ~3 GB, ECAPA) on the same image; needs the image with
-  # voxcpm in it (v9 and later).
-  voice: {image: mw-worker-talkcomfy, tag: v30, min_cuda: 12.8, cpu: 8, ram_gb: 32, disk_gb: 60, download_gb: 30,
-          env: {HF_HUB_DISABLE_XET: 1}}
   # tts: expressive voices and automatic casting (voice.speak.indextts, voice.speak.qwen3, voice.cast) on the talk
   # image with the IndexTTS-2.5 and Qwen3-TTS venvs and the judges (UTMOS22, wav2vec2 gender, speaker age). v21 is
   # NOT BUILT YET: build and smoke-test it (check_tts) before any of these jobs is queued. Weights on first use:
@@ -344,15 +338,15 @@ autoscale:
   # costs a 2-5 min boot plus a 2-6 min weights load. Workers built before this ignore it (rebuild needed).
   warm_hold:
     enabled: true
-    max_hold_minutes: {default: 15, image: 12, edit: 15, talk: 20, comfy: 20, dance: 20, voice: 15, tts: 15, music: 15,
+    max_hold_minutes: {default: 15, image: 12, edit: 15, talk: 20, comfy: 20, dance: 20, tts: 15, music: 15,
                        train: 0, finish: 0, video: 0}
     format_families:
       photo: [image, edit]
       carousel: [image, edit]
       story: [image, edit]
-      narrated_edit: [image, voice, tts]
+      narrated_edit: [image, tts]
       story_clip: [image, edit, comfy, dance]
-      talking_video: [image, edit, voice, tts, talk, comfy]
+      talking_video: [image, edit, tts, talk, comfy]
   # Work no pool has capacity for (deploy/autoscale.capacity_fallback): after report_after_minutes the owner is told
   # (owner event no_capacity, once a day per kind and pins); after fallback_after_minutes pinned work (not
   # hard_pin_batches) is widened to the kind's other pools with the same card. 2026-11-25: jobs pinned to vast_5090
@@ -900,54 +894,38 @@ generation:
     # every knob spent the post is dropped with the reason instead of rendering the same clip again.
     v2v_repair: {start_step_step: 1, start_step_floor: 0, same_score_tolerance: 0.005}
 
-# Designed voices (manyworlds/creator/voice_lab.py, worker/handlers/tts_voxcpm.py; owner 2026-11-22: a voice of
-# their own). VoxCPM2 (Apache-2.0) designs `candidates` voices from the bible's voice notes and appearance, each
-# reading anchor_text (~15 s); one is picked automatically, never by ear: word error rate within max_wer (the speech
-# gate's Whisper, run on the GPU worker), speaker-embedding cosine distance at least min_distance from every other
-# creator's voice (SpeechBrain ECAPA, Apache-2.0), then the lowest WER, then the highest pitch variance (least
-# monotone). Speech is generated piece by piece (long text degrades), `takes` per piece, the lowest WER kept, pieces
-# joined as set out under "Natural speech" below. cfg_value / inference_timesteps are VoxCPM2's README values.
-# optimize: torch.compile on load (slower start, untested here). pitch_hz: the pitch tracker's range.
+# Designed voices (manyworlds/creator/voice_lab.py, worker/handlers/tts_engines.py and speech_audio.py; owner
+# 2026-11-22: a voice of their own). Each creator's voice is cast automatically (casting below): references designed
+# from the bible, speaking the casting script in her engine, judged on the worker; at least min_distance (speaker-
+# embedding cosine distance, SpeechBrain ECAPA, Apache-2.0) from every other creator's voice. Lines are spoken in
+# that engine, `takes` per piece (an engine's own `takes` wins), the lowest WER kept (the speech gate's Whisper, run
+# on the GPU worker), pieces joined as set out under "Natural speech" below. pitch_hz: the pitch tracker's range.
+# VoxCPM2 was retired 2026-11-26 by the owner ("sounds bad"): Qwen3-TTS is the default engine (the owner prefers its
+# emotion and inflection), IndexTTS-2.5 the challenger. A creator whose stored voice VoxCPM2 made speaks with Kokoro
+# until she is cast again (voices.needs_recast).
 # Creators without a designed voice keep Kokoro (anchors.voice.engine: kokoro).
 voice:
-  engine: indextts           # the default for new casts, behind engine_gate below (the bake-off flips it)
-  model: openbmb/VoxCPM2
-  candidates: 4
+  engine: qwen3              # the default for new casts, behind engine_gate below (the bake-off can flip it)
   takes: 2
   anchor_text: "Okay, so this morning did not go to plan. I missed the early train, spilled half my coffee, and still
     made it on time somehow. Honestly, I think the trick is just not panicking. Anyway, here's what I learned."
   pause_s: 0.25
   max_wer: 0.1
   min_distance: 0.35
-  cfg_value: 2.0
-  inference_timesteps: 10
-  optimize: false
   embedding: speechbrain/spkrec-ecapa-voxceleb
   pitch_hz: [65, 500]
-  kinds: {design: voice.design, speak: voice.speak}
   # Natural speech (plan 2026-11-22-video-quality-autonomous item 7; research 2026-11-22-video-quality-wave2-3 §6).
   # synthesis: whole_line (one generation per line: the model's own intonation across the sentence) or clauses
   # (each line spoken clause by clause: commas, semicolons, colons, dashes, ellipses, sentence ends; never inside
   # numbers or after abbreviations; a clause under clause_min_words joins its neighbour). whole_line until the two
-  # are compared by ear and by WER in the breadth test (voice.speak payload `compare: true` makes both; clauses
-  # resets intonation at every comma). Either way pieces are joined with our silences, each drawn from its range
-  # with the job's seeded RNG
-  # (spontaneous English: clause pauses mostly under 0.5 s, sentence pauses mostly over). A line's explicit
+  # are compared by ear and by WER (clauses resets intonation at every comma). Either way pieces are joined with our
+  # silences, each drawn from its range with the job's seeded RNG (spontaneous English: clause pauses mostly under 0.5 s, sentence pauses mostly over). A line's explicit
   # pause_after_s replaces the gap after it; pause_s above is only the fallback for payloads without these keys.
   # Each take is trimmed of its own silence (frames more than threshold_db below its loudest, keeping pad_ms) and
   # faded over fade_ms at both edges (no clicks), so the gaps are exactly what we chose. Takes are scored per
   # clause; a clause whose every take is above max_wer x clause_retry_wer_factor gets one more round of seeds; a
   # line still above line_max_wer after assembly fails the job (retried with new seeds).
   synthesis: whole_line
-  # clone: ultimate (every line cloned from the reference clip AND its transcript, the delivery as the instruction:
-  # one timbre across lines) or controllable (a line with a delivery from the clip alone: the timbre drifted). The
-  # VoxCPM README shows the delivery parenthetical with controllable cloning; with ultimate cloning it is unmeasured:
-  # listen to a few directed lines in the breadth test.
-  clone: ultimate
-  # Measured 2026-11-24 (breadth rerun): with ultimate cloning the model READS the delivery aloud ("Musing, a little
-  # out of breath, walking home...", "A quiet, sincere, one thing..."): every directed line failed intelligibility.
-  # So deliveries go to the model only with controllable cloning (creator/voice_lab.speak_payload).
-  deliveries_spoken: {ultimate: false, controllable: true}
   clause_min_words: 2
   clause_gap_s: [0.18, 0.30]
   sentence_gap_s: [0.45, 0.70]
@@ -961,53 +939,24 @@ voice:
   # a 0.25 line through, and every talk take over it then failed the same way ("Two am. I take it back" heard as
   # "and take it back", breadth rerun 2026-11-24).
   gate_repairs: 2
-  # Seconds of silence added after the reference clip's last word before a line continues from it (ultimate cloning:
-  # the line starts where the prompt clip stops; worker tts_voxcpm.prompt_clip). A guess at why "Two am." was run
-  # into the clip's tail and lost: unmeasured, so off (0) until the bake-off compares it (needs the talkcomfy image
-  # rebuilt; an older worker ignores the key).
-  prompt_tail_silence_s: 0.0
-  # The delivery bank (research 2026-11-24-expressive-voice §2.2): ultimate cloning copies the prosody of the clip a
-  # line continues from, and reads a delivery written in the text aloud. So each creator gets a few short clips of
-  # her own designed voice, one per delivery, made once with controllable cloning (the delivery as the instruction,
-  # the base clip as the timbre reference; creator/voice_lab.bank, `mw voice bank`), each kept only if it says its
-  # text (max_wer), reads none of its instruction aloud, stays her voice (ECAPA cosine distance to her base clip at
-  # most max_distance, an estimate until the bake-off) and stays unlike every other creator (voice.min_distance).
-  # A line with a delivery then continues from the clip whose keywords its delivery names most (first named wins a
-  # tie), her base clip staying the timbre reference; no keyword, or no kept clip: the base clip, as before. The
-  # delivery never reaches the text. enabled: false makes every line use the base clip again.
-  delivery_bank:
-    enabled: true
-    takes: 3
-    max_wer: 0.1
-    max_distance: 0.3
-    # instruction words that do not count as read aloud when heard (a misheard filler is not a leak)
-    leak_ignore: [a, an, and, the, of, to, at, in, "on", but, then, little, bit]
-    deliveries:
-      excited:
-        instruction: "excited and bright, a little fast, smiling"
-        text: "No, wait, this actually worked! I did not think it would, and now I want to tell everyone."
-        keywords: [excited, upbeat, bright, energetic, enthusiastic, thrilled, hyped, fast, cheerful, happy, confident]
-      confiding:
-        instruction: "quiet and close, sincere, almost a whisper"
-        text: "Okay, can I tell you something? I have never said this on here, and I am still a bit nervous about it."
-        keywords: [quiet, soft, softly, sincere, confiding, whisper, whispering, gentle, intimate, serious, honest,
-                   vulnerable, slow]
-      deadpan:
-        instruction: "flat and dry, deadpan, tired"
-        text: "Great. The bus left without me again. Love that for me, honestly."
-        keywords: [flat, dry, deadpan, tired, sarcastic, unimpressed, matter of fact, bored, exhausted, wry]
-      amused:
-        instruction: "amused, laughing a little, playful"
-        text: "I tripped on the stairs in front of everyone, and then I just waved, like that was the plan."
-        keywords: [amused, laugh, laughing, playful, teasing, grin, grinning, smiling, cheeky, giggle, joking, fun]
-      storytelling:
-        instruction: "relaxed and casual, telling a story to a friend"
-        text: "So I get to the market really early, right, and the guy at the bread stall already knows my order."
-        keywords: [casual, story, storytelling, musing, relaxed, conversational, thoughtful, chatty, warm, easy]
-      questioning:
-        instruction: "curious, asking, rising at the end"
-        text: "So what would you have done? Would you have gone back for it, or just let it go?"
-        keywords: [curious, asking, question, questioning, wondering, puzzled, inviting, unsure]
+  # The named deliveries a line can ask for: a line's delivery ("flat, tired, then a small laugh") is matched to the
+  # name whose keywords it mentions most (first named wins a tie; voices.nearest_delivery), and the engine's own
+  # `emotions` table (voice.engines.<engine>.emotions) gives that name's control. The delivery never reaches the text.
+  # The pattern library's cards name these too (brain/patterns.py).
+  deliveries:
+    excited:
+      keywords: [excited, upbeat, bright, energetic, enthusiastic, thrilled, hyped, fast, cheerful, happy, confident]
+    confiding:
+      keywords: [quiet, soft, softly, sincere, confiding, whisper, whispering, gentle, intimate, serious, honest,
+                 vulnerable, slow]
+    deadpan:
+      keywords: [flat, dry, deadpan, tired, sarcastic, unimpressed, matter of fact, bored, exhausted, wry]
+    amused:
+      keywords: [amused, laugh, laughing, playful, teasing, grin, grinning, smiling, cheeky, giggle, joking, fun]
+    storytelling:
+      keywords: [casual, story, storytelling, musing, relaxed, conversational, thoughtful, chatty, warm, easy]
+    questioning:
+      keywords: [curious, asking, question, questioning, wondering, puzzled, inviting, unsure]
   # EXPERIMENTAL, off: a quiet synthetic in-breath (numpy pink noise, band-limited, Hann envelope; nothing sampled)
   # in the gap before every n-th sentence, ending lead_s before it; skipped when the gap is shorter than the breath.
   breaths: {enabled: false, every_n_sentences: 3, gain_db: -42, seconds: [0.12, 0.22], band_hz: [500, 4000],
@@ -1020,12 +969,10 @@ voice:
   # for new casts once the bake-off allows it: while engine_gate.requires_bakeoff holds and no bake-off decision
   # (decisions.kind = decision_kind) exists, new casts use until_bakeoff. `mw test breadth --plan voicebake` (the
   # owner's go, as for any GPU run) records the winner (manyworlds/voice_bakeoff.py); that row flips the default.
-  engine_gate: {requires_bakeoff: true, until_bakeoff: voxcpm, decision_kind: voice_engine}
+  # until_bakeoff: qwen3 (owner 2026-11-26: prefers Qwen3's emotion and inflection; IndexTTS-2.5 is the challenger,
+  # and the bake-off compares only these two).
+  engine_gate: {requires_bakeoff: true, until_bakeoff: qwen3, decision_kind: voice_engine}
   engines:
-    voxcpm:
-      kind: voice.speak
-      licence: "Apache-2.0 code and weights (OpenBMB/VoxCPM, openbmb/VoxCPM2; checked 2026-11-25)"
-      licence_ok: true
     # IndexTTS-2.5 (bilibili, tag v2.5.0, 2026-08-10; repo commit pinned in the Dockerfile). Licence: bilibili Model
     # Use License, code and weights: royalty-free commercial use; a separate licence above 100M MAU or RMB 1bn
     # revenue (§2.2); "You may not Use the bilibili indextts2 or any Derivative Work to improve any AI model" (§3.4c):
@@ -1076,7 +1023,7 @@ voice:
       licence: "Apache-2.0 code and weights"
       licence_ok: true
   # Casting (creator/voice_lab.cast, worker voice.cast): `candidates` references designed from the bible (Qwen3-TTS
-  # VoiceDesign; `voxcpm` designs with VoxCPM2 as before), each reading anchor_text (its WER at most max_ref_wer),
+  # VoiceDesign), each reading anchor_text (its WER at most max_ref_wer),
   # then speaking this script in the creator's engine, a delivery per line (the engine's emotion control). Judged by
   # voice.judge; the best qualifying candidate becomes her voice, stored by the producer (settle_casts) and at launch
   # (launch step `voice`, at_launch).
@@ -1099,7 +1046,7 @@ voice:
   # estimates from the authors' published ranges and our own clips' WER, to be tuned from the bake-off's numbers:
   # max_wer the intelligibility gate's 0.15; min_mos UTMOS22 (~3.0 is clearly synthetic, natural TTS scores 3.8-4.3);
   # min_f0_std_st flat speech moves under ~1 semitone; max_ref_distance ECAPA cosine distance to her reference
-  # (the delivery bank's 0.3 plus room for emotion). pace_wps: words per second of trimmed speech (calibration
+  # (0.3, a voice's own spread between deliveries, plus room for emotion). pace_wps: words per second of trimmed speech (calibration
   # 2026-11-24: real creators 3.7-4.3), per archetype, tolerance either side. Weights sum to 1.
   judge:
     max_wer: 0.15

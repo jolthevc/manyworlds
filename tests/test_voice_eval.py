@@ -105,18 +105,19 @@ def test_pace_bands_come_from_her_archetype(policy):
 
 
 def test_the_bakeoff_picks_quality_per_accepted_minute_cost(policy):
-    cfg = {**policy.get("voice", "bakeoff"), "incumbent": "voxcpm"}
+    cfg = {**policy.get("voice", "bakeoff"), "incumbent": policy.get("voice", "engine_gate", "until_bakeoff")}
+    assert cfg["incumbent"] == "qwen3"
     e = lambda c, usd, **kw: {"composite": c, "pass_share": 0.9, "accepted_minutes": 2.0, "usd": usd,  # noqa: E731
                               "gender_ok": True, "licence_ok": True, **kw}
     # better and modestly dearer wins: the cost exponent keeps price from outweighing a material gain
-    out = ve.bakeoff_winner({"voxcpm": e(0.60, 0.10), "indextts": e(0.75, 0.16), "qwen3": e(0.68, 0.12)}, cfg)
+    out = ve.bakeoff_winner({"qwen3": e(0.60, 0.10), "indextts": e(0.75, 0.16)}, cfg)
     assert out["winner"] == "indextts" and [r["engine"] for r in out["ranked"]][0] == "indextts"
     # a gain under min_gain keeps the incumbent
-    assert ve.bakeoff_winner({"voxcpm": e(0.70, 0.10), "indextts": e(0.71, 0.10)}, cfg)["winner"] == "voxcpm"
+    assert ve.bakeoff_winner({"qwen3": e(0.70, 0.10), "indextts": e(0.71, 0.10)}, cfg)["winner"] == "qwen3"
     # an uncleared licence, a gender miss or too few passing lines refuse an engine whatever it scores
-    out = ve.bakeoff_winner({"voxcpm": e(0.6, 0.1), "a": e(0.9, 0.1, licence_ok=False),
+    out = ve.bakeoff_winner({"qwen3": e(0.6, 0.1), "a": e(0.9, 0.1, licence_ok=False),
                              "b": e(0.9, 0.1, gender_ok=False), "c": e(0.9, 0.1, pass_share=0.2)}, cfg)
-    assert out["winner"] == "voxcpm" and set(out["refused"]) == {"a", "b", "c"}
+    assert out["winner"] == "qwen3" and set(out["refused"]) == {"a", "b", "c"}
     assert ve.bakeoff_winner({"a": e(0.9, 0.1, accepted_minutes=0)}, cfg)["winner"] is None
 
 

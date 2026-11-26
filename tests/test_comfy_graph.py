@@ -279,7 +279,7 @@ def _creator(conn):
 
 
 def _perf_voice(conn, text: str, uri: str, key: str = "shared:perf-compare:voice:0:0"):
-    j = queue.enqueue(conn, "voice.speak", {"lines": [{"text": t} for t in text.split("|")]}, batch="post-x",
+    j = queue.enqueue(conn, "voice.speak.qwen3", {"lines": [{"text": t} for t in text.split("|")]}, batch="post-x",
                       idempotency_key=key)
     conn.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (j,))
     conn.execute("INSERT INTO assets (job_id, kind, uri, sha256, bytes, meta) VALUES (%s, 'audio', %s, 'x', 1, %s)",
@@ -336,7 +336,7 @@ def test_a_reused_line_queues_the_graph_on_its_pool_and_voices_nothing(conn, pol
     p = job["payload"]
     assert p["graph"] == "echomimic_v3_flash" and p["graph_spec"] == pol.get("comfy_graphs", "echomimic_v3_flash")
     assert p["audio_uri"] == "s3://b/line0.wav" and p["params"]["width"] == 576
-    assert conn.execute("SELECT count(*) n FROM jobs WHERE kind = 'voice.speak' AND batch LIKE 'test-%'"
+    assert conn.execute("SELECT count(*) n FROM jobs WHERE kind LIKE 'voice.speak%' AND batch LIKE 'test-%'"
                         ).fetchone()["n"] == 0
 
 

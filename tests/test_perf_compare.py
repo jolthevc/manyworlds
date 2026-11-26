@@ -13,7 +13,7 @@ from manyworlds.production import common
 
 from test_breadth import _creator, _paused
 
-DESIGNED = {"voice": {"engine": "voxcpm", "ref_uri": "s3://b/voice.wav", "ref_text": "Okay so this happened."}}
+DESIGNED = {"voice": {"engine": "qwen3", "ref_uri": "s3://b/voice.wav", "ref_text": "Okay so this happened."}}
 ITEMS = ["perf_v1_infinitetalk", "perf_v2_longcat"]
 
 
@@ -61,8 +61,8 @@ def test_the_estimate_counts_shared_pieces_once(conn, policy):
         for j in i["estimate"]["jobs"]:
             jobs[i["id"]][j["kind"]] = jobs[i["id"]].get(j["kind"], 0) + j["n"]
     v1, v2 = (jobs[i] for i in ITEMS)
-    assert v1["image.zimage"] == 9 and "voice.speak" in v1
-    assert "image.zimage" not in v2 and "voice.speak" not in v2
+    assert v1["image.zimage"] == 9 and "voice.speak.qwen3" in v1
+    assert "image.zimage" not in v2 and "voice.speak.qwen3" not in v2
     assert not any("comfy.wan_animate2" in j for j in (v1, v2))
     assert out["estimated_usd"] > 0
 

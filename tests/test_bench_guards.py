@@ -8,5 +8,5 @@ from manyworlds import bench
 
 def test_a_voice_bench_needs_a_reference_voice(conn, policy):
     with pytest.raises(ValueError, match="ref_uri"):
-        bench.enqueue(conn, policy, "voice.speak", 1)
+        bench.enqueue(conn, policy, "voice.speak.qwen3", 1)
     assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 0

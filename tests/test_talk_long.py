@@ -374,13 +374,13 @@ def test_a_directed_cutaway_is_narrated_over_its_own_photo(conn, policy, store, 
     assert cut["payload"]["script"] == "They still haven't cleaned that window, by the way."
 
 
-# --- the designed voice: every spoken piece is a voice.speak job first -----------------------------------
-DESIGNED = {"engine": "voxcpm", "ref_uri": "s3://b/voice/ref.wav", "ref_text": "Okay, so this morning.", "voice": "bf_emma"}
+# --- the designed voice: every spoken piece is a voice.speak.<engine> job first --------------------------
+DESIGNED = {"engine": "qwen3", "ref_uri": "s3://b/voice/ref.wav", "ref_text": "Okay, so this morning.", "voice": "bf_emma"}
 
 
 def _voice_jobs(conn, pid, status=None):
     rows = conn.execute("SELECT id, status, payload, idempotency_key FROM jobs WHERE post_id = %s "
-                        "AND kind = 'voice.speak' ORDER BY idempotency_key", (pid,)).fetchall()
+                        "AND kind = 'voice.speak.qwen3' ORDER BY idempotency_key", (pid,)).fetchall()
     return [r for r in rows if status is None or r["status"] == status]
 
 
@@ -404,9 +404,10 @@ def test_a_designed_voice_speaks_each_take_before_its_talk_job(conn, policy, sto
     for job, shot in zip((first, second), (SHOP, DOORWAY)):
         p = job["payload"]
         assert p["ref_uri"] == DESIGNED["ref_uri"] and p["ref_text"] == DESIGNED["ref_text"]
-        # ultimate cloning (policy voice.deliveries_spoken): the delivery stays in the post, not in the model's text
-        assert p["lines"] == [{"text": line["text"]} for line in shot["performance"]["lines"]]
-        assert p["takes"] == policy.get("voice", "takes")
+        # the words only: a delivery is the engine's own control (or none), never part of the spoken text
+        assert [x["text"] for x in p["lines"]] == [line["text"] for line in shot["performance"]["lines"]]
+        assert not any("(" in x["text"] for x in p["lines"])
+        assert p["takes"] == policy.get("voice", "engines", "qwen3", "takes")
     # A failed voice job is retried like any other step, with a new seed.
     conn.execute("UPDATE jobs SET status = 'failed' WHERE id = %s", (first["id"],))
     production.advance(conn, policy, now=NOW, store=store)
@@ -435,7 +436,7 @@ def test_a_cutaway_uses_the_designed_voice_too(conn, policy, store, tmp_path, jo
                         (pid,)).fetchone()["n"] == 0
     jobs = _voice_jobs(conn, pid)
     assert len(jobs) == 3
-    assert jobs[1]["payload"]["lines"] == [{"text": "They still haven't cleaned that window, by the way."}]
+    assert [x["text"] for x in jobs[1]["payload"]["lines"]] == ["They still haven't cleaned that window, by the way."]
     spoken = [_spoken(conn, j) for j in jobs]
     production.advance(conn, policy, now=NOW, store=store)
     [cut] = conn.execute("SELECT payload FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchall()
@@ -449,7 +450,7 @@ def test_a_kokoro_creator_gets_no_voice_job(conn, policy, store, tmp_path, joine
     policy = _talking(policy)
     # No reference clip yet: still Kokoro (voices.engine), so production is exactly as before.
     pid, body = _directed_post(conn, policy, store, tmp_path, [SHOP, DOORWAY],
-                               voice={"engine": "voxcpm", "voice": "bf_emma"})
+                               voice={"engine": "qwen3", "voice": "bf_emma"})
     assert _voice_jobs(conn, pid) == []
     talks = _segment_jobs(conn, pid)
     assert len(talks) == 2 and all("audio_uri" not in t["payload"] for t in talks)
@@ -686,7 +687,7 @@ def _piece(conn, cid, kind="talk.infinitetalk", *, seconds=None, voice=None, own
     """A made piece of a talking video: its job (with its designed voice line, or its own Kokoro audio) and video."""
     payload = {}
     if voice is not None:
-        vj = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('voice.speak', 'done', %s, %s) "
+        vj = conn.execute("INSERT INTO jobs (kind, status, creator_id, payload) VALUES ('voice.speak.qwen3', 'done', %s, %s) "
                           "RETURNING id", (cid, Jsonb({}))).fetchone()["id"]
         payload["audio_uri"] = f"s3://b/voice/{vj}.wav"
         conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) "

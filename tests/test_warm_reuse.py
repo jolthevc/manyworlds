@@ -63,7 +63,7 @@ def test_no_warm_reuse_on_another_card_near_its_deadline_or_cap(conn, policy):
 
 
 def test_a_machine_without_the_kind_is_not_warm_for_it(conn, policy):
-    _warm(conn, "mw-voice-l40s-runpod-v", L40S, kinds=("voice.speak",))
+    _warm(conn, "mw-tts-l40s-runpod-v", L40S, kinds=("voice.speak.qwen3",))
     job = queue.enqueue(conn, "talk.infinitetalk", {}, batch="test-breadth-b", pools=[VOL])
     actions = autoscale.scale_up(conn, policy, providers(), now=NOW)
     assert not [a for a in actions if a.get("action") == "routed_to_warm"]

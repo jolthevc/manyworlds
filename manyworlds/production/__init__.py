@@ -12,8 +12,8 @@ A scene whose job failed, or whose images were all rejected, gets a new job with
 Narrated edits and story clips are made from the chosen photos once all are chosen; a story clip
 must also pass the video review gate (manyworlds.review.video), with review.video.max_repairs_per_post
 new seeds before the post is dropped.
-A creator with a designed voice (voices.engine: voxcpm) has every spoken piece (a talk take or segment, a cutaway,
-a narrated edit's script) voiced first by a voice.speak job; the piece's job starts once that is done, with its wav
+A creator with a designed voice (voices.engine: qwen3 or indextts) has every spoken piece (a talk take or segment, a
+cutaway, a narrated edit's script) voiced first by a voice.speak.<engine> job; the piece's job starts once that is done, with its wav
 as `audio_uri`. A Kokoro creator's pieces are voiced on their own workers, as before.
 Walk-and-talk (generation.talk_motion): a talking take whose shot moves (a walking or standing-up beat, a camera
 move) gets a silent motion clip first, from the take's photo on the story-clip path, alongside its voice line; the
@@ -48,7 +48,7 @@ The package (one module per stage; this module re-exports every name, so `from m
   steps       Step, advance_step and the job state readers (waiting | chosen | rejected | failed)
   scenes      the identity LoRA, scene image jobs, start, the scene Steps (repairs)
   takes       how a talking video's script is cut into takes and which shot, photo and words each has
-  voice       the designed voice: voice lines and their voice.speak Steps
+  voice       the designed voice: voice lines and their voice.speak.<engine> Steps
   motion      story clips, clip edits, dance / motion transfer, walk-and-talk motion clips and their joins
   talk        talk jobs, the hybrid's cutaways, long talk segments and their join
   followups   the one video made from the chosen photos (FOLLOW_UPS) and its voice and motion first

@@ -155,9 +155,9 @@ def voiced_windows(mono, sr: int, s: dict) -> list[tuple[int, int]]:
 
 
 def _embedder(model: str):
-    """SpeechBrain ECAPA-TDNN (the designed voices' embedder, handlers/tts_voxcpm._Ecapa): wav at any rate -> list."""
-    from . import tts_voxcpm
-    return tts_voxcpm._embedder({"embedding": model})
+    """SpeechBrain ECAPA-TDNN (the designed voices' embedder, handlers/speech_audio._Ecapa): wav at any rate -> list."""
+    from . import speech_audio
+    return speech_audio._embedder({"embedding": model})
 
 
 def embed_windows(mono, sr: int, s: dict, embed: Callable | None = None) -> list[list[float]]:
@@ -604,9 +604,9 @@ def train(payload: dict, ctx: JobContext) -> HandlerResult:
 
 def release() -> None:
     """Give the GPU back before another family's job: the embedder (the upstream models ran in subprocesses)."""
-    from . import tts_voxcpm
-    for key in [k for k in tts_voxcpm._state if isinstance(k, tuple) and k[0] == "embed"]:
-        tts_voxcpm._state.pop(key, None)
+    from . import speech_audio
+    for key in [k for k in speech_audio._state if isinstance(k, tuple) and k[0] == "embed"]:
+        speech_audio._state.pop(key, None)
     try:
         import torch
         if torch.cuda.is_available():

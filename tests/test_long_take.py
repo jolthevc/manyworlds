@@ -22,7 +22,7 @@ from manyworlds.worker.runner import JobContext, NonRetryable, OutputFile
 from test_breadth import _paused
 from test_review import BIBLE
 
-VOICE = {"engine": "voxcpm", "ref_uri": "s3://b/ref.wav", "ref_text": "Hi, it's me."}
+VOICE = {"engine": "qwen3", "ref_uri": "s3://b/ref.wav", "ref_text": "Hi, it's me."}
 
 
 def _creator(conn, *, designed=True):
@@ -218,7 +218,7 @@ def test_a_take_without_a_designed_voice_is_refused_with_the_reason(conn, policy
     assert {i.id for i in items} == {"talk_longcat16_90s", "talk_chain_90s"}
     kokoro = breadth._creator(conn, _creator(conn, designed=False)["handle"])
     reason = breadth.skip_reason(pol, items[0], kokoro)
-    assert "designed voice" in reason and "mw voice design" in reason
+    assert "designed voice" in reason and "mw voice cast" in reason
     designed = breadth._creator(conn, _creator(conn)["handle"])
     assert all(breadth.skip_reason(pol, i, designed) is None for i in items)
     longcat = next(i for i in items if i.take["kind"] == "talk.longcat")
@@ -252,7 +252,7 @@ def test_the_chain_shares_one_voice_line_and_continues_from_each_last_frame(conn
     cr = breadth._creator(conn, _creator(conn)["handle"])
     assert long_take.advance(conn, pol, **_args(pol, "r9", chain, cr))["state"] == "waiting"
     assert long_take.advance(conn, pol, **_args(pol, "r9", single, cr))["on"] == "voice"
-    voices = conn.execute("SELECT id, batch, payload, pools FROM jobs WHERE kind = 'voice.speak'").fetchall()
+    voices = conn.execute("SELECT id, batch, payload, pools FROM jobs WHERE kind = 'voice.speak.qwen3'").fetchall()
     assert len(voices) == 1 and voices[0]["batch"] == "test-breadth-r9-take-voice"   # one line for both takes
     assert voices[0]["payload"]["ref_uri"] == VOICE["ref_uri"] and len(voices[0]["payload"]["lines"]) > 5
     _finish(conn, voices[0]["id"], "audio", "s3://b/line.wav", {"seconds": 70.0, "lines": LINES})
@@ -286,7 +286,7 @@ def test_a_failed_voice_line_fails_the_take(conn, policy):
     _, items = breadth.load_plan(pol, "longtake")
     cr = breadth._creator(conn, _creator(conn)["handle"])
     long_take.advance(conn, pol, **_args(pol, "r8", items[0], cr))
-    conn.execute("UPDATE jobs SET status = 'failed', error = 'boom' WHERE kind = 'voice.speak'")
+    conn.execute("UPDATE jobs SET status = 'failed', error = 'boom' WHERE kind = 'voice.speak.qwen3'")
     out = long_take.advance(conn, pol, **_args(pol, "r8", items[0], cr))
     assert out["state"] == "failed" and "boom" in out["reason"]
 
@@ -334,13 +334,13 @@ def test_the_breadth_run_starts_with_the_shared_voice_line_only(conn, policy, st
     dry = breadth.run(conn, pol, "longtake", creator=handle, dry_run=True)
     assert not dry["skipped"] and _jobs(conn) == 0
     est = {i["id"]: i["estimate"]["jobs"] for i in dry["items"]}
-    assert [j["kind"] for j in est["talk_longcat16_90s"]] == ["voice.speak", "talk.longcat"]
+    assert [j["kind"] for j in est["talk_longcat16_90s"]] == ["voice.speak.qwen3", "talk.longcat"]
     assert [j["kind"] for j in est["talk_chain_90s"]].count("talk.infinitetalk") >= 3
     out = breadth.run(conn, pol, "longtake", creator=handle, store=store, once=True, sleep=lambda s: None)
     assert out["takes"] == {"talk_longcat16_90s": {"state": "waiting", "on": "voice"},
                             "talk_chain_90s": {"state": "waiting", "on": "voice"}}
     rows = conn.execute("SELECT kind, batch, priority FROM jobs").fetchall()
-    assert [r["kind"] for r in rows] == ["voice.speak"]
+    assert [r["kind"] for r in rows] == ["voice.speak.qwen3"]
     assert rows[0]["batch"] == f"{out['batch']}-take-voice" and rows[0]["priority"] == breadth.urgent_priority(
         breadth.test_policy(pol))
     assert not out["done"]

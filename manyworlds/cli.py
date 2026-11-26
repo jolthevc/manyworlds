@@ -289,26 +289,13 @@ def build_parser() -> argparse.ArgumentParser:
     tr2.add_argument("run")
     tr2.add_argument("--no-probe", action="store_true", help="skip downloading the final videos to read fps and size")
 
-    vo = sub.add_parser("voice", help="a creator's designed voice: design candidates, list them to listen, pick one")
+    vo = sub.add_parser("voice", help="a creator's designed voice: cast it automatically, its status and quality")
     vsub = vo.add_subparsers(dest="voice_cmd", required=True)
-    vd = vsub.add_parser("design", help="queue voice candidates from the bible (a test batch: runs while paused)")
-    vd.add_argument("creator")
-    vd.add_argument("--pools", help="comma-separated GPU pools to pin the job to, e.g. runpod_secure_l40s_vol")
-    vc = vsub.add_parser("candidates", help="the latest design job's candidates: scores and links to listen")
-    vc.add_argument("creator")
-    vp = vsub.add_parser("pick", help="choose the voice from the latest finished design (automatic, or --candidate N)")
-    vp.add_argument("creator")
-    vp.add_argument("--candidate", type=int, help="this candidate index instead of the automatic choice")
-    vb = vsub.add_parser("bank", help="queue the delivery bank: one clip of her voice per delivery (a test batch)")
-    vb.add_argument("creator")
-    vb.add_argument("--pools", help="comma-separated GPU pools to pin the jobs to")
-    vbp = vsub.add_parser("bank-pick", help="review the finished bank clips and keep those that pass")
-    vbp.add_argument("creator")
     vcast = vsub.add_parser("cast", help="cast her voice automatically: candidates from the bible, judged by the "
                                          "worker, the best stored once the job finishes (a test batch: runs while "
-                                         "paused; replaces design + pick)")
+                                         "paused)")
     vcast.add_argument("creator")
-    vcast.add_argument("--engine", help="indextts | qwen3 | voxcpm (default: the bake-off's winner, else policy)")
+    vcast.add_argument("--engine", help="qwen3 | indextts (default: the bake-off's winner, else policy)")
     vcast.add_argument("--pools", help="comma-separated GPU pools to pin the job to")
     vcast.add_argument("--attempt", type=int, default=0, help="a new attempt draws new candidates")
     vcs = vsub.add_parser("cast-status", help="her latest cast: each candidate's scores and which one was stored")
@@ -541,26 +528,8 @@ def _test(args, conn, pol) -> int:
     return 0
 
 
-def voice_candidates(conn, pol, creator_id, store=None) -> dict:
-    """The latest voice design job of a creator and its candidates (creator.voice_lab.candidates: WER, pitch variance,
-    distance from the nearest other creator's voice, whether each qualifies for the automatic pick, best first), which
-    one is the current voice, and a presigned link to listen to each."""
-    from .creator import voice_lab
-    job = conn.execute("SELECT id, status, batch FROM jobs WHERE creator_id = %s AND kind = %s "
-                       "ORDER BY created_at DESC LIMIT 1", (creator_id, voice_lab._kind(pol, "design"))).fetchone()
-    if not job:
-        return {"job": None, "candidates": [], "note": "no design job yet: mw voice design <creator>"}
-    current = (conn.execute("SELECT anchors FROM creators WHERE id = %s", (creator_id,)).fetchone()["anchors"]
-               or {}).get("voice") or {}
-    out = [{**c, "current": current.get("ref_uri") == c["uri"],
-            "url": store.public_url(c["uri"]) if store is not None else c["uri"]}
-           for c in voice_lab.candidates(conn, pol, job["id"])]
-    return {"job": str(job["id"]), "status": job["status"], "batch": job["batch"], "candidates": out,
-            **({} if job["status"] == "done" else {"note": f"the design job is {job['status']}: candidates once done"})}
-
-
 def _voice(args, conn, pol) -> int:
-    """`mw voice cast|cast-status|design|candidates|pick|bank|bank-pick <creator>`, `mw voice bakeoff-decide <run>`
+    """`mw voice cast|cast-status|quality <creator>`, `mw voice bakeoff-decide <run>`
     (manyworlds.creator.voice_lab, manyworlds.voice_bakeoff)."""
     from .creator import voice_lab
     if args.voice_cmd == "bakeoff-decide":
@@ -590,45 +559,7 @@ def _voice(args, conn, pol) -> int:
     if args.voice_cmd == "quality":
         _print(voice_lab.quality_stats(conn, pol, cid, days=args.days))
         return 0
-    if args.voice_cmd == "design":
-        handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
-        # a test batch, so it runs while operations are paused; urgent, so no machine waits to batch it
-        batch = f"test-voice-{handle}"
-        pools = [p.strip() for p in args.pools.split(",") if p.strip()] if args.pools else None
-        try:
-            job = voice_lab.design(conn, pol, cid, batch=batch, pools=pools)
-        except ValueError as e:
-            raise SystemExit(str(e)) from None
-        prio = int(pol.get("autoscale", "batch", "urgent_priority", default=1))
-        conn.execute("UPDATE jobs SET priority = greatest(priority, %s) WHERE id = %s AND status = 'queued'",
-                     (prio, job))
-        row = conn.execute("SELECT status, batch, pools FROM jobs WHERE id = %s", (job,)).fetchone()
-        _print({"job": str(job), **row, "next": f"mw voice candidates {handle}, then mw voice pick {handle}"})
-        return 0
-    if args.voice_cmd == "candidates":
-        _print(voice_candidates(conn, pol, cid, storage.from_url()))
-        return 0
-    if args.voice_cmd == "bank":     # the delivery bank: one clip per delivery, a test batch like design
-        handle = conn.execute("SELECT handle FROM creators WHERE id = %s", (cid,)).fetchone()["handle"]
-        pools = [p.strip() for p in args.pools.split(",") if p.strip()] if args.pools else None
-        try:
-            jobs = voice_lab.bank(conn, pol, cid, batch=f"test-voice-{handle}", pools=pools)
-        except ValueError as e:
-            raise SystemExit(str(e)) from None
-        _print({"jobs": {k: str(v) for k, v in jobs.items()}, "next": f"mw voice bank-pick {handle} once they finish"})
-        return 0
-    if args.voice_cmd == "bank-pick":
-        _print(voice_lab.pick_bank(conn, pol, cid))
-        return 0
-    job = conn.execute("SELECT id FROM jobs WHERE creator_id = %s AND kind = %s AND status = 'done' "
-                       "ORDER BY created_at DESC LIMIT 1", (cid, voice_lab._kind(pol, "design"))).fetchone()
-    if not job:
-        raise SystemExit("no finished voice design job: mw voice design <creator>, then wait for it")
-    try:   # --candidate: the owner's choice after listening (never one too close to another creator's voice)
-        _print(voice_lab.pick(conn, pol, cid, job["id"], candidate=args.candidate))
-    except ValueError as e:
-        raise SystemExit(str(e)) from None
-    return 0
+    raise SystemExit(f"unknown voice command {args.voice_cmd!r}")
 
 
 def _agency(args, conn, pol) -> int:

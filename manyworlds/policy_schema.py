@@ -7,14 +7,17 @@ typo fails validation instead. Free-form maps (per-family numbers, per-kind sett
 parameters handed to workers as they are) stay `dict`s.
 
 Adding a key to one of these sections means adding its field here too (tests/test_policy_schema.py fails until
-then). Sections not named here are not validated.
+then). Sections not named here are not validated, except for one rule on `voice`: its default engine and the
+bake-off gate's incumbent must be engines it defines, and never a retired one (VoxCPM2, retired 2026-11-26).
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+
+from .voices import RETIRED_ENGINES as RETIRED_VOICE_ENGINES   # VoxCPM2, retired by the owner 2026-11-26
 
 Num = float                     # ints are accepted where a float is declared
 NumMap = dict[str, float]       # {family|kind|provider: number}
@@ -495,6 +498,39 @@ class Generation(_Strict):
     borrowed_motion: bool = False
 
 
+# --- voice (not a hot section: only its engine choice is checked) ------------------------------------------------------
+
+
+
+class VoiceEngineGate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    until_bakeoff: str | None = None
+
+
+class Voice(BaseModel):
+    """Every other voice key passes as it is."""
+    model_config = ConfigDict(extra="allow")
+
+    engine: str | None = None
+    engine_gate: VoiceEngineGate | None = None
+    engines: dict[str, Free] = {}
+
+    @model_validator(mode="after")
+    def _engines_known(self):
+        for name, value in (("engine", self.engine),
+                            ("engine_gate.until_bakeoff", self.engine_gate.until_bakeoff if self.engine_gate else None)):
+            if value is None:
+                continue
+            if value in RETIRED_VOICE_ENGINES:
+                raise ValueError(f"{name}: {value!r} is a retired voice engine")
+            if value not in self.engines:
+                raise ValueError(f"{name}: {value!r} is not in voice.engines {sorted(self.engines)}")
+        retired = sorted(set(self.engines) & set(RETIRED_VOICE_ENGINES))
+        if retired:
+            raise ValueError(f"engines: {retired} retired, remove them")
+        return self
+
+
 # --- the policy ------------------------------------------------------------------------------------------------------
 
 class PolicySchema(BaseModel):
@@ -508,6 +544,7 @@ class PolicySchema(BaseModel):
     production: Production
     finishing: Finishing
     generation: Generation
+    voice: Voice | None = None
 
 
 def errors(body: Any) -> list[str]:

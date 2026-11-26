@@ -2,7 +2,7 @@
 
 When the volume filled on 2026-11-24 ("Disk quota exceeded"), downloads in progress left zero-byte files in
 HF_HOME/hub. huggingface_hub treats a present file as downloaded, so every later machine loaded an empty config.json
-and failed (VoxCPM2: JSONDecodeError at from_pretrained). `heal(repo)` deletes a repo's zero-byte blobs and the
+and failed (JSONDecodeError at from_pretrained). `heal(repo)` deletes a repo's zero-byte blobs and the
 snapshot links that point at them, so the next load fetches just those files again; `forget(repo)` drops the
 repo's whole cache entry, for a load that still fails on a corrupt file. Public model files only.
 

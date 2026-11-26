@@ -19,7 +19,7 @@ Outputs, always in this order (so the stored keys, assets/<creator>/<job>/00.wav
 Each output's meta: role, seconds, sample_rate, channels, instrumental; the instrumental of an instrumental song also
 carries its `library_entry` (manyworlds.sound catalogue schema), so a bed that passes joins the sound library
 (manyworlds.music.generated_beds). With `check`, the mix's meta has `check`: the vocal stem transcribed (Whisper, the
-designed voices' transcriber, handlers/tts_voxcpm._asr) against the sung words (manyworlds.speech.wer), the length
+designed voices' transcriber, handlers/speech_audio._asr) against the sung words (manyworlds.speech.wer), the length
 against the asked length, the mix's integrated loudness (pyloudnorm), and `passed`.
 
 Idempotent: the seed is the payload's, the graph and file names are fixed per job, a rerun overwrites the same keys.
@@ -179,11 +179,11 @@ def loudness_lufs(a, sr: int) -> float | None:
 
 
 def transcribe(vocals, sr: int, check: dict) -> str:
-    """The vocal stem as heard (Whisper, as the designed voices are scored: handlers/tts_voxcpm._asr)."""
-    from . import tts_voxcpm
+    """The vocal stem as heard (Whisper, as the designed voices are scored: handlers/speech_audio._asr)."""
+    from . import speech_audio
     mono = vocals.mean(axis=1) if getattr(vocals, "ndim", 1) == 2 else vocals
-    return tts_voxcpm._asr({"asr_model": check.get("asr_model", "openai/whisper-large-v3"),
-                            "language": check.get("language", "en")})(mono, sr)
+    return speech_audio._asr({"asr_model": check.get("asr_model", "openai/whisper-large-v3"),
+                              "language": check.get("language", "en")})(mono, sr)
 
 
 def judge(check: dict, *, asked_s: float, seconds: float, lufs: float | None, lyric_wer: float | None,

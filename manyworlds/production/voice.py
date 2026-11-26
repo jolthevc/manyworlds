@@ -1,4 +1,4 @@
-"""The designed voice: each spoken piece's voice.speak job (a Step of its own) and the lines it says."""
+"""The designed voice: each spoken piece's voice.speak.<engine> job (a Step of its own) and the lines it says."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from .common import _cfg, _seed, piece_key, unmarked
 from .steps import Step, _status, advance_step
 
 
-# The designed voice (creator/voice_lab.py, worker/handlers/tts_voxcpm.py): for a creator whose voice engine is
-# designed (voxcpm, indextts, qwen3), each spoken piece is a voice.speak job first (voice.speak.<engine> for the
-# newer engines), a Step of its own (retried like any other on failure; its
+# The designed voice (creator/voice_lab.py, worker/handlers/tts_engines.py): for a creator whose voice engine is
+# designed (qwen3, indextts), each spoken piece is a job of that engine's kind first (voice.speak.<engine>,
+# voice_lab.speak_kind), a Step of its own (retried like any other on failure; its
 # takes are chosen by WER on the worker), and the piece's job takes its wav. A rejected talk clip is remade over the
 # same voice line, so a line whose worker transcript already shows the intelligibility gate would reject it is voiced
 # again first (`gate_misses`, policy voice.gate_repairs).
@@ -29,7 +29,7 @@ def _sentence_lines(text: str) -> list[dict]:
 
 
 def voice_lines(body: dict, segment: int | None = None) -> list[dict]:
-    """What one take of a talking video says, line by line, for voice.speak: [{text, delivery, pause_after_s}].
+    """What one take of a talking video says, line by line, for voice.speak.*: [{text, delivery, pause_after_s}].
     A directed take (body.talk_shots) speaks its shots' lines with their deliveries and pauses, cut to this take's
     words (a take split for length gets only its part; a line cut in two keeps its pause on the second part).
     Otherwise, or when the take's words don't follow the shots' lines, one line per sentence, no delivery.

@@ -392,7 +392,7 @@ assert out.hidden_states is not None and len(out.hidden_states) == 3, out.hidden
         raise RuntimeError(f"lip-sync score failed: {s}")
     done.append("lip-sync score")
     done.append(_check_crops(d))
-    return done + check_longcat() + check_voice() + check_tts() + check_music()
+    return done + check_longcat() + check_speech() + check_tts() + check_music()
 
 
 # What the LongCat environment must import: the avatar script's own imports (pipeline, INT8 loader, audio encoders,
@@ -587,74 +587,40 @@ def check_music_voice() -> list[str]:
     return done
 
 
-def check_voice() -> list[str]:
-    """Designed voices on the talk image (handlers/tts_voxcpm.py): VoxCPM2 and its documented arguments, the
-    transcriber and speaker embedding importable, transformers still on the wrapper's pin, the pitch tracker and the
-    line joining run for real on the CPU. A real design run needs a GPU and the model download: on a build machine
-    without one it is skipped and said so."""
-    import inspect
-
+def check_speech() -> list[str]:
+    """The designed voices' shared speech tooling on the talk image (handlers/speech_audio.py): the transcriber and
+    speaker embedding importable, transformers still on the wrapper's pin, the pitch tracker running for real on the
+    CPU, and lines spoken by a stand-in engine joined with their pauses and timed (planning, takes, joining). The
+    engines themselves are check_tts's (VoxCPM2, which this check used to load, was retired 2026-11-26)."""
     import numpy as np
     import transformers
 
-    _imports(["voxcpm", "speechbrain.inference.speaker", "librosa", "einops"])
-    from voxcpm import VoxCPM
-    from .runner import JobContext, handlers_for
-    from .handlers import tts_voxcpm as tts
-    handlers_for(["voice.design", "voice.speak"])
-    done = ["imports, handlers: voice.design, voice.speak"]
+    _imports(["speechbrain.inference.speaker", "librosa", "transformers"])
+    from .handlers import speech_audio as sa
+    done = ["imports: speechbrain, librosa"]
     if transformers.__version__ != "4.57.6":
-        raise RuntimeError(f"voxcpm moved transformers to {transformers.__version__} (the wrapper needs 4.57.6)")
-    args = set(inspect.signature(VoxCPM._generate).parameters)
-    need = {"text", "prompt_wav_path", "prompt_text", "reference_wav_path", "cfg_value", "inference_timesteps"}
-    if need - args:
-        raise RuntimeError(f"VoxCPM.generate lacks {sorted(need - args)}")
-    done.append("VoxCPM generate() takes the documented arguments")
+        raise RuntimeError(f"transformers moved to {transformers.__version__} (the wrapper needs 4.57.6)")
 
     sr = 48000
     t = np.arange(sr) / sr
     tone = (0.3 * np.sin(2 * np.pi * (180 + 40 * np.sin(2 * np.pi * 2 * t)) * t)).astype(np.float32)
-    if not tts._pitch_variance(tone, sr, {"pitch_hz": [65, 500]}) > 0:
+    if not sa._pitch_variance(tone, sr, {"pitch_hz": [65, 500]}) > 0:
         raise RuntimeError("pitch tracker found no pitch movement in a vibrato tone")
     done.append("pitch variance")
 
-    class Fake:   # the model's place, so joining, timings and the 48 kHz file are checked without weights
-        sample_rate = sr
-
-        def generate(self, *, seed, text, **kw):
-            return tone[: sr // 2]
-
-    d = Path(tempfile.mkdtemp())
-    ref = tts.write_wav(d / "ref.wav", tone, sr)
-
-    class Store:
-        def get_file(self, uri, local):
-            local.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ref, local)
-            return local
-
-    saved = (tts._tts, tts._asr)
-    tts._tts, tts._asr = (lambda params: Fake()), (lambda params: (lambda wav, rate: "hello there"))
-    try:
-        res = tts.speak({"ref_uri": "x://ref.wav", "ref_text": "hello there", "takes": 2, "seed": 1,
-                         "lines": [{"text": "hello there", "delivery": "softly", "pause_after_s": 0.5},
-                                   {"text": "hello there"}]}, JobContext(job=None, workdir=d, store=Store()))
-    finally:
-        tts._tts, tts._asr = saved
-    meta = res.outputs[0].meta
+    p = sa.validate_speak({"ref_uri": "x://ref.wav", "ref_text": "hello there", "takes": 2, "seed": 1,
+                           "lines": [{"text": "hello there", "delivery": "softly", "pause_after_s": 0.5},
+                                     {"text": "hello there"}]})
+    out = sa._voice_lines(p, p["speech"], lambda wav, rate: "hello there", sr, 1, strict=True,
+                          generate=lambda unit, line, seed, strength: tone[: sr // 2])
+    meta = sa._audio_meta(out, sr, "whole_line")
     if meta["sample_rate"] != sr or meta["seconds"] != 1.5 or [line["wer"] for line in meta["lines"]] != [0.0, 0.0]:
         raise RuntimeError(f"voice lines joined wrongly: {meta}")
-    done.append("voice lines joined with pauses at 48 kHz")
-
-    import torch
-    if not torch.cuda.is_available():
-        done.append("VoxCPM2 design run skipped: no GPU here (the first voice.design job is the real test)")
-        return done
-    model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False, optimize=False)
-    wav = model.generate(text="(A calm adult voice)Hi.", cfg_value=2.0, inference_timesteps=4)
-    if len(wav) < model.tts_model.sample_rate // 10:
-        raise RuntimeError("VoxCPM2 made no audio")
-    done.append(f"VoxCPM2 design run ({len(wav) / model.tts_model.sample_rate:.1f} s)")
+    d = Path(tempfile.mkdtemp())
+    back, rate = sa.read_wav(sa.write_wav(d / "speech.wav", out["audio"], sr))
+    if rate != sr or len(back) != len(out["audio"]):
+        raise RuntimeError("the joined wav did not read back")
+    done.append("voice lines joined with pauses at 48 kHz, written and read back")
     return done
 
 
@@ -694,7 +660,7 @@ def check_tts() -> list[str]:
     import torch
 
     from .handlers import tts_engines as te
-    from .handlers import tts_voxcpm as vox
+    from .handlers import speech_audio as sa
     from .handlers import voice_judge as vj
     from .runner import JobContext, handlers_for
     handlers_for(["voice.speak.indextts", "voice.speak.qwen3", "voice.cast"])
@@ -738,11 +704,11 @@ def check_tts() -> list[str]:
             return tone
 
         def design(self, *, description, text, seed, out):
-            return vox.write_wav(out, tone, sr)
+            return sa.write_wav(out, tone, sr)
 
     fake = FakeEngine()
     d = Path(tempfile.mkdtemp())
-    ref = vox.write_wav(d / "ref.wav", tone, sr)
+    ref = sa.write_wav(d / "ref.wav", tone, sr)
 
     class Store:
         def get_file(self, uri, local):
@@ -750,11 +716,11 @@ def check_tts() -> list[str]:
             shutil.copyfile(ref, local)
             return local
 
-    saved = (te._engine, vox._asr, vox._embedder, vj._mos, vj._gender, vj._age, dict(te.DESIGNERS))
+    saved = (te._engine, sa._asr, sa._embedder, vj._mos, vj._gender, vj._age, dict(te.DESIGNERS))
     te._engine = lambda name, params: fake
     te.DESIGNERS["qwen3_design"] = lambda params: fake
-    vox._asr = lambda params: (lambda wav, rate: "hello there friend")
-    vox._embedder = lambda params: (lambda wav, rate: [1.0, 0.0, 0.0])
+    sa._asr = lambda params: (lambda wav, rate: "hello there friend")
+    sa._embedder = lambda params: (lambda wav, rate: [1.0, 0.0, 0.0])
     vj._gender = lambda params: (lambda wav, rate: {"female": 0.9, "male": 0.1})
     vj._age = lambda params: (lambda wav, rate: {"20s": 0.8, "30s": 0.2})
     params = {"line_check": {"enabled": True, "repairs": 1, "strength_steps": [1.25], "max_wer": 0.15,
@@ -771,7 +737,7 @@ def check_tts() -> list[str]:
                         "script": [{"name": "neutral", "text": "hello there friend"}], "params": params},
                        JobContext(job=None, workdir=d, store=Store()))
     finally:
-        te._engine, vox._asr, vox._embedder, vj._mos, vj._gender, vj._age = saved[:6]
+        te._engine, sa._asr, sa._embedder, vj._mos, vj._gender, vj._age = saved[:6]
         te.DESIGNERS.clear()
         te.DESIGNERS.update(saved[6])
     line = res.outputs[0].meta["lines"][0]
@@ -788,7 +754,7 @@ def check_tts() -> list[str]:
 
 
 CHECKS = {"image": check_image, "train": check_train, "talk": check_talk, "talkcomfy": check_talkcomfy,
-          "voice": check_voice, "tts": check_tts, "music": check_music}
+          "speech": check_speech, "tts": check_tts, "music": check_music}
 
 
 def main(argv=None) -> int:

@@ -1,6 +1,7 @@
-"""Designed voices on the worker (worker/handlers/tts_voxcpm.py), with the model, transcriber and embedder replaced
-by fakes: payload checks, takes scored by WER against the words only, lines joined with their pauses at 48 kHz, and
-natural speech (clauses, seeded gaps, trim and fades, per-clause retries, the experimental breaths and fillers)."""
+"""The designed voices' shared speech tooling (worker/handlers/speech_audio.py), driven through an engine's speak
+handler (handlers/tts_engines.py) with the engine and transcriber replaced by fakes: payload checks, takes scored by
+WER against the words only, lines joined with their pauses, and natural speech (clauses, seeded gaps, trim and fades,
+per-clause retries, the experimental breaths and fillers). VoxCPM2's own tests went with it (retired 2026-11-26)."""
 
 from __future__ import annotations
 
@@ -12,32 +13,33 @@ import pytest
 from manyworlds import voices
 from manyworlds.speech import wer
 from manyworlds.storage import LocalStore
-from manyworlds.worker.handlers import tts_voxcpm as tts
+from manyworlds.worker.handlers import speech_audio as tts
+from manyworlds.worker.handlers import tts_engines as te
 from manyworlds.worker.runner import JobContext, NonRetryable
 
 SR = 48000
 
 
 class Fake:
-    """VoxCPM2's place: half a second of audio per call; hears back what it was asked to say (without the
-    instruction) unless given transcripts to return in order."""
+    """An engine's place: half a second of audio per call; hears back the words it was asked to say unless given
+    transcripts to return in order."""
     sample_rate = SR
 
     def __init__(self, transcripts=None):
         self.calls, self.transcripts = [], list(transcripts or [])
 
-    def generate(self, *, seed, text, **kw):
-        self.calls.append({"seed": seed, "text": text, **kw})
+    def speak(self, *, text, ref, ref_text, emotion, strength, seed, out):
+        self.calls.append({"seed": seed, "text": text, "emotion": emotion, "strength": strength})
         return np.full(SR // 2, 0.1, dtype=np.float32)
 
     def hear(self, wav, sr):
-        return self.transcripts.pop(0) if self.transcripts else voices.strip_delivery(self.calls[-1]["text"])
+        return self.transcripts.pop(0) if self.transcripts else self.calls[-1]["text"]
 
 
 @pytest.fixture()
 def fake(monkeypatch):
     f = Fake()
-    monkeypatch.setattr(tts, "_tts", lambda params: f)
+    monkeypatch.setattr(te, "_engine", lambda name, params: f)
     monkeypatch.setattr(tts, "_asr", lambda params: f.hear)
     monkeypatch.setattr(tts, "_embedder", lambda params: (lambda wav, sr: [1.0, 0.0, float(len(f.calls))]))
     monkeypatch.setattr(tts, "_pitch_variance", lambda wav, sr, params: 0.1 * len(f.calls))
@@ -57,24 +59,9 @@ def _ref(ctx, tmp_path) -> str:
     return ctx.store.put_file(path, "voices/ref.wav").uri
 
 
-def _speak(ctx, tmp_path, lines, **kw):
-    return tts.speak({"ref_uri": _ref(ctx, tmp_path), "ref_text": "Okay so this happened.", "lines": lines,
-                      "seed": 7, **kw}, ctx)
-
-
-@pytest.mark.parametrize("bad", [
-    {"text": "hi there", "n": 2},                                   # no description
-    {"description": "warm", "text": "   ", "n": 2},                 # nothing to say
-    {"description": "warm", "text": "(softly)", "n": 2},            # only an instruction
-    {"description": "warm", "text": "hi", "n": 0},
-    {"description": "warm", "text": "hi", "n": "4"},
-    {"description": "warm", "text": "hi", "n": True},
-    {"description": "warm", "text": "hi", "n": 2, "seed": "x"},
-    {"description": "warm", "text": "hi", "n": 2, "params": ["model"]},
-])
-def test_a_bad_design_payload_is_not_retried(bad):
-    with pytest.raises(NonRetryable):
-        tts.validate_design(bad)
+def _speak(ctx, tmp_path, lines, params=None, **kw):
+    return te.speak_qwen3({"ref_uri": _ref(ctx, tmp_path), "ref_text": "Okay so this happened.", "lines": lines,
+                           "seed": 7, "params": {"engines": {"qwen3": {}}, **(params or {})}, **kw}, ctx)
 
 
 @pytest.mark.parametrize("bad", [
@@ -86,58 +73,24 @@ def test_a_bad_design_payload_is_not_retried(bad):
     {"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi", "pause_after_s": -1}]},
     {"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi", "delivery": 3}]},
     {"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}], "takes": 0},
+    {"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}], "embed": "yes"},
 ])
 def test_a_bad_speak_payload_is_not_retried(bad):
     with pytest.raises(NonRetryable):
         tts.validate_speak(bad)
 
 
-def test_design_makes_n_scored_candidates_in_the_described_voice(fake, ctx):
-    res = tts.design({"description": "warm, low, a little husky", "text": "Okay so this happened.", "n": 3,
-                      "seed": 10}, ctx)
-    assert [o.meta["seed"] for o in res.outputs] == [10, 11, 12]
-    assert fake.calls[0]["text"] == "(warm, low, a little husky)Okay so this happened."
-    assert all(o.kind == "audio" and o.meta["wer"] == 0.0 and o.meta["embedding"] for o in res.outputs)
-    assert [o.meta["pitch_var"] for o in res.outputs] == pytest.approx([0.1, 0.2, 0.3])
-    with wave.open(str(res.outputs[0].path)) as w:
-        assert w.getframerate() == SR and w.getnframes() == SR // 2
-    assert res.recipe["engine"] == "voxcpm" and res.meta["output_seconds"] == 1.5
-
-
 def test_delivery_is_not_in_transcript_check(fake, ctx, tmp_path):
-    """Review Focus 5: the delivery instruction goes to the model, never into the words the transcript is checked
-    against (it is not spoken, so counting it would fail every directed line)."""
+    """Review Focus 5: the delivery never reaches the words the engine speaks or the transcript is checked against
+    (it is not spoken, so counting it would fail every directed line); the line keeps it in its meta."""
     res = _speak(ctx, tmp_path, [{"text": "I knew it.", "delivery": "whispering, amused"},
                                  {"text": "(sighs) Fine."}])                   # an inline instruction counts too
-    assert [c["text"] for c in fake.calls] == ["(whispering, amused)I knew it.", "(sighs)Fine."]
+    assert [c["text"] for c in fake.calls] == ["I knew it.", "Fine."]
     lines = res.outputs[0].meta["lines"]
     assert [line["text"] for line in lines] == ["I knew it.", "Fine."]
     assert [line["wer"] for line in lines] == [0.0, 0.0]
     assert [line["delivery"] for line in lines] == ["whispering, amused", "sighs"]
     assert wer("(whispering, amused) I knew it.", "I knew it") == 0.4   # what checking the raw text would score
-
-
-def test_every_line_is_cloned_with_the_reference_and_its_transcript(fake, ctx, tmp_path):
-    """Voice consistency (2026-11-23): a line with a delivery used to be cloned from the clip alone, so its timbre
-    drifted from the lines without one. Now every line gets the clip and its transcript; the delivery stays the
-    instruction in the text."""
-    _speak(ctx, tmp_path, [{"text": "Hi.", "delivery": "dry"}, {"text": "Bye."}])
-    for call in fake.calls:
-        assert call["prompt_text"] == "Okay so this happened."
-        assert call["prompt_wav_path"] == call["reference_wav_path"]
-        assert call["prompt_wav_path"].endswith("reference.wav")
-    assert [c["text"] for c in fake.calls] == ["(dry)Hi.", "Bye."]
-
-
-def test_controllable_cloning_is_still_available(fake, ctx, tmp_path):
-    res = _speak(ctx, tmp_path, [{"text": "Hi.", "delivery": "dry"}, {"text": "Bye."}],
-                 params={"clone": "controllable"})
-    assert "prompt_text" not in fake.calls[0] and fake.calls[0]["reference_wav_path"].endswith("reference.wav")
-    assert fake.calls[1]["prompt_text"] == "Okay so this happened."     # without a delivery: the transcript too
-    assert res.recipe["clone"] == "controllable"
-    with pytest.raises(NonRetryable):
-        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}],
-                            "params": {"clone": "sometimes"}})
 
 
 def test_the_take_closest_to_the_line_is_kept(fake, ctx, tmp_path):
@@ -161,8 +114,6 @@ def test_lines_are_joined_with_their_pauses_into_one_48khz_file(fake, ctx, tmp_p
 def test_instructions_are_split_from_the_words():
     assert voices.split_instruction("(softly) (amused) I knew it.") == ("softly, amused", "I knew it.")
     assert voices.split_instruction("No instruction (here).") == ("", "No instruction (here).")
-    assert voices.with_instruction("slightly faster (cheerful)", "(old) Go.") == "(slightly faster, cheerful)Go."
-    assert voices.with_instruction("", "Go.") == "Go."
 
 
 # --- natural speech (plan 2026-11-22-video-quality-autonomous item 7) --------------------------------------------
@@ -266,7 +217,7 @@ def test_clause_timings_are_monotonic_and_lines_cover_their_clauses(fake, ctx, t
 
 def test_each_clause_is_scored_against_its_words_without_the_delivery(fake, ctx, tmp_path):
     res = _speak(ctx, tmp_path, [{"text": "I knew it, (laughing) really.", "delivery": "whispering"}], params=NATURAL)
-    assert [c["text"] for c in fake.calls] == ["(whispering)I knew it,", "(whispering, laughing)really."]
+    assert [c["text"] for c in fake.calls] == ["I knew it,", "really."]
     clauses = res.outputs[0].meta["clauses"]
     assert [c["text"] for c in clauses] == ["I knew it,", "really."]
     assert [c["wer"] for c in clauses] == [0.0, 0.0] and res.outputs[0].meta["lines"][0]["wer"] == 0.0
@@ -297,7 +248,7 @@ def test_a_later_attempt_draws_new_seeds(fake, ctx, tmp_path):
 def test_without_disfluency_the_scripted_words_are_spoken_untouched(fake, ctx, tmp_path):
     lines = [{"text": "So, like, I went and it rained."}, {"text": "Um, okay."}]
     res = _speak(ctx, tmp_path, lines, params=NATURAL)
-    spoken = " ".join(voices.strip_delivery(c["text"]) for c in fake.calls)
+    spoken = " ".join(c["text"] for c in fake.calls)
     assert spoken.split() == "So, like, I went and it rained. Um, okay.".split()
     assert res.outputs[0].meta["fillers"] == [] and all(c["filler"] is None for c in res.outputs[0].meta["clauses"])
 
@@ -376,7 +327,7 @@ def test_fade_ramps_both_edges_without_changing_length():
     assert len(tts.fade(np.ones(5, dtype=np.float32), sr, 50)) == 5     # a fade never overlaps itself
 
 
-# --- whole line vs clauses (2026-11-23): whole lines by default, both on request for the comparison --------------
+# --- whole line vs clauses (2026-11-23): whole lines by default ------------------------------------------------
 WHOLE = {**{k: v for k, v in NATURAL.items() if k != "split_clauses"}, "synthesis": "whole_line"}
 
 
@@ -391,27 +342,6 @@ def test_whole_line_synthesis_speaks_each_line_in_one_piece(fake, ctx, tmp_path)
         tts.speech_config({"synthesis": "words"})
 
 
-def test_compare_makes_both_syntheses_from_the_same_seeds(fake, ctx, tmp_path):
-    res = _speak(ctx, tmp_path, [{"text": "Okay, so I went."}], params=WHOLE, compare=True)
-    main, alt = res.outputs
-    assert (main.meta["synthesis"], alt.meta["synthesis"]) == ("whole_line", "clauses")
-    assert main.path.name == "speech.wav" and alt.path.name == "speech_clauses.wav"   # production reads the first
-    assert alt.meta["compare_of"] == 0 and alt.meta["failed_lines"] == []
-    assert [(c["output"], c["synthesis"]) for c in main.meta["compare"]] == [(0, "whole_line"), (1, "clauses")]
-    assert [c["text"] for c in fake.calls] == ["Okay, so I went.", "Okay,", "so I went."]
-    assert fake.calls[0]["seed"] == fake.calls[1]["seed"] == 7
-    assert res.recipe["compare"] is True
-    assert res.meta["output_seconds"] == pytest.approx(main.meta["seconds"] + alt.meta["seconds"], abs=0.01)
-    with pytest.raises(NonRetryable):
-        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}], "compare": "yes"})
-
-
-def test_a_garbled_comparison_never_fails_the_job(fake, ctx, tmp_path):
-    fake.transcripts = ["Okay so I went", "nothing", "alike"]
-    res = _speak(ctx, tmp_path, [{"text": "Okay, so I went."}], params={**WHOLE, "line_max_wer": 0.25}, compare=True)
-    assert res.outputs[0].meta["lines"][0]["wer"] == 0.0 and res.outputs[1].meta["failed_lines"] == [0]
-
-
 # --- lost first words (breadth rerun 2026-11-24: "Two am. I take it back" heard as "and take it back") -------------
 def test_trim_keeps_a_soft_first_word():
     """The trim is not what ate "Two am.": it cuts only frames more than threshold_db under the loudest, and a tired,
@@ -420,55 +350,3 @@ def test_trim_keeps_a_soft_first_word():
     clip = np.concatenate([np.zeros(SR // 10, dtype=np.float32), soft, np.zeros(SR // 5, dtype=np.float32), loud])
     cut = tts.trim(clip, SR, threshold_db=-40, frame_ms=10, pad_ms=30)
     assert len(cut) >= len(soft) + SR // 5 + len(loud)
-
-
-def test_a_prompt_tail_gives_the_line_a_boundary_to_start_from(fake, ctx, tmp_path):
-    _speak(ctx, tmp_path, [{"text": "Two am. I take it back."}], params={"prompt_tail_silence_s": 0.3})
-    call = fake.calls[0]
-    assert call["prompt_wav_path"] != call["reference_wav_path"] and call["reference_wav_path"].endswith("reference.wav")
-    padded, sr = tts.read_wav(tts.Path(call["prompt_wav_path"]))
-    original, _ = tts.read_wav(tts.Path(call["reference_wav_path"]))
-    assert sr == SR and len(padded) == len(original) + int(0.3 * SR) and not padded[len(original):].any()
-    fake.calls.clear()
-    _speak(ctx, tmp_path, [{"text": "Two am."}])                    # off by default: the reference itself
-    assert fake.calls[0]["prompt_wav_path"] == fake.calls[0]["reference_wav_path"]
-    with pytest.raises(NonRetryable):
-        tts.speech_config({"prompt_tail_silence_s": -1})
-
-
-# --- the delivery bank: a line continues from its delivery's clip, her base clip the timbre reference ------------
-def test_a_bank_line_continues_from_its_clip_and_keeps_the_base_timbre(fake, ctx, tmp_path):
-    clip = tts.write_wav(tmp_path / "deadpan.wav", np.zeros(SR // 2, dtype=np.float32), SR)
-    bank_uri = ctx.store.put_file(clip, "voices/bank-deadpan.wav").uri
-    res = _speak(ctx, tmp_path, [
-        {"text": "Two am. I take it back.", "bank": "deadpan",
-         "prompt": {"ref_uri": bank_uri, "ref_text": "Great. Love that for me."}},
-        {"text": "Bye."}])
-    bank_call, plain = fake.calls
-    assert bank_call["prompt_text"] == "Great. Love that for me." and "prompt_" in bank_call["prompt_wav_path"]
-    assert bank_call["reference_wav_path"].endswith("reference.wav")            # timbre: her base clip
-    assert bank_call["text"] == "Two am. I take it back."                       # nothing to read aloud
-    assert plain["prompt_text"] == "Okay so this happened." and plain["prompt_wav_path"].endswith("reference.wav")
-    assert [line["bank"] for line in res.outputs[0].meta["lines"]] == ["deadpan", None]
-    assert "embedding" not in res.outputs[0].meta
-
-
-def test_a_bank_clip_job_reports_its_speaker_embedding(fake, ctx, tmp_path):
-    res = _speak(ctx, tmp_path, [{"text": "No, wait, this worked!", "delivery": "excited"}], embed=True,
-                 params={"clone": "controllable"})
-    meta = res.outputs[0].meta
-    assert meta["embedding"] and "pitch_var" in meta
-    assert fake.calls[0]["text"] == "(excited)No, wait, this worked!" and "prompt_text" not in fake.calls[0]
-
-
-@pytest.mark.parametrize("line", [
-    {"text": "hi", "prompt": "s3://b/c.wav"},
-    {"text": "hi", "prompt": {"ref_uri": "s3://b/c.wav"}},
-    {"text": "hi", "prompt": {"ref_text": "x"}},
-    {"text": "hi", "bank": 3},
-])
-def test_a_bad_bank_prompt_is_not_retried(line):
-    with pytest.raises(NonRetryable):
-        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [line]})
-    with pytest.raises(NonRetryable):
-        tts.validate_speak({"ref_uri": "s3://b/r.wav", "ref_text": "x", "lines": [{"text": "hi"}], "embed": "yes"})

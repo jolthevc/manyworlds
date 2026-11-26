@@ -66,7 +66,7 @@ def test_a_designed_voice_reads_the_edit_script_first(conn, policy, store, tmp_p
     cid = creator(conn)
     real_refs(conn, store, tmp_path, cid)
     conn.execute("UPDATE creators SET anchors = anchors || %s WHERE id = %s",
-                 (Jsonb({"voice": {"engine": "voxcpm", "ref_uri": "s3://b/voice/ref.wav", "ref_text": "Okay.",
+                 (Jsonb({"voice": {"engine": "qwen3", "ref_uri": "s3://b/voice/ref.wav", "ref_text": "Okay.",
                                    "voice": "bf_emma"}}), cid))
     planner.plan_period(conn, policy, PlanStub([post(0, "narrated_edit", ["a", "b", "c"], script="Soup. More soup!",
                                                      on_screen_text="soup")]),
@@ -76,7 +76,7 @@ def test_a_designed_voice_reads_the_edit_script_first(conn, policy, store, tmp_p
     finish(conn, store, tmp_path, policy, lambda: JudgeStub([ok()] * 4), pid)
     production.advance(conn, policy, now=NOW)
     assert conn.execute("SELECT 1 FROM jobs WHERE post_id = %s AND kind = 'image.narrated'", (pid,)).fetchone() is None
-    [voice] = conn.execute("SELECT id, payload, idempotency_key FROM jobs WHERE post_id = %s AND kind = 'voice.speak'",
+    [voice] = conn.execute("SELECT id, payload, idempotency_key FROM jobs WHERE post_id = %s AND kind = 'voice.speak.qwen3'",
                            (pid,)).fetchall()
     assert voice["idempotency_key"] == f"post:{pid}:voice:0"
     assert voice["payload"]["lines"] == [{"text": "Soup."}, {"text": "More soup!"}]
