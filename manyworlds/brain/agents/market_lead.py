@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from ... import queue
 from ...worker.runner import NonRetryable
-from .. import evidence, predictions, proposals
+from .. import evidence, hypotheses, predictions, proposals
 from ..agent import AgentContext, record_decision, register, remember
 from .talent_manager import latest_brief
 
@@ -99,8 +99,7 @@ def _creators(conn, market_id) -> list[dict]:
 def _prompt(conn, policy, market: dict) -> str:
     briefs = [dict(r) for r in conn.execute("SELECT day, brief FROM trend_briefs WHERE market = %s ORDER BY day DESC "
                                             "LIMIT %s", (market["name"], int(_cfg(policy).get("trend_briefs", 3)))).fetchall()]
-    findings = [{"finding": f["statement"], "grade": f["grade"]}
-                for f in evidence.findings(conn, mode="real", scope="market", market_id=market["id"])]
+    findings = hypotheses.views(policy, evidence.findings(conn, mode="real", scope="market", market_id=market["id"]))
     return "\n\n".join([
         f"The market: {market['name']}. Its current dossier: {json.dumps(market['dossier'] or {}, default=str)}",
         f"Its creators (briefs from their talent managers; mode sandbox means no real audience yet): "

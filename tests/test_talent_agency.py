@@ -531,14 +531,19 @@ def test_explicit_staged_nude_fetish_soliciting_and_minor_content_is_rejected(co
     assert not res["accepted"] and not res["safety"]
 
 
-def test_a_clear_brand_misfit_is_rejected_and_minor_detail_defects_only_reported(conn, policy, store, tmp_path):
+def test_a_clear_brand_misfit_only_ranks_and_minor_detail_defects_are_only_reported(conn, policy, store, tmp_path):
+    """Generous publishing (owner 2026-11-26): an off-register image is flagged and ranks lower, never rejected; a
+    major detail defect (a material artifact) still fails realism."""
     from test_review import JudgeStub, creator_with_job, ok
     _, job = creator_with_job(conn, store, tmp_path, n_images=3)
     judge = JudgeStub([ok(brand_alignment=1), ok(detail_defects=["minor: a ring slightly soft"]),
                        ok(detail_defects=["major: melted nails on the visible hand"])])
     res = gates.review_job(conn, policy, judge, store, job, tmp_path)
-    assert [r["accepted"] for r in res] == [False, True, False]
+    assert [r["accepted"] for r in res] == [True, True, False]
     assert res[1]["realism"] and not res[2]["realism"]
+    brand = conn.execute("SELECT passed, score, details FROM reviews WHERE gate = 'brand'").fetchall()
+    assert brand and all(b["passed"] for b in brand)
+    assert any(b["details"]["off_register"] and b["details"]["rank_only"] for b in brand)
 
 
 def test_simulated_intimacy_with_followers_is_refused_but_charm_is_asked_for():

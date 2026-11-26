@@ -312,6 +312,19 @@ def build_parser() -> argparse.ArgumentParser:
     pfr = pfsub.add_parser("report", help="requested vs observed per model, target, control and level; why "
                                           "calibration does or doesn't adjust")
     pfr.add_argument("--creator", help="one creator's observations only (handle or id)")
+
+    pc = sub.add_parser("policy", help="runtime policy overrides (manyworlds.brain.overrides): list them, or roll one "
+                                       "back")
+    pcsub = pc.add_subparsers(dest="policy_cmd", required=True)
+    pco = pcsub.add_parser("overrides", help="the latest overrides, newest first (id, path, value, version, author, "
+                                             "reason)")
+    pco.add_argument("--path", help="one path only")
+    pco.add_argument("--limit", type=int, default=50)
+    pcr = pcsub.add_parser("revert", help="restore the value a path had before an override, as a new override "
+                                          "(within brain.authority; beyond it, an approval for the owner)")
+    pcr.add_argument("override_id", type=int, help="the override's id (mw policy overrides)")
+    pcr.add_argument("--reason", required=True, help="why it is rolled back (recorded on the new override)")
+    pcr.add_argument("--author", default="owner", help="who rolls it back (recorded; default owner)")
     return p
 
 
@@ -482,6 +495,8 @@ def main(argv: list[str] | None = None) -> int:
         return _voice(args, conn, pol)
     elif args.cmd == "performance":
         return _performance(args, conn, pol)
+    elif args.cmd == "policy":
+        return _policy_overrides(args, conn, pol)
     elif args.cmd == "research":
         return _research(args, conn, pol)
     elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce", "trends"):
@@ -535,6 +550,24 @@ def _test(args, conn, pol) -> int:
                 llm.spent = spent
     _print({**out, **({"llm_usd": llm.spent} if llm is not None else {})})
     return 0
+
+
+def _policy_overrides(args, conn, pol) -> int:
+    """`mw policy overrides [--path P]`, `mw policy revert <override-id> --reason R [--author A]`
+    (manyworlds.brain.overrides.revert)."""
+    from .brain import overrides
+    if args.policy_cmd == "overrides":
+        _print(conn.execute("SELECT id, path, value, version, author, reason, decision_id, created_at "
+                            "FROM policy_overrides WHERE %s::text IS NULL OR path = %s ORDER BY version DESC LIMIT %s",
+                            (args.path, args.path, args.limit)).fetchall())
+        return 0
+    if args.policy_cmd == "revert":
+        try:
+            _print(overrides.revert(conn, pol, args.override_id, author=args.author, reason=args.reason))
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        return 0
+    raise SystemExit(f"unknown policy command {args.policy_cmd!r}")
 
 
 def _performance(args, conn, pol) -> int:

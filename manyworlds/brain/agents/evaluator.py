@@ -131,11 +131,12 @@ def idea_content(conn, idea_id) -> tuple:
     idea = conn.execute("SELECT creator_id, concept, format, body FROM ideas WHERE id = %s", (idea_id,)).fetchone()
     if idea is None:   # retrying cannot make the row appear
         raise NonRetryable(f"evaluator: no idea {idea_id}")
-    # Never what the planner thought (reasoning) or how it labelled the idea (exploratory), which
+    # Never what the planner thought (reasoning) or how it labelled the idea (exploratory, exploration), which
     # would bias the scores; scheduling bookkeeping (day, platform, canon_key) is irrelevant to them, and a
     # revision is scored on its plan, never on its history (manyworlds.brain.revise.BOOKKEEPING).
     plan = {k: v for k, v in (idea["body"] or {}).items()
-            if k not in ("reasoning", "exploratory", "day", "platform", "canon_key", *revise.BOOKKEEPING)}
+            if k not in ("reasoning", "exploratory", "exploration", "exploration_off_target", "day", "platform",
+                         "canon_key", *revise.BOOKKEEPING)}
     _, who = creator_summary(conn, idea["creator_id"])
     text = evaluation.IDEA_TEMPLATE.format(format=idea["format"], concept=idea["concept"],
                                            plan=json.dumps(plan, ensure_ascii=False))

@@ -17,8 +17,9 @@ log = logging.getLogger("manyworlds.review")
 
 # The QA's three judgments (owner 2026-11-25), all in the one existing judge call:
 #   content safety       hard: the `sexualized` flag, defined by SAFETY_RULE (policy strategy.desirability.restrictions)
-#   brand alignment      scored against the creator's presentation register (BRAND_RULE); rejects only a clear misfit
-#                        (review.<image|video>.min_brand_alignment)
+#   brand alignment      scored against the creator's presentation register (BRAND_RULE); rank only since 2026-11-26
+#                        (review.reject_only): it ranks candidates, and under review.<kind>.min_brand_alignment the
+#                        row is flagged off_register, never rejected
 #   distribution         a risk score and label per platform (DISTRIBUTION_RULE): report and routing only, never a reject
 # Safety is judged on VISIBLE content, context, composition and intent, never on speculation about what is under
 # clothing: an oversized shirt, a hotel bathrobe, a backless dress or a cardigan worn as a top pass when covered.
@@ -219,14 +220,16 @@ def major_details(r, cfg: dict | None = None) -> list[str]:
 
 
 def context_verdicts(cfg: dict, r) -> dict[str, tuple[bool, dict]]:
-    """Brand alignment (rejects only a clear misfit: under review.<kind>.min_brand_alignment) and distribution
-    suitability (a risk score and label: report and routing only, always passes), when the judge scored them."""
+    """Brand alignment and distribution suitability, when the judge scored them; both always pass (generous
+    publishing, owner 2026-11-26: policy review.reject_only lists what may reject, and taste is not on it). Brand
+    alignment ranks candidates (production.steps.RANKED_GATES) and, under review.<kind>.min_brand_alignment, is flagged
+    `off_register` in its row for the record; distribution is a risk score and label for reports and routing."""
     out = {}
     b = getattr(r, "brand_alignment", None)
     if b is not None:
         b = max(0, min(10, int(b)))
         bar = float(cfg.get("min_brand_alignment", 3))
-        out["brand"] = (b >= bar, {"brand_alignment": b, "bar": bar, "enforced": True})
+        out["brand"] = (True, {"brand_alignment": b, "bar": bar, "off_register": b < bar, "rank_only": True})
     d = getattr(r, "distribution_risk", None)
     if d is not None:
         out["distribution"] = (True, {"distribution_risk": max(0, min(10, int(d))),

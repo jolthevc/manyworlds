@@ -13,6 +13,9 @@ Only sections listed in `brain.authority.observed_sections` can be overridden at
 read through the effective policy. The producer, reviewer and autoscaler still read the policy
 file, so a change to `production.*`, `limits.*` and the like is refused outright (not_observed)
 rather than recorded and silently ignored.
+
+`revert` (`mw policy revert <override-id>`) rolls the latest override of a path back: the value before it is
+proposed again as a new override, under the same authority rules, with the reason and author recorded.
 """
 
 from __future__ import annotations
@@ -137,3 +140,46 @@ def _decide(conn, approval_id, *, approved: bool, by: str) -> None:
         s = row["subject"]
         _apply(conn, s["path"], s["value"], author=row["requested_by"],
                reason=f"{row['reason']} (approved by {by})", decision_id=s.get("decision_id"))
+
+
+def _get_path(body: dict, path: str):
+    node = body
+    for k in path.split("."):
+        if not isinstance(node, dict) or k not in node:
+            raise KeyError(path)
+        node = node[k]
+    return node
+
+
+def revert(conn, policy: Policy, override_id, *, author: str, reason: str) -> dict:
+    """Roll one override back (`mw policy revert <override-id>`): the value its path had before it (the previous
+    override of that path, else the policy file's) is proposed again as a new override, with the reason and author
+    recorded, so history only grows and the revert can itself be reverted. It goes through `propose`, so the same
+    authority rules apply: outside brain.authority it waits for the owner as an approval. Only the latest override
+    of its path can be reverted (a later one would be undone silently); a path that already holds the restored value
+    changes nothing."""
+    row = conn.execute("SELECT id, path, value, version FROM policy_overrides WHERE id = %s",
+                       (int(override_id),)).fetchone()
+    if row is None:
+        raise ValueError(f"no override {override_id}")
+    prev = conn.execute("SELECT value, version FROM policy_overrides WHERE path = %s AND version < %s "
+                        "ORDER BY version DESC LIMIT 1", (row["path"], row["version"])).fetchone()
+    if prev is not None:
+        value, source = prev["value"], f"override v{prev['version']}"
+    else:
+        try:
+            value, source = _get_path(policy.body, row["path"]), "the policy file"
+        except KeyError:
+            raise ValueError(f"{row['path']} has no value before override {override_id} to restore") from None
+    latest = conn.execute("SELECT id, value, version FROM policy_overrides WHERE path = %s ORDER BY version DESC "
+                          "LIMIT 1", (row["path"],)).fetchone()
+    if latest["version"] != row["version"]:   # rolling back past a later change would undo it silently
+        raise ValueError(f"override {latest['id']} (v{latest['version']}) changed {row['path']} after it: revert that "
+                         f"one first")
+    current = latest["value"]
+    out = {"reverts": int(row["id"]), "reverted_version": int(row["version"]), "path": row["path"], "value": value,
+           "restored_from": source}
+    if current == value:
+        return {**out, "applied": False, "unchanged": True}
+    why = f"revert of override {row['id']} (v{row['version']}) to {source}: {reason}"
+    return {**out, **propose(conn, policy, row["path"], value, author=author, reason=why)}

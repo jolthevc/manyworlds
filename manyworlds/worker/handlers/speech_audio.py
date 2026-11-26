@@ -429,8 +429,9 @@ def _voice_lines(p: dict, cfg: dict, asr, sr: int, attempt: int, *, strict: bool
     `generate(unit, line, seed, strength) -> wav`: the engine's voice (handlers/tts_engines.py), given only the words
     (a delivery is never spoken, so it is never in `spoken`). `judge` (voice_judge.LineJudge, policy
     voice.line_check): the chosen take of each piece is measured (clarity, naturalness, expressiveness, consistency,
-    pacing); a piece that fails is regenerated with new seeds and the next emotion strength, at most `judge.repairs`
-    times, and the best take kept (voice_eval.better). Its scores go into the clause's and the line's meta
+    pacing); a piece with a material defect (unclear, robotic, not her voice: voice_eval.line_verdict `regenerate`)
+    is regenerated with new seeds and the next emotion strength, at most `judge.repairs` times, and the best take kept
+    (voice_eval.better); a flat or off-pace piece keeps its take, its reasons recorded. Its scores go into the clause's and the line's meta
     (`judge`)."""
     import numpy as np
 
@@ -469,8 +470,8 @@ def _voice_lines(p: dict, cfg: dict, asr, sr: int, attempt: int, *, strict: bool
             from ...voice_eval import better
             pick["judge"] = {**judge(unit["spoken"], wav, heard), "repairs": 0}
             for r in range(judge.repairs):
-                if pick["judge"]["passed"]:
-                    break
+                if not pick["judge"].get("regenerate", not pick["judge"]["passed"]):
+                    break   # no material defect: flat or off-pace takes are recorded, never regenerated
                 strength = judge.strength(r)
                 s2 = p["seed"] + REPAIR_SEED_OFFSET + ((attempt - 1) * len(units) + ui) * judge.repairs + r
                 w2, k2, seed2, raw, heard2 = take(unit, 2 * takes + r, s2, strength)
@@ -515,6 +516,7 @@ def _voice_lines(p: dict, cfg: dict, asr, sr: int, attempt: int, *, strict: bool
         if judged:
             timings[-1]["judge"] = {
                 "passed": all(j["passed"] for j in judged),
+                "defect": any(j.get("regenerate", not j["passed"]) for j in judged),   # a material defect left
                 "composite": round(sum(j["composite"] for j in judged) / len(judged), 4),
                 "reasons": [r for j in judged for r in j["reasons"]],
                 "repairs": sum(int(j.get("repairs") or 0) for j in judged),

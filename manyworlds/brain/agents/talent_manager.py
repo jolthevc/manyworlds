@@ -46,7 +46,7 @@ from ... import direction, queue
 from ...creator import dossier
 from ...creator import profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import archetypes, capability_card, commerce, evidence, predictions, proposals
+from .. import archetypes, capability_card, commerce, evidence, hypotheses, predictions, proposals
 from ..agent import AgentContext, record_decision, register, remember
 from . import analyst
 
@@ -235,8 +235,8 @@ def _review_prompt(ctx: AgentContext, creator_id, prof: dict, mode: str, event: 
     conn, policy = ctx.conn, ctx.policy
     cfg = _cfg(policy)
     ev_mode = evidence.mode_for(conn, creator_id)
-    findings = [{"finding": f["statement"], "grade": f["grade"]}
-                for f in evidence.findings(conn, mode=ev_mode, creator_id=creator_id)]
+    # hypotheses, strongest first: level, replications, age, weight; a stale one is due for retest
+    findings = hypotheses.views(policy, evidence.findings(conn, mode=ev_mode, creator_id=creator_id))
     last = analyst.latest(conn, creator_id)
     prev = latest_brief(conn, creator_id)
     who = {k: v for k, v in prof.items() if k not in ("dials", "identity", "commercialization")}

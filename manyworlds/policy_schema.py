@@ -264,6 +264,13 @@ class ReviewRepair(_Strict):
     stand_ins: dict[str, str]
 
 
+class ReviewRejectOnly(_Strict):
+    principle: str
+    classes: list[str]
+    gates: dict[str, str]
+    rank_only: list[str]
+
+
 class Review(_Strict):
     image: ReviewImage
     video: ReviewVideo
@@ -272,6 +279,7 @@ class Review(_Strict):
     final: ReviewFinal
     sync: ReviewSync
     max_repairs_per_post: int
+    reject_only: ReviewRejectOnly
     repair: ReviewRepair
 
 

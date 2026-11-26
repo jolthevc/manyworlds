@@ -14,10 +14,11 @@ class DropPost(Exception):
 
 # What ranks accepted candidates: the core gates' scores, plus `performance` (manyworlds.performance, owner 2026-11-26):
 # among candidates that pass every defect gate, appeal, charisma, expression, naturalness and closeness to the
-# directed performance (a passing, rank-only row whose score is its selection points). Report rows (distribution_risk,
+# directed performance (a passing, rank-only row whose score is its selection points), and `brand` alignment with her
+# presentation register (rank only since 2026-11-26: review.reject_only). Report rows (distribution_risk,
 # where higher is worse; hands or teeth, present only when visible) once ranked riskier photos first (review
 # 2026-11-25).
-RANKED_GATES = ["identity", "realism", "scene", "direction", "performance"]
+RANKED_GATES = ["identity", "realism", "scene", "direction", "performance", "brand"]
 
 _CANDIDATES = """SELECT a.id, a.uri,
                   coalesce(sum(r.score) FILTER (WHERE r.details->>'stage' = 'confirm' AND r.gate = ANY(%s)),

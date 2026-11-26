@@ -5,7 +5,8 @@ Whisper (clarity: WER), UTMOS22 (naturalness: a MOS predictor), F0 and energy st
 (consistency: distance to the creator's reference clip), and words per second over the trimmed speech (pacing).
 Casting adds perceived gender and age (wav2vec2 classifiers) against the bible. This module turns those numbers into
 
-    line_verdict(scores, cfg, band) -> {passed, reasons, composite}   one line: kept, or regenerated (voice.line_check)
+    line_verdict(scores, cfg, band) -> {passed, reasons, regenerate, composite}   one line: kept, or regenerated only
+                                                                          for a material defect (voice.line_check)
     cast_summary(lines, cfg, band, fit) -> dict                       one candidate voice over the casting script
     rank_cast(candidates, cfg, others, min_distance) -> list           the candidates that qualify, best first
     bakeoff_winner(engines, cfg) -> dict                               the engine the bake-off picks
@@ -17,6 +18,11 @@ unintelligible, robotic) is a reason, never just a low number.
 """
 
 from __future__ import annotations
+
+# The reasons that are material defects (owner 2026-11-26, policy review.reject_only: lip-sync and audio defects):
+# unintelligible, robotic, not her voice. Only they regenerate a line (voice.line_check.regenerate_on overrides this
+# when the job carries it); flat or off-pace lines keep their best take and are recorded.
+REGENERATE_ON = ("unclear", "robotic", "inconsistent")
 
 import math
 import re
@@ -83,7 +89,9 @@ def composite(subs: dict, weights: dict) -> float:
 def line_verdict(s: dict, cfg: dict, band: tuple[float, float]) -> dict:
     """One spoken line judged (policy voice.judge): unclear (WER), robotic (MOS under its floor), flat (pitch movement
     under its floor), off pace (outside the band by more than the tolerance), not her voice (ECAPA distance to the
-    reference over its ceiling). -> {passed, reasons, composite, subs}."""
+    reference over its ceiling). -> {passed, reasons, regenerate, defects, composite, subs}: `passed` is the full
+    quality judgement (casting and quality stats read it); `regenerate` is whether a reason is a material defect
+    (cfg regenerate_on, else REGENERATE_ON), the only thing that makes production speak the line again."""
     reasons = []
     if s.get("wer") is None or float(s["wer"]) > float(cfg.get("max_wer", 0.15)):
         reasons.append(f"unclear: WER {s.get('wer')} over {cfg.get('max_wer', 0.15)}")
@@ -101,17 +109,22 @@ def line_verdict(s: dict, cfg: dict, band: tuple[float, float]) -> dict:
     if s.get("ref_distance") is not None and float(s["ref_distance"]) > float(cfg.get("max_ref_distance", 0.4)):
         reasons.append(f"inconsistent: {s['ref_distance']} from her reference, over {cfg.get('max_ref_distance', 0.4)}")
     subs = sub_scores(s, cfg, band)
-    return {"passed": not reasons, "reasons": reasons, "subs": subs,
+    on = tuple(cfg.get("regenerate_on") or REGENERATE_ON)
+    defects = [r for r in reasons if r.split(":", 1)[0] in on]
+    return {"passed": not reasons, "reasons": reasons, "regenerate": bool(defects), "defects": defects, "subs": subs,
             "composite": composite(subs, cfg.get("weights") or {})}
 
 
 def better(a: dict, b: dict | None) -> bool:
-    """Is take `a` (a line_verdict merged into its scores) better than `b`: a pass beats a fail, then the composite,
-    then the lower WER."""
+    """Is take `a` (a line_verdict merged into its scores) better than `b`: a take without a material defect beats
+    one with, then a pass beats a fail, then the composite, then the lower WER."""
     if b is None:
         return True
-    ka = (a.get("passed", False), a.get("composite", 0.0), -float(a.get("wer") or 0.0))
-    kb = (b.get("passed", False), b.get("composite", 0.0), -float(b.get("wer") or 0.0))
+
+    def key(t):
+        defect = t.get("regenerate", not t.get("passed", False))
+        return (not defect, t.get("passed", False), t.get("composite", 0.0), -float(t.get("wer") or 0.0))
+    ka, kb = key(a), key(b)
     return ka > kb
 
 

@@ -263,8 +263,8 @@ def _judge_answer(conn, policy: Policy, llm, rubric, rc: dict, creator_id, answe
     scores, breaks = [], 0
     for it in items:
         fmt = it.get("format", "photo")
-        plan = {k: v for k, v in it.items() if k not in ("reasoning", "exploratory", "day", "platform", "canon_key",
-                                                         "experiment")}
+        plan = {k: v for k, v in it.items() if k not in ("reasoning", "exploratory", "exploration", "day", "platform",
+                                                         "canon_key", "experiment")}
         text = evaluation.IDEA_TEMPLATE.format(format=fmt, concept=ideas.concept_text(fmt, it, it.get("caption")),
                                                plan=json.dumps(plan, ensure_ascii=False))
         s = evaluation.score(llm, policy, rubric, [who, text], role="evaluator", samples=1, creator_id=creator_id)

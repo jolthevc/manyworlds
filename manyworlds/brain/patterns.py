@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import get_args
@@ -228,9 +229,23 @@ def _rcfg(policy: Policy | None) -> dict:
     return (policy.get("intelligence", "retrieval", default={}) if policy else {}) or {}
 
 
+HYPOTHESIS_FIELDS = ("origin", "applies_to", "level", "replications", "contradictions", "last_tested", "retest_after")
+
+
+def _hypothesis(row: dict | None, card: dict) -> dict:
+    """A card's hypothesis record (migration 055; manyworlds.brain.hypotheses): stored values, else what a library
+    card is until our own posts test it (research, at archetype level, for its best-fit archetypes and medium)."""
+    row = row or {}
+    return {"origin": row.get("origin") or "research", "level": row.get("level") or "archetype",
+            "applies_to": row.get("applies_to") or {"archetypes": list(card.get("best_fit") or []),
+                                                    "medium": card.get("medium")},
+            "replications": row.get("replications") or [], "contradictions": row.get("contradictions") or [],
+            "last_tested": row.get("last_tested"), "retest_after": row.get("retest_after")}
+
+
 def _as_card(key: str, card: dict, **extra) -> dict:
     return {**(card or {}), "key": key, "id": None, "version": 0, "sources": list((card or {}).get("sources") or []),
-            "evidence": {}, "acceptance": {}, "outcomes": {}, **extra}
+            "evidence": {}, "acceptance": {}, "outcomes": {}, **_hypothesis(None, card or {}), **extra}
 
 
 def cards(conn, policy: Policy | None) -> list[dict]:
@@ -246,7 +261,8 @@ def cards(conn, policy: Policy | None) -> list[dict]:
             out[r["key"]] = {**(r["body"] or {}), "key": r["key"], "id": str(r["id"]), "version": r["version"],
                              "status": r["status"], "medium": r["medium"], "signature_ok": r["signature_ok"],
                              "sources": r["sources"] or [], "evidence": r["evidence"] or {},
-                             "acceptance": r["acceptance"] or {}, "outcomes": r["outcomes"] or {}}
+                             "acceptance": r["acceptance"] or {}, "outcomes": r["outcomes"] or {},
+                             **_hypothesis(r, {**(r["body"] or {}), "medium": r["medium"]})}
     for key, card in library(policy)["cards"].items():
         if key not in out:
             out[key] = _as_card(key, card)
@@ -262,7 +278,9 @@ def media_for(policy: Policy | None, fmt: str | None) -> list[str] | None:
 
 
 def weight(policy: Policy | None, card: dict) -> float:
-    """Evidence x production acceptance x real outcomes (policy intelligence.retrieval.weights)."""
+    """Evidence x production acceptance x real outcomes (policy intelligence.retrieval.weights) x replication across
+    our creators x staleness (manyworlds.brain.hypotheses: a card whose outcomes are past their retest date weighs
+    less until our posts test it again; a card never tested on our posts does not decay)."""
     w = _rcfg(policy).get("weights") or {}
     if counts_as_evidence(card):
         n = int((card.get("evidence") or {}).get("n_posts") or len(card.get("sources") or []))
@@ -280,7 +298,10 @@ def weight(policy: Policy | None, card: dict) -> float:
     if int(out.get("n") or 0) >= int(w.get("min_outcomes", 3)) and out.get("median_ratio") is not None:
         outcome = max(float(lo), min(float(hi), float(out["median_ratio"])))
     kind = float((_bcfg(policy).get("weight") or {}).get(basis(policy, card)["kind"], 1.0))
-    return round(ev * acceptance * outcome * kind, 4)
+    from . import hypotheses
+    rep = hypotheses.replication_factor(policy, card)
+    stale = hypotheses.decay(policy, card, datetime.now(timezone.utc)) if card.get("last_tested") else 1.0
+    return round(ev * acceptance * outcome * kind * rep * stale, 4)
 
 
 def fit(policy: Policy | None, card: dict, archetype_names: list[str], media: list[str] | None,
@@ -348,6 +369,22 @@ def _evidence_line(card: dict, policy: Policy | None = None) -> str:
     out = card.get("outcomes") or {}
     if out.get("n"):
         line += f"; real outcome {out.get('median_ratio')}x her median over {out['n']} posts"
+    return line + _hypothesis_line(card)
+
+
+def _hypothesis_line(card: dict) -> str:
+    """The card as a hypothesis: its level, the creators where it held and failed, its age since last tested and,
+    past its retest date, DUE FOR RETEST (manyworlds.brain.hypotheses)."""
+    from . import hypotheses
+    now = datetime.now(timezone.utc)
+    held, failed = len(card.get("replications") or []), len(card.get("contradictions") or [])
+    line = f"; level {card.get('level') or 'archetype'}, held in {held} of our creators"
+    if failed:
+        line += f", failed in {failed}"
+    if card.get("last_tested"):
+        line += f", last tested {hypotheses.age_days(card, now)} days ago"
+        if hypotheses.due_for_retest(None, card, now):
+            line += ", DUE FOR RETEST"
     return line
 
 
@@ -470,13 +507,15 @@ def feedback(conn, policy: Policy) -> dict:
             by_creator[cid] = {"posts": got, "median": reaches[len(reaches) // 2] if reaches else None}
         return by_creator[cid]
 
+    hc = policy.get("brain", "hypotheses", "cards", default={}) or {}
     res = {"cards": 0, "posts": 0}
     for c in conn.execute("SELECT DISTINCT ON (key) id, key FROM pattern_cards ORDER BY key, version DESC").fetchall():
         posts = conn.execute(
-            "SELECT id, creator_id, status, body->>'drop_reason' AS why FROM posts WHERE body->'pattern_cards' "
-            "@> jsonb_build_array(jsonb_build_object('key', %s::text, 'applied', true))", (c["key"],)).fetchall()
+            "SELECT id, creator_id, status, body->>'drop_reason' AS why, published_at FROM posts "
+            "WHERE body->'pattern_cards' @> jsonb_build_array(jsonb_build_object('key', %s::text, 'applied', true))",
+            (c["key"],)).fetchall()
         acc = {"tried": 0, "accepted": 0, "dropped": 0, "drop_reasons": {}}
-        ratios = []
+        ratios, per_creator, tested = [], {}, None
         for p in posts:
             if p["status"] in ok:
                 acc["accepted"] += 1
@@ -491,11 +530,33 @@ def feedback(conn, policy: Policy) -> dict:
             o = co["posts"].get(str(p["id"]))
             if o and co["median"]:
                 ratios.append(float(o["reach"]) / co["median"])
+                per_creator.setdefault(str(p["creator_id"]), []).append(float(o["reach"]) / co["median"])
+                if p["published_at"] and (tested is None or p["published_at"] > tested):
+                    tested = p["published_at"]
         ratios.sort()
         out = {"n": len(ratios), "median_ratio": round(ratios[len(ratios) // 2], 3) if ratios else None,
                "mode": "real"}
-        conn.execute("UPDATE pattern_cards SET acceptance = %s, outcomes = %s, updated_at = now() WHERE id = %s",
-                     (Jsonb(acc), Jsonb(out), c["id"]))
+        held, failed = _held(hc, per_creator)
+        retest = tested + timedelta(days=float(hc.get("retest_days", 60))) if tested else None
+        conn.execute("UPDATE pattern_cards SET acceptance = %s, outcomes = %s, replications = %s, contradictions = %s, "
+                     "last_tested = %s, retest_after = %s, updated_at = now() WHERE id = %s",
+                     (Jsonb(acc), Jsonb(out), Jsonb(held), Jsonb(failed), tested, retest, c["id"]))
         res["cards"] += 1
         res["posts"] += acc["tried"]
     return res
+
+
+def _held(cfg: dict, per_creator: dict[str, list[float]]) -> tuple[list[dict], list[dict]]:
+    """Which creators a card held for (her posts that applied it, at least min_posts_per_creator, reached hold_ratio
+    x her median or more) and failed for (under fail_ratio): one creator's result is a replication, never a rule."""
+    held, failed = [], []
+    for cid, rs in sorted(per_creator.items()):
+        if len(rs) < int(cfg.get("min_posts_per_creator", 3)):
+            continue
+        m = sorted(rs)[len(rs) // 2]
+        entry = {"creator_id": cid, "n": len(rs), "median_ratio": round(m, 3)}
+        if m >= float(cfg.get("hold_ratio", 1.0)):
+            held.append(entry)
+        elif m < float(cfg.get("fail_ratio", 0.8)):
+            failed.append(entry)
+    return held, failed

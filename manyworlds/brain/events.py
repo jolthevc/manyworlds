@@ -11,7 +11,9 @@ the creator's mode, so sandbox events are about SIMULATED outcomes and say so.
 
 Rate limits: at most `max_per_type_per_creator_per_day` events of a type per creator, and routing enqueues
 at most one job per creator and route per tick (one analysis covers an event storm). Breakouts are also
-shown to the next showrunner batch (`for_planning`) as a follow-up opportunity.
+shown to the next showrunner batch (`for_planning`) as a follow-up opportunity, each labelled by the noise guard
+(policy `brain.events.noise_guard`): one post, unreplicated, until one of its attributes recurs in enough breakouts
+of hers or of comparable creators (manyworlds.brain.hypotheses.comparable) that it is a pattern worth testing.
 """
 
 from __future__ import annotations
@@ -127,12 +129,67 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> list[dict]:
     return raised
 
 
-def for_planning(conn, creator_id, *, now: datetime | None = None, days: int = 7) -> list[dict]:
-    """Recent breakouts for the showrunner: what worked unusually well, as a follow-up opportunity."""
+UNREPLICATED = "one post, unreplicated: a single observation, not a pattern"
+
+
+def _post_attributes(conn, post_id, keys: set[str]) -> set[str]:
+    """A post's attributes as "name=value" (the format, its idea's attributes, the pattern cards it applied), only
+    for the names in `keys`."""
+    if not post_id:
+        return set()
+    r = conn.execute("SELECT p.format, p.body->'pattern_cards' AS cards, i.attributes FROM posts p "
+                     "LEFT JOIN ideas i ON i.post_id = p.id WHERE p.id = %s LIMIT 1", (post_id,)).fetchone()
+    if not r:
+        return set()
+    out = {f"format={r['format']}"} if "format" in keys and r["format"] else set()
+    out |= {f"{k}={str(v)[:60]}" for k, v in (r["attributes"] or {}).items() if k in keys and v}
+    if "pattern_card" in keys:
+        out |= {f"pattern_card={c['key']}" for c in (r["cards"] or [])
+                if isinstance(c, dict) and c.get("applied") and c.get("key")}
+    return out
+
+
+def replication(conn, policy: Policy | None, creator_id, post_id, *, mode: str, now: datetime) -> dict:
+    """The noise guard (policy brain.events.noise_guard): which of this breakout's attributes recur in at least
+    min_posts breakouts (this one included) of hers or of comparable creators over lookback_days, in the same mode.
+    -> {replicated, repeated {attribute: breakouts}}."""
+    cfg = (_cfg(policy).get("noise_guard") or {}) if policy is not None else {}
+    keys = set(cfg.get("attributes") or [])
+    mine = _post_attributes(conn, post_id, keys)
+    if not mine:
+        return {"replicated": False, "repeated": {}}
+    from . import hypotheses
+    creators = [str(creator_id)] + hypotheses.comparable_creators(conn, policy, creator_id)
+    rows = conn.execute(
+        "SELECT DISTINCT subject->>'post_id' AS post_id FROM events WHERE type = 'breakout' "
+        "AND creator_id = ANY(%s::uuid[]) AND created_at > %s AND payload->>'mode' = %s "
+        "AND subject->>'post_id' IS DISTINCT FROM %s",
+        (creators, now - timedelta(days=float(cfg.get("lookback_days", 90))), mode, str(post_id))).fetchall()
+    counts: dict[str, int] = {}
+    for r in rows:
+        for a in _post_attributes(conn, r["post_id"], keys) & mine:
+            counts[a] = counts.get(a, 0) + 1
+    need = int(cfg.get("min_posts", 3))
+    repeated = {a: n + 1 for a, n in sorted(counts.items()) if n + 1 >= need}
+    return {"replicated": bool(repeated), "repeated": repeated}
+
+
+def for_planning(conn, creator_id, *, policy: Policy | None = None, now: datetime | None = None,
+                 days: int = 7) -> list[dict]:
+    """Recent breakouts for the showrunner: what worked unusually well, as a follow-up opportunity, each with its
+    `evidence`: one post, unreplicated, until the noise guard finds its attribute repeating across comparable posts
+    (`replication`); single-post noise never reaches planning as a pattern."""
     now = now or datetime.now(timezone.utc)
-    rows = conn.execute("SELECT payload, created_at FROM events WHERE creator_id = %s AND type = 'breakout' "
+    rows = conn.execute("SELECT subject, payload, created_at FROM events WHERE creator_id = %s AND type = 'breakout' "
                         "AND created_at > %s ORDER BY created_at DESC LIMIT 5",
                         (creator_id, now - timedelta(days=days))).fetchall()
-    return [{"caption": r["payload"].get("caption"), "format": r["payload"].get("format"),
-             "ratio": r["payload"].get("ratio"),
-             "label": evidence.LABEL if r["payload"].get("mode") == "sandbox" else None} for r in rows]
+    out = []
+    for r in rows:
+        rep = replication(conn, policy, creator_id, (r["subject"] or {}).get("post_id"),
+                          mode=r["payload"].get("mode") or "real", now=now)
+        out.append({"caption": r["payload"].get("caption"), "format": r["payload"].get("format"),
+                    "ratio": r["payload"].get("ratio"),
+                    "evidence": (f"replicated: {', '.join(f'{a} in {n} breakouts' for a, n in rep['repeated'].items())}"
+                                 if rep["replicated"] else UNREPLICATED),
+                    "label": evidence.LABEL if r["payload"].get("mode") == "sandbox" else None})
+    return out

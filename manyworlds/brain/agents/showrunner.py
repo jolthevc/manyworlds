@@ -1,9 +1,12 @@
 """The showrunner: plans a creator's next few days as ideas, the way the person would actually post.
 
 It knows the creator (profile and memory), sees how its recent ideas scored and what has been
-learned about this creator (findings, read in the creator's evidence mode), and spends a share of
-each batch exploring things the creator hasn't tried (policy `brain.exploration_share`, which the
-Brain may tune). Ideas carry attributes for learning (setting, outfit, activity, mood, trend) but
+learned about this creator (findings, read in the creator's evidence mode, each with its level, replications and
+age: manyworlds.brain.hypotheses), and spends an exact part of each batch exploring: every idea is labelled refine,
+adjacent or novel, the counts come from her exploration temperature (manyworlds.brain.exploration.batch_targets,
+policy `brain.exploration_mix` and the portfolio total `brain.exploration_share`, which the Brain may tune), and
+code fits the batch to them (exploration.reconcile: trim or flag, no extra call). Hypotheses comparable creators proved
+are offered as experiments, never rules. Ideas carry attributes for learning (setting, outfit, activity, mood, trend) but
 no strategic category; ordinary moments are welcome. Its reasoning is stored on each idea and never
 shown to the evaluator. Every idea is sent to the evaluator; only evaluated ideas become posts
 (manyworlds.brain.ideas.schedule_ready).
@@ -12,6 +15,7 @@ shown to the evaluator. Every idea is sent to the evaluator; only evaluated idea
 from __future__ import annotations
 
 import json
+import math
 from datetime import date, datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
@@ -21,7 +25,8 @@ from pydantic import BaseModel, Field
 
 from ...creator import dossier, profile as profile_mod
 from ...worker.runner import NonRetryable
-from .. import archetypes, events, evidence, experiments, exploration, memory, patterns, planner, proposals, series
+from .. import (archetypes, events, evidence, experiments, exploration, hypotheses, memory, patterns, planner,
+               proposals, series)
 from ..agent import AgentContext, commission, record_decision, register
 from . import analyst, comment_themes, style_director, talent_manager
 
@@ -46,7 +51,9 @@ class PlannedIdea(planner.PlannedPost):
     attributes: dict[str, str] = Field(default_factory=dict,
                                        description="setting, outfit, activity, mood, trend (yes/no): plain words")
     reasoning: str = Field(default="", description="why this post now, in one or two sentences")
-    exploratory: bool = Field(default=False, description="true if this tries something the creator hasn't done")
+    exploration: Literal["refine", "adjacent", "novel"] = Field(
+        default="refine", description="refine: builds on what works; adjacent: a step from it (a new setting, hook or "
+                                      "format on her proven ground); novel: something she hasn't done")
     canon_key: str = Field(default="", description="if `canon` replaces a single fact (home, partner, job, pet, "
                                                    "employer), that fact's name; otherwise empty")
     staging: str = Field(default="", description="the name of a staging from the library, or empty (most posts)")
@@ -144,12 +151,17 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         {k: c["bible"].get(k) for k in planner.BIBLE_FIELDS if c["bible"].get(k)}
     mode = evidence.mode_for(conn, creator_id)
     outcome_age_h = round(int(policy.get("brain", "analysis", "target_age_s", default=259200)) / 3600)
-    findings = [{"finding": f["statement"], "grade": f["grade"], **({"label": f["label"]} if f["label"] else {})}
-                for f in evidence.findings(conn, mode=mode, creator_id=creator_id)]
+    found = evidence.findings(conn, mode=mode, creator_id=creator_id)
+    findings = hypotheses.views(policy, found)   # level, replications, age, weight; stale ones due for retest
+    offered = hypotheses.planning_views(conn, policy, creator_id)
+    offered_text = (f"Hypotheses from comparable creators (each held in the creators counted, never tested on her: "
+                    f"suggestions an experiment may test, not rules; never copy their posts): {json.dumps(offered)}\n"
+                    if offered else "")
     last = analyst.latest(conn, creator_id)
     guidance = (last["output"] or {}).get("guidance") if last else None
     hypotheses = [h["statement"] for h in ((last["output"] or {}).get("hypotheses") or [])] if last else []
-    share = float(policy.get("brain", "exploration_share", default=0.3))
+    mix = exploration.batch_targets(conn, policy, creator_id, counts["total"])
+    t = mix["targets"]
     scope = policy.get("scope", default={})
     hashtags_max = dials.get("hashtags_max") or {}
     notes = policy.get("planner", "format_notes", default={}) or {}
@@ -208,8 +220,9 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
                  f"weigh more). An idea that follows one sets `pattern` to its name and takes its format, hook, "
                  f"shot types and recipe (move, edit grammar) in her own voice; most ideas still need none, and none "
                  f"is ever a copy of anyone's post:\n{patterns.brief(cards, detail='plan')}\n" if cards else "")
-    breakouts = events.for_planning(conn, creator_id)
-    breakout_text = (f"Recent posts that did far better than usual (a natural follow-up may suit; never a copy): "
+    breakouts = events.for_planning(conn, creator_id, policy=policy)
+    breakout_text = (f"Recent posts that did far better than usual (a natural follow-up may suit; never a copy; one "
+                     f"marked unreplicated is a single observation, not a pattern: never build a formula on it): "
                      f"{json.dumps(breakouts)}. " if breakouts else "")
     qa_text = (f"Recent ideas the feed check dropped (don't repeat these mistakes): {json.dumps(qa_drops)}. "
                if qa_drops else "")
@@ -223,9 +236,11 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"{json.dumps(_recent_with_scores(conn, creator_id, int(cfg.get('recent_posts', 30)), policy), default=str)}\n"
         f"Her series (a video belongs to one of these, by name): {json.dumps(planner.series_catalogue(prof), default=str)}\n"
         f"{continuity_text}"
-        f"What has been learned about this creator so far (grades: proven > tentative > speculative):\n"
+        f"What has been learned about this creator so far (hypotheses, strongest first; grades: proven > tentative > "
+        f"speculative; our own experiments outrank observation; one marked due_for_retest is stale and stays "
+        f"revisable):\n"
         f"{json.dumps(findings) if findings else 'nothing yet'}\n"
-        f"{niche_text}{play_text}{card_text}{culture_text}{brief_text}{style_text}"
+        f"{offered_text}{niche_text}{play_text}{card_text}{culture_text}{brief_text}{style_text}"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
         f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
@@ -237,9 +252,12 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
         f"What each format is: {json.dumps({f: n for f, n in notes.items() if f in formats})}. "
         f"{capability_text}{staging_text}{flavor_text}{move_text}"
-        f"About {round(share * 100)}% of the ideas should try something this creator hasn't done yet (mark them "
-        f"exploratory); point them at these directions, chosen by sampling over what is known and untried: "
-        f"{json.dumps([d['describe'] for d in explore])}; the rest build on what works. {slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "
+        f"Exploration: of the {counts['total']} ideas, exactly {t['refine']} refine (build on what works), "
+        f"{t['adjacent']} adjacent (a step from what works: a new setting, hook or format on her proven ground) and "
+        f"{t['novel']} novel (something she hasn't done yet); set `exploration` on each. Her identity stays "
+        f"coherent in all of them; only the content moves. Point the adjacent and novel ones at these directions, "
+        f"chosen by sampling over what is known and untried: {json.dumps([d['describe'] for d in explore])}. "
+        f"{slot_text}{qa_text}{breakout_text}Hashtags per post at most {hashtags_max or 1}; often none. "
         f"Never touch: {scope.get('excluded_topics')}. No sponsored, product or review posts, no selling. "
         f"{_strategy_line(policy)}{dossier.presentation_line(prof)}"
         + ("Covers and talking show her face; details, places, food, her back and her hands carry the rest. "
@@ -247,9 +265,9 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     meta = {"profile_version": version, "counts": counts, "hashtags_max": hashtags_max, "prof": prof,
             "analysis_decision_id": str(last["id"]) if last else None,
             "talent_brief_id": str(brief["id"]) if brief else None,
-            "finding_ids": [str(f["id"]) for f in evidence.findings(conn, mode=mode, creator_id=creator_id)],
+            "finding_ids": [str(f["id"]) for f in found],
             "platforms": list(scope.get("platforms") or ["instagram"]), "stagings": stagings, "flavors": flavors,
-            "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore,
+            "moves": moves, "slots": {s["slot"]: s for s in slots}, "exploration": explore, "mix": mix,
             "cards": {c["key"]: c for c in cards}}
     return prompt, meta
 
@@ -345,6 +363,19 @@ class Showrunner:
             (kept.append(q) if q else dropped.append({"caption": item.caption[:80], "why": why}))
         if not kept:
             raise NonRetryable(f"the showrunner returned no usable ideas: {dropped[:5]}")
+        # The exploration temperature, in code: trim a batch far over its size (the most over-target level first,
+        # never an experiment slot) and flag ideas over their level's count; labels are never rewritten.
+        mix = meta["mix"]
+        total = int(meta["counts"]["total"]) or len(kept)
+        over = float(ctx.policy.get("brain", "exploration_mix", "trim_over_share", default=0.25))
+        size = max(total, math.ceil(total * (1 + over)))
+        fit = exploration.reconcile([q.exploration for q in kept], mix["targets"], size,
+                                    keep={i for i, q in enumerate(kept) if q.experiment})
+        dropped += [{"caption": kept[i].caption[:80],
+                     "why": f"exploration mix: batch over {size} ideas, {kept[i].exploration} over its "
+                            f"{mix['targets'][kept[i].exploration]}"} for i in fit["trimmed"]]
+        flagged = {fit["kept"].index(i) for i in fit["flagged"]}
+        kept = [kept[i] for i in fit["kept"]]
         batch = f"{creator_id}:{start}"
         with ctx.conn.transaction():   # the batch, its evaluation requests and the decision land together
             # Serialise runs of this job: if another worker (after a lost lease) already wrote the
@@ -355,7 +386,7 @@ class Showrunner:
             if done:
                 return done["output"]
             ids, used = [], set()
-            for q in kept:
+            for qi, q in enumerate(kept):
                 slot = meta["slots"].get(q.experiment) if q.experiment else None
                 if slot and (slot["slot"] in used or slot["day"] != q.day or slot["platform"] != q.platform):
                     slot = None   # a slot is filled once, on its randomised day
@@ -368,8 +399,10 @@ class Showrunner:
                 body = {"scenes": q.scenes, "script": q.script, "on_screen_text": q.on_screen_text,
                         "hashtags": q.hashtags, "canon": q.canon, "pillar": q.pillar, "tone": q.tone,
                         "series": q.series, "caption": q.caption, "day": q.day, "platform": q.platform,
-                        "exploratory": q.exploratory, "reasoning": q.reasoning, "canon_key": q.canon_key,
-                        "staging": staging, "flavor": flavor}
+                        "exploratory": q.exploration != "refine", "exploration": q.exploration,
+                        "reasoning": q.reasoning, "canon_key": q.canon_key, "staging": staging, "flavor": flavor}
+                if qi in flagged:   # over its level's count in this batch: kept; the next batch's carry corrects it
+                    body["exploration_off_target"] = True
                 if q.series:   # read back at publication, when the post becomes an episode (manyworlds.brain.series)
                     body.update(episode=max(int(q.episode or 0), 0), episode_premise=q.episode_premise.strip())
                 if q.opens_thread.strip():
@@ -387,19 +420,25 @@ class Showrunner:
                     "INSERT INTO ideas (creator_id, batch, concept, format, body, attributes, status, experiment_id, arm) "
                     "VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s) RETURNING id",
                     (creator_id, batch, f"{q.format}: {concept}", q.format, Jsonb(body),
-                     Jsonb({**q.attributes, **({"exploratory": "yes"} if q.exploratory else {}),
+                     Jsonb({**q.attributes, "exploration": q.exploration,
+                            **({"exploratory": "yes"} if q.exploration != "refine" else {}),
                             **({"staging": staging} if staging else {}), **({"flavor": flavor} if flavor else {}),
                             **({"move": move} if move else {})}),
                      slot["experiment_id"] if slot else None, slot["arm"] if slot else None)).fetchone()["id"]
                 commission(ctx, "evaluator", {"idea_id": str(iid)}, reason="score before scheduling", key=f"eval:{iid}")
                 ids.append(str(iid))
             output = {"batch": batch, "ideas": len(ids), "idea_ids": ids, "dropped": dropped}
+            realised = {"stage": mix["stage"], "plateau": mix["plateau"], "own": mix["own"], "shares": mix["shares"],
+                        "correction": mix["correction"], "targets": mix["targets"], "planned": fit["planned"],
+                        "shortfall": fit["shortfall"], "trimmed": len(fit["trimmed"]), "flagged": len(fit["flagged"])}
+            exploration.record_window(ctx.conn, creator_id, mix, fit["planned"])
             record_decision(ctx, "content_batch", step="plan", creator_id=creator_id, model=ctx.llm.model_for(role),
                             inputs={"start": str(start), "days": days, "profile_version": meta["profile_version"],
                                     "requested": meta["counts"], "analysis_decision_id": meta["analysis_decision_id"],
                                     "talent_brief_id": meta["talent_brief_id"],
                                     "pattern_cards": sorted(meta["cards"]),
                                     "finding_ids": meta["finding_ids"], "exploration": meta["exploration"],
+                                    "exploration_mix": realised,
                                     "experiment_slots": {"offered": len(meta["slots"]), "filled": len(used)}},
                             output=output, rationale=out.rationale)
         return output

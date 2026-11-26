@@ -107,11 +107,17 @@ def post_outcomes(conn, creator_id, n: int, mode: Mode, *, policy=None) -> dict:
 
 def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: str, creator_id=None, cluster_id=None,
                    market_id=None, effect=None, interval: tuple | None = None, n: int | None = None,
-                   sources=(), domain: str = "content", genre: str | None = None) -> uuid.UUID:
+                   sources=(), domain: str = "content", genre: str | None = None, origin: str | None = None,
+                   level: str | None = None, applies_to: dict | None = None, replications=(), contradictions=(),
+                   last_tested=None, retest_after=None, parent_id=None) -> uuid.UUID:
     """A finding about a sandbox creator, or drawn from one or from simulated metrics, can only be
     recorded as simulated: the label is checked here, not trusted, so nothing simulated can reach
     a real-mode read when the creator later goes live. `domain`: content (posts) or music (songs);
-    `genre`: the genre a genre-scope finding is about."""
+    `genre`: the genre a genre-scope finding is about. The hypothesis record (manyworlds.brain.hypotheses; migration
+    055): origin and level default from the scope, evidence and sources; last tested now unless given; retest_after
+    NULL means policy brain.hypotheses.retest_days after last_tested."""
+    from . import hypotheses
+    d = hypotheses.defaults(scope, evidence, sources)
     if evidence != "simulated":
         if creator_id and mode_for(conn, creator_id) == "sandbox":
             raise ValueError(f"creator {creator_id} is in the sandbox: its findings must be evidence='simulated'")
@@ -124,10 +130,47 @@ def record_finding(conn, *, scope: str, statement: str, evidence: str, grade: st
     table = "simulated_findings" if evidence == "simulated" else "findings"
     return conn.execute(
         f"""INSERT INTO {table} (scope, creator_id, cluster_id, market_id, statement, evidence, grade, effect,
-                                 interval_low, interval_high, n, sources, domain, genre)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                 interval_low, interval_high, n, sources, domain, genre, origin, level, applies_to,
+                                 replications, contradictions, last_tested, retest_after, parent_id)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   coalesce(%s, now()), %s, %s) RETURNING id""",
         (scope, creator_id, cluster_id, market_id, statement, evidence, grade, effect, low, high, n,
-         Jsonb(list(sources)), domain, genre)).fetchone()["id"]
+         Jsonb(list(sources)), domain, genre, origin or d["origin"], level or d["level"], Jsonb(applies_to or {}),
+         Jsonb(list(replications)), Jsonb(list(contradictions)), last_tested, retest_after,
+         parent_id)).fetchone()["id"]
+
+
+def finding(conn, finding_id) -> dict | None:
+    """One finding by id, from either table (labelled SIMULATED when simulated), or None."""
+    for table in ("findings", "simulated_findings"):
+        row = conn.execute(f"SELECT * FROM {table} WHERE id = %s", (finding_id,)).fetchone()
+        if row:
+            return _label(row)
+    return None
+
+
+def archetype_hypotheses(conn, *, mode: Mode, effect_key: str | None = None,
+                         statuses: tuple[str, ...] = ("open",)) -> list[dict]:
+    """Archetype-level hypotheses (scope archetype, manyworlds.brain.hypotheses) in the mode, optionally for one
+    effect key (applies_to.effect_key)."""
+    if mode not in ("real", "sandbox"):
+        raise ValueError(f"unknown evidence mode {mode!r}")
+    cond = "scope = 'archetype' AND status = ANY(%(st)s) AND (%(key)s::text IS NULL OR applies_to->>'effect_key' = %(key)s)"
+    sql = f"SELECT * FROM findings WHERE {cond}"
+    if mode == "sandbox":
+        sql += f" UNION ALL SELECT * FROM simulated_findings WHERE {cond}"
+    rows = conn.execute(f"SELECT * FROM ({sql}) f ORDER BY created_at", {"st": list(statuses), "key": effect_key}).fetchall()
+    return [_label(r) for r in rows]
+
+
+def record_test(conn, finding_id, *, replications: list, contradictions: list, grade: str, level: str,
+                status: str = "open") -> None:
+    """A hypothesis tested again (manyworlds.brain.hypotheses.on_experiment): its replications and contradictions,
+    the grade, level and status they give it, last tested now and its retest date reset (NULL: from policy)."""
+    for table in ("findings", "simulated_findings"):
+        conn.execute(f"UPDATE {table} SET replications = %s, contradictions = %s, grade = %s, level = %s, status = %s, "
+                     "last_tested = now(), retest_after = NULL, updated_at = now() WHERE id = %s",
+                     (Jsonb(list(replications)), Jsonb(list(contradictions)), grade, level, status, finding_id))
 
 
 def record_simulated_metrics(conn, post_id, rows: list[dict], *, model: str, panel_version: str) -> None:
@@ -337,14 +380,20 @@ def attribution(conn, creator_ids, mode: Mode, *, policy=None, n: int = 60, dims
     pattern card): the creators' last `n` published posts each, at the analysis target age, grouped per dimension value
     with n, median reach, and per-1k-reach saves, shares, follows and profile visits (where the platform gave them),
     and the median reach over the creators' own medians (`lift`). Dimensions: format, the idea's attributes (outfit,
-    setting...), the shot types of its shot sheet, the pattern cards it applied, the creator's archetype. `real` reads
-    real publications only; `sandbox` the simulated ones, labelled SIMULATED."""
+    setting, exploration...), the shot types of its shot sheet, the pattern cards it applied, the creator's archetype,
+    the performance controls the shots asked for (`control`: "name=level", from performance_observations) and the
+    directed shot-sheet fields named in policy brain.attribution.directed (shot_size, device, camera_move...). Each
+    group also carries its posts' median all-in cost (`usd_per_post`: every ledger entry booked to the post or its
+    jobs, with its jobs' share of their machines' whole bill, deploy.report.machine_cost_by_job) and `reach_per_usd`.
+    `real` reads real publications only; `sandbox` the simulated ones, labelled SIMULATED."""
     import statistics
     if mode not in ("real", "sandbox"):
         raise ValueError(f"unknown evidence mode {mode!r}")
     target = int((policy.get("brain", "analysis", "target_age_s", default=259200) if policy else 259200))
     dims = list(dims or ("format", "outfit", "setting", "shot_type", "pattern_card", "archetype"))
+    directed = dict((policy.get("brain", "attribution", "directed", default={}) if policy else {}) or {})
     groups: dict = {}
+    seen: list[tuple[dict, dict, str]] = []
     for cid in [str(c) for c in creator_ids]:
         prof = conn.execute("SELECT body FROM creator_profiles WHERE creator_id = %s ORDER BY version DESC LIMIT 1",
                             (cid,)).fetchone()
@@ -361,37 +410,97 @@ def attribution(conn, creator_ids, mode: Mode, *, policy=None, n: int = 60, dims
             if not m or not m.get("reach"):
                 continue
             body, attrs = r["body"] or {}, r["attributes"] or {}
+            shots = [s for s in body.get("shots") or [] if isinstance(s, dict)]
             values = {"format": [r["format"]], "archetype": [archetype[0]] if archetype[0] else [],
                       "shot_type": sorted({s.get("shot_type") for s in body.get("shots") or []
                                            if isinstance(s, dict) and s.get("shot_type")}),
                       "pattern_card": sorted({c.get("key") for c in body.get("pattern_cards") or []
                                               if isinstance(c, dict) and c.get("applied") and c.get("key")})}
+            if "control" in dims:
+                values["control"] = _controls(conn, r["id"])
+            for d, path in directed.items():
+                if d in dims:
+                    values[d] = sorted({str(v)[:60] for v in (_dig(s, path) for s in shots) if v not in (None, "")})
             for d in dims:
                 if d not in values and attrs.get(d):
                     values[d] = [str(attrs[d])[:60]]
             posts.append((m, values))
+            seen.append((m, values, str(r["id"])))
         if not posts:
             continue
         own = statistics.median(float(m["reach"]) for m, _ in posts)
         for m, values in posts:
-            for d in dims:
-                for v in values.get(d) or []:
-                    groups.setdefault(d, {}).setdefault(v, []).append((m, float(m["reach"]) / own if own else None))
+            m["_lift"] = float(m["reach"]) / own if own else None
+    costs = post_costs(conn, [pid for _, _, pid in seen])
+    for m, values, pid in seen:
+        for d in dims:
+            for v in values.get(d) or []:
+                groups.setdefault(d, {}).setdefault(v, []).append((m, m["_lift"], costs.get(pid)))
     out: dict = {}
     for d, by in groups.items():
         out[d] = {}
         for v, items in by.items():
-            reach = [float(m["reach"]) for m, _ in items]
+            reach = [float(m["reach"]) for m, _, _ in items]
             row = {"n": len(items), "median_reach": statistics.median(reach)}
-            lifts = [x for _, x in items if x is not None]
+            lifts = [x for _, x, _ in items if x is not None]
             row["lift"] = round(statistics.median(lifts), 3) if lifts else None
+            usd = [c for _, _, c in items if c is not None]
+            if usd:
+                row["usd_per_post"] = round(statistics.median(usd), 4)
+                if row["usd_per_post"] > 0:
+                    row["reach_per_usd"] = round(row["median_reach"] / row["usd_per_post"], 1)
             for k in RATES:
-                vals = [1000.0 * float(m[k]) / float(m["reach"]) for m, _ in items if m.get(k) is not None]
+                vals = [1000.0 * float(m[k]) / float(m["reach"]) for m, _, _ in items if m.get(k) is not None]
                 if vals:
                     row[f"{k}_per_1k"] = round(statistics.median(vals), 2)
             if mode == "sandbox":
                 row["label"] = LABEL
             out[d][v] = row
+    return out
+
+
+def _dig(node, path: str):
+    for k in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(k)
+    return node
+
+
+def _controls(conn, post_id) -> list[str]:
+    """The performance controls the post's assets were directed at ("name=level", performance_observations
+    requested, the newest observation per asset)."""
+    rows = conn.execute("SELECT DISTINCT ON (asset_id) requested FROM performance_observations WHERE post_id = %s "
+                        "ORDER BY asset_id, (stage = 'confirm') DESC, created_at DESC", (post_id,)).fetchall()
+    return sorted({f"{k}={v}" for r in rows for k, v in (r["requested"] or {}).items() if v is not None})
+
+
+def post_costs(conn, post_ids: list[str]) -> dict[str, float]:
+    """Each post's all-in cost: every non-GPU ledger entry booked to it or its jobs, plus its jobs' share of the whole
+    bill of the machines they ran on (deploy.report.machine_cost_by_job; boot, downloads, idle and failures
+    included), or, for jobs no machine bill covers, their attributed GPU entries."""
+    if not post_ids:
+        return {}
+    from ..deploy import report
+    rows = conn.execute(
+        """SELECT p.id, p.created_at,
+                  (SELECT coalesce(sum(c.usd), 0) FROM cost_entries c
+                    WHERE (c.post_id = p.id OR c.job_id IN (SELECT j.id FROM jobs j WHERE j.post_id = p.id))
+                      AND c.category NOT IN ('gpu', 'gpu_billed')) AS other,
+                  (SELECT array_agg(j.id::text) FROM jobs j WHERE j.post_id = p.id) AS jobs
+           FROM posts p WHERE p.id = ANY(%s::uuid[])""", (list(post_ids),)).fetchall()
+    if not rows:
+        return {}
+    from datetime import timedelta
+    machine = report.machine_cost_by_job(conn, since=min(r["created_at"] for r in rows) - timedelta(days=1))
+    out = {}
+    for r in rows:
+        jobs = r["jobs"] or []
+        billed = sum(float(machine[j]) for j in jobs if j in machine)
+        loose = [j for j in jobs if j not in machine]
+        gpu = float(conn.execute("SELECT coalesce(sum(usd), 0) u FROM cost_entries WHERE category = 'gpu' "
+                                 "AND job_id = ANY(%s::uuid[])", (loose,)).fetchone()["u"]) if loose else 0.0
+        out[str(r["id"])] = round(float(r["other"] or 0) + billed + gpu, 6)
     return out
 
 

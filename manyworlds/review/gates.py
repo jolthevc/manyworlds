@@ -293,7 +293,7 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                        realism_score=scores.get("realism"), scene_score=scores.get("scene"), defects=details.get("defects", []))
             res.update({g: res.get(g, True) and ok for g, (ok, _) in checks.items()})
             res["accepted"] = all(res[g] for g in gates) and all(res.get(g, True)
-                                                                 for g in (*detail.JUDGED, "set_match", "brand",
+                                                                 for g in (*detail.JUDGED, "set_match",
                                                                            *BODY_CHECKS))
             if res["accepted"]:
                 still.append(a)

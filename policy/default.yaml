@@ -404,8 +404,9 @@ review:
     # hands or arms; framing = a face in a shot that has none (cutaway, hands, object) or anyone in a set plate.
     body_checks: {anatomy: true, framing: true}
     # Brand alignment (owner 2026-11-25; review.common.BRAND_RULE, scored in the same call when the creator has a
-    # presentation register): an image under this is a clear misfit for her register and is rejected; above it the
-    # score only ranks. Distribution risk is a report (and routing) only, never a reject.
+    # presentation register): rank only since 2026-11-26 (generous publishing: review.reject_only). The score ranks
+    # candidates (production.steps.RANKED_GATES); an image under this bar is flagged `off_register` in its row, a
+    # report, never a reject. Distribution risk is a report (and routing) only, never a reject.
     min_brand_alignment: 3
     reference_images: 3        # creator reference photos shown with every review
     max_jobs_per_run: 50
@@ -572,6 +573,37 @@ review:
     landmarker_path: /opt/models/face_landmarker.task
     timeout_seconds: 300
   max_repairs_per_post: 4    # day 5: regenerations allowed before a post is dropped
+  # Generous publishing (owner 2026-11-26: "the evaluator is not the audience"). After media exists only a material
+  # defect may reject: every review gate that can fail a candidate maps to one of `classes`; the gates in `rank_only`
+  # are scored and inform selection and future experiments, never regeneration (tests/test_learning_harness.py checks
+  # every enforced post-media gate against this list, so a new rejecting gate needs a class here first).
+  reject_only:
+    principle: "after media exists only material defects reject; subjective preferences rank and inform, never regenerate"
+    classes: [artifacts, anatomy_motion, identity_drift, lip_sync_audio, technical_quality, safety_rights_policy,
+              functional_failure]
+    gates:
+      identity: identity_drift
+      dance_identity: identity_drift
+      realism: artifacts
+      background: artifacts
+      teeth: artifacts
+      final_seams: artifacts
+      motion: anatomy_motion
+      anatomy: anatomy_motion
+      hands: anatomy_motion
+      lip_sync: lip_sync_audio
+      lip_closure: lip_sync_audio
+      intelligibility: lip_sync_audio
+      final_sync: lip_sync_audio
+      final_lip_sync: lip_sync_audio
+      final_real: technical_quality
+      review: technical_quality          # the judge could not read the file at all (review.image.max_review_errors)
+      safety: safety_rights_policy
+      framing: functional_failure        # a face where the shot must show none, anyone in a set plate
+      set_match: functional_failure      # a carousel photo in another place than its set
+      consistency: functional_failure    # set or outfit continuity against its references (when enforced)
+      final_face_clear: functional_failure   # on-screen text over the face
+    rank_only: [scene, direction, brand, distribution, performance]
   # Targeted repair (manyworlds.review.repair): a rejected scene is diagnosed from its review rows (the gate that
   # failed most) and the next job gets that cause's fix, within max_repairs_per_post. Unsafe output is never
   # regenerated. {scene} is the scene text; `scene` leads the prompt, the others follow it. A hint is positive wording, or
@@ -1081,11 +1113,12 @@ voice:
       spread_norm_st: [0.5, 2.5]
       rate_cv_norm: [0.03, 0.15]
       weights: {lines: 0.6, fit: 0.25, delivery_spread: 0.1, rate_variation: 0.05}
-  # Every voice line in production gets the same cheap scores; a line that fails (unclear, robotic, flat, off pace,
-  # not her voice) is spoken again with a new seed and the next emotion strength, at most `repairs` times, and the
-  # best take is kept (its scores in the asset meta: lines[].judge, quality). Needs talkcomfy v21 (older images
-  # ignore it).
-  line_check: {enabled: true, repairs: 2, strength_steps: [1.25, 0.8]}
+  # Every voice line in production gets the same cheap scores. Only a material defect (`regenerate_on`: unclear,
+  # robotic, not her voice; review.reject_only) is spoken again with a new seed and the next emotion strength, at most
+  # `repairs` times, and the best take is kept; flat and off-pace lines keep their take and are recorded (reasons in
+  # the asset meta: lines[].judge, quality), never regenerated (owner 2026-11-26). Needs talkcomfy v21 (older images
+  # ignore it); the regenerate_on rule needs a talkcomfy rebuild (older images regenerate every failing line).
+  line_check: {enabled: true, repairs: 2, strength_steps: [1.25, 0.8], regenerate_on: [unclear, robotic, inconsistent]}
   # The judges' models, all on the voice job's GPU. Licences checked 2026-11-25: UTMOS22 strong (MIT code and
   # weights, via tarepan/SpeechMOS v1.2.0); alefiury gender (Apache-2.0, LibriSpeech); empiriolabsai/speaker-age
   # (Apache-2.0, new and unproven: soft weight only). Excluded: audeering age/gender (CC-BY-NC-SA-4.0), torchaudio
@@ -2002,6 +2035,62 @@ brain:
   # Exploration directions (manyworlds.brain.exploration): Thompson draws over measured effects and untried
   # formats/stagings (prior N(0, prior_sd) in log-lift); the top `directions` steer the exploratory ideas.
   exploration: {directions: 3, prior_sd: 0.3}
+  # Exploration temperature (manyworlds.brain.exploration.mix; owner 2026-11-26): every idea is labelled refine (build
+  # on what works), adjacent (a step from it: a new setting, hook or format on proven ground) or novel (something she
+  # hasn't done). The share of adjacent and novel ideas is set by her stage (by_stage; refine is the rest): high at
+  # launch, when the audience is unknown, lower once a formula works, raised again on a plateau (plateau: a creator in
+  # one of its stages whose real follower count did not grow over growth_days). A creator's own shares
+  # (creators.<creator_id>.adjacent|novel) are set only through brain.authority (manyworlds.brain.overrides), so they
+  # are versioned and reversible. The portfolio total is brain.exploration_share: when the portfolio's realised share
+  # over portfolio.window_days (at least min_ideas ideas) is off it, every creator's adjacent and novel shares are
+  # scaled toward it by at most max_correction. A batch's exact counts close the gap her last window_days of batches
+  # left; the showrunner is given them, and code trims a batch that came back more than trim_over_share over its size
+  # (the most over-target level first; never an experiment slot) and flags ideas over their level's count, with no
+  # extra model call.
+  exploration_mix:
+    window_days: 14
+    trim_over_share: 0.25
+    by_stage:
+      default: {adjacent: 0.25, novel: 0.1}
+      exploring: {adjacent: 0.3, novel: 0.25}
+      iterating: {adjacent: 0.3, novel: 0.15}
+      growing: {adjacent: 0.2, novel: 0.08}
+      breaking_out: {adjacent: 0.15, novel: 0.05}
+      established: {adjacent: 0.25, novel: 0.1}
+    plateau: {stages: [growing, breaking_out, established], growth_days: 28, adjacent: 0.3, novel: 0.15}
+    creators: {}
+    portfolio: {window_days: 14, min_ideas: 20, max_correction: 0.25}
+  # Hypotheses, not permanent beliefs (manyworlds.brain.hypotheses; docs/2026-11-26-learning-harness.md 4.3-4.5). A
+  # finding is due for a retest retest_days (by grade) after it was last tested; past that its weight halves every
+  # decay.half_life_days, down to decay.floor, until it is retested. Weight = grade x origin (our own controlled
+  # experiments outrank every other kind of evidence) x replication ((1 + replication_bonus x held, at most
+  # 1 + max_replication_bonus) / (1 + contradiction_weight x failed)) x decay. Planning prompts show each
+  # finding's level, replications and age, highest weight first.
+  # propagation: a creator's proven experiment opens a speculative archetype-level hypothesis for comparable creators
+  # (comparable: primary_archetype, or any_archetype they share), offered to them as an experiment (never a rule);
+  # each comparable creator's test adds a replication or a contradiction. tentative_after creators where it held grade
+  # it tentative; held across portfolio_after_archetypes archetypes raises its level to portfolio; contradictions
+  # outnumbering replications by retire_after_contradictions close it. cards: a pattern card held for a creator whose
+  # posts that applied it (at least min_posts_per_creator) reached hold_ratio x her median or more, failed under
+  # fail_ratio; a card's outcomes are due for a retest retest_days after its last tested post.
+  hypotheses:
+    retest_days: {proven: 90, tentative: 45, speculative: 30}
+    decay: {half_life_days: 60, floor: 0.25}
+    grade_weight: {proven: 1.0, tentative: 0.6, speculative: 0.3}
+    origin_weight: {experiment: 1.0, creator: 0.6, post: 0.3, research: 0.5}
+    contradiction_weight: 1.5
+    replication_bonus: 0.25
+    max_replication_bonus: 1.0
+    propagation: {enabled: true, comparable: any_archetype, tentative_after: 2, portfolio_after_archetypes: 2,
+                  retire_after_contradictions: 2, offer_as_experiment: true, shown: 5}
+    cards: {hold_ratio: 1.0, fail_ratio: 0.8, min_posts_per_creator: 3, retest_days: 60}
+  # Outcome joins (manyworlds.brain.evidence.attribution): the shot-sheet fields joined to outcomes as directed
+  # attributes (dimension: dotted path in a shot), beside the performance controls asked for (dimension `control`)
+  # and each post's all-in cost (every ledger entry booked to it or its jobs, with its jobs' share of their machines'
+  # whole bill: deploy.report.machine_cost_by_job).
+  attribution:
+    directed: {shot_size: framing.shot_size, device: framing.device, camera_move: framing.camera_move,
+               energy: performance.energy, time_of_day: set.time_of_day}
   # Feed QA at scheduling (manyworlds.brain.feed_qa): ideas that would repeat an attribute value more than
   # max_repeat times in the last `window` posts, near-duplicate a recent caption or scene (similarity 0-1), or
   # score below a floor on an idea-rubric dimension (naturalness: doesn't sound like them) are dropped.
@@ -2027,6 +2116,11 @@ brain:
     qa_drop_share: 0.5           # ...more than this share dropped
     max_per_type_per_creator_per_day: 3
     routes: {breakout: analyst, drop: talent_manager, qa_surge: owner}   # drop: the manager diagnoses (mode diagnose)
+    # Noise guard: a breakout reaches planning as one unreplicated observation until one of its attributes (from
+    # `attributes`: the format, the idea's attributes, applied pattern cards) recurs in at least min_posts breakouts of
+    # her own or of comparable creators (brain.hypotheses.propagation.comparable) over lookback_days, same mode.
+    noise_guard: {attributes: [format, setting, outfit, activity, mood, staging, flavor, move, pattern_card, exploration],
+                  min_posts: 3, lookback_days: 90}
   # Launches (manyworlds.brain.launches): an approved launch walks bible -> reference pack -> anchors -> LoRA ->
   # profile -> ready (sandbox + account request); a step whose jobs fail is retried this many times, then stops.
   launches: {max_step_retries: 2, step_timeout_hours: 48, min_reference_renders: 8}
@@ -2077,7 +2171,7 @@ brain:
     max_predictions: 5                 # checkable claims recorded a run (role strategist, scored by mw brain scorecard)
     # Conviction: belief about weekly log growth of reach (real data only), prior N(prior_mean, prior_sd).
     conviction: {prior_mean: 0.0, prior_sd: 0.15, min_weeks: 3, voi_weight: 0.5, alternative_mean: 0.0, retire_margin: 0.02}
-  exploration_share: 0.3          # share of each batch spent on untried directions and open experiments
+  exploration_share: 0.3          # the portfolio's target share of adjacent and novel ideas (brain.exploration_mix)
   # Creative evaluation (manyworlds.brain.evaluation): each item scored `samples` times; median and
   # spread kept. check_rate of items also get an evaluator_check score. max_spread: calibration bar.
   # samples: 1 since 2026-11-21 (was 3): two more only for an idea within resample.margin of a feed-QA floor, the
@@ -2109,7 +2203,8 @@ brain:
                    brand: {core_change_min_real_posts: 30, core_change_days: 60, attribution_posts: 60,
                            presentation: {max_step: 1},
                            growth_days: 28,
-                           attribution_dims: [format, outfit, setting, shot_type, pattern_card, archetype]}}
+                           attribution_dims: [format, outfit, setting, shot_type, pattern_card, archetype,
+                                              exploration, control, shot_size, device, camera_move, energy]}}
   # Decision rights (manyworlds.brain.proposals; docs/superpowers/plans/2026-11-23-agency.md): who decides each kind
   # of request, and what each role may decide alone. Code checks them; the model only argues. Anything over a role's
   # rights goes to the owner.
@@ -2183,6 +2278,8 @@ brain:
     observed_paths: ["llm.roles.*"]
     autonomous:
       - {path: "brain.exploration_share", min: 0.1, max: 0.6}
+      - {path: "brain.exploration_mix.creators.*.adjacent", min: 0, max: 0.5}
+      - {path: "brain.exploration_mix.creators.*.novel", min: 0, max: 0.4}
       - {path: "brain.llm_usd_per_day.*", min: 0, max: 5}
 
 planner:

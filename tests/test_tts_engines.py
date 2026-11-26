@@ -102,8 +102,28 @@ def test_the_engine_hears_only_the_words_and_takes_the_emotion_as_its_own_contro
     assert line["judge"]["passed"] and line["judge"]["repairs"] == 0 and meta["quality"]["passed"] == 1
 
 
-def test_a_flat_line_is_regenerated_at_the_next_strength_and_the_best_take_kept(fake, ctx, ref_uri, policy):
-    fake.flat_until = 1                      # the first take is flat, the repair moves
+def _robotic_when_quiet(monkeypatch):
+    """Quiet (flat) takes also sound robotic: a MOS under voice.judge.min_mos, a material defect."""
+    monkeypatch.setattr(vj, "_mos", lambda params: (lambda wav, sr: 2.0 if float(np.max(wav)) < 0.15 else 4.1))
+
+
+def test_a_flat_line_keeps_its_take_and_is_recorded_never_regenerated(fake, ctx, ref_uri, policy):
+    """Generous publishing (owner 2026-11-26): flat or off-pace is a preference, not a defect."""
+    fake.flat_until = 1                      # the first take is flat (and otherwise fine)
+    res = te.speak_indextts({"ref_uri": ref_uri, "ref_text": "Okay.", "seed": 5,
+                             "lines": [{"text": "So I get to the market really early, right.",
+                                        "emotion": {"name": "storytelling", "vector": [0.3] + [0] * 7}}],
+                             "params": _params(policy)}, ctx)
+    assert [c["strength"] for c in fake.calls] == [1.0]          # spoken once
+    judge = res.outputs[0].meta["lines"][0]["judge"]
+    assert not judge["passed"] and judge["repairs"] == 0 and not judge["defect"]
+    assert any(r.startswith("flat") for r in judge["reasons"])   # recorded
+
+
+def test_a_robotic_line_is_regenerated_at_the_next_strength_and_the_best_take_kept(fake, ctx, ref_uri, policy,
+                                                                                    monkeypatch):
+    _robotic_when_quiet(monkeypatch)
+    fake.flat_until = 1                      # the first take is robotic, the repair is fine
     res = te.speak_indextts({"ref_uri": ref_uri, "ref_text": "Okay.", "seed": 5,
                              "lines": [{"text": "So I get to the market really early, right.",
                                         "emotion": {"name": "storytelling", "vector": [0.3] + [0] * 7}}],
@@ -112,19 +132,20 @@ def test_a_flat_line_is_regenerated_at_the_next_strength_and_the_best_take_kept(
     steps = policy.get("voice", "line_check", "strength_steps")
     assert strengths == [1.0, steps[0]]
     judge = res.outputs[0].meta["lines"][0]["judge"]
-    assert judge["passed"] and judge["repairs"] == 1 and judge["f0_std_st"] > 1.2
+    assert judge["passed"] and judge["repairs"] == 1 and judge["f0_std_st"] > 1.2 and not judge["defect"]
     seeds = [c["seed"] for c in fake.calls]
     assert seeds[1] != seeds[0]
 
 
-def test_a_line_that_never_passes_keeps_its_best_take_and_says_why(fake, ctx, ref_uri, policy):
+def test_a_line_that_never_passes_keeps_its_best_take_and_says_why(fake, ctx, ref_uri, policy, monkeypatch):
+    _robotic_when_quiet(monkeypatch)
     fake.flat_until = 99
     res = te.speak_indextts({"ref_uri": ref_uri, "ref_text": "Okay.", "seed": 5,
                              "lines": [{"text": "So I get to the market really early, right."}],
                              "params": _params(policy)}, ctx)
     judge = res.outputs[0].meta["lines"][0]["judge"]
     assert len(fake.calls) == 1 + policy.get("voice", "line_check", "repairs")
-    assert not judge["passed"] and any(r.startswith("flat") for r in judge["reasons"])
+    assert not judge["passed"] and judge["defect"] and any(r.startswith("robotic") for r in judge["reasons"])
     assert res.outputs[0].meta["quality"] == {"lines": 1, "passed": 0, "composite": judge["composite"],
                                               "repairs": judge["repairs"]}
 

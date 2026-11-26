@@ -204,6 +204,16 @@ def _context(conn, policy: Policy, t: dict) -> str:
     ])
 
 
+def _hypotheses_text(conn, policy: Policy) -> str:
+    """What has held for which archetype across our own creators (manyworlds.brain.hypotheses, real evidence only), with
+    how many creators it held and failed in: hypotheses about an archetype, never proof about a new creator."""
+    from . import hypotheses
+    rows = hypotheses.casting_views(conn, policy)
+    return (f"Archetype-level hypotheses from our own creators' experiments (replicated_in: creators where it held; "
+            f"suggestions about an archetype, never proof for a new creator): {json.dumps(rows, default=str)}"
+            if rows else "")
+
+
 # --- cast: concepts, judge, code scores -----------------------------------------------------------------------------
 def develop(conn, policy: Policy, llm, t: dict) -> list[dict]:
     """The concepts (one call)."""
@@ -218,6 +228,7 @@ def develop(conn, policy: Policy, llm, t: dict) -> list[dict]:
         f"The archetype library (name: what it is): {json.dumps(archetypes.catalogue(policy))}",
         (f"Pattern cards for casting (what makes creators like this worth following; patterns, never a person):\n"
          f"{patterns.brief(cards)}" if cards else ""),
+        _hypotheses_text(conn, policy),
         _culture(conn, policy),
         f"Handles already taken: {taken}. Minimum apparent age {scope.get('creator_min_age', 21)}. Never touch: "
         f"{scope.get('excluded_topics')}.",

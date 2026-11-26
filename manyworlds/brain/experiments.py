@@ -11,6 +11,10 @@ each arm has its sample: a fixed horizon, so looking every batch can't inflate f
 is sized when the experiment opens, for `power` to detect `mde` given the creator's outcome spread. A clear difference becomes a `proven` finding (evidence `experimental`, or `simulated` for
 sandbox creators, through manyworlds.brain.evidence); no difference is recorded on the experiment, which
 is a result too. One experiment per creator and effect, ever.
+
+Cross-portfolio (manyworlds.brain.hypotheses): a proven result opens a speculative archetype-level hypothesis for
+comparable creators, offered to them here as an experiment (after their own tentative findings), never applied as a
+rule; their results replicate or contradict it.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from statistics import NormalDist
 from psycopg.types.json import Jsonb
 
 from ..policy import Policy
-from . import analysis, evidence
+from . import analysis, evidence, hypotheses
 
 
 def _cfg(policy: Policy) -> dict:
@@ -79,12 +83,16 @@ def concluded_for(conn, creator_id) -> list[dict]:
 
 
 def open_from_findings(conn, policy: Policy, creator_id) -> list[str]:
-    """Open experiments for the creator's tentative findings, strongest first, up to the cap."""
+    """Open experiments for the creator's tentative findings, strongest first (effect x evidence weight:
+    manyworlds.brain.hypotheses.weight), up to the cap; with room left, for the archetype-level hypotheses comparable
+    creators proved (brain.hypotheses.propagation.offer_as_experiment): a suggestion she tests, never a rule."""
     cfg = _cfg(policy)
     room = int(cfg.get("max_open_per_creator", 1)) - len(open_for(conn, creator_id))
     mode = evidence.mode_for(conn, creator_id)
     found = evidence.findings(conn, mode=mode, creator_id=creator_id, grades=("tentative",), domain="content")
-    found.sort(key=lambda f: -abs(float(f["effect"] or 0)))
+    found.sort(key=lambda f: -abs(float(f["effect"] or 0)) * hypotheses.weight(policy, f))
+    if (policy.get("brain", "hypotheses", "propagation", default={}) or {}).get("offer_as_experiment", True):
+        found += hypotheses.hypotheses_for(conn, policy, creator_id)
     tested = {r["effect_key"] for r in conn.execute(
         "SELECT effect_key FROM experiments WHERE creator_id = %s AND mode = %s AND effect_key IS NOT NULL",
         (creator_id, mode)).fetchall()}
@@ -186,6 +194,10 @@ def conclude(conn, policy: Policy, exp: dict, rows: list[dict]) -> dict | None:
         assigned = {r["arm"]: r["n"] for r in conn.execute(
             "SELECT arm, count(*) n FROM ideas WHERE experiment_id = %s GROUP BY arm", (exp["id"],)).fetchall()}
         result = {"status": status, **res, "assigned": assigned, "finding_id": str(finding_id) if finding_id else None}
+        # Across the portfolio: replicate or contradict the hypothesis it tested, or open one for comparable creators.
+        spread = hypotheses.on_experiment(conn, policy, exp, result)
+        if spread:
+            result["hypothesis"] = spread
         conn.execute("UPDATE experiments SET status = 'concluded', result = %s, concluded_at = now(), updated_at = now() "
                      "WHERE id = %s", (Jsonb(result), exp["id"]))
     return result

@@ -61,17 +61,20 @@ This document covers what exists (surveyed, with file references in the session 
 
 ## 4. What we build now (simplest first, all code and policy, no spend)
 
-1. **Defect-only rejection.**
+Status 2026-11-26: items 1-6 built (branch `learning-harness`; tests in `tests/test_learning_harness.py`; migration
+055 applies on deploy). Nothing from "Later" was started.
+
+1. **Defect-only rejection.** *Done:* `review.common.context_verdicts` (brand always passes, flagged `off_register`, ranked by `production.steps.RANKED_GATES`); `voice_eval.line_verdict` `regenerate` (policy `voice.line_check.regenerate_on`; needs a talkcomfy rebuild to reach the worker); policy `review.reject_only` with its gate-to-class map.
    - `brand` alignment becomes rank only: off-register images lose in selection and are never rejected.
    - The voice line check regenerates only unclear, robotic or wrong-voice lines. Flat and off-pace lines keep their best take and are recorded.
    - A policy principle names what may reject (owner's list): artifacts, anatomy, identity drift, lip-sync or audio defects, technical quality, safety and rights, functional failure.
-2. **Exploration temperature, enforced and measured.**
+2. **Exploration temperature, enforced and measured.** *Done:* `brain/exploration.py` (`shares`, `batch_targets`, `reconcile`), policy `brain.exploration_mix`, authority paths `brain.exploration_mix.creators.*.adjacent|novel`; the batch decision's `exploration_mix`, `creator_states.evidence_window.exploration`, attribution dimension `exploration`. Code trims and flags; it never relabels.
    - Each idea carries `exploration: refine | adjacent | novel`.
    - Policy sets the shares per stage (launch, growth, plateau), and the portfolio total.
    - A creator may override, within `brain.authority`.
    - The showrunner is given exact counts per batch, and code tops up or trims to the target.
    - Realised shares and their outcomes go in the evidence windows.
-3. **Hypothesis records.** Findings and cards gain:
+3. **Hypothesis records.** *Done:* migration 055, `brain/hypotheses.py` (weight, decay, view), policy `brain.hypotheses`. Findings and cards gain:
    - `origin`: post, creator, research, or experiment;
    - `applies_to`: archetype, vertical, audience, model, as context tags;
    - `level`: post, character, archetype, vertical, portfolio, production;
@@ -80,9 +83,9 @@ This document covers what exists (surveyed, with file references in the session 
    - `last_tested` and `retest_after`.
 
    Evidence weight decays past `retest_after` until the finding is retested, and a stale proven finding shows as "due for retest". Planning prompts show each finding with its level, its replication count and its age.
-4. **Cross-portfolio propagation.** A creator-level `proven` finding opens a speculative hypothesis at archetype level for comparable creators. It is offered to their showrunners as an experiment suggestion, never applied as a rule. Replication across creators raises its level and weight; a contradiction lowers it. Casting reads the archetype-level hypotheses with their replication counts.
-5. **Noise guard.** A breakout reaches planning as "one post, unreplicated" until the same attribute repeats across comparable posts. The outcome join adds performance controls, all-in cost and directed attributes.
-6. **Rollback.** `mw policy revert <override>` restores the previous value as a new override, with the reason recorded.
+4. **Cross-portfolio propagation.** *Done:* `hypotheses.on_experiment` (from `experiments.conclude`), `hypotheses_for` (experiment flow and showrunner), `casting._hypotheses_text`. A creator-level `proven` finding opens a speculative hypothesis at archetype level for comparable creators. It is offered to their showrunners as an experiment suggestion, never applied as a rule. Replication across creators raises its level and weight; a contradiction lowers it. Casting reads the archetype-level hypotheses with their replication counts.
+5. **Noise guard.** *Done:* `events.replication` / `for_planning` (policy `brain.events.noise_guard`); `evidence.attribution` dimensions `control` and `brain.attribution.directed`, and `usd_per_post` / `reach_per_usd` per group. A breakout reaches planning as "one post, unreplicated" until the same attribute repeats across comparable posts. The outcome join adds performance controls, all-in cost and directed attributes.
+6. **Rollback.** *Done:* `overrides.revert`, `mw policy overrides` and `mw policy revert <override-id> --reason R` (only the latest override of a path; the same authority rules). `mw policy revert <override>` restores the previous value as a new override, with the reason recorded.
 
 **Later, each needing its own go-ahead:**
 - blinded pairwise comparisons, used to calibrate the judges against owner picks;

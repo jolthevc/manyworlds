@@ -67,7 +67,7 @@ def test_invalid_ideas_are_dropped_with_reasons(conn, policy):
     assert conn.execute("SELECT count(*) n FROM ideas").fetchone()["n"] == 1
 
 
-def test_the_prompt_carries_memory_scores_findings_and_the_exploration_share(conn, policy):
+def test_the_prompt_carries_memory_scores_findings_and_the_exploration_counts(conn, policy):
     cid = _maren(conn)
     evidence.record_finding(conn, scope="creator", creator_id=cid, statement="steam shots get saved",
                             evidence="simulated", grade="tentative")
@@ -77,7 +77,9 @@ def test_the_prompt_carries_memory_scores_findings_and_the_exploration_share(con
     prompt = str(llm.calls[0]["content"])
     assert "top-floor flat above a bakery" in prompt                    # memory
     assert "steam shots get saved" in prompt and "SIMULATED" in prompt  # sandbox findings, labelled
-    assert "45%" in prompt                                              # exploration share from the effective policy
+    # the exploration temperature: exact counts per level (brain.exploration_mix; the portfolio total
+    # brain.exploration_share only corrects once the portfolio has enough ideas)
+    assert "Exploration: of the" in prompt and " refine (" in prompt and " novel (" in prompt
 
 
 def test_a_rerun_does_not_write_the_batch_twice(conn, policy):
