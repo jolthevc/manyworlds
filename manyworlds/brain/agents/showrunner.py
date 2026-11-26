@@ -159,7 +159,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
                     if offered else "")
     last = analyst.latest(conn, creator_id)
     guidance = (last["output"] or {}).get("guidance") if last else None
-    hypotheses = [h["statement"] for h in ((last["output"] or {}).get("hypotheses") or [])] if last else []
+    analyst_hypotheses = [h["statement"] for h in ((last["output"] or {}).get("hypotheses") or [])] if last else []
     mix = exploration.batch_targets(conn, policy, creator_id, counts["total"])
     t = mix["targets"]
     scope = policy.get("scope", default={})
@@ -243,7 +243,7 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"{offered_text}{niche_text}{play_text}{card_text}{culture_text}{brief_text}{style_text}"
         f"The analyst's latest guidance for this batch (follow it where the evidence is strong, keep exploring where "
         f"it isn't; say in an idea's reasoning when a finding shaped it): "
-        f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': hypotheses}) if guidance else 'no analysis yet'}\n\n"
+        f"{json.dumps({'label': 'SIMULATED (sandbox test)' if mode == 'sandbox' else 'real', 'guidance': guidance, 'hypotheses': analyst_hypotheses}) if guidance else 'no analysis yet'}\n\n"
         f"Days: {day_names} (weekly rituals happen on their weekday; it is {season} where she lives: the light, "
         f"weather, food and things to do follow the season). "
         f"Plan about {counts['total']} posts and Stories over {days} days (day 0 to {days - 1}): "
