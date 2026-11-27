@@ -371,3 +371,19 @@ def test_a_large_own_photo_is_downscaled_for_the_read_not_skipped(tmp_path):
     assert buf.tell() > 400000
     small = own_annotation._shrink(buf.getvalue(), 400000, 1024)
     assert small and len(small) <= 400000 and Image.open(io.BytesIO(small)).size[1] == 1024
+
+
+def test_the_gold_sample_is_third_party_posts_still_held_spread_across_creators(conn, policy):
+    """Owner 2026-11-27: gold sets from third-party posts, not our own while their quality is unknown."""
+    for h in ("a", "b", "c"):
+        c = _ref_creator(conn, handle=h)
+        for i in range(5):
+            pid = _ref_post(conn, c, i, 100, coded={"candid_level": "candid"})
+            conn.execute("UPDATE reference_posts SET media = %s, media_purge_after = now() + interval '3 days' "
+                         "WHERE id = %s", (Jsonb([{"uri": "s3://r/x.jpg", "kind": "image"}]), pid))
+        gone = _ref_post(conn, c, 9, 100, coded={"candid_level": "candid"})          # purged: never sampled
+        conn.execute("UPDATE reference_posts SET media = '[]'::jsonb WHERE id = %s", (gone,))
+    got = gold.external_items(conn, policy, 10, per_creator=2)
+    assert len(got) == 6 and all(p["media"] for p in got)
+    assert sorted({str(p["creator_id"]) for p in got}) == sorted({str(p["creator_id"]) for p in got})
+    assert max(sum(1 for q in got if q["creator_id"] == p["creator_id"]) for p in got) == 2

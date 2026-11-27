@@ -2009,7 +2009,10 @@ intelligence:
     repeat: true                                       # the production annotator reads the item again
     min_alpha: 0.67
     min_items: 30                                      # an attribute with fewer paired items is `untested`, not flagged
-    own_assets: 60                                     # own accepted images per gold run (rights-clean)
+    external_items: 60                                 # third-party research posts per gold run (owner 2026-11-27:
+    external_per_creator: 2                            # not our own posts while their quality is unknown)
+    seed: gold-v1
+    own_assets: 60                                     # own accepted images (run_own; not used for now)
     max_usd_per_run: 15.0
     share_at_read: 0.05                                # external reads that also get the reference reads, at read time
     agent: research:gold

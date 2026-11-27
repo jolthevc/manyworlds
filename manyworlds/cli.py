@@ -1163,19 +1163,16 @@ def _research_loop(args, conn, pol) -> int:
                 "candidates": propositions.candidates(conn)})
     elif args.action == "agreement":
         _print(gold.report(conn, pol, requester="cli"))
-    elif args.action == "gold":
-        items = gold.own_items(conn, int(args.assets or gold.cfg(pol).get("own_assets", 60)))
+    elif args.action == "gold":   # third-party research posts (owner 2026-11-27: not our own posts yet)
+        n = int(args.assets or gold.cfg(pol).get("external_items", 60))
         if args.dry_run:
-            _print({"dry_run": True, "own_assets": len(items), "cap_usd": args.usd or gold.cfg(pol).get(
-                "max_usd_per_run"), "monthly_left_usd": budget.left(conn, pol)})
+            items = gold.external_items(conn, pol, n)
+            _print({"dry_run": True, "posts": len(items), "creators": len({p["creator_id"] for p in items}),
+                    "cap_usd": args.usd or gold.cfg(pol).get("max_usd_per_run"),
+                    "monthly_left_usd": budget.left(conn, pol)})
             return 0
-        import tempfile
-        from pathlib import Path
-
         from .llm import Claude
-        from .storage import from_url
-        with tempfile.TemporaryDirectory(prefix="mw-gold-") as tmp:
-            _print(gold.run_own(conn, pol, Claude(conn, pol), from_url(), Path(tmp), n=len(items), usd=args.usd))
+        _print(gold.run_external(conn, pol, Claude(conn, pol), n=n, usd=args.usd))
     elif args.action == "ask":
         if not args.question:
             print('usage: mw research ask --question "..." [--kind data|web|both]')

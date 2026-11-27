@@ -294,3 +294,96 @@ def spot_check(conn, policy: Policy, unit_id: str, labels: dict[str, str], who: 
             spine.put_value(conn, unit_id, attr, value=v, method="human", annotator=who, purpose="spot_check")
             n += 1
     return n
+
+
+# --- a gold run on third-party research posts (owner 2026-11-27: not on our own posts while their quality is unknown)
+def external_items(conn, policy: Policy, n: int, *, per_creator: int | None = None) -> list[dict]:
+    """Reference posts already read by the production annotator, whose research copies are still held (within the
+    data policy's window), spread across creators (at most per_creator each), in a seeded random order: a
+    representative sample, not the outliers."""
+    import random
+    c = cfg(policy)
+    k = int(per_creator or c.get("external_per_creator", 2))
+    rows = [dict(r) for r in conn.execute(
+        """SELECT p.* FROM reference_posts p
+           WHERE p.media_purge_after > now() AND p.media <> '[]'::jsonb
+             AND EXISTS (SELECT 1 FROM reference_annotations a WHERE a.post_id = p.id AND a.schema = %s
+                         AND a.source = 'external')
+           ORDER BY p.id""", (ann.ANNOTATION_SCHEMA,)).fetchall()]
+    random.Random(str(c.get("seed", "gold-v1"))).shuffle(rows)
+    taken: dict = {}
+    out = []
+    for r in rows:
+        if taken.get(r["creator_id"], 0) < k:
+            out.append(r)
+            taken[r["creator_id"]] = taken.get(r["creator_id"], 0) + 1
+        if len(out) >= n:
+            break
+    return out
+
+
+def run_external(conn, policy: Policy, llm, *, n: int | None = None, usd: float | None = None) -> dict:
+    """The repeat and reference reads of up to n third-party posts the production annotator has already read (its
+    read is the `production` coder, mirrored by the spine sync), with the external annotator's own image loading;
+    only to processors the data policy lists. Within the run cap and the monthly ceiling; then the agreement report."""
+    from datetime import datetime, timezone
+
+    from ..brain.agents.intelligence import Intelligence, ReadBatch, read_system
+    from . import budget, references, spine
+    from .data_policy import processor_ok
+    c = cfg(policy)
+    agent = str(c.get("agent", "research:gold"))
+    cap = min(float(usd if usd is not None else c.get("max_usd_per_run", 15.0)), budget.left(conn, policy))
+    started = datetime.now(timezone.utc)
+    spine.sync(conn, policy)
+    items = external_items(conn, policy, int(n or c.get("external_items", 60)))
+    acfg = policy.get("intelligence", "agent", "annotate", default={}) or {}
+    per_call = max(1, int(acfg.get("posts_per_call", 4)))
+    prod_role = str((policy.get("intelligence", "agent", "roles", default={}) or {}).get("annotate", "iia_annotate"))
+    passes = ([("repeat", prod_role)] if c.get("repeat", True) else []) + \
+             [("gold", str(r)) for r in c.get("reference_roles") or []]
+    refused = [r for _, r in passes if not processor_ok(policy, llm.model_for(r))]
+    if refused:
+        return {"refused": f"not in data_policy.processors: {refused}"}
+    store = references.research_store(policy)
+    reader = Intelligence()
+    units = {str(p["id"]): str(conn.execute(
+        "SELECT id FROM content_units WHERE ref_table = 'reference_posts' AND ref_id = %s AND level = 'post'",
+        (str(p["id"]),)).fetchone()["id"]) for p in items}
+    calls, stopped, failed = 0, None, []
+    for purpose, role in passes:
+        for i in range(0, len(items), per_call):
+            if _spent(conn, agent, started) >= cap:
+                stopped = f"run cap ${cap:.2f} reached"
+                break
+            chunk = items[i:i + per_call]
+            content = reader._read_content(conn, policy, store, chunk, acfg)
+            try:
+                with llm.tagged(agent, None):
+                    got = llm.structured(role, system=read_system(policy), content=content, schema=ReadBatch,
+                                         effort="low")
+            except Exception as e:  # noqa: BLE001 - an answer outside the schema loses one batch
+                failed.append(f"{purpose}:{role}: {type(e).__name__}: {str(e)[:160]}")
+                calls += 1
+                continue
+            calls += 1
+            reads = {r.post: r.annotation for r in (getattr(got, "reads", None) or [])
+                     if isinstance(getattr(r, "post", None), int)}
+            annotator = llm.model_for(role) if purpose == "repeat" else f"{role}:{llm.model_for(role)}"
+            for j, post in enumerate(chunk, 1):
+                read = reads.get(j)
+                if read is None:
+                    continue
+                coded = getattr(read.observed, "coded", None)
+                raw = coded.model_dump(mode="json") if hasattr(coded, "model_dump") else (coded or {})
+                clean, _ = ann.coerce_coded(raw, ann.vocab(policy))
+                clean = clean.model_dump(mode="json") if hasattr(clean, "model_dump") else clean
+                spine.put_read(conn, units[str(post["id"])], {"coded": clean,
+                                                              "vocab_versions": ann.vocab_versions(policy)},
+                               medium=post["media_type"], annotator=annotator, purpose=purpose)
+        if stopped:
+            break
+    out = report(conn, policy, unit_ids=list(units.values()), requester="gold:external")
+    return {"items": len(items), "creators": len({p["creator_id"] for p in items}), "calls": calls,
+            "spent_usd": round(_spent(conn, agent, started), 4), "cap_usd": round(cap, 2), "stopped": stopped,
+            "passes": [p for p, _ in passes], "failed_batches": failed, "report": out}

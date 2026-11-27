@@ -437,10 +437,10 @@ def file_gaps(conn, policy) -> dict:
                          spec={"tests": [{"kind": "main", "attrs": [a]}], "uses": ["showrunner", "style_director",
                                                                                  "casting"]}))
     if not looked and len(rows) >= int(g.get("min_posts", 40)):
-        filed.append(ask(conn, policy, "gaps", "What do the posts furthest above their creator's median share, and "
-                         "what do winners use that our own content does not?",
-                         spec={"explore": [{"method": "outliers"}, {"method": "contrast_sources"},
-                                           {"method": "format_fit"}, {"method": "evolution"}],
+        # third-party content only for now (owner 2026-11-27): no comparison with our own posts in the weekly look
+        filed.append(ask(conn, policy, "gaps", "What do the posts furthest above their creator's median share, which "
+                         "formats carry which creators, and how did their format mix change?",
+                         spec={"explore": [{"method": "outliers"}, {"method": "format_fit"}, {"method": "evolution"}],
                                "uses": ["showrunner", "style_director", "director"]}))
     return {"filed": filed, "posts": len(rows)}
 
