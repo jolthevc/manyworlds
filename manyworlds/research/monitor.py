@@ -180,7 +180,7 @@ def select(conn, policy: Policy, creator_id, fresh: dict[str, dict], *, now: dat
     # from the eligible rest, whatever its numbers, so estimates aren't built only from outliers. Seeded by creator
     # and day: a rerun of the same check draws the same post.
     share = float(policy.get("intelligence", "random_share", default=0) or 0)
-    if share > 0:
+    if share > 0 and len(rows) > 1:
         import random
         taken = {x["id"] for x in chosen}
         eligible = [str(r["id"]) for i, r in enumerate(rows[:-1]) if r["selected"] is None and str(r["id"]) not in taken

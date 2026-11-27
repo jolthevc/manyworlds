@@ -24,7 +24,7 @@ def _ref_post(conn, creator, i, likes, *, days_old=10.0, media="photo", coded=No
     pid = conn.execute(
         "INSERT INTO reference_posts (creator_id, platform, external_id, media_type, posted_at, metrics, snapshots, "
         "fetched_at) VALUES (%s, 'instagram', %s, %s, %s, %s, %s, %s) RETURNING id",
-        (creator, f"{creator}-{i}", media, posted, Jsonb({"likes": likes, "comments": 1}),
+        (creator, f"{creator}-{i}", media, posted, Jsonb({"likes": likes, "comments": 1, "shares": 2, "saves": 3}),
          Jsonb([{"at": (posted + timedelta(days=1)).isoformat(), "likes": likes // 2}]), posted + timedelta(days=days_old))
     ).fetchone()["id"]
     if coded is not None:
