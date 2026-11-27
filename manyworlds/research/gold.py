@@ -223,7 +223,7 @@ def run_own(conn, policy: Policy, llm, store, workdir: Path, *, n: int | None = 
              [("gold", str(r)) for r in c.get("reference_roles") or []]
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    units, calls, stopped = {}, 0, None
+    units, calls, stopped, failed = {}, 0, None, []
     for a in items:
         post = spine.upsert_unit(conn, source="own", level="post", ref_table="posts", ref_id=a["post_id"],
                                  platform="own", format=a.get("format"))
@@ -249,9 +249,14 @@ def run_own(conn, policy: Policy, llm, store, workdir: Path, *, n: int | None = 
                 seen.append((j, a))
             if not seen:
                 continue
-            with llm.tagged(agent, None):
-                got = llm.structured(role, system=own.OWN_NOTE + read_system(policy), content=blocks,
-                                     schema=ReadBatch, effort="low")
+            try:
+                with llm.tagged(agent, None):
+                    got = llm.structured(role, system=own.OWN_NOTE + read_system(policy), content=blocks,
+                                         schema=ReadBatch, effort="low")
+            except Exception as e:  # noqa: BLE001 - an answer outside the schema (2026-11-27: a situation off the
+                failed.append(f"{purpose}:{role}: {type(e).__name__}: {str(e)[:160]}")   # list) loses one batch
+                calls += 1
+                continue
             calls += 1
             reads = {r.post: r.annotation for r in (getattr(got, "reads", None) or [])
                      if isinstance(getattr(r, "post", None), int)}
@@ -272,7 +277,8 @@ def run_own(conn, policy: Policy, llm, store, workdir: Path, *, n: int | None = 
             break
     out = report(conn, policy, unit_ids=list(units.values()), requester="gold:own")
     return {"items": len(items), "calls": calls, "spent_usd": round(_spent(conn, agent, started), 4),
-            "cap_usd": round(cap, 2), "stopped": stopped, "passes": [p for p, _ in passes], "report": out}
+            "cap_usd": round(cap, 2), "stopped": stopped, "passes": [p for p, _ in passes], "failed_batches": failed,
+            "report": out}
 
 
 def spot_check(conn, policy: Policy, unit_id: str, labels: dict[str, str], who: str = "owner") -> int:
