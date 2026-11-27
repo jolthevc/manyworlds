@@ -58,7 +58,8 @@ def test_paused_producer_queues_only_the_research_the_owner_allows(conn, policy,
     called = []
     monkeypatch.setattr(production, "advance", lambda *a, **k: called.append("advance") or {})
     out = cli.produce_tick(conn, _paused(policy))
-    assert set(out["research"]) == {"monitor", "desk"} and called == []
+    assert {"monitor", "desk"} <= set(out["research"]) <= {"monitor", "desk", "research_loop", "verify"}
+    assert called == []                                       # the research loop and checks run too (owner 2026-11-27)
     modes = sorted(r["payload"]["mode"] for r in conn.execute("SELECT payload FROM jobs"))
     assert modes == ["desk", "monitor"]
     cli.produce_tick(conn, _paused(policy))

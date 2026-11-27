@@ -903,13 +903,27 @@ def produce_tick(conn, pol, llm=None) -> dict:
         # desk runs, each queued once a day (both check the leave themselves).
         research = {}
         from .research import desk, monitor
-        for name, due in (("monitor", monitor.ensure_due), ("desk", desk.ensure_due)):
+        from .brain import research_questions
+        for name, due in (("monitor", monitor.ensure_due), ("desk", desk.ensure_due),
+                          ("questions", research_questions.ensure_answering)):
             try:
                 job = due(conn, pol)
                 if job:
                     research[name] = str(job)
             except Exception as e:  # noqa: BLE001 - reported, retried next tick
                 research[name] = f"error: {type(e).__name__}: {e}"[:300]
+        # The research loop's code steps (spine sync, knowledge gaps) and the live end-to-end checks, each on its own
+        # cadence (owner 2026-11-27: intelligence keeps working and failures stay visible while paused).
+        from .brain import chief_of_staff
+        allowed = pol.get("operations", "while_paused", default=[]) or []
+        for name, fn in (("research_loop", chief_of_staff.research_tick), ("verify", chief_of_staff.verify_tick)):
+            if name in allowed:
+                try:
+                    got = fn(conn, pol, _dt.now(_tz.utc))
+                    if got and not got.get("skipped"):
+                        research[name] = got
+                except Exception as e:  # noqa: BLE001 - reported, retried next tick
+                    research[name] = f"error: {type(e).__name__}: {e}"[:300]
         return {"operations": "paused", **({"casts": casts} if casts and any(casts.values()) else {}),
                 **({"research": research} if research else {})}
     if pol.get("brain", "showrunner", "enabled", default=False):

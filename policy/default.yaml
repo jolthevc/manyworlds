@@ -2090,7 +2090,8 @@ creators:
 # them (autoscale.merge_families there). Production never reads it.
 # while_paused: what the owner lets run on its own while paused (2026-11-25: research monitoring keeps learning during
 # the build, at intelligence.monitor.daily_usd); its jobs are in `research-` batches.
-operations: {mode: paused, test_batch_prefixes: [bench-, test-, research-], while_paused: [research_monitor],
+operations: {mode: paused, test_batch_prefixes: [bench-, test-, research-],
+             while_paused: [research_monitor, research_loop, verify],
              test_overlay: {path: policy/test_overlay.yaml, batches: [test-breadth-]}}
 
 # What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).

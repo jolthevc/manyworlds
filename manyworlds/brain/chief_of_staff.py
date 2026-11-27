@@ -97,12 +97,12 @@ def research_tick(conn, policy: Policy, now: datetime) -> dict:
             out["spine"] = {k: got.get(k) for k in ("external", "own", "normalised")}
         except Exception as e:  # noqa: BLE001 - the tick goes on
             out["spine_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-    try:
-        with conn.transaction():
-            out["gaps"] = research_questions.file_gaps(conn, policy)
-    except Exception as e:  # noqa: BLE001
-        out["gaps_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-    return out
+        try:   # gaps on the same cadence: each looks at the freshly synced spine
+            with conn.transaction():
+                out["gaps"] = research_questions.file_gaps(conn, policy)
+        except Exception as e:  # noqa: BLE001
+            out["gaps_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    return out or {"skipped": "synced recently"}
 
 
 def verify_tick(conn, policy: Policy, now: datetime) -> dict:

@@ -524,3 +524,21 @@ def brief(conn, policy, use: str | None, k: int | None = None) -> str:
         if web.get("summary"):
             lines.append(f"  [web research] {web['summary'][:300]}")
     return "\n".join(lines)
+
+
+def ensure_answering(conn, policy, *, now=None):
+    """Once a day, when questions are queued, a brain.intelligence job (mode questions) answers them, within the
+    questions budget and the monthly research ceiling; while paused only with `research_loop` in
+    operations.while_paused (the job is a test-marked `research-` batch, which the Brain worker claims). Returns the
+    job id, or None."""
+    from datetime import datetime, timezone
+
+    from .. import operations, queue
+    live = operations.is_live(policy)
+    if not live and "research_loop" not in (policy.get("operations", "while_paused", default=[]) or []):
+        return None
+    if not conn.execute("SELECT 1 FROM research_questions WHERE status = 'queued' LIMIT 1").fetchone():
+        return None
+    day = (now or datetime.now(timezone.utc)).date().isoformat()
+    return queue.enqueue(conn, "brain.intelligence", {"mode": "questions", "day": day, **({} if live else {"test": True})},
+                         batch=f"research-questions-{day}", idempotency_key=f"intelligence-questions:{day}")
