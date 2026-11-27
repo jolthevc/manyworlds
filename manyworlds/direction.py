@@ -752,6 +752,27 @@ def _set(s: ShotSheet, video: bool, scene: str, policy: Any = None) -> str:
     return set_
 
 
+def model_format(sections: dict[str, str], target: str, policy: Any) -> dict[str, str]:
+    """The target model's own prompt shape (policy `direction.model_formats.<target>`, the adapter between what
+    the director wants and how that model reads it; owner 2026-11-27): `sections` keeps only those, in that order
+    (e.g. Wan 2.2 I2V: motion and camera only, the start image already shows who and where), `max_words` cuts the
+    rest from the end. A target without an active format compiles exactly as before."""
+    fmt = (_policy(policy, "direction", "model_formats", default={}) or {}).get(target) or {}
+    if not fmt.get("enabled"):
+        return sections
+    keep = [k for k in (fmt.get("sections") or list(sections)) if k in sections]
+    out = {k: sections[k] for k in keep}
+    cap = int(fmt.get("max_words") or 0)
+    if cap:
+        used = 0
+        for k in keep:
+            words = out[k].split()
+            take = max(0, min(len(words), cap - used))
+            out[k] = " ".join(words[:take]).rstrip(",;:.")
+            used += take
+    return {k: v for k, v in out.items() if v}
+
+
 def _render(head: str, sections: dict[str, str], tail: str) -> str:
     parts = [_sentence(_LABELS[k], v) for k, v in sections.items()]
     return head + " ".join(x for x in [*parts, tail] if x)
@@ -1007,6 +1028,7 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
                 "wardrobe": wardrobe, "action": action,
                 "performance": _performance(s, target, policy, profile) if directed else "",
                 "set": set_, "style": style, "sound": sound}
+    sections = model_format(sections, target, policy)
     items = negative_items(s, target, policy, positive=_render(head, sections, ""))
     channel = has_negative_channel(target, policy)
     tail = "" if channel else _stand_ins(items, policy)

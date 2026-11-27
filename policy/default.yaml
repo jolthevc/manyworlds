@@ -3063,6 +3063,11 @@ direction:
   # lowest-priority section; camera, action and the positive stand-ins are kept
   # (a negative prompt is outside the budget). Undirected prompts are not budgeted.
   prompt_budget: {photo: 440, i2v: 300, talk: 300}   # photo 440 (2026-11-26): room for the performance under 512
+  # Each production model's own prompt shape (manyworlds.direction.model_format; owner 2026-11-27: model-specific
+  # translation). Off until an A/B on renders shows it helps. i2v: Wan 2.2's official prompt extension (wan/utils/
+  # system_prompt.py) keeps motion and camera, drops what the start image already shows, at most 100 words.
+  model_formats:
+    i2v: {enabled: false, engine: wan2.2-i2v, sections: [action, camera, performance], max_words: 100}
   prompt_trim:
     clause_words: 20
     set_floor_words: 10        # a trimmed set keeps its first words: the place itself (2026-11-26)

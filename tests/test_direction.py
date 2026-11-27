@@ -659,3 +659,17 @@ def test_a_flash_photo_is_not_told_it_is_lit_only_by_real_sources(policy):
     lamp = ShotSheet(set=SetSpec(location="a house party", light_direction="a floor lamp", light_quality="soft"))
     assert stand_in.lower() not in direction.compile_prompt(flash, BIBLE, "photo", policy).lower()
     assert stand_in.lower() in direction.compile_prompt(lamp, BIBLE, "photo", policy).lower()
+
+
+def test_a_model_format_reshapes_one_targets_prompt_and_only_when_enabled(policy):
+    shot = ShotSheet(set=SetSpec(location="her kitchen at night"), wardrobe=WardrobeSpec(outfit="a grey hoodie"),
+                     blocking=[Beat(at_s=0, action="turns from the stove and laughs")])
+    before = direction.compile_prompt(shot, BIBLE, "i2v", policy)
+    assert "kitchen" in before and direction.compile_prompt(shot, BIBLE, "photo", policy)     # shipped: off
+    d = policy.body["direction"]
+    on = {"direction": {**d, "model_formats": {"i2v": {**d["model_formats"]["i2v"], "enabled": True}}}}
+    after = direction.compile_prompt(shot, BIBLE, "i2v", {**policy.body, **on})
+    assert "turns from the stove" in after and "kitchen" not in after and "hoodie" not in after
+    assert len(after.split()) <= 100 + 40                     # the cap (plus the stand-ins tail)
+    assert direction.compile_prompt(shot, BIBLE, "photo", {**policy.body, **on}) == \
+        direction.compile_prompt(shot, BIBLE, "photo", policy)                                 # other targets untouched
