@@ -931,9 +931,12 @@ generation:
     v2v_images: [mw-worker-talkcomfy]
     kind: comfy.wan_i2v
     keyframes: 1
-    v2v: {steps: 4, start_step: 2, clip_vision: false}
-    # Repairs of a V2V take that failed lip_sync (production.talk.talk_repair; breadth run 2026-11-23: the mouth was
-    # never redrawn, openness ~0.001, and every reseeded repair scored the same corr): each repair lowers start_step
+    # start_step from the 2026-11-27 sweep (two Maren takes, real renders after the picker fix, with the lead-in and
+    # hold): sync corr 0.52-0.63 at 2 (one take failed realism, a face warped mid-turn), 0.64 at 1, 0.66-0.68 at 0;
+    # body kept (SSIM against the source motion clip) 0.86-0.87 at 2, 0.79-0.80 at 1, 0.69 at 0. 1 is the balance.
+    v2v: {steps: 4, start_step: 1, clip_vision: false}
+    # Repairs of a V2V take that failed lip_sync (production.talk.talk_repair; the 2026-11-23 "mouth never redrawn"
+    # was the ComfyUI output picker returning the source clip, fixed in talkcomfy v33): each repair lowers start_step
     # by start_step_step (redraws more of the clip) down to start_step_floor. A knob (start_step, seed) whose repair
     # scored the same lip-sync corr as the attempt before (within same_score_tolerance) is not tried again; with
     # every knob spent the post is dropped with the reason instead of rendering the same clip again.

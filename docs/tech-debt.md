@@ -16,7 +16,7 @@ capability X does not go live until the item is closed. Updated 2026-11-23 (the 
 
 | Item | Why it matters | Where |
 |---|---|---|
-| The V2V lip-sync default (`generation.talk_motion.v2v.start_step: 2` of 4) is unmeasured | the "closed mouth" before 2026-11-26 was the picker bug (the source clip returned as the render); real renders at start step 2 move the mouth but fail lip sync (corr 0.16, -0.07): set the default from the start-step sweep | policy `generation.talk_motion.v2v` |
+| The V2V start step (now 1 of 4) rests on two clips | the 2026-11-27 sweep (experiments doc §5): with the lead-in and hold, sync 0.52-0.68 and every take but one passed; recheck it on more clips and lines once walk-and-talk posts run | policy `generation.talk_motion.v2v` |
 | The lip_sync gate cannot tell sync from chance on many clips | slow speech loudness correlates with any mouth that opens now and then: fake V2V takes passed at 0.87 against a null of 0.87; the null margin is recorded (report-only) but uncalibrated; a SyncNet-class scorer needs the owner's licence decision (`docs/research/2026-11-22-latentsync-syncnet-licence.md`) | policy `review.video.lip_sync.chance` |
 | RVC (per-artist voice training) is refused | its assets repo adds a research-use clause; rmvpe/hubert weights' licences unstated: the owner decides | policy `music.voice.adapters.rvc` |
 | The music critic hears nothing yet | listener and aesthetics adapters are stubs: no `music.listen` worker kind, no hosted audio model checked | `music_listening.py` |

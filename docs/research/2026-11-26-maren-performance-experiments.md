@@ -2,7 +2,7 @@
 
 The three experiments approved by the owner (cap $3), run in batches `bench-exp1126-*`. They were sandbox runs only: nothing was published.
 
-**Total spend: $1.00.** That includes one machine ($0.10) started for two motion jobs that were cancelled before they ran.
+**Total spend: $1.89 of the $3 cap** (to 2026-11-27, the repair ladder included). That includes one machine ($0.10) started for two motion jobs that were cancelled before they ran, and ~$0.08 on a 4090 host where ComfyUI would not start (the job moved to an L40S).
 
 ## 1. Voice: Qwen3-TTS vs IndexTTS-2.5
 
@@ -87,8 +87,8 @@ The three experiments approved by the owner (cap $3), run in batches `bench-exp1
 - Both still fail the lip-sync check (corr 0.16 and −0.07, bar 0.3).
 - The repair ladder (start step 1, then 0) now changes the render, so it can be measured.
 - Untested: a timing offset in V2V, and whether half the frame is too little redraw for the mouth to follow the audio.
-- V2V takes still have no lead-in or end hold (review finding, open).
-- Spend for all three experiments: $1.09 of $3.
+- V2V takes had no lead-in or end hold (review finding; fixed in talkcomfy v35, §5).
+- Spend for all three experiments at that point: $1.09 of $3.
 
 **Prompt fixes found on the way** (all deployed):
 - Walk phrases were going into a standing shot.
@@ -130,9 +130,46 @@ The margin is now recorded on every lip_sync row (`review.video.lip_sync.chance`
 
 The weak articulation is in the render itself.
 
+## 5. The V2V repair ladder (2026-11-27, talkcomfy v35, $0.72 of the cap)
+
+**Setup:**
+- The same two motion clips, line, seed and prompt as §3.
+- Rendered at start steps 2, 1 and 0. Lower steps redraw more of the clip.
+- Every take now has the 0.3 s lead-in and 0.6 s end hold, and the motion clip covers the padded line.
+- Each render's provenance was checked: the sampler ran (not cached), with the start step requested.
+- The judges ran with lip sync set to report-only, so every take was judged.
+
+| Clip | Start step | Sync corr | Margin over chance | Body kept (SSIM vs source) | Identity / realism / motion | All gates | GPU s (warm) |
+|---|---|---|---|---|---|---|---|
+| energy 0, before (§3, no lead-in) | 2 | 0.16 | −0.17 | 0.85 | — | lip sync fails | 544 (cold) |
+| energy 0 | 2 | 0.52 | +0.17 | 0.86 | 6 / 6 / 6 | **fails realism**: face warped mid-turn | 890 (cold, first job) |
+| energy 0 | 1 | 0.64 | +0.45 | 0.79 | 8 / 7 / 7 | pass | 142 |
+| energy 0 | 0 | 0.66 | +0.52 | 0.69 | 7 / 8 / 8 | pass | 179 |
+| energy 2, before (§3, no lead-in) | 2 | −0.08 | −0.61 | 0.85 | — | lip sync fails | 146 |
+| energy 2 | 2 | 0.63 | +0.49 | 0.87 | 8 / 7 / 8 | pass | 131 |
+| energy 2 | 1 | 0.64 | +0.54 | 0.80 | 8 / 7 / 8 | pass | 155 |
+| energy 2 | 0 | 0.68 | +0.60 | 0.69 | 8 / 7 / 8 | pass | 175 |
+
+**Reading:**
+- **The lead-in and hold were the main fix.** At the same start step, seed and clip, sync rose from 0.16 and −0.08 to 0.52 and 0.63, and both now beat chance.
+  - Likely cause: InfiniteTalk's first frame is the clip's conditioning frame. A line that starts at frame 1 gives the mouth no room, and the silent hold settles the close.
+  - This is a likely mechanism, not tested in isolation.
+- **Lower start steps buy a little more sync and cost body movement.** Each step down adds about 0.02–0.12 corr and loses about 0.07–0.10 SSIM against the source motion.
+  - At step 0 a third of the source clip's look is gone, so the directed motion is partly lost.
+- **The default is now start step 1** (policy `generation.talk_motion.v2v`).
+  - It keeps most of the motion, syncs on both clips and passed every gate on both.
+  - The repair ladder (1, then 0) stays for takes that still fail.
+- Only two clips and one line were tested. Treat this as a starting point, not a calibration.
+- The mouth leads the voice by 1–4 frames (40–160 ms) at its best lag. That is inside the lag search; worth watching.
+- **Cost:**
+  - A warm V2V take takes 131–179 GPU s on an L40S, about $0.04–0.06 attributed.
+  - The ladder's whole bill, across six takes, was $0.64 of GPU: about $0.11 a take all-in, with a cold boot and the failed 4090 host included.
+  - Judging cost about $0.08 of Claude.
+- Appeal and naturalness were not compared. Those scores are written in a separate review row, which the report-only pass does not return.
+
 ## What this changes
 
 - **Voice:** Qwen3 stays, subject to the owner's ear.
 - **Photo direction:** expression controls work through the face. Pose, candidness and energy need changes to blocking and composition, not adjectives. The director should vary blocking per candidate when variety is wanted, not only the seed.
-- **Talking video:** audio-first is confirmed as the main lever. Video start is the most natural-looking path, but it is blocked by the start-step defect.
+- **Talking video:** audio-first is confirmed as the main lever. Video start (walk-and-talk V2V) now works: with the lead-in and hold, five of six takes passed every gate (§5). The default is start step 1.
 - **Judges:** the observed levels were plausible for sass. Calibration rightly stays off until judge agreement has been measured against the owner's ratings.
