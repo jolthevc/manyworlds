@@ -176,6 +176,18 @@ def select(conn, policy: Policy, creator_id, fresh: dict[str, dict], *, now: dat
             chosen.append({"id": str(r["id"]), "reasons": reasons, "ratio": float(ratio or 0)})
     chosen.sort(key=lambda x: (-len(x["reasons"]), -x["ratio"]))
     chosen = chosen[:int(s.get("max_per_check", 3))]
+    # Representative sampling (intelligence.random_share, owner 2026-11-26): now and then one post drawn uniformly
+    # from the eligible rest, whatever its numbers, so estimates aren't built only from outliers. Seeded by creator
+    # and day: a rerun of the same check draws the same post.
+    share = float(policy.get("intelligence", "random_share", default=0) or 0)
+    if share > 0:
+        import random
+        taken = {x["id"] for x in chosen}
+        eligible = [str(r["id"]) for i, r in enumerate(rows[:-1]) if r["selected"] is None and str(r["id"]) not in taken
+                    and not (r["posted_at"] and r["posted_at"] < window)]
+        rng = random.Random(f"{rows[0]['external_id']}:{now.date().isoformat()}")
+        if eligible and rng.random() < share:
+            chosen.append({"id": rng.choice(eligible), "reasons": ["random"], "ratio": 0.0})
     for x in chosen:
         conn.execute("UPDATE reference_posts SET selected = %s WHERE id = %s",
                      (Jsonb({"at": now.isoformat(), "reasons": x["reasons"]}), x["id"]))

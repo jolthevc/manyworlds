@@ -252,7 +252,8 @@ def niche_trends(conn, creator_id, policy) -> dict | None:
     return None
 
 
-def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], creator_ids=None) -> list[dict]:
+def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], creator_ids=None,
+                    outcome: tuple[str, str] | None = None) -> list[dict]:
     """The research reference posts with their newest annotation (schemas: newest first, e.g. annotation.READ_SCHEMAS)
     for the recipe analysis (manyworlds.brain.recipes): {post_id, creator_id, platform, media_type, posted_at,
     fetched_at, schema, observed, over_own_median (the post's latest, else the one stored with its read), metrics
@@ -260,7 +261,11 @@ def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], c
 
     Research evidence: other people's public posts, correlation never proof, and never simulated (there are no
     simulated reference posts), so `real` and `sandbox` read the same rows; the mode is still named and checked like
-    every reader's. Post-level comments and commenters are not read."""
+    every reader's. Post-level comments and commenters are not read.
+
+    `outcome` (metric, horizon): the post's normalised outcome from the analytical spine (manyworlds.research.spine:
+    log of the metric over the creator's median at that horizon) replaces over_own_median, as its ratio (exp); a
+    post without that outcome gets None (excluded and counted by the analysis, never zero)."""
     if mode not in ("real", "sandbox"):
         raise ValueError(f"unknown evidence mode {mode!r}")
     ids = [str(c) for c in creator_ids] if creator_ids is not None else None
@@ -274,10 +279,19 @@ def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], c
            ORDER BY a.post_id, array_position(%s::text[], a.schema)""",
         (list(schemas), ids, ids, list(schemas))).fetchall()
     keys = ("views", "likes", "comments", "shares", "saves")
+    spine = {}
+    if outcome is not None:
+        import math
+        spine = {r["ref_id"]: math.exp(float(r["normalized"])) for r in conn.execute(
+            """SELECT u.ref_id, o.normalized FROM outcomes o JOIN content_units u ON u.id = o.unit_id
+               WHERE u.ref_table = 'reference_posts' AND u.level = 'post' AND o.metric = %s AND o.horizon = %s
+                 AND o.normalized IS NOT NULL""", (str(outcome[0]), str(outcome[1]))).fetchall()}
     out = []
     for r in rows:
         m, ev = r["metrics"] or {}, r["evidence"] or {}
         ratio = m.get("over_own_median") if m.get("over_own_median") is not None else ev.get("over_own_median")
+        if outcome is not None:
+            ratio = spine.get(str(r["post_id"]))
         out.append({"post_id": str(r["post_id"]), "creator_id": str(r["creator_id"]), "platform": r["platform"],
                     "media_type": r["media_type"], "posted_at": r["posted_at"], "fetched_at": r["fetched_at"],
                     "schema": r["schema"], "observed": r["observed"] or {}, "over_own_median": ratio,

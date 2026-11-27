@@ -32,7 +32,7 @@ from psycopg.types.json import Jsonb
 
 from ..policy import Policy
 
-VERSION = "v1"            # bump when a measurement changes; stored with the measure
+VERSION = "v2"            # bump when a measurement changes; stored with the measure (v2: audio loudness and silence)
 KIND = "finish.measure_video"
 
 
@@ -138,6 +138,29 @@ def speech_from_vtt(text: str, *, early_s: float = 2.0) -> dict | None:
             "words_in_first_2s": sum(len(c[2].split()) for c in cues if c[0] < early_s), "source": "vtt"}
 
 
+def audio_measures(path: str, c: dict, duration: float) -> dict | None:
+    """Integrated loudness (EBU R128, LUFS), loudness range, and the share of the video in silence (ffmpeg
+    silencedetect at intelligence.measure.silence_db for at least silence_min_s), in one decode of the audio. None
+    without an audio track or when ffmpeg reports nothing."""
+    db, gap = float(c.get("silence_db", -35)), float(c.get("silence_min_s", 0.3))
+    proc = subprocess.run([_ffmpeg(), "-hide_banner", "-nostats", "-threads", "2", "-i", str(path), "-vn", "-af",
+                           f"ebur128=framelog=quiet,silencedetect=noise={db}dB:d={gap}", "-f", "null", "-"],
+                          capture_output=True, text=True, timeout=300)
+    err = proc.stderr or ""
+    lufs = re.findall(r"I:\s+(-?[\d.]+) LUFS", err)
+    lra = re.findall(r"LRA:\s+(-?[\d.]+) LU", err)
+    silent = sum(float(x) for x in re.findall(r"silence_duration: ([\d.]+)", err))
+    starts = re.findall(r"silence_start: (-?[\d.]+)", err)
+    ends = re.findall(r"silence_end: ([\d.]+)", err)
+    if len(starts) > len(ends) and duration:      # silent to the end: silencedetect never closes it
+        silent += max(0.0, duration - float(starts[-1]))
+    if not lufs and not starts:
+        return None
+    return {"loudness_lufs": float(lufs[-1]) if lufs else None, "loudness_range_lu": float(lra[-1]) if lra else None,
+            "silence_share": round(min(1.0, silent / duration), 3) if duration else None,
+            "silences": len(starts)}
+
+
 def frames(path: str, duration: float, c: dict, workdir: Path) -> list[Path]:
     """`frames` stills sampled evenly in time (the middle of each slice), each scaled into `frame_size`."""
     n = int(c.get("frames", 8))
@@ -195,6 +218,7 @@ def measure(path: str, c: dict, *, words: list[dict] | None = None, vtt: str | N
         "soft": {**shots_summary(soft_shots, soft, dur, short), "at": soft},
         "speech": speech,
         "speech_share": round(min(1.0, speech["speech_s"] / dur), 2) if speech and dur else None,
+        "audio": audio_measures(path, c, dur) if info.get("has_audio") else None,
     }
     if workdir is not None:
         fs = frames(path, dur, c, Path(workdir) / "frames")

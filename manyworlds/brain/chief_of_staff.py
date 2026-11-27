@@ -46,6 +46,7 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     cal = performance.refresh_calibration(conn, policy)   # one step, only from reliable observations
     out["performance_calibration"] = {k: cal.get(k) for k in ("enabled", "judge", "reason") if cal.get(k)} | {
         "changed": len(cal.get("changed") or [])}
+    out["research"] = research_tick(conn, policy, now)
     if out["expired_requests"]:
         notify.owner_event(conn, "requests_expired", payload={"n": out["expired_requests"]},
                            dedupe_key=f"requests_expired:{now:%Y-%m-%dT%H}")
@@ -74,4 +75,30 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
         notify.owner_event(conn, "requests_waiting_for_owner", payload={"n": waiting},
                            dedupe_key=f"requests_waiting_for_owner:{day}")
     out.update(failing_agents=len(failing), idle_spend_agents=len(idle_spend), waiting_for_owner=waiting)
+    return out
+
+
+def research_tick(conn, policy: Policy, now: datetime) -> dict:
+    """The research loop's code steps (no model): mirror the research and production tables into the analytical
+    spine every intelligence.spine.sync_every_hours, then file knowledge gaps as pre-registered questions
+    (research_questions.file_gaps; the intelligence agent's `questions` mode answers them). Each step in its own
+    savepoint: a failure is reported, never breaks the tick."""
+    from ..research import spine
+    from . import inquiry, research_questions
+    out: dict = {}
+    every = float((policy.get("intelligence", "spine", default={}) or {}).get("sync_every_hours", 6))
+    last = conn.execute("SELECT max(created_at) t FROM analysis_runs WHERE method = 'spine_sync'").fetchone()["t"]
+    if last is None or last <= now - timedelta(hours=every):
+        try:
+            with conn.transaction():
+                got = spine.sync(conn, policy)
+                inquiry.record(conn, policy, requester="chief_of_staff", method="spine_sync", spec={}, result=got)
+            out["spine"] = {k: got.get(k) for k in ("external", "own", "normalised")}
+        except Exception as e:  # noqa: BLE001 - the tick goes on
+            out["spine_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    try:
+        with conn.transaction():
+            out["gaps"] = research_questions.file_gaps(conn, policy)
+    except Exception as e:  # noqa: BLE001
+        out["gaps_error"] = f"{type(e).__name__}: {str(e)[:200]}"
     return out

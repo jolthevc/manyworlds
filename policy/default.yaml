@@ -1567,7 +1567,8 @@ intelligence:
   # scene_floor on a scale_width copy; hard cuts above hard_cut, soft (punch-ins) above soft_cut, at least min_gap_s
   # apart; shots under short_shot_s count as short; words in the first hook_window_s; `frames` stills in a grid.
   measure: {scene_floor: 0.08, hard_cut: 0.30, soft_cut: 0.15, min_gap_s: 0.25, short_shot_s: 1.0, hook_window_s: 2.0,
-            scale_width: 192, frames: 8, frame_size: [180, 320], grid_cols: 4, timeout_s: 600}
+            scale_width: 192, frames: 8, frame_size: [180, 320], grid_cols: 4, timeout_s: 600,
+            silence_db: -35, silence_min_s: 0.3}   # audio (v2): loudness and the share in silence (ffmpeg)
   # The creative pattern library's seed file (policy/patterns; manyworlds.brain.patterns).
   patterns: {file: patterns-v0.yaml}
   # Cheap checks of a candidate against the real creators its brief names (manyworlds.brain.impersonation). Flags are
@@ -1918,9 +1919,100 @@ intelligence:
     max_per_propose: 5
     max_per_run: 10
     max_tests_per_question: 12
+    max_explore_per_question: 6     # exploratory looks (manyworlds.brain.inquiry) per question; each in the trial ledger
     daily_usd: 0.1
     est_usd_per_call: 0.005
     brief_k: 6
+    # Knowledge gaps filed as questions by code, no model (manyworlds.brain.research_questions.file_gaps, chief of
+    # staff tick): attributes with enough coverage but no answered test, and contradicted claims. At most
+    # max_per_tick a tick; a gap already queued or answered within retest_days is not filed again.
+    gaps: {enabled: true, max_per_tick: 3, min_posts: 40, retest_days: 30}
+  # The analytical spine (manyworlds.research.spine, migration 056; docs/2026-11-26-unified-intelligence.md §4): every
+  # content unit, ours or external, any format and level, with long-form attribute values and outcomes. The registry
+  # here is checked in code instead of database CHECKs, so a new media business adds names, not migrations.
+  spine:
+    platforms: [instagram, tiktok, youtube, meta_ads, tiktok_ads, google_ads, web, own, other]
+    media: [photo, carousel, video, audio, text]
+    formats: [photo, carousel, reel, short, story, long_video, ad, music_video, micro_drama_episode, talking_video,
+              narrated_edit, story_clip, song, other]
+    verticals: [lifestyle, fashion, beauty, travel, fitness, food, comedy, music, automotive, tech, entertainment,
+                advertising, other]
+    levels: [creator, series, post, segment, shot, beat]
+    # Raw counts are kept at each observation's age; the horizon is the band the age falls in (days).
+    horizons: {d1: [0.5, 1.5], d3: [1.5, 4.5], d7: [4.5, 12], d30: [12, 45], mature: [45, 100000]}
+    # Every metric is kept raw; `normalized` is the log of raw over the creator's median of the same metric at the
+    # same horizon over their other posts in the trailing baseline_days, when at least baseline_min_n exist.
+    external_metrics: [views, likes, comments, shares, saves]
+    own_metrics: [reach, views, likes, comments, shares, saves, follows, profile_visits, watch_time_s,
+                  avg_watch_pct, link_clicks, revenue_usd]
+    derived: {engagement: [likes, comments, shares, saves]}     # sums kept as metrics of their own
+    baseline_days: 180
+    baseline_min_n: 5
+    max_posts_per_sync: 5000
+    sync_every_hours: 6          # the chief of staff mirrors the tables into the spine this often (code, no model)
+  # The attribute registry: each coded or measured attribute's tier (universal: any format; format: specific to a
+  # format or vertical; context: who and where; production: how we make it) and class (objective: checkable by eye or
+  # code; subjective: a creative judgement; inferred: a reading of intent or audience), and how agreement is measured
+  # (level: nominal, ordinal or interval). Gold sets report agreement by class (manyworlds.research.gold).
+  attributes:
+    composition: {tier: universal, class: objective, level: nominal}
+    camera_angle: {tier: universal, class: objective, level: nominal}
+    subject_scale: {tier: universal, class: objective, level: ordinal}
+    lighting_kind: {tier: universal, class: objective, level: nominal}
+    palette: {tier: universal, class: objective, level: nominal}
+    pose: {tier: universal, class: objective, level: nominal}
+    expression: {tier: universal, class: subjective, level: nominal}
+    body_language: {tier: universal, class: subjective, level: nominal}
+    candid_level: {tier: universal, class: subjective, level: ordinal}
+    emotional_tone: {tier: universal, class: subjective, level: nominal}
+    aspiration: {tier: universal, class: subjective, level: interval}
+    opening: {tier: universal, class: subjective, level: nominal}
+    face_in_first_second: {tier: universal, class: objective, level: nominal}
+    movement_complexity: {tier: universal, class: subjective, level: ordinal}
+    setting_changes: {tier: universal, class: objective, level: interval}
+    sound: {tier: universal, class: objective, level: nominal}
+    garments: {tier: format, class: objective, level: nominal}
+    accessories: {tier: format, class: objective, level: nominal}
+    hair: {tier: format, class: objective, level: nominal}
+    makeup: {tier: format, class: subjective, level: nominal}
+    nails: {tier: format, class: objective, level: nominal}
+    jewelry_level: {tier: format, class: objective, level: ordinal}
+    styling_category: {tier: format, class: subjective, level: nominal}
+    fit: {tier: format, class: subjective, level: nominal}
+    slide_roles: {tier: format, class: subjective, level: nominal}
+    opener_has_face: {tier: format, class: objective, level: nominal}
+    environment: {tier: context, class: objective, level: nominal}
+    travel_context: {tier: context, class: inferred, level: nominal}
+    lifestyle_narrative: {tier: context, class: inferred, level: nominal}
+    product_integration: {tier: context, class: objective, level: nominal}
+    product_categories: {tier: context, class: objective, level: nominal}
+    production_complexity: {tier: production, class: subjective, level: ordinal}
+    renderable_now: {tier: production, class: inferred, level: nominal}
+    # measured by code (research.video_measure): objective by construction, the reference for model reads of pace
+    cuts_per_10s: {tier: universal, class: objective, level: interval, measured: code}
+    duration_s: {tier: universal, class: objective, level: interval, measured: code}
+    first_word_s: {tier: universal, class: objective, level: interval, measured: code}
+    words_per_s: {tier: universal, class: objective, level: interval, measured: code}
+    speech_share: {tier: universal, class: objective, level: interval, measured: code}
+    loudness_lufs: {tier: universal, class: objective, level: interval, measured: code}
+    silence_share: {tier: universal, class: objective, level: interval, measured: code}
+  # Gold sets (manyworlds.research.gold): independent reads of the same items to measure how far each attribute can
+  # be trusted. Opus is a reference annotator, not ground truth: agreement is reported between every pair of
+  # annotators (production model, reference models, a repeat of the production model, code measures, the owner's
+  # spot checks), by attribute and by class. An attribute whose alpha against the reference stays under min_alpha
+  # is flagged `unreliable`: the recipe analysis leaves it out (recipes.reliable_fields) until it is reworked.
+  gold:
+    reference_roles: [gold_reference, gold_second]    # independent reads (llm.roles): Opus, Sonnet
+    repeat: true                                       # the production annotator reads the item again
+    min_alpha: 0.67
+    min_items: 30                                      # an attribute with fewer paired items is `untested`, not flagged
+    own_assets: 60                                     # own accepted images per gold run (rights-clean)
+    max_usd_per_run: 15.0
+    share_at_read: 0.05                                # external reads that also get the reference reads, at read time
+    agent: research:gold
+  # Representative sampling: this share of every selection of posts to annotate is drawn uniformly at random from
+  # what was collected (reason `random`), never chosen by the outlier rules, so estimates stay unbiased.
+  random_share: 0.15
 
 creator_lab:
   # Who a creator is (owner 2026-11-21): someone people would choose to follow. Added to the bible and profile prompts,
@@ -3947,6 +4039,10 @@ llm:
     research_deep: claude-sonnet-5-5    # research desk, deep questions (web search and fetch)
     desk_claims: claude-haiku-5-5       # sorts a researched answer into classified claims
     research_question: claude-haiku-5-5 # turns a research question into tests over the coded catalogue; proposes some
+    # Gold sets (manyworlds.research.gold): independent reference reads of the same items; no fallback (a fallback
+    # would hide which model answered). Opus is a reference, not ground truth.
+    gold_reference: claude-opus-5-5
+    gold_second: claude-sonnet-5-5
     iia_synthesize: {model: claude-opus-5-5, fallback: claude-sonnet-5-5}
     # The vision benchmark (manyworlds.research.vision_bench): one role per candidate, no fallback (a fallback would
     # hide which model answered). Add a candidate as vision_bench_<name> and pass --models <name>.
@@ -4011,6 +4107,11 @@ llm:
     talent_manager: {candidates: [qwen4-max, glm-5.3], share: 0.2}
     style_director: {candidates: [qwen4-max, glm-5.3], share: 0.2}
     market_lead:    {candidates: [qwen4-max, glm-5.3], share: 0.2}
+    # Research roles (owner 2026-11-26: recursive research evaluation): annotation is also measured on gold sets
+    # (intelligence.gold); the shadow rows add a cheap running comparison.
+    iia_annotate:      {candidates: [qwen3.7-plus], share: 0.1}
+    iia_distill:       {candidates: [qwen4-max, claude-haiku-5-5], share: 0.2}
+    research_question: {candidates: [qwen3.8-flash], share: 0.2}
   shadow_usd_per_day: 0.5
   shadow_request_chars: 12000   # the end of the request kept with each shadow row, for preference judging
   # Message Batches (manyworlds.llm_batch, 2026-11-23): on the brain worker, every call a brain job makes is journaled

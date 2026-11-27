@@ -158,8 +158,27 @@ def resolved_for(conn, creator_id, *, role: str | None = None, n: int = 10) -> l
              **({"label": evidence.LABEL} if r["mode"] == "sandbox" else {})} for r in rows]
 
 
+def baseline_briers(conn, *, mode: str) -> dict:
+    """Each resolved prediction's Brier under the naive base-rate forecaster: the share of earlier resolved
+    predictions on the same metric that held (0.5 before any), so a role's skill is measured against "say what
+    usually happens", not only against a coin. {prediction id: brier}."""
+    seen: dict = {}
+    out = {}
+    for r in conn.execute("SELECT id, metric, outcome FROM predictions WHERE mode = %s AND outcome IS NOT NULL "
+                          "ORDER BY resolved_at, id", (mode,)).fetchall():
+        held, n = seen.get(r["metric"], (0, 0))
+        p = held / n if n else 0.5
+        out[r["id"]] = (p - (1.0 if r["outcome"] else 0.0)) ** 2
+        seen[r["metric"]] = (held + (1 if r["outcome"] else 0), n + 1)
+    return out
+
+
 def scorecard(conn, *, mode: str = "real", role: str | None = None) -> list[dict]:
-    """Per role and month: how good the claims were. Lower Brier is better; 0.25 is a coin flip at p = 0.5."""
+    """Per role and month: how good the claims were. Lower Brier is better; 0.25 is a coin flip at p = 0.5.
+    `brier_base_rate` is the naive base-rate forecaster's on the same predictions, and `skill` = 1 - brier /
+    brier_base_rate (above 0: better than saying what usually happens; owner 2026-11-26: compare against simple
+    baselines)."""
+    base = baseline_briers(conn, mode=mode)
     rows = conn.execute(
         "SELECT role, to_char(created_at, 'YYYY-MM') AS month, count(*) n, avg(brier) brier, "
         "avg(CASE WHEN outcome THEN 1 ELSE 0 END) held, avg(probability) mean_p FROM predictions "
@@ -172,8 +191,15 @@ def scorecard(conn, *, mode: str = "real", role: str | None = None) -> list[dict
             "avg(CASE WHEN outcome THEN 1 ELSE 0 END) held FROM predictions WHERE mode = %s AND role = %s "
             "AND to_char(created_at, 'YYYY-MM') = %s AND outcome IS NOT NULL AND metric = ANY(%s) GROUP BY 1 ORDER BY 1",
             (mode, r["role"], r["month"], list(METRICS))).fetchall()
+        ids = [x["id"] for x in conn.execute(
+            "SELECT id FROM predictions WHERE mode = %s AND role = %s AND to_char(created_at, 'YYYY-MM') = %s "
+            "AND outcome IS NOT NULL AND metric = ANY(%s)", (mode, r["role"], r["month"], list(METRICS))).fetchall()]
+        bb = [base[i] for i in ids if i in base]
+        brier_base = round(sum(bb) / len(bb), 4) if bb else None
+        skill = (round(1 - float(r["brier"]) / brier_base, 3) if brier_base else None)
         out.append({"role": r["role"], "month": r["month"], "n": r["n"], "brier": round(float(r["brier"]), 4),
                     "hit_rate": round(float(r["held"]), 3), "mean_probability": round(float(r["mean_p"]), 3),
+                    "brier_base_rate": brier_base, "skill": skill,
                     "calibration": [{"said": round(float(b["p"]), 2), "happened": round(float(b["held"]), 2),
                                      "n": b["n"]} for b in buckets],
                     **({"label": evidence.LABEL} if mode == "sandbox" else {})})

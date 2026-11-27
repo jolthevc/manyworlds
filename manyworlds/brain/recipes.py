@@ -153,11 +153,29 @@ def prepare(raw: list[dict], policy) -> list[Row]:
     return out
 
 
-def load(conn, policy, *, creator_ids=None) -> list[Row]:
-    """The annotated research posts as rows (through manyworlds.brain.evidence, real mode)."""
+def load(conn, policy, *, creator_ids=None, outcome: tuple[str, str] | None = None) -> list[Row]:
+    """The annotated research posts as rows (through manyworlds.brain.evidence, real mode). `outcome` (metric,
+    horizon) analyses that spine outcome instead of over_own_median. Fields the latest gold run flagged unreliable
+    (manyworlds.research.gold) are left out of every row, so no test rests on an attribute we can't trust."""
+    from ..research import gold
     from . import evidence
-    return prepare(evidence.annotated_posts(conn, mode="real", schemas=ann.READ_SCHEMAS, creator_ids=creator_ids),
-                   policy)
+    rows = prepare(evidence.annotated_posts(conn, mode="real", schemas=ann.READ_SCHEMAS, creator_ids=creator_ids,
+                                            outcome=outcome), policy)
+    return drop_fields(rows, gold.unreliable(conn))
+
+
+def drop_fields(rows: list[Row], fields: set[str]) -> list[Row]:
+    """The rows without these coded fields (each recorded in `excluded` as unreliable)."""
+    if not fields:
+        return rows
+    for r in rows:
+        gone = fields & set(r.known)
+        if gone:
+            r.known = frozenset(set(r.known) - gone)
+            r.attrs = frozenset(a for a in r.attrs if field_of(a) not in gone)
+            r.values = {k: v for k, v in r.values.items() if k not in gone}
+            r.excluded.update({f: "unreliable" for f in gone})
+    return rows
 
 
 def select(rows: list[Row], filters: dict | None) -> list[Row]:
@@ -626,3 +644,15 @@ def card_tests(result: dict) -> list[dict]:
              "effect": result.get("effect"), "ci": result.get("ci"), "high": result.get("effect"), "low": 1.0,
              "p": h.get("p"), "q": result.get("q"), "n_high": n, "n_low": n, "unit": "creators",
              "stage": "confirmed"}]
+
+
+def own_rows(conn, policy) -> list[Row]:
+    """Our own accepted content coded in the same vocabulary (manyworlds.review.own_annotation), as rows without an
+    outcome: for comparing what we make with what works elsewhere (inquiry.contrast_sources), never for effects.
+    Sandbox creators count here (mode sandbox): only attributes are read, never metrics."""
+    from . import evidence
+    raw = [{"post_id": r["asset_id"], "creator_id": r["creator_id"], "platform": "own",
+            "media_type": "video" if str(r.get("format") or "").endswith(("video", "clip", "edit")) else "photo",
+            "observed": r["observed"], "over_own_median": None, "metrics": {}}
+           for r in evidence.own_annotations(conn, mode="sandbox", schemas=ann.READ_SCHEMAS)]
+    return prepare(raw, policy)

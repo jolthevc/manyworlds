@@ -170,7 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser("research", help="research references (named public creators): forget one on request, purge, "
                                          "patterns, pilot (the influencer intelligence agent: scout, annotate, distill)")
     rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor", "data-audit", "graph-check",
-                                       "vision-bench"])
+                                       "vision-bench", "spine", "gold", "agreement", "ask", "answer", "gaps",
+                                       "spot-check", "budget"])
     rs.add_argument("--apply", action="store_true", help="data-audit: clean what the data policy no longer allows "
                                                          "(contact details in bios, caption features backfilled)")
     rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
@@ -193,6 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
                                                "(default intelligence.vision_bench.assets)")
     rs.add_argument("--models", help="vision-bench: candidates, comma separated (default intelligence.vision_bench.models)")
     rs.add_argument("--creator", help="vision-bench: one sandbox creator's handle (default every sandbox creator)")
+    rs.add_argument("--question", help="ask: the research question in words (data, web or both: --kind)")
+    rs.add_argument("--kind", default="data", choices=["data", "web", "both"], help="ask: how to answer it")
+    rs.add_argument("--labels", nargs="*", default=[], help="spot-check: attribute=value pairs for the unit in `who`")
     sub.add_parser("init-storage", help="create the object storage bucket if missing")
     rv = sub.add_parser("review", help="run review gates on new creator images (--loop to keep going)")
     rv.add_argument("--batch")
@@ -1121,12 +1125,66 @@ def _research(args, conn, pol) -> int:
         return _research_monitor(args, conn, pol)
     elif args.action == "vision-bench":
         return _research_vision_bench(args, conn, pol)
+    elif args.action in ("spine", "gold", "agreement", "ask", "answer", "gaps", "spot-check", "budget"):
+        return _research_loop(args, conn, pol)
     else:
         out = patterns.validate(pol)
         if args.seed and not out["problems"]:
             out["seeded"] = patterns.seed(conn, pol)
         _print({"cards": sorted(patterns.library(pol)["cards"]), **out})
         return 1 if out["problems"] else 0
+    return 0
+
+
+def _research_loop(args, conn, pol) -> int:
+    """The research cycle by hand (docs/2026-11-26-unified-intelligence.md):
+    spine                         mirror research and production tables into the analytical spine (code, free)
+    gold [--assets N] [--usd X]   a gold run on our own accepted images, then the agreement report (--dry-run: count)
+    agreement                     the agreement report over every gold read held (free)
+    ask --question "..." [--kind data|web|both]    file a question (answered by `answer`)
+    answer                        answer the queued questions (recipes, exploration, the desk); within the budgets
+    gaps                          file knowledge gaps as pre-registered questions (code, free)
+    spot-check <unit id> --labels attr=value ...   the owner's labels for a unit, joined to every agreement report
+    budget                        the monthly research ceiling: spent, left, today's allowance"""
+    from .research import budget, gold, spine
+    if args.action == "spine":
+        _print(spine.sync(conn, pol))
+    elif args.action == "budget":
+        _print(budget.status(conn, pol))
+    elif args.action == "agreement":
+        _print(gold.report(conn, pol, requester="cli"))
+    elif args.action == "gold":
+        items = gold.own_items(conn, int(args.assets or gold.cfg(pol).get("own_assets", 60)))
+        if args.dry_run:
+            _print({"dry_run": True, "own_assets": len(items), "cap_usd": args.usd or gold.cfg(pol).get(
+                "max_usd_per_run"), "monthly_left_usd": budget.left(conn, pol)})
+            return 0
+        import tempfile
+        from pathlib import Path
+
+        from .llm import Claude
+        from .storage import from_url
+        with tempfile.TemporaryDirectory(prefix="mw-gold-") as tmp:
+            _print(gold.run_own(conn, pol, Claude(conn, pol), from_url(), Path(tmp), n=len(items), usd=args.usd))
+    elif args.action == "ask":
+        if not args.question:
+            print('usage: mw research ask --question "..." [--kind data|web|both]')
+            return 2
+        from .brain import research_questions
+        _print({"question_id": research_questions.ask(conn, pol, "owner", args.question, kind=args.kind)})
+    elif args.action == "answer":
+        from .brain import research_questions
+        from .llm import Claude
+        _print(research_questions.run_due(conn, pol, Claude(conn, pol)))
+    elif args.action == "gaps":
+        from .brain import research_questions
+        _print(research_questions.file_gaps(conn, pol))
+    elif args.action == "spot-check":
+        if not args.who or not args.labels:
+            print("usage: mw research spot-check <unit id> --labels attribute=value ...")
+            return 2
+        labels = dict(x.split("=", 1) for x in args.labels if "=" in x)
+        _print({"stored": gold.spot_check(conn, pol, args.who, labels)})
     return 0
 
 

@@ -29,9 +29,10 @@ def _with(policy, section: str, key: str, value):
     return dataclasses.replace(policy, body=body)
 
 
-def _monitor_cfg(policy, **over):
+def _monitor_cfg(policy, *, random_share: float = 0.0, **over):
+    """The monitor policy with overrides; the random slice off unless asked (it adds a seeded random post)."""
     m = {**policy.body["intelligence"]["monitor"], **over}
-    return _with(policy, "intelligence", "monitor", m)
+    return _with(_with(policy, "intelligence", "random_share", random_share), "intelligence", "monitor", m)
 
 
 def ig_item(i: int, *, who="mira.lou", kind="Image", likes=100, views=None, caption=None, days=None):
@@ -341,3 +342,16 @@ def test_scrapecreators_tiktok_items_keep_their_video_and_cover_links():
     p = providers.sc_tt_post(item)
     assert p["video_url"] == "https://v.example/1.mp4" and p["images"] == ["https://p.example/1.heic"]
     assert p["metrics"]["duration_s"] == 15
+
+
+def test_a_check_also_draws_a_random_post_for_representative_sampling(conn, policy, monkeypatch, tmp_path):
+    """Owner 2026-11-26: a share of selections is uniformly random (reason `random`), never chosen by the outlier rules."""
+    _env(monkeypatch, "APIFY_TOKEN")
+    policy = _monitor_cfg(policy, daily_usd=1.0, random_share=1.0)      # always draw one
+    _creator(conn)
+    got, download = _downloads()
+    monitor.tick(conn, policy, _router(conn, policy, FakeApify()), now=NOW, store=LocalStore(tmp_path / "s"),
+                 download=download, workdir=tmp_path)
+    reasons = [r["selected"]["reasons"] for r in conn.execute(
+        "SELECT selected FROM reference_posts WHERE selected IS NOT NULL").fetchall()]
+    assert ["random"] in reasons and len(reasons) == 3                 # the two rule picks plus one random
