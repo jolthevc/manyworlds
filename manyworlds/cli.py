@@ -147,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "WORKER_DATABASE_URL=... for piping into `fly secrets import` (never into a terminal)")
     wc.add_argument("--force", action="store_true", help="rotate even while GPU machines are up (they lose access)")
     lm = sub.add_parser("llm", help="LLM models: compare candidates with a role's model, choose the best per job")
-    lm.add_argument("action", choices=["shadow-report", "recommend", "judge", "batches", "bench", "registry"],
+    lm.add_argument("action", choices=["shadow-report", "recommend", "judge", "batches", "bench", "registry", "evidence"],
                     help="shadow-report: the comparisons; recommend: which candidate qualifies (--propose files it as "
                          "an approval); judge: score a generative role's answers blind (spends up to --usd); "
                          "batches: the brain's call journal and Message Batches (what batching saved)")
@@ -490,6 +490,9 @@ def main(argv: list[str] | None = None) -> int:
             _print(shadow.report(conn, args.role, days=args.days, tolerance=args.tolerance))
         elif args.action == "registry":
             _print(pol.get("llm", "registry", default={}))
+        elif args.action == "evidence":
+            from . import benchmarks
+            _print(benchmarks.evidence(conn, pol))
         elif args.action == "bench":
             from . import benchmarks
             from .llm import LLM
