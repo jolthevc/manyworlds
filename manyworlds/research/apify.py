@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -105,18 +106,49 @@ def _actor_input(platform: str, tag: str, limit: int) -> dict:
             "shouldDownloadCovers": False, "shouldDownloadSubtitles": False}
 
 
-def run_actor(actor: str, payload: dict, *, token: str | None = None, timeout: int = 300) -> list[dict]:
-    token = token or os.environ["APIFY_TOKEN"]
-    req = urllib.request.Request(
-        f"{API}/acts/{actor}/run-sync-get-dataset-items?timeout={timeout - 10}",
-        data=json.dumps(payload).encode(), method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                 "User-Agent": "manyworlds-research/0.1"})
+TERMINAL = ("SUCCEEDED", "FAILED", "TIMED-OUT", "ABORTED")
+
+
+def _call(method: str, url: str, token: str, *, body: dict | None = None, timeout: int = 90):
+    req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, method=method,
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                          "User-Agent": "manyworlds-research/0.1"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read() or b"[]")
+            raw = r.read()
+            return json.loads(raw) if raw else None
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Apify {actor} -> {e.code}: {e.read().decode()[:500]}") from e
+        raise RuntimeError(f"Apify {method} {url.split('?')[0].rsplit('/', 2)[-2:]} -> {e.code}: "
+                           f"{e.read().decode()[:500]}") from e
+
+
+def run_actor(actor: str, payload: dict, *, token: str | None = None, timeout: int = 300, now=time.monotonic,
+              call=None) -> list[dict]:
+    """Run an actor, read its default dataset, then delete that dataset and the run's key-value store (2026-11-27:
+    the scraped items stayed in Apify storage for its retention period; the data policy wants no third-party copy
+    kept longer than our own use). API v2: POST /acts/{actor}/runs, GET /actor-runs/{id}?waitForFinish=60 until a
+    terminal status, GET /datasets/{id}/items, DELETE /datasets/{id}, DELETE /key-value-stores/{id} (204)."""
+    token = token or os.environ["APIFY_TOKEN"]
+    call = call or (lambda m, url, body=None, t=90: _call(m, url, token, body=body, timeout=t))
+    run = (call("POST", f"{API}/acts/{actor}/runs?waitForFinish=60&timeout={timeout - 10}", payload, 90) or {})["data"]
+    deadline = now() + timeout
+    while run.get("status") not in TERMINAL:
+        if now() > deadline:
+            call("POST", f"{API}/actor-runs/{run['id']}/abort")
+            raise RuntimeError(f"Apify {actor}: run {run['id']} not finished after {timeout} s (aborted)")
+        run = (call("GET", f"{API}/actor-runs/{run['id']}?waitForFinish=60", None, 90) or {})["data"]
+    try:
+        if run["status"] != "SUCCEEDED":
+            raise RuntimeError(f"Apify {actor}: run {run['id']} ended {run['status']}")
+        return call("GET", f"{API}/datasets/{run['defaultDatasetId']}/items?format=json&clean=true", None, 120) or []
+    finally:
+        for path in (f"datasets/{run.get('defaultDatasetId')}", f"key-value-stores/{run.get('defaultKeyValueStoreId')}"):
+            if "None" in path:
+                continue
+            try:
+                call("DELETE", f"{API}/{path}")
+            except Exception:  # noqa: BLE001 - a failed delete is reported by the next data audit, never fatal
+                pass
 
 
 class ApifySource:

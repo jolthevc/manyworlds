@@ -433,3 +433,22 @@ def test_the_gpu_development_envelope_caps_each_experiment_and_the_week(conn, po
     assert budget.dev_allows(conn, policy, 2.5) == (True, "ok")
     ok, why = budget.dev_allows(conn, policy, 3.5)
     assert not ok and "per-experiment" in why
+
+
+def test_an_apify_run_is_read_then_its_dataset_and_store_are_deleted():
+    """2026-11-27 inventory: scraped items stayed in Apify storage; now each run's storages are deleted after reading."""
+    from manyworlds.research import apify
+    calls = []
+
+    def call(method, url, body=None, t=90):
+        calls.append((method, url.split("?")[0].replace(apify.API, "")))
+        if method == "POST" and url.startswith(f"{apify.API}/acts/"):
+            return {"data": {"id": "r1", "status": "RUNNING", "defaultDatasetId": "d1", "defaultKeyValueStoreId": "k1"}}
+        if method == "GET" and "/actor-runs/" in url:
+            return {"data": {"id": "r1", "status": "SUCCEEDED", "defaultDatasetId": "d1", "defaultKeyValueStoreId": "k1"}}
+        if method == "GET" and "/datasets/d1/items" in url:
+            return [{"id": "p1"}]
+        return None
+
+    assert apify.run_actor("x~y", {}, token="t", call=call) == [{"id": "p1"}]
+    assert ("DELETE", "/datasets/d1") in calls and ("DELETE", "/key-value-stores/k1") in calls
