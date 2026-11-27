@@ -350,3 +350,24 @@ def test_format_fit_and_evolution_read_formats_by_proposition_and_over_time():
         "median_x_own_median"]
     ev = inquiry.evolution(rows)
     assert ev["shifts"]["toward_video"]["creators"] == 4 and ev["shifts"]["toward_video"]["median_outcome_change_log"] > 0
+
+
+def test_a_large_own_photo_is_downscaled_for_the_read_not_skipped(tmp_path):
+    """2026-11-27: every own read was empty: our photos exceed image_max_bytes and were silently skipped."""
+    import io
+    import random as rnd
+
+    from PIL import Image
+
+    from manyworlds.review import own_annotation
+    im = Image.new("RGB", (1600, 2000))
+    px = im.load()
+    r = rnd.Random(1)
+    for x in range(0, 1600, 4):
+        for y in range(0, 2000, 4):
+            px[x, y] = (r.randrange(256), r.randrange(256), r.randrange(256))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    assert buf.tell() > 400000
+    small = own_annotation._shrink(buf.getvalue(), 400000, 1024)
+    assert small and len(small) <= 400000 and Image.open(io.BytesIO(small)).size[1] == 1024

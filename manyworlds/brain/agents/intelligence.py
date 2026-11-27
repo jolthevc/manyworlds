@@ -535,14 +535,17 @@ class Intelligence:
                 media = post.get("media") or []
                 pics = [x for x in media if x.get("kind") == "grid"] or [x for x in media if x.get("kind") == "image"]
                 for x in pics[:int(_cfg(policy).get("images_per_post", 3))]:
-                    if store is None or int(x.get("bytes") or 0) > cap:
+                    if store is None:
                         continue
                     try:
                         local = store.get_file(x["uri"], Path(tmp) / f"{post['id']}-{Path(x['uri']).name}")
                         data = Path(local).read_bytes()
                     except Exception:  # noqa: BLE001 - a missing copy: the read goes on with what remains
                         continue
-                    if len(data) <= cap:
+                    if len(data) > cap:   # downscaled, never silently skipped (2026-11-27)
+                        from ...review.own_annotation import _shrink
+                        data = _shrink(data, cap, int(acfg.get("image_max_side", 1024))) or b""
+                    if data and len(data) <= cap:
                         blocks.append(image_block(data, "image/jpeg"))
         return blocks
 

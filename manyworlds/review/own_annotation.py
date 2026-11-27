@@ -66,9 +66,30 @@ def _images(conn, store: ObjectStore, asset: dict, workdir: Path, cfg: dict) -> 
             data = store.get_file(uri, workdir / f"own-{asset['id']}-{i}{Path(uri).suffix or '.png'}").read_bytes()
         except Exception:  # noqa: BLE001 - a missing file: the read goes on with what remains
             continue
-        if len(data) <= cap:
+        if len(data) > cap:   # our photos are larger than the cap: downscale, never skip (2026-11-27: every own
+            data = _shrink(data, cap, int(cfg.get("image_max_side", 1024)))   # read was silently empty)
+        if data and len(data) <= cap:
             out.append(data)
     return out
+
+
+def _shrink(data: bytes, cap: int, side: int) -> bytes | None:
+    """The image as a JPEG of at most `side` px on its long edge and under `cap` bytes (quality stepped down), or None."""
+    import io
+
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im = im.convert("RGB")
+            im.thumbnail((side, side))
+            for q in (85, 75, 65, 55):
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=q)
+                if buf.tell() <= cap:
+                    return buf.getvalue()
+    except Exception:  # noqa: BLE001 - an unreadable image is left out
+        return None
+    return None
 
 
 def _media_type(data: bytes) -> str:
