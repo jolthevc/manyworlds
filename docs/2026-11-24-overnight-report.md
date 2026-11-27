@@ -3,9 +3,14 @@
 Everything below ran on sandbox creators only. Operations stayed paused, no launches were scheduled, and no GPU
 machine is running now.
 
+> **Correction, 2026-11-26.** The dance result below is void. Both dance outputs were byte-for-byte the driving
+> clips: the ComfyUI output picker returned the loader's preview of its INPUT as the render. Every walk-and-talk
+> (V2V) take that night was likewise its silent source clip with the voice muxed on, so the "mouth never redrawn"
+> drops and the V2V repairs measured nothing. See `docs/research/2026-11-26-maren-performance-experiments.md` §4.
+
 ## The short version
 
-- **Photos, carousels, Stories, narrated edits, story clips, dance and reference edits all passed** the breadth test
+- **Photos, carousels, Stories, narrated edits, story clips and reference edits all passed** (dance: void, see the correction) the breadth test
   on real GPUs.
 - **Talking video is not there yet.** Last night's run ended 13 of 17 items ready, 6 of its 10 talking items. I fixed the faults in code and reran the 4 failed
   items today; none passed.
@@ -26,7 +31,8 @@ machine is running now.
 
 | Format | Result |
 |---|---|
-| Photo, carousel, Story, narrated edit, story clip, dance, reference edits | go |
+| Photo, carousel, Story, narrated edit, story clip, reference edits | go |
+| Dance (Wan-Animate-2) | void: the outputs were the driving clips (2026-11-26 audit); untested |
 | Talking video | not yet: 6 of last night's 10 talking items ready (the hybrid with a cutaway finished today, once its join ran on the Fly finisher); 0 of 4 on today's rerun of the failed items |
 
 What sank the talking items, and what I did about each:

@@ -94,6 +94,42 @@ The three experiments approved by the owner (cap $3), run in batches `bench-exp1
 - Walk phrases were going into a standing shot.
 - The performance's body phrase contradicted the beat's blocked hands.
 
+## 4. Audit: what the output-picker bug invalidated
+
+**Scope.** Since 2026-11-22, every graph that loads a video with core `LoadVideo` returned that input as its
+"render". There were 65 jobs: InfiniteTalk V2V (walk-and-talk) and Wan-Animate-2 (dance). Graphs that start from a
+photo were unaffected: photo-start lip sync, story clips, LongCat and LTX.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| 2026-11-24 breadth: "dance passed" | **Void** | Both dance outputs are byte-for-byte the driving clips (sha256), and their identity reviews failed. |
+| 2026-11-24/25: walk-and-talk drops were "V2V that never redrew the mouth" | **Void** | Each take was the silent source clip with the voice muxed on. |
+| The "escalating V2V repairs" (lower start_step) | **Untested until now** | Repairs reran the same passthrough, so the scores were byte-identical. |
+| perf-v3b: 5 walk-and-talk takes "passed lip sync" (corr 0.30–0.83) | **Void, and they expose a gate weakness** | They were untouched source clips. See "Lip-sync gate" below. |
+| V2V and dance cost and render time (88–160 GPU s per take) | **Void** | The old picker returned as soon as the input preview appeared, before the sampler ran. A real V2V render took 146 s warm and 544 s cold. |
+| Wan-Animate-2 cost and quality | **Unknown** | No real dance render has been measured. |
+| "V2V looks the most natural" (§3, first version) | **Void** | That was the source motion clip itself. Only its motion quality is measured, not the lip-synced result. |
+| Capability card, pattern cards | **Unaffected** | No card or capability row was ever computed from these jobs (both tables are empty). |
+
+**Lip-sync gate.** The gate passes a clip when mouth opening correlates with the voice's loudness at r ≥ 0.3.
+- Speech loudness moves slowly, so a mouth that opens now and then correlates with the voice almost as well when the voice is shifted 0.5–1.6 s.
+- Against that null (the 95th percentile of correlations at 13–40 frames of shift):
+
+| Takes | Real correlation | Null | Margin |
+|---|---|---|---|
+| Fake takes | up to 0.87 | 0.87 | ≤ 0.10 |
+| Older photo-start takes | 0.18–0.79 | — | −0.13 to +0.30 |
+| Today's photo-start takes (silent lead-in and hold) | 0.66–0.67 | 0.00–0.13 | +0.54 to +0.66 |
+
+The margin is now recorded on every lip_sync row (`review.video.lip_sync.null`). It is report-only until it is calibrated against clips judged by eye. The lead-in also makes the score far more informative.
+
+**Timing checks before any new render** (§3's two real renders): the cheap, deterministic causes are ruled out.
+- The mouth opens at frame 3 against speech at frame 1, and closes at frame 90 against 88.
+- There is no global offset and no 16/25 fps speed mismatch.
+- The motion clip (5.06 s) covers the line (3.69 s).
+
+The weak articulation is in the render itself.
+
 ## What this changes
 
 - **Voice:** Qwen3 stays, subject to the owner's ear.
