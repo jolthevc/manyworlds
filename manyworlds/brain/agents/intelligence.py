@@ -344,7 +344,8 @@ class Intelligence:
                        (ctx.policy.get("intelligence", "desk", "daily_usd", default=0) if mode == "desk" else
                         (ctx.policy.get("intelligence", "questions", "daily_usd", default=0)
                          if mode == "questions" else cfg.get("max_usd_per_run", 0))))
-        spend = Spend(ctx.conn, ctx.job.id, float(p.get("usd") or default_cap))
+        from ...research import budget   # every run also within the monthly research ceiling (research_budget)
+        spend = Spend(ctx.conn, ctx.job.id, min(float(p.get("usd") or default_cap), budget.left(ctx.conn, ctx.policy)))
         steps = STEPS.get(mode, [mode])
         out: dict = {"mode": mode, "cap_usd": spend.cap}
         scope = list(p.get("creator_ids") or [])

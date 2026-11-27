@@ -164,7 +164,9 @@ def spent_today(conn) -> float:
 
 def affordable(conn, policy) -> bool:
     c = cfg(policy)
-    return spent_today(conn) + float(c.get("est_usd_per_call", 0)) <= float(c.get("daily_usd", 0))
+    from ..research import budget   # and within the monthly research ceiling (research_budget)
+    est = float(c.get("est_usd_per_call", 0))
+    return spent_today(conn) + est <= float(c.get("daily_usd", 0)) and est <= budget.left(conn, policy)
 
 
 def _role(policy) -> str:

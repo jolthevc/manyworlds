@@ -310,7 +310,8 @@ def tick(conn, policy: Policy, router, *, now: datetime | None = None, budget_us
     for r in conn.execute("SELECT id FROM reference_creators WHERE next_check_at IS NULL AND tier <> 'dormant' "
                           "AND last_checked_at IS NULL LIMIT %s", (int(c.get("max_enroll_per_tick", 500)),)).fetchall():
         enroll(conn, policy, r["id"], now=now, due_now=True)          # their first check: now
-    left = float(c.get("daily_usd", 0)) - spent_today(conn, now)
+    from . import budget
+    left = min(float(c.get("daily_usd", 0)) - spent_today(conn, now), budget.left(conn, policy, now))
     if budget_usd is not None:
         left = min(left, float(budget_usd))
     out = {"checked": [], "errors": [], "skipped_budget": 0, "budget_left_usd": round(left, 4)}

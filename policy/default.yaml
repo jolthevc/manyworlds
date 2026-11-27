@@ -1384,6 +1384,16 @@ strategy:
     age_bands: [[18, 24], [25, 34], [35, 54], [55, 99]]
     top_gaps: 5
 
+# One monthly ceiling for all research and intelligence spend (owner 2026-11-26: up to $100/month for discovery, data
+# acquisition, annotation, video understanding, web research, analysis and synthesis; a ceiling, not a target; it
+# replaced the $1/day allowance; GPU production, launches and other operating spend are not in it). Every research
+# spender also asks manyworlds.research.budget.left(): the month's remainder, paced so a day takes at most
+# pace_multiple x the even share of what is left. agents: ledger tags counted (a tag, or tag:anything).
+research_budget:
+  monthly_usd: 100.0
+  pace_multiple: 3.0
+  agents: [research, intelligence, trends, research_calibration]
+
 research:
   hashtags_per_platform: 6
   items_per_hashtag: 30
@@ -1629,10 +1639,10 @@ intelligence:
   # GDELT and publisher RSS. A question asked again while its finding is fresh is answered from the finding. quick ~
   # $0.03-0.05 (Haiku, <= 3 searches), deep ~ $0.3-0.5 (Sonnet, searches plus page reads). Findings keep our synthesis,
   # classified claims and source URLs with the API's cited snippet; never pages. Topics are watched on their cadence
-  # by the daily desk run within daily_usd (with monitor.daily_usd: the owner's $1/day of research).
+  # by the daily desk run within daily_usd and the monthly research_budget.
   desk:
     enabled: true
-    daily_usd: 0.6
+    daily_usd: 1.0
     fresh_days: 7
     brief_grace_days: 14
     keep_days: 730
@@ -1668,8 +1678,8 @@ intelligence:
   # ScrapeCreators $0.00188 a page; Business Discovery free). mix, select_rate, usd_per_vision_post: for
   # `mw research monitor --estimate N` ($/month at N creators). Off until the owner turns it on.
   monitor:
-    enabled: true            # owner 2026-11-25: on at $1/day, also while paused (operations.while_paused)
-    daily_usd: 0.4                 # with desk.daily_usd 0.6: the owner's $1/day of research (2026-11-25)
+    enabled: true            # owner 2026-11-25: on, also while paused (operations.while_paused)
+    daily_usd: 1.0                 # within research_budget (owner 2026-11-26: $100/month replaced the $1/day)
     max_checks_per_tick: 400
     max_enroll_per_tick: 500
     # Batched profile checks: Apify's profile scraper takes many handles a run and embeds each one's latest 12 posts

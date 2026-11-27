@@ -129,6 +129,9 @@ def ask(conn, policy: Policy, llm, question: str, *, depth: str = "quick", reque
         return {"skipped": f"unknown depth {depth}"}
     if spent_today(conn) + float(d.get("est_usd", 0)) > float(c.get("daily_usd", 0)):
         return {"skipped": "desk daily budget reached"}
+    from . import budget
+    if float(d.get("est_usd", 0)) > budget.left(conn, policy):
+        return {"skipped": "monthly research budget (research_budget) reached for now"}
     with llm.tagged("research:desk", None):
         got = llm.web_research(str(d.get("role", "research_quick")), system=SYSTEM, question=question,
                                max_searches=int(d.get("max_searches", 3)), fetch=bool(d.get("fetch")),

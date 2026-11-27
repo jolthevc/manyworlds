@@ -49,7 +49,8 @@ def spent_today(conn, now: datetime) -> float:
 def left(conn, policy: Policy, now: datetime, stage: str | None = None) -> float:
     """Dollars the watcher may still spend today (overall, and within a stage's own share if given)."""
     cfg = _cfg(policy)
-    total = float(cfg.get("daily_usd_max", 3.0)) - spent_today(conn, now)
+    from . import budget
+    total = min(float(cfg.get("daily_usd_max", 3.0)) - spent_today(conn, now), budget.left(conn, policy, now))
     if stage is None:
         return total
     share = float((cfg.get("stage_share") or {}).get(stage, 1.0)) * float(cfg.get("daily_usd_max", 3.0))
