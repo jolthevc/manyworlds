@@ -431,7 +431,7 @@ class LLM:
         model, fallback = self.route(role)
         key = self.task_key(role)
         how = "override" if self._role_override(key) else ("task" if key != role else "role")
-        split = self._split(key)
+        split = (self._split(self._task) if self._task else None) or self._split(key)   # the task's own, else the role's
         if split and split != model:
             # a share of this task's real calls go to a candidate (its answer is used; the incumbent is the
             # fallback): evidence from normal work, joined downstream through the ledger's task and model
