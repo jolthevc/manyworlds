@@ -558,9 +558,7 @@ class LLM:
             raise OpenModelError(f"{host['key_env']} is not set")
         prefix = str(spec.get("system_prefix") or "")      # the model's own prompting needs (registry), if any
         if prefix and isinstance(system, str):
-            system = f"{prefix}
-
-{system}"
+            system = prefix + "\n\n" + system
         body = {"model": spec["id"],
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": _openai_content(content, bool(spec.get("vision")),
