@@ -32,6 +32,9 @@ def _root() -> Path:
     return Path.cwd() / "policy" / "benchmarks"
 
 
+MIN_JUDGES = 2   # eligible judges a pair should have; fewer is flagged in the plan
+
+
 class Piece(BaseModel):
     text: str = Field(description="the answer to the assignment, as it would be used")
 
@@ -105,6 +108,8 @@ def run(conn, policy: Policy, llm, *, creator_id, scenarios: list[str] | None, m
     plan = {"bench": bench, "scenarios": chosen, "models": models, "baseline": baseline, "samples": samples,
             "judges": {m: judges_for(policy, judges, m, baseline) for m in models}, "estimate_usd": est,
             "cap_usd": usd}
+    # one judge per pair is one opinion: on 2026-11-27 two judges split 3-9 and 8-5 on the same candidate
+    plan["under_judged"] = sorted(m for m, js in plan["judges"].items() if len(js) < MIN_JUDGES)
     if dry_run:
         return plan
     c = conn.execute("SELECT bible FROM creators WHERE id = %s", (creator_id,)).fetchone()

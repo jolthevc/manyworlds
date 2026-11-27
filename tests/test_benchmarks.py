@@ -39,12 +39,13 @@ def _creator(conn):
 
 
 def test_candidates_are_judged_blind_by_other_families_and_recorded(conn, policy):
-    assert set(benchmarks.load()["scenarios"]) >= {"bartender_monologue", "embodiment_low", "house_tour_plan"}
+    assert set(benchmarks.load()["scenarios"]) >= {"closing_time_monologue", "embodiment_low", "house_tour_plan"}
     llm = BenchLLM()
-    out = benchmarks.run(conn, policy, llm, creator_id=_creator(conn), scenarios=["bartender_monologue"],
+    out = benchmarks.run(conn, policy, llm, creator_id=_creator(conn), scenarios=["closing_time_monologue"],
                          models=["glm-5.3"], baseline="claude-sonnet-5-5",
                          judges=["claude-opus-5-5", "glm-5.3", "qwen4-max"], samples=2, usd=1.0)
     assert out["judges"] == {"glm-5.3": ["qwen4-max"]}           # neither claude nor glm judges claude vs glm
+    assert out["under_judged"] == ["glm-5.3"]                    # one eligible judge is flagged
     s = out["summary"]["glm-5.3"]
     assert s["judgements"] == 2 and s["wins"] == 2 and s["losses"] == 0   # the order flip didn't fool the tally
     assert [m for m, sch in llm.log if sch == "Verdict"] == ["qwen4-max", "qwen4-max"]

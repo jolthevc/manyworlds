@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     lm.add_argument("--tolerance", type=float, default=1.0, help="numeric difference counted as agreeing")
     lm.add_argument("--models", help="bench: comma-separated candidate models (from llm.registry)")
     lm.add_argument("--baseline", default="claude-sonnet-5-5", help="bench: the incumbent the candidates are compared with")
-    lm.add_argument("--judges", default="claude-opus-5-5,glm-5.3", help="bench: judge models (never one of a contestant's family)")
+    lm.add_argument("--judges", default="claude-opus-5-5,glm-5.3,qwen4-max,deepseek-v4.1-flash", help="bench: judge models (never one of a contestant's family)")
     lm.add_argument("--samples", type=int, default=2, help="bench: answers per model per scenario")
     lm.add_argument("--scenarios", help="bench: comma-separated scenario ids (default: all in the bench)")
     lm.add_argument("--bench", default="creative-v1", help="bench: the scenario file in policy/benchmarks")
