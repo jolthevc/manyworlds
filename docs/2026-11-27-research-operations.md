@@ -1,5 +1,9 @@
 # The research operation today: jobs, dataset and data lifecycle (2026-11-27)
 
+> **Superseded the same day.** The owner discontinued third-party creator research after this inventory was written.
+> The dataset described below has been deleted; see `docs/2026-11-27-third-party-research-discontinued.md`. This
+> document stays as the record of what existed.
+
 This is a factual inventory, taken from the code, the policy and the production database on 2026-11-27. "Running" means it runs on its own now (operations are paused; `operations.while_paused` lists what may run anyway). "Built" means the code exists and is tested but nothing schedules it yet. "Demonstrated" means it has produced real output.
 
 ## 1. The jobs, one by one
