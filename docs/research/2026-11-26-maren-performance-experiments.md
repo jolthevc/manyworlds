@@ -73,15 +73,22 @@ The three experiments approved by the owner (cap $3), run in batches `bench-exp1
 - The energy requested in words barely changes the face: the voice drives it.
 - Video-start clips look the most natural (subtle expression, real body movement, a wry ending), but the mouth barely moves.
 
-**A defect found:** the video-to-video start step is ignored.
-- The production repair for a video-to-video lip-sync failure lowers `start_step` (2 → 1 → 0).
+**A defect found, and its real cause:** we were saving the source clip, not the render.
 - Rerunning both clips at start step 1 produced byte-identical files with identical lip-sync scores.
-- So the knob has no effect in our graph, and the repair escalation for walk-and-talk is a no-op.
+- The upstream sampler does honour `start_step` (traced in WanVideoWrapper at our pinned commit), and our graph matches Kijai's V2V example.
+- The cause was ours. ComfyUI v0.45's core `LoadVideo` lists its input file among a prompt's outputs, as a preview of type `input`. Our `comfy.run()` took the first `.mp4` it found: the source motion clip.
+- It also returned as soon as that preview appeared, before the sampler finished. That is why video-start jobs took 88–120 GPU seconds, against 237 or more for photo start.
+- So every walk-and-talk "render" and repair since the core-node swap measured the untouched motion clip with the voice muxed on.
+- The same picker served multi-window graphs and motion transfer. The 2026-11-24 dance "pass" probably judged the driving clip.
+- Fixed in talkcomfy v33: only files saved as `output` are taken. The two video-start clips were rerun to verify.
 
-To investigate before video start (approach C) can be judged fairly:
-- whether WanVideoWrapper's InfiniteTalk path uses `samples` and `start_step` at all;
-- how Kijai's V2V example wires it (its denoise is probably 1.0);
-- whether the mouth region needs a mask.
+**After the fix (start step 2):**
+- The clips are real renders now. Her mouth visibly speaks while the source clip's framing and body movement are kept, and the files differ from before.
+- Both still fail the lip-sync check (corr 0.16 and −0.07, bar 0.3).
+- The repair ladder (start step 1, then 0) now changes the render, so it can be measured.
+- Untested: a timing offset in V2V, and whether half the frame is too little redraw for the mouth to follow the audio.
+- V2V takes still have no lead-in or end hold (review finding, open).
+- Spend for all three experiments: $1.09 of $3.
 
 **Prompt fixes found on the way** (all deployed):
 - Walk phrases were going into a standing shot.
