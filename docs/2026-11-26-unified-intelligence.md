@@ -303,3 +303,80 @@ Free: Business Discovery, the YouTube Data API, the ad libraries, deterministic 
   - Johari et al. on always-valid inference;
   - switchback designs;
   - Kantar/WARC and System1/IPA creative studies (treated as light priors).
+
+## 11. Archetypes: why people follow vs what she posts about (owner brief, 2026-11-26)
+
+**What we had.** The "archetype" library (`policy/archetypes/archetypes-v1.yaml`) is mostly a set of vertical and
+format playbooks: fashion_style, beauty_grwm, food_home, movement, city_explorer and maker, plus two that are closer
+to propositions (storyteller, educator). The proposition itself lived in one line, `positioning.why_follow`, which
+code never read.
+
+Missing:
+- a structured proposition, a mix, and the jobs content does (attention, follow, return, affinity);
+- arc types;
+- the idea engines in her life;
+- any way to research propositions in other creators.
+
+**What changed** (extending existing pieces; no new agent or bible):
+- `policy/archetypes/propositions-v1.yaml`: your ten propositions as starting hypotheses. Each one has:
+  - its follow reason;
+  - what earns attention, converts to a follow, brings people back and builds affinity;
+  - the public signals a reader can code;
+  - the signals in our own analytics;
+  - the outcomes that matter most for it;
+  - its pitfalls.
+  A creator is a weighted mix (shares), not a label. A reason the list lacks is kept as `other:<words>`, and research counts these as candidates for new propositions.
+- Dossier:
+  - The archetypes section now sets three things separately: playbooks (how content is built), propositions with shares (why people follow) and verticals (what she posts about).
+  - Each series names the proposition it serves, its job and its arc (evergreen, seasonal, episodic or serial).
+  - The content system names her idea engines and a job mix.
+- Casting concepts carry propositions and verticals, and are asked to vary them across concepts.
+- Research:
+  - Reference creators are coded for propositions and verticals from a text digest of our own reads of their posts (`mw research propositions`). No media is sent, and it costs about $0.001 a creator.
+  - Proposition and vertical are context fields in every analysis and filters in questions.
+  - Our own posts carry their series' job and proposition in the spine.
+
+**Where I disagree with, or qualify, the brief.**
+1. **Some propositions may not be separable.**
+   - Muse and aspirational icon, tastemaker and authority, comfort figure and best friend overlap.
+   - Agreement measurement decides. If two independent reads can't tell them apart (α under the floor), they should merge.
+   - If clusters of "other:" answers keep appearing, they become new propositions.
+2. **A proposition is an audience outcome, so for other creators we can only infer it.**
+   - Public content shows what a creator offers, not why their audience stays.
+   - Comment text, the best evidence of why people stay, is red in our data policy, so we never read it for other creators.
+   - For our own creators the comment themes and Insights give the real answer. The proposition mix should be revised from them, with the evidence attached.
+3. **The funnel jobs are mostly measurable only on our own accounts.**
+   - Public counts give attention proxies (views, shares) and weak return proxies (saves). Follows per post, returning viewers and affinity are not public.
+   - So the funnel will be learned mainly from our own published content. External research can only suggest which content shapes tend to do each job.
+4. **54 reference creators are far too few for proposition × vertical findings.**
+   - Ten propositions by thirteen verticals is 130 cells, and the recipe analysis needs six or more creators per test.
+   - The allocator should widen the creator universe (hundreds) at the cheap creator level, before reading many more posts per creator.
+5. **The risk is homogenising.**
+   - "Proven combinations" are an input to casting, never a template.
+   - Keep the exploration share in casting as in content: at least one concept per casting run should carry a proposition mix the portfolio lacks.
+
+**What to investigate first** (each a research question the loop can answer cheaply once creators are coded):
+- outcomes by proposition within a vertical, the "why do different creators in one vertical succeed differently" question;
+- which creative attributes differ by proposition among winners, for example whether protagonist winners use serial
+  arcs and open endings more than others;
+- commercial density by proposition: tastemaker and authority are likely the most sponsorable, a hypothesis to test
+  against the commercial registry;
+- the cost per accepted post of each proposition's typical content shapes. Some propositions, such as muse, are cheap for us to render; others need talking video, which is costly for us today.
+
+## 12. Owner actions (all of them, in one place)
+
+1. **Instagram:**
+   - a professional account and App Review for Business Discovery and hashtag search;
+   - the account connection when publishing begins;
+   - counsel's view on Business Discovery uses (`data_policy.sources.graph.pending_counsel`).
+2. **Google:**
+   - a Cloud project and API key for the YouTube Data API;
+   - apply for the YouTube derived-metrics (36-month) use case;
+   - apply for the Google Trends API alpha.
+3. **Twelve Labs**, for own-content tests:
+   1. Create the account.
+   2. Turn off training on customer data in its account settings.
+   3. Put the key in Fly secrets (`TWELVELABS_API_KEY`, piped to `fly secrets import`).
+   4. Then I set `intelligence.pegasus.enabled` and `training_opt_out_confirmed` (both off now).
+4. **Spot checks**, optional but valuable: label a few gold items when asked (`mw research spot-check`). Your eye is one of the coders the agreement report compares.
+5. Still open from before: R2 rotation, infrastructure invoice figures, `NTFY_TOPIC`, `MW_HASH_SALT`.
