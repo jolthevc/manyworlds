@@ -454,3 +454,23 @@ def test_an_apify_run_is_read_then_its_dataset_and_store_are_deleted(monkeypatch
 
     assert apify.run_actor("x~y", {}, token="t", call=call) == [{"id": "p1"}]
     assert ("DELETE", "/datasets/d1") in calls and ("DELETE", "/key-value-stores/k1") in calls
+
+
+def test_the_envelope_counts_only_this_weeks_spend_and_each_machine_once(conn, policy):
+    from datetime import datetime, timedelta, timezone
+
+    from psycopg.types.json import Jsonb
+
+    from manyworlds import budget
+    now = datetime(2026, 11, 27, 12, tzinfo=timezone.utc)               # a Friday; the week starts Monday 23rd
+    old = now - timedelta(days=10)
+    for name, started, billed in (("m-old", old, 9.0), ("m-new", now - timedelta(hours=2), 1.5)):
+        conn.execute("INSERT INTO gpu_groups (name, provider, pool, usd_per_hour, job_kinds, deadline, max_usd, "
+                     "started_at, billed_usd) VALUES (%s, 'vast', 'p', 1, '{image.zimage}', %s, 5, %s, %s)",
+                     (name, now + timedelta(hours=1), started, billed))
+    for batch, group in (("bench-a-x", "m-old"), ("bench-a-y", "m-new"), ("bench-b-z", "m-new")):  # m-new shared
+        j = conn.execute("INSERT INTO jobs (kind, batch, payload, created_at) VALUES ('image.zimage', %s, %s, %s) "
+                         "RETURNING id", (batch, Jsonb({}), now - timedelta(hours=1))).fetchone()["id"]
+        conn.execute("INSERT INTO attempts (job_id, worker_id, pool, gpu_group) VALUES (%s, 'w', 'p', %s)", (j, group))
+    s = budget.dev_status(conn, policy, now=now)
+    assert s["spent_usd"] == 1.5                                        # the old machine's bill is last week's
