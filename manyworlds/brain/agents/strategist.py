@@ -28,6 +28,7 @@ from typing import Literal
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+from ...llm import as_task
 from ...worker.runner import NonRetryable
 from .. import portfolio, predictions, proposals
 from ..agent import AgentContext, register, remember
@@ -230,8 +231,9 @@ class Strategist:
                       f"(by thesis_id) with reasons; propose nothing where nothing is warranted. Back your calls "
                       f"with up to {cfg.get('max_predictions')} checkable predictions about the creators concerned "
                       f"(median_reach or reach_growth, above or below a threshold, with a probability).")
-            plan = ctx.llm.structured("brain", system=SYSTEM, content=prompt, schema=PortfolioPlan,
-                                      effort=cfg.get("effort", "medium"))
+            with as_task(ctx.llm, "strategist_plan"):
+                plan = ctx.llm.structured("brain", system=SYSTEM, content=prompt, schema=PortfolioPlan,
+                                          effort=cfg.get("effort", "medium"))
             moves = _apply_moves(ctx, snap, plan.stage_moves)
             decided = _decide_requests(ctx, open_requests, plan.requests)
             launches = _apply_launches(ctx, snap, plan.launches, f"strategist:{p['day']}")

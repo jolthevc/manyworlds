@@ -42,6 +42,7 @@ from typing import Any
 
 from .. import direction
 from ..direction import TEXT_KINDS, TRANSITION_KINDS, DirectedEdits, DirectedShots, ShotSheet, spoken
+from ..llm import as_task
 from . import budget, memory, patterns, planner
 
 log = logging.getLogger("manyworlds.director")
@@ -502,8 +503,9 @@ def direct(conn, policy, llm, body: dict, creator_id, *, fmt: str | None = None,
     content = _prompt(conn, policy, body, creator_id, fmt, scenes, move_name, move)
     agent = budget.tag_for(conn, AGENT, creator_id)
     with llm.tagged(agent, None, before_call=lambda: budget.check(conn, policy, agent)):
-        out = llm.structured(str(cfg.get("role", AGENT)), system=system_prompt(policy), content=content,
-                             schema=DirectedShots, effort=str(cfg.get("effort", "medium")), creator_id=creator_id)
+        with as_task(llm, "director_shots"):
+            out = llm.structured(str(cfg.get("role", AGENT)), system=system_prompt(policy), content=content,
+                                 schema=DirectedShots, effort=str(cfg.get("effort", "medium")), creator_id=creator_id)
     shots: list[dict[str, Any]] = [s.model_dump(mode="json") for s in (getattr(out, "shots", None) or [])]
     if not shots:
         raise ValueError("the director answered no shots")
@@ -615,9 +617,10 @@ def _edit(conn, policy, llm, content, shots: list[dict], creator_id, agent: str,
     ask = ask + [{"type": "text", "text": f"{EDIT_ASK}\n{json.dumps(view, default=str)}"}]
     try:
         with llm.tagged(agent, None, before_call=lambda: budget.check(conn, policy, agent)):
-            out = llm.structured(str(cfg.get("role", AGENT)), system=system_prompt(policy), content=ask,
-                                 schema=DirectedEdits, effort=str(cfg.get("edit_effort", "low")),
-                                 creator_id=creator_id)
+            with as_task(llm, "director_edit"):
+                out = llm.structured(str(cfg.get("role", AGENT)), system=system_prompt(policy), content=ask,
+                                     schema=DirectedEdits, effort=str(cfg.get("edit_effort", "low")),
+                                     creator_id=creator_id)
     except Exception as e:  # noqa: BLE001 - direction without an edit beats no direction
         log.warning("the edit pass failed (%s: %s); shots keep an empty edit", type(e).__name__, str(e)[:300])
         return

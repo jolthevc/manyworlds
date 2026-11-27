@@ -69,6 +69,14 @@ class StructuredLLM(Protocol):
                    effort: str = "high", creator_id=None) -> T: ...
 
 
+def as_task(llm, name: str):
+    """`with as_task(llm, "director_edit"):` names the capability the calls inside perform (policy llm.tasks
+    lists them). Routing, shadow tests and benchmarks can then treat that task on its own; any client without
+    task routing (a test stub) is left as it is."""
+    task = getattr(llm, "task", None)
+    return task(name) if callable(task) else contextlib.nullcontext()
+
+
 def image_block(data: bytes, media_type: str = "image/png") -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": media_type,
                                         "data": base64.standard_b64encode(data).decode()}}
@@ -249,6 +257,7 @@ class LLM:
         self._overrides: dict | None = None   # approved role switches, re-read every llm.override_cache_seconds
         self._overrides_at = 0.0
         self.batching = False   # journal calls in brain jobs and batch llm.batch.roles (the brain worker sets it)
+        self._task: str | None = None   # the task the current calls perform (as_task): routed on its own when configured
 
     @property
     def client(self):
@@ -258,9 +267,27 @@ class LLM:
         return self._client
 
     # --- routing -------------------------------------------------------------------------------------------
+    def task_key(self, role: str) -> str:
+        """The routing key of the current call: the task (as_task) when it has its own route (llm.roles.<task> or an
+        approved override), else the role. Tasks let one capability inside a role (the director's edit, the analyst
+        inside `brain`) be switched, shadowed and benchmarked on its own; unconfigured, it routes as the role."""
+        t = self._task
+        if t and (self._role_override(t) or self.policy.get("llm", "roles", t)):
+            return t
+        return role
+
+    @contextlib.contextmanager
+    def task(self, name: str):
+        before, self._task = self._task, name
+        try:
+            yield
+        finally:
+            self._task = before
+
     def route(self, role: str) -> tuple[str, str | None]:
-        """(model, fallback) for a role: an approved switch (`llm.roles.<role>` in policy_overrides, from model
-        selection) wins over the policy file, in every service that calls models, not only the Brain."""
+        """(model, fallback) for a role (or its current task, task_key): an approved switch (`llm.roles.<key>` in
+        policy_overrides, from model selection) wins over the policy file, in every service that calls models."""
+        role = self.task_key(role)
         spec = self._role_override(role) or self.policy.get("llm", "roles", role)
         if not spec:
             raise KeyError(f"no model configured for LLM role {role!r}")
@@ -529,6 +556,11 @@ class LLM:
         key = os.environ.get(host["key_env"])
         if not key:
             raise OpenModelError(f"{host['key_env']} is not set")
+        prefix = str(spec.get("system_prefix") or "")      # the model's own prompting needs (registry), if any
+        if prefix and isinstance(system, str):
+            system = f"{prefix}
+
+{system}"
         body = {"model": spec["id"],
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": _openai_content(content, bool(spec.get("vision")),
@@ -540,6 +572,9 @@ class LLM:
                     else schema.model_json_schema()}}}
         if spec.get("stream"):
             body.update(stream=True, stream_options={"include_usage": True})
+        for k in ("temperature", "top_p", "min_p"):            # per-model sampling (creative models need it)
+            if spec.get(k) is not None:
+                body[k] = float(spec[k])
         prices = spec.get("usd_per_mtok") or [0, 0]
         timeout = float(spec.get("timeout_seconds", host.get("timeout_seconds", 120)))   # slow thinkers need more
         last = None
@@ -570,6 +605,8 @@ class LLM:
 
     # --- shadow testing ------------------------------------------------------------------------------------
     def _shadow(self, role: str, model: str, out: BaseModel, primary_usd: float, **call) -> None:
+        if self._task and self.policy.get("llm", "shadow", self._task):
+            role = self._task                 # a task with its own shadow test: evidence for that task alone
         cfg = self.policy.get("llm", "shadow", role)
         if not cfg or not self.shadowing:
             return

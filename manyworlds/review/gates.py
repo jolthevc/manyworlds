@@ -34,7 +34,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, PrivateAttr
 
 from ..creator.lab import appearance_prompt
-from ..llm import StructuredLLM, image_block
+from ..llm import StructuredLLM, as_task, image_block
 from ..policy import Policy
 from ..storage import ObjectStore
 from . import common, detail
@@ -191,8 +191,9 @@ def _judge(llm: StructuredLLM, policy: Policy, cfg: dict, role: str, effort: str
     if perf:
         content.append({"type": "text", "text": perf})
     content.append({"type": "text", "text": f"Review all {len(candidates)} candidates, one entry each."})
-    out = llm.structured(role, system=SYSTEM, content=content, schema=ImageReviews, effort=effort,
-                         creator_id=creator["id"])
+    with as_task(llm, f"image_{role}"):
+        out = llm.structured(role, system=SYSTEM, content=content, schema=ImageReviews, effort=effort,
+                             creator_id=creator["id"])
     by_index = {r.index: r for r in out.reviews}
     reads = list(getattr(out, "performance_reads", None) or [])
     reviews = []

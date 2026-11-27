@@ -48,7 +48,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .. import direction
 from ..brain import archetypes as arch
-from ..llm import StructuredLLM
+from ..llm import StructuredLLM, as_task
 from ..policy import Policy
 from . import profile as profile_mod
 
@@ -696,12 +696,13 @@ def section_prompt(conn, policy: Policy, creator_id, section: str, prof: dict, *
 def build_section(conn, policy: Policy, llm: StructuredLLM, creator_id, section: str, prof: dict, *,
                   extra: str = "") -> dict:
     """One section, cleaned (not saved): {section: value} (archetypes also gives archetype_why)."""
-    out = llm.structured(policy.get("brain", "talent_manager", "role", default="talent_manager"),
-                         system=profile_mod.persona_system(policy, SYSTEM),
-                         content=section_prompt(conn, policy, creator_id, section, prof, extra=extra),
-                         schema=SCHEMAS[section],
-                         effort=policy.get("brain", "talent_manager", "effort", default="medium"),
-                         creator_id=creator_id)
+    with as_task(llm, f"dossier_{section}"):
+        out = llm.structured(policy.get("brain", "talent_manager", "role", default="talent_manager"),
+                             system=profile_mod.persona_system(policy, SYSTEM),
+                             content=section_prompt(conn, policy, creator_id, section, prof, extra=extra),
+                             schema=SCHEMAS[section],
+                             effort=policy.get("brain", "talent_manager", "effort", default="medium"),
+                             creator_id=creator_id)
     return clean(policy, section, out, prof)
 
 

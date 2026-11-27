@@ -4116,6 +4116,70 @@ llm:
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
     claude-sonnet-5-5: [2.00, 10.00, 0.10, 2.50]
     claude-haiku-5-5:  [0.10, 0.50, 0.01, 0.125]
+  # Tasks (owner 2026-11-27: the agent is a responsibility, the model a replaceable resource per task). A call
+  # inside `as_task(llm, <task>)` routes as its parent role until `llm.roles.<task>` (or an approved override of it)
+  # gives the task its own model; `llm.shadow.<task>` shadow-tests that task alone. Every task the code names is
+  # listed here (tests/test_model_registry.py). {task: parent role}; `image_<role>`/`clip_<role>`/`evaluate_<rubric>`/
+  # `dossier_<section>` are families: the parent is the role named in the task, else the one given.
+  tasks:
+    director_shots: director              # set, wardrobe, framing, blocking, performance per scene
+    director_edit: director               # on-screen text, cuts, captions for the shots
+    strategist_plan: brain                # portfolio plan, stage moves, launches
+    analyst_read: brain                   # a creator's metrics read
+    image_review: review                  # image defect screen (identity, realism, anatomy, direction, performance)
+    image_review_confirm: review_confirm  # second look at close calls
+    clip_review: review                   # clip defect screen from keyframes
+    clip_review_confirm: review_confirm
+    evaluate_idea: evaluator              # rubric scoring, one task per rubric
+    evaluate_feed: evaluator
+    evaluate_direction: evaluator
+    evaluate_execution: evaluator
+    dossier_archetypes: talent_manager    # dossier sections, one task each
+    dossier_positioning: talent_manager
+    dossier_audience_insight: talent_manager
+    dossier_story: talent_manager
+    dossier_brand_core: talent_manager
+    dossier_brand_world: talent_manager
+    dossier_brand_commerce: talent_manager
+    dossier_content_system: talent_manager
+    dossier_performance: talent_manager
+  # The model registry: what each model is, where it runs, under which licence and data terms, and the evidence
+  # about it, graded by source (vendor claim, published benchmark, community impression, our own measurement: the
+  # last is what selection acts on). status: approved (may hold a role), candidate (shadow and benchmark only),
+  # retired. A model a role, fallback or shadow names must be here (tests/test_model_registry.py). `mw llm registry`.
+  registry:
+    claude-opus-5-5:   {family: claude, provider: anthropic, modalities: [text, image], licence: proprietary,
+                        data_terms: "Anthropic commercial API: no training on inputs; standard retention", status: approved,
+                        evidence: [{kind: benchmark, claim: "EQ-Bench creative writing v3: 4th (later snapshot); Mazur story board 6th", date: 2026-11-17},
+                                   {kind: own, claim: "blind judge for routing trials (2026-11-23)", date: 2026-11-23}]}
+    claude-sonnet-5-5: {family: claude, provider: anthropic, modalities: [text, image], licence: proprietary,
+                        data_terms: "Anthropic commercial API: no training on inputs; standard retention", status: approved,
+                        evidence: [{kind: own, claim: "director kept on Sonnet: Qwen4-Max and GLM-5.3 lost 4/4 blind (2026-11-23)", date: 2026-11-23}]}
+    claude-haiku-5-5:  {family: claude, provider: anthropic, modalities: [text, image], licence: proprietary,
+                        data_terms: "Anthropic commercial API: no training on inputs; standard retention", status: approved,
+                        evidence: []}
+    kimi-k3.1-pro:     {family: kimi, provider: together, modalities: [text, image], licence: "modified MIT (attribution above 100M MAU or $20M monthly revenue)",
+                        data_terms: "Together: verify retention before media", status: candidate,
+                        evidence: [{kind: benchmark, claim: "EQ-Bench creative writing: 2nd (later snapshot); humor boards 2nd", date: 2026-11},
+                                   {kind: own, claim: "timed out often, cost the most, lost its trials (2026-11-22)", date: 2026-11-22}]}
+    glm-5.3:           {family: glm, provider: together, modalities: [text], licence: "MIT-style (security review above $10B revenue)",
+                        data_terms: "Together: verify retention before media", status: candidate,
+                        evidence: [{kind: benchmark, claim: "Mazur story board: top open-weight (9th)", date: 2026-11-17},
+                                   {kind: own, claim: "lost director 4/4, style 3/3, talent 2/2 blind (2026-11-23)", date: 2026-11-23}]}
+    glm-5.3-flash:     {family: glm, provider: together, modalities: [text], licence: MIT, data_terms: "Together", status: candidate, evidence: []}
+    deepseek-v4.1-flash: {family: deepseek, provider: together, modalities: [text], licence: "check", data_terms: "Together", status: candidate,
+                        evidence: [{kind: community, claim: "most-used roleplay model on OpenRouter (usage, not quality)", date: 2026-11}]}
+    minimax-m3.1-flash: {family: minimax, provider: together, modalities: [text], licence: "check", data_terms: "Together", status: candidate, evidence: []}
+    nemotron-3.5-vl:   {family: nemotron, provider: together, modalities: [text, image], licence: "NVIDIA Open Model Agreement (check)",
+                        data_terms: "Together", status: candidate, evidence: []}
+    qwen3.8-flash:     {family: qwen, provider: together, modalities: [text, image], licence: "Qwen Community License (check)",
+                        data_terms: "Together via a third-party provider; the owner enabled data sharing for it (2026-11-21)", status: approved, evidence: []}
+    qwen3.7-plus:      {family: qwen, provider: together, modalities: [text, image], licence: "API (Qwen Plus tier)",
+                        data_terms: "Together via a third-party provider; data sharing enabled", status: candidate, evidence: []}
+    qwen4-max:         {family: qwen, provider: together, modalities: [text, image], licence: "API (Qwen Max tier; check)",
+                        data_terms: "Together via a third-party provider; data sharing enabled", status: approved,
+                        evidence: [{kind: benchmark, claim: "Mazur story board 3rd (3.55)", date: 2026-11-17},
+                                   {kind: own, claim: "style director: won 3/3 blind at ~53% of Sonnet's cost (2026-11-23)", date: 2026-11-23}]}
   max_output_tokens: 16000
   # Claude's server-side web tools (llm.web_research, research.desk): $10 per 1,000 searches (failed ones free), fetch
   # tokens only; at most max_continuations pause_turn continuations per question.

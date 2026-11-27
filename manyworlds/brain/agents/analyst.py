@@ -19,6 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ...llm import as_task
 from ...worker.runner import NonRetryable
 from .. import analysis, evidence, experiments
 from ..agent import AgentContext, commission, record_decision, register
@@ -108,9 +109,10 @@ def analyse(ctx: AgentContext, creator_id) -> dict:
     if question:   # research a talent manager asked for (manyworlds.brain.proposals): answer it in the notes
         content += (f"\nA QUESTION FROM HER TALENT MANAGER (answer it in your notes from this data; say plainly what "
                     f"the data can't tell): {question}")
-    out = ctx.llm.structured("brain", system=SYSTEM, content=content, schema=Analysis,
-                             effort=ctx.policy.get("brain", "analyst", "effort", default="medium"),
-                             creator_id=creator_id)
+    with as_task(ctx.llm, "analyst_read"):
+        out = ctx.llm.structured("brain", system=SYSTEM, content=content, schema=Analysis,
+                                 effort=ctx.policy.get("brain", "analyst", "effort", default="medium"),
+                                 creator_id=creator_id)
     evidence_kind = "simulated" if mode == "sandbox" else "observational"
     source = [{"creator_id": str(creator_id)}] + ([{"table": "simulated_metrics"}] if mode == "sandbox" else [])
     finding_ids = []

@@ -59,6 +59,19 @@ make; GPU workers on cheap interruptible cards make it; every dollar lands in a 
 - `manyworlds/migrations/` — forward-only SQL; add a new numbered file, never edit an applied one
 - `policy/default.yaml` — every tunable number (budgets, GPU pools/prices, models, scope, limits)
 
+## Direction (owner 2026-11-27, settled)
+
+Success comes from creating personalities and content people love and learning to do it repeatedly, not from
+knowing everything about other creators. Externally informed (exceptional internet research through legitimate,
+authorized sources: search, published interviews, rankings, case studies, reports, official platform resources,
+authorized APIs); creatively independent (original personalities and content, wide creative freedom, no generic AI
+look, no formula; production serves the creative vision rather than dictating it); technically sophisticated;
+empirically self-improving from our own content, experiments and first-party outcomes (exploit, vary, and pursue the
+genuinely new; data enhances creativity, never constrains it; AI quality judgments are not audience evidence);
+economically disciplined. Licensed intelligence services stay optional, never a dependency, never bought without
+approval. Build on what exists: no wholesale rebuilds; prefer demonstrated capability and finished-content quality
+over architecture.
+
 ## Rules that matter
 
 - **No third-party creator research** (owner 2026-11-27): no scraping, automated creator discovery, monitoring or multimodal analysis of other creators' photos and videos. `intelligence.external.enabled` is off and checked at every entry point; apify, scrapecreators and Business Discovery are blocked in the data policy. Intelligence comes from web research (the desk), our own content and first-party analytics. Turning it back on is the owner's decision only. See `docs/2026-11-27-third-party-research-discontinued.md`.

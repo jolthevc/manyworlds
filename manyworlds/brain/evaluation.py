@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, create_model
 
+from ..llm import as_task
 from ..policy import Policy
 from .rubrics import Rubric
 
@@ -77,8 +78,9 @@ def score(llm, policy: Policy, r: Rubric, content: list, *, role: str, samples: 
         return {k: (statistics.median(v) if v else None) for k, v in per_dim.items()}
 
     def sample() -> None:
-        out = llm.structured(role, system=SYSTEM, content=prompt, schema=schema, effort=effort(policy),
-                             creator_id=creator_id)
+        with as_task(llm, f"evaluate_{r.rubric}"):
+            out = llm.structured(role, system=SYSTEM, content=prompt, schema=schema, effort=effort(policy),
+                                 creator_id=creator_id)
         for d in r.dimensions:
             s = getattr(out, d.key, None)
             if s is None or s.score is None:

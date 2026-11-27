@@ -39,7 +39,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ..creator.lab import appearance_prompt
-from ..llm import StructuredLLM, image_block
+from ..llm import StructuredLLM, as_task, image_block
 from ..policy import Policy
 from ..storage import ObjectStore
 from . import common, detail
@@ -190,8 +190,9 @@ def _judge(llm: StructuredLLM, policy: Policy, role: str, effort: str, creator, 
     if perf:
         content.append({"type": "text", "text": perf})
     content.append({"type": "text", "text": "Review the clip as a whole from these keyframes."})
-    r = llm.structured(role, system=SYSTEM, content=content, schema=ClipReview, effort=effort,
-                       creator_id=creator["id"])
+    with as_task(llm, f"clip_{role}"):
+        r = llm.structured(role, system=SYSTEM, content=content, schema=ClipReview, effort=effort,
+                           creator_id=creator["id"])
     for k in ("identity", "motion", "realism"):
         setattr(r, k, max(0, min(10, getattr(r, k))))
     r.identity_per_frame = ([max(1, min(10, int(s))) for s in r.identity_per_frame]
