@@ -1,6 +1,7 @@
-"""Model benchmarks on our own creative tasks (manyworlds.benchmarks): every candidate gets the same assignment,
-answers are compared blind with the incumbent's, no judge judges its own family, spend stops at the cap, and the
-trial lands in the ledger."""
+"""Model benchmarks on our own creative tasks (manyworlds.benchmarks): every candidate gets the same assignment;
+every judge family (Claude included) compares blind; independent samples are counted apart from judgements; a
+judge that favours its own family is measured; the longer-answer effect is reported; every call is reserved
+against the cap, so the cap holds; trials pool into per-task evidence."""
 
 from __future__ import annotations
 
@@ -11,7 +12,8 @@ from manyworlds import benchmarks
 
 
 class BenchLLM:
-    """Answers with the model's name; the judge prefers whichever answer came from glm (wherever it sits)."""
+    """glm writes a longer answer. Judges: claude picks whichever answer is claude's (self-preference); glm and qwen
+    pick glm's."""
 
     def __init__(self, usd_per_call=0.001):
         self.calls, self.log, self.shadowing, self.usd = [], [], True, usd_per_call
@@ -25,12 +27,14 @@ class BenchLLM:
         yield
 
     def _call(self, model, *, system, content, schema, effort, creator_id):
-        self.calls.append(NS(usd=self.usd))
+        self.calls.append(NS(usd=self.usd, output_tokens=100))
         self.log.append((model, schema.__name__))
         if schema is benchmarks.Piece:
-            return benchmarks.Piece(text=f"answer by {model}")
+            return benchmarks.Piece(text="a much longer answer by glm here" if "glm" in model else "short by claude")
         a = content.split("=== Answer A ===")[1].split("=== Answer B ===")[0]
-        return benchmarks.Verdict(reason="sounds more like her", better="A" if "glm" in a else "B")
+        own = "glm" not in a if model.startswith("claude") else "glm" in a
+        return benchmarks.Verdict(reason="r", better="A" if own else "B",
+                                  a=benchmarks.Scores(originality=4), b=benchmarks.Scores(originality=2))
 
 
 def _creator(conn):
@@ -38,28 +42,36 @@ def _creator(conn):
                         "RETURNING id").fetchone()["id"]
 
 
-def test_candidates_are_judged_blind_by_other_families_and_recorded(conn, policy):
+def test_all_families_judge_and_self_preference_independent_samples_and_length_are_reported(conn, policy):
     assert set(benchmarks.load()["scenarios"]) >= {"closing_time_monologue", "embodiment_low", "house_tour_plan"}
     llm = BenchLLM()
     out = benchmarks.run(conn, policy, llm, creator_id=_creator(conn), scenarios=["closing_time_monologue"],
                          models=["glm-5.3"], baseline="claude-sonnet-5-5",
                          judges=["claude-opus-5-5", "glm-5.3", "qwen4-max"], samples=2, usd=1.0)
-    assert out["judges"] == {"glm-5.3": ["qwen4-max"]}           # neither claude nor glm judges claude vs glm
-    assert out["under_judged"] == ["glm-5.3"]                    # one eligible judge is flagged
-    s = out["summary"]["glm-5.3"]
-    assert s["judgements"] == 2 and s["wins"] == 2 and s["losses"] == 0   # the order flip didn't fool the tally
-    assert [m for m, sch in llm.log if sch == "Verdict"] == ["qwen4-max", "qwen4-max"]
-    assert llm.shadowing is True                                 # restored after the run
-    row = conn.execute("SELECT method, result FROM analysis_runs WHERE method = 'model_bench'").fetchone()
-    assert row and len(row["result"]["answers"]) == 4
+    assert out["neutral_judges"] == {"glm-5.3": ["qwen4-max"]} and out["under_judged"] == ["glm-5.3"]
+    m = out["models"]["glm-5.3"]
+    assert m["judgements"] == 6                                      # every judge on every pair (2 samples x 3)
+    assert m["samples"] == {"candidate": 2, "baseline": 0, "tie": 0}  # two independent samples, majority each
+    assert m["samples_neutral_judges"] == {"candidate": 2, "baseline": 0, "tie": 0}
+    sp = out["self_preference"]
+    assert sp["claude"]["self_preference"] == 1.0                    # claude always picks claude; qwen never does
+    assert sp["glm"]["self_preference"] == 0.0                       # glm picks glm exactly as often as qwen does
+    assert out["length"]["longer_answer_won"] is not None
+    assert m["dimensions"]["originality"] in (2.0, 3.0, 4.0) and llm.shadowing is True
+    assert out["untested_scenarios"] == [] and out["stopped"] is None
+    assert set(out["cost"]) == {"estimated_usd", "committed_usd", "actual_usd"}
+    ev = benchmarks.evidence(conn, policy)
+    assert ev["models"]["glm-5.3 vs claude-sonnet-5-5"]["dialogue:closing_time_monologue"] == {"candidate": 2,
+                                                                                              "baseline": 0, "tie": 0}
 
 
-def test_the_cap_stops_spending_and_a_dry_run_spends_nothing(conn, policy):
+def test_the_cap_holds_with_reservations_and_unjudged_scenarios_are_named(conn, policy):
     llm = BenchLLM(usd_per_call=0.5)
     me = _creator(conn)
     plan = benchmarks.run(conn, policy, llm, creator_id=me, scenarios=None, models=["glm-5.3"],
                           baseline="claude-sonnet-5-5", judges=["qwen4-max"], samples=2, usd=1.0, dry_run=True)
     assert llm.calls == [] and plan["estimate_usd"] > 0 and len(plan["scenarios"]) >= 7
-    benchmarks.run(conn, policy, llm, creator_id=me, scenarios=None, models=["glm-5.3"],
-                   baseline="claude-sonnet-5-5", judges=["qwen4-max"], samples=2, usd=1.0)
-    assert llm.spent <= 1.0 + 0.5                                # stops at the first call past the cap
+    out = benchmarks.run(conn, policy, llm, creator_id=me, scenarios=None, models=["glm-5.3"],
+                         baseline="claude-sonnet-5-5", judges=["qwen4-max"], samples=2, usd=1.0)
+    assert llm.spent <= 1.0 and out["stopped"].startswith("cap")     # never over the cap
+    assert "narrative_scene" in out["untested_scenarios"]            # named, not silently missing

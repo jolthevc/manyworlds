@@ -114,3 +114,30 @@ def test_json_mode_prompt_sends_the_schema_in_the_prompt_and_no_grammar(conn, po
                                                          creator_id=None)
     assert got.answer == "ok" and "response_format" not in seen
     assert "JSON schema" in seen["messages"][1]["content"] and "write it" in seen["messages"][1]["content"]
+
+
+def test_a_split_sends_a_share_of_a_tasks_real_calls_to_a_candidate_and_the_ledger_says_so(conn, policy):
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        answer: str
+
+    def post(url, body, key, timeout):
+        assert body.get("reasoning") == {"effort": "low"}               # the model's extra request parameters
+        return {"choices": [{"message": {"content": '{"answer": "from glm"}'}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    import os
+    os.environ.setdefault(policy.get("llm", "hosts", "together")["key_env"], "test-key")
+    llm_body = policy.body["llm"]
+    om = llm_body["open_models"]
+    split = policy_mod.from_dict({**policy.body, "llm": {**llm_body, "splits": {"director_edit": {
+        "candidate": "glm-5.3", "share": 1.0}}, "open_models": {**om, "glm-5.3": {**om["glm-5.3"],
+                                                                                "extra_body": {"reasoning": {"effort": "low"}}}}}})
+    llm = llm_mod.Claude(conn, split, post=post)
+    with llm.tagged("director", None), llm_mod.as_task(llm, "director_edit"):
+        got = llm.structured("director", system="s", content="c", schema=Out)
+    assert got.answer == "from glm"
+    row = conn.execute("SELECT provider, task, route FROM cost_entries WHERE agent = 'director' "
+                       "ORDER BY id DESC LIMIT 1").fetchone()
+    assert (row["provider"], row["task"], row["route"]) == ("glm-5.3", "director_edit", "split")
+    assert llm.model_for("director") == llm_mod.Claude(conn, policy).model_for("director")   # routing unchanged

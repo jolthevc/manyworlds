@@ -258,6 +258,7 @@ class LLM:
         self._overrides_at = 0.0
         self.batching = False   # journal calls in brain jobs and batch llm.batch.roles (the brain worker sets it)
         self._task: str | None = None   # the task the current calls perform (as_task): routed on its own when configured
+        self._call_key: tuple[str, str] | None = None   # (task or role, how its model was chosen) for the ledger
 
     @property
     def client(self):
@@ -311,6 +312,14 @@ class LLM:
             self._overrides_at = time.monotonic()
         return self._overrides.get(role)
 
+    def _split(self, key: str) -> str | None:
+        """The candidate model for this call when policy `llm.splits.<task or role>` sends it one
+        ({candidate, share}); None otherwise. Sampled per call."""
+        cfg = self.policy.get("llm", "splits", key, default=None) or {}
+        if not cfg or not cfg.get("candidate") or not self.shadowing:
+            return None
+        return str(cfg["candidate"]) if random.random() < float(cfg.get("share", 0)) else None
+
     def model_for(self, role: str) -> str:
         return self.route(role)[0]
 
@@ -324,7 +333,9 @@ class LLM:
         ledger.record(self.conn, category="llm", provider=model,
                       quantity=input_tokens + output_tokens + cr + cw, unit="token",
                       usd=usd, creator_id=creator_id, policy_version=self.policy.version,
-                      agent=agent if agent is not None else self._tag.get("agent"), job_id=self._tag.get("job_id"))
+                      agent=agent if agent is not None else self._tag.get("agent"), job_id=self._tag.get("job_id"),
+                      task=(self._call_key or (None, None))[0],
+                      route="shadow" if agent == SHADOW_AGENT else (self._call_key or (None, None))[1])
         self.calls.append(u)
         return u
 
@@ -418,6 +429,14 @@ class LLM:
         if self._tag.get("before_call"):
             self._tag["before_call"]()
         model, fallback = self.route(role)
+        key = self.task_key(role)
+        how = "override" if self._role_override(key) else ("task" if key != role else "role")
+        split = self._split(key)
+        if split and split != model:
+            # a share of this task's real calls go to a candidate (its answer is used; the incumbent is the
+            # fallback): evidence from normal work, joined downstream through the ledger's task and model
+            model, fallback, how = split, model, "split"
+        self._call_key = (self._task or role, how)
         if llm_batch.active(self):
             return llm_batch.journaled(self, role, model, fallback, system=system, content=content, schema=schema,
                                        effort=effort, creator_id=creator_id)
@@ -580,6 +599,8 @@ class LLM:
         for k in ("temperature", "top_p", "min_p"):            # per-model sampling (creative models need it)
             if spec.get(k) is not None:
                 body[k] = float(spec[k])
+        for k, v in (spec.get("extra_body") or {}).items():   # host-specific controls (reasoning budget, thinking)
+            body[k] = v
         prices = spec.get("usd_per_mtok") or [0, 0]
         timeout = float(spec.get("timeout_seconds", host.get("timeout_seconds", 120)))   # slow thinkers need more
         last = None

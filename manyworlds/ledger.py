@@ -24,6 +24,8 @@ def record(
     policy_version: str | None = None,
     agent: str | None = None,
     at=None,
+    task: str | None = None,
+    route: str | None = None,
 ) -> None:
     """`at` dates an entry that belongs to the past (a provider's charges reconciled later), so daily caps and
     reports count it on the day it was incurred; default now."""
@@ -31,10 +33,11 @@ def record(
         """
         INSERT INTO cost_entries
             (job_id, attempt_id, creator_id, post_id, category, provider,
-             quantity, unit, usd, policy_version, agent, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, now()))
+             quantity, unit, usd, policy_version, agent, created_at, task, route)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, now()), %s, %s)
         """,
-        (job_id, attempt_id, creator_id, post_id, category, provider, quantity, unit, usd, policy_version, agent, at),
+        (job_id, attempt_id, creator_id, post_id, category, provider, quantity, unit, usd, policy_version, agent, at,
+         task, route),
     )
 
 

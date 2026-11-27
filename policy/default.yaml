@@ -4121,6 +4121,11 @@ llm:
     claude-opus-5-5:   [4.00, 20.00, 0.20, 5.00]
     claude-sonnet-5-5: [2.00, 10.00, 0.10, 2.50]
     claude-haiku-5-5:  [0.10, 0.50, 0.01, 0.125]
+  # Splits: a share of a task's (or role's) real calls go to a candidate whose answer is used, the incumbent as its
+  # fallback, so evidence accumulates from normal work (owner 2026-11-27): the ledger records each call's task and
+  # route (role, task, override, split, shadow), joining the model to acceptance, rerenders and cost downstream.
+  # {task: {candidate: <model>, share: 0..1}}. None as shipped.
+  splits: {}
   # Tasks (owner 2026-11-27: the agent is a responsibility, the model a replaceable resource per task). A call
   # inside `as_task(llm, <task>)` routes as its parent role until `llm.roles.<task>` (or an approved override of it)
   # gives the task its own model; `llm.shadow.<task>` shadow-tests that task alone. Every task the code names is
