@@ -3017,6 +3017,7 @@ direction:
     unless_mentioned:
       mirror reflections: [mirror, reflection]
       extra people: [crowd, friend, people, person]
+      studio lighting: [flash]       # a flash photo is lit by the flash: "lit only by real sources" contradicts it
   # For a target without a negative channel: the positive phrasing that stands in for a negative (Z-Image photos).
   # An item without one is dropped. Mirrors and text have none on purpose: "a plain wall behind the person" on every photo
   # would flatten the ordinary rooms the research asks for, and any wording of "text" asks for text.

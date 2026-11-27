@@ -379,6 +379,38 @@ def _hand_details(details: str) -> str:
     return " ".join(p for p in parts if _HAND_WORDS.search(p)).strip()
 
 
+_GARMENT_WORDS = re.compile(r"\b(cardigans?|sweaters?|jumpers?|knits?|hoodies?|coats?|jackets?|blazers?|dress(es)?|"
+                            r"shirts?|t-shirts?|tees?|tops?|skirts?|jeans|trousers|shorts|scarf|scarves|lanyards?|"
+                            r"uniforms?|apron)\b", re.I)
+_CONTINUES = re.compile(r"^(it|its|it's|the|that|this|they|these|a few|some|she|her)\b", re.I)
+
+
+def _items(details: str) -> list[list[str]]:
+    """Signature details as items, each a list of sentences (split on '.' and ';'): a sentence that goes on about the
+    item before ('It is a dark moss green...', 'The sleeves fall...') stays with it."""
+    out: list[list[str]] = []
+    for sent in re.split(r"(?<=[.;])\s+", str(details or "").strip()):
+        sent = sent.strip().rstrip(";").strip()
+        if not sent:
+            continue
+        if out and _CONTINUES.match(sent):
+            out[-1].append(sent)
+        else:
+            out.append([sent])
+    return out
+
+
+def worn_signature(details: str) -> str:
+    """The signature details that go with any outfit: a shot that names what she wears drops the signature garments
+    (2026-11-27 range audit: 'her oversized moss-green cardigan' was compiled into a swimsuit at a pool, a suit on a
+    rooftop and a gym kit) and any sentence about one, keeping the small things (an earring, a watch, a clip, nails)."""
+    items = _items(details)
+    kept = [x for item in items if not _GARMENT_WORDS.search(item[0]) for x in item if not _GARMENT_WORDS.search(x)]
+    if len(kept) == sum(len(i) for i in items):
+        return str(details or "")                 # nothing to leave out: exactly as written
+    return " ".join(x if x.endswith(".") else f"{x}." for x in kept).rstrip(".")
+
+
 def _hands_subject(bible: dict) -> str:
     """The subject of a faceless shot: her hands, with what makes them hers (skin, hand-level signature details)."""
     a = bible.get("appearance") or {}
@@ -967,7 +999,11 @@ def compile_prompts(shot: "ShotSheet | dict | None", bible: dict, target: Target
 
     head = f"{trigger}, " if trigger else ""
     no_face = faceless(s)
-    sections = {"camera": camera, "subject": _faceless_subject(s, bible, policy) if no_face else appearance_prompt(bible),
+    dressed = bible
+    if s.wardrobe.outfit.strip():   # the shot's outfit, not her signature garments over it
+        a = dict(bible.get("appearance") or {})
+        dressed = {**bible, "appearance": {**a, "signature_details": worn_signature(a.get("signature_details") or "")}}
+    sections = {"camera": camera, "subject": _faceless_subject(s, bible, policy) if no_face else appearance_prompt(dressed),
                 "wardrobe": wardrobe, "action": action,
                 "performance": _performance(s, target, policy, profile) if directed else "",
                 "set": set_, "style": style, "sound": sound}

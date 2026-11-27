@@ -630,3 +630,32 @@ def test_a_hands_shot_carries_only_hand_level_signature_details():
     kept = _hand_details(details)
     assert "cardigan" not in kept and "mid-thigh" not in kept
     assert "silver ring" in kept and "nails" in kept and "scar on her right wrist" in kept
+
+
+MAREN_LIKE = ("Her oversized moss-green cardigan. It is a dark moss green in a chunky knit and hangs to mid-thigh. The "
+              "sleeves fall past her wrists. It is never named or mentioned; it is simply always there.; Single thin "
+              "gold hoop in her left ear only. Plain black digital wristwatch on her left wrist. Plain tortoiseshell "
+              "claw clip. The faded grey work lanyard hangs off the coat hook in most room shots. Short unpainted nails.")
+
+
+def test_a_shot_that_names_her_outfit_drops_her_signature_garments_and_keeps_the_small_things(policy):
+    # 2026-11-27 range audit: the cardigan was compiled into a swimsuit at a pool, a suit on a rooftop and a gym kit
+    kept = direction.worn_signature(MAREN_LIKE)
+    assert "cardigan" not in kept and "mid-thigh" not in kept and "sleeves" not in kept and "always there" not in kept
+    assert "lanyard" not in kept
+    assert "gold hoop" in kept and "wristwatch" in kept and "claw clip" in kept and "unpainted nails" in kept
+    assert direction.worn_signature("a small silver hoop, a red string bracelet") == "a small silver hoop, a red string bracelet"
+    bible = {**BIBLE, "appearance": {**BIBLE["appearance"], "signature_details": MAREN_LIKE}}
+    pool = ShotSheet(set=SetSpec(location="the edge of a hotel pool"), wardrobe=WardrobeSpec(outfit="a black swimsuit"))
+    p = direction.compile_prompt(pool, bible, "photo", unbudgeted(policy))
+    assert "black swimsuit" in p and "cardigan" not in p and "gold hoop" in p
+    home = ShotSheet(set=SetSpec(location="her kitchen"))                   # no outfit named: she wears her own
+    assert "cardigan" in direction.compile_prompt(home, bible, "photo", unbudgeted(policy))
+
+
+def test_a_flash_photo_is_not_told_it_is_lit_only_by_real_sources(policy):
+    stand_in = policy.get("direction", "positive_instead_of", "studio lighting")
+    flash = ShotSheet(set=SetSpec(location="a house party", light_direction="on-camera flash", light_quality="hard"))
+    lamp = ShotSheet(set=SetSpec(location="a house party", light_direction="a floor lamp", light_quality="soft"))
+    assert stand_in.lower() not in direction.compile_prompt(flash, BIBLE, "photo", policy).lower()
+    assert stand_in.lower() in direction.compile_prompt(lamp, BIBLE, "photo", policy).lower()
