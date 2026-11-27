@@ -164,3 +164,56 @@ def test_the_scorecard_compares_each_role_with_the_base_rate(conn):
     assert len(base) == 4 and list(base.values())[0] == 0.25                 # the first: a coin before any history
     [row] = predictions.scorecard(conn, mode="real", role="showrunner")
     assert row["brier_base_rate"] is not None and row["skill"] is not None
+
+
+# --- Pegasus on our own videos (off until the owner's account and training opt-out) --------------------------------
+def _with_pegasus(policy, **over):
+    import dataclasses
+    intel = {**policy.body["intelligence"], "pegasus": {**policy.body["intelligence"]["pegasus"], **over}}
+    return dataclasses.replace(policy, body={**policy.body, "intelligence": intel})
+
+
+def test_pegasus_refuses_until_enabled_opted_out_keyed_and_own(conn, policy, monkeypatch):
+    from manyworlds.research import pegasus
+    assert "enabled is false" in pegasus.refused(conn, policy, "x")
+    on = _with_pegasus(policy, enabled=True)
+    assert "training opt-out" in pegasus.refused(conn, on, "x")
+    on = _with_pegasus(policy, enabled=True, training_opt_out_confirmed=True)
+    monkeypatch.delenv("TWELVELABS_API_KEY", raising=False)
+    assert "TWELVELABS_API_KEY" in pegasus.refused(conn, on, "x")
+    monkeypatch.setenv("TWELVELABS_API_KEY", "test-key")
+    assert "own posts" in pegasus.refused(conn, on, "00000000-0000-0000-0000-000000000000")
+
+
+def test_a_pegasus_read_lands_as_time_ordered_beats_and_is_charged(conn, policy, store, tmp_path, monkeypatch):
+    from brain_helpers import creator, make_post
+
+    from manyworlds.research import pegasus
+    monkeypatch.setenv("TWELVELABS_API_KEY", "test-key")
+    on = _with_pegasus(policy, enabled=True, training_opt_out_confirmed=True)
+    cid = creator(conn)
+    post = make_post(conn, cid)
+    job = conn.execute("INSERT INTO jobs (kind, status, creator_id, post_id) VALUES ('talk.infinitetalk', 'done', %s, "
+                       "%s) RETURNING id", (cid, post)).fetchone()["id"]
+    clip = tmp_path / "take.mp4"
+    clip.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    asset = conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes) VALUES (%s, %s, 'video', "
+                         "%s, 'x', 1) RETURNING id", (job, cid, store.put_file(clip, "t/take.mp4").uri)).fetchone()["id"]
+    seen = []
+
+    def fake(path, c):
+        seen.append(path)
+        return {"duration_s": 60.0, "usage": {"output_tokens": 1000}, "deleted": True, "segments": {
+            "beat": [{"start_time": 2.0, "end_time": 3.5, "metadata": {"kind": "gesture", "energy": 2}},
+                     {"start_time": 0.0, "end_time": 1.0, "metadata": {"kind": "opening", "energy": 1}}],
+            "overall": [{"start_time": 0, "end_time": 6, "metadata": {"naturalness": 7, "defects": ["frozen hand"]}}]}}
+
+    out = pegasus.read_assets(conn, on, store, tmp_path, [str(asset)], analyse_=fake)
+    [r] = out["reads"]
+    assert r["deleted"] and abs(r["usd"] - (0.029 + 0.0075)) < 1e-6 and not clip.with_name(f"{asset}.mp4").exists()
+    beats = conn.execute("SELECT u.seq, u.start_s, v.value FROM content_units u JOIN attribute_values v ON v.unit_id = u.id "
+                         "WHERE u.level = 'beat' AND v.attribute = 'av_kind' ORDER BY u.seq").fetchall()
+    assert [(b["seq"], float(b["start_s"]), b["value"]) for b in beats] == [(0, 0.0, "opening"), (1, 2.0, "gesture")]
+    assert conn.execute("SELECT usd FROM cost_entries WHERE agent = 'research:pegasus'").fetchone()["usd"] > 0
+    # a reference post's media is never sent
+    assert "own posts" in pegasus.refused(conn, on, "00000000-0000-0000-0000-000000000000")

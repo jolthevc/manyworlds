@@ -2010,6 +2010,13 @@ intelligence:
     max_usd_per_run: 15.0
     share_at_read: 0.05                                # external reads that also get the reference reads, at read time
     agent: research:gold
+  # Pegasus (manyworlds.research.pegasus): native audiovisual reads of OUR OWN videos only (owner 2026-11-26), off
+  # until the owner has an account (TWELVELABS_API_KEY) AND has turned off training on customer data in its settings
+  # (training_opt_out_confirmed: the owner sets it). Each upload is deleted after its read. Prices: a third-party
+  # capture of the list ($1.75/h input, $7.50/M output tokens); confirm against the first real usage report.
+  pegasus: {enabled: false, training_opt_out_confirmed: false, model: pegasus1.6, temperature: 0.2, max_tokens: 4096,
+            min_segment_s: 2, poll_s: 5, timeout_s: 900, upload_timeout_s: 300, usd_per_minute: 0.029,
+            usd_per_mtok_out: 7.5, est_usd_per_clip: 0.03, max_usd_per_run: 3.0}
   # Representative sampling: this share of every selection of posts to annotate is drawn uniformly at random from
   # what was collected (reason `random`), never chosen by the outlier rules, so estimates stay unbiased.
   random_share: 0.15
