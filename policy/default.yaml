@@ -4155,25 +4155,25 @@ llm:
   registry:
     claude-opus-5-5:   {family: claude, provider: anthropic, modalities: [text, image], licence: proprietary,
                         data_terms: "Anthropic commercial API: no training on inputs; standard retention", status: approved,
-                        evidence: [{kind: benchmark, claim: "EQ-Bench creative writing v3: 4th (later snapshot); Mazur story board 6th", date: 2026-11-17},
-                                   {kind: own, claim: "blind judge for routing trials (2026-11-23)", date: 2026-11-23}]}
+                        evidence: [{kind: benchmark, claim: "EQ-Bench creative writing v3: 4th (later snapshot); Mazur story board 6th", date: "2026-11-17"},
+                                   {kind: own, claim: "blind judge for routing trials (2026-11-23)", date: "2026-11-23"}]}
     claude-sonnet-5-5: {family: claude, provider: anthropic, modalities: [text, image], licence: proprietary,
                         data_terms: "Anthropic commercial API: no training on inputs; standard retention", status: approved,
-                        evidence: [{kind: own, claim: "director kept on Sonnet: Qwen4-Max and GLM-5.3 lost 4/4 blind (2026-11-23)", date: 2026-11-23}]}
+                        evidence: [{kind: own, claim: "director kept on Sonnet: Qwen4-Max and GLM-5.3 lost 4/4 blind (2026-11-23)", date: "2026-11-23"}]}
     claude-haiku-5-5:  {family: claude, provider: anthropic, modalities: [text, image], licence: proprietary,
                         data_terms: "Anthropic commercial API: no training on inputs; standard retention", status: approved,
                         evidence: []}
     kimi-k3.1-pro:     {family: kimi, provider: together, modalities: [text, image], licence: "modified MIT (attribution above 100M MAU or $20M monthly revenue)",
                         data_terms: "Together: verify retention before media", status: candidate,
-                        evidence: [{kind: benchmark, claim: "EQ-Bench creative writing: 2nd (later snapshot); humor boards 2nd", date: 2026-11},
-                                   {kind: own, claim: "timed out often, cost the most, lost its trials (2026-11-22)", date: 2026-11-22}]}
+                        evidence: [{kind: benchmark, claim: "EQ-Bench creative writing: 2nd (later snapshot); humor boards 2nd", date: "2026-11"},
+                                   {kind: own, claim: "timed out often, cost the most, lost its trials (2026-11-22)", date: "2026-11-22"}]}
     glm-5.3:           {family: glm, provider: together, modalities: [text], licence: "MIT-style (security review above $10B revenue)",
                         data_terms: "Together: verify retention before media", status: candidate,
-                        evidence: [{kind: benchmark, claim: "Mazur story board: top open-weight (9th)", date: 2026-11-17},
-                                   {kind: own, claim: "lost director 4/4, style 3/3, talent 2/2 blind (2026-11-23)", date: 2026-11-23}]}
+                        evidence: [{kind: benchmark, claim: "Mazur story board: top open-weight (9th)", date: "2026-11-17"},
+                                   {kind: own, claim: "lost director 4/4, style 3/3, talent 2/2 blind (2026-11-23)", date: "2026-11-23"}]}
     glm-5.3-flash:     {family: glm, provider: together, modalities: [text], licence: MIT, data_terms: "Together", status: candidate, evidence: []}
     deepseek-v4.1-flash: {family: deepseek, provider: together, modalities: [text], licence: "check", data_terms: "Together", status: candidate,
-                        evidence: [{kind: community, claim: "most-used roleplay model on OpenRouter (usage, not quality)", date: 2026-11}]}
+                        evidence: [{kind: community, claim: "most-used roleplay model on OpenRouter (usage, not quality)", date: "2026-11"}]}
     minimax-m3.1-flash: {family: minimax, provider: together, modalities: [text], licence: "check", data_terms: "Together", status: candidate, evidence: []}
     nemotron-3.5-vl:   {family: nemotron, provider: together, modalities: [text, image], licence: "NVIDIA Open Model Agreement (check)",
                         data_terms: "Together", status: candidate, evidence: []}
@@ -4183,8 +4183,8 @@ llm:
                         data_terms: "Together via a third-party provider; data sharing enabled", status: candidate, evidence: []}
     qwen4-max:         {family: qwen, provider: together, modalities: [text, image], licence: "API (Qwen Max tier; check)",
                         data_terms: "Together via a third-party provider; data sharing enabled", status: approved,
-                        evidence: [{kind: benchmark, claim: "Mazur story board 3rd (3.55)", date: 2026-11-17},
-                                   {kind: own, claim: "style director: won 3/3 blind at ~53% of Sonnet's cost (2026-11-23)", date: 2026-11-23}]}
+                        evidence: [{kind: benchmark, claim: "Mazur story board 3rd (3.55)", date: "2026-11-17"},
+                                   {kind: own, claim: "style director: won 3/3 blind at ~53% of Sonnet's cost (2026-11-23)", date: "2026-11-23"}]}
   max_output_tokens: 16000
   # Claude's server-side web tools (llm.web_research, research.desk): $10 per 1,000 searches (failed ones free), fetch
   # tokens only; at most max_continuations pause_turn continuations per question.
