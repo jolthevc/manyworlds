@@ -92,3 +92,25 @@ def test_an_open_model_gets_its_own_system_prefix_and_sampling(conn, policy):
     llm._open("glm-5.3", system="You are the showrunner.", content="hi", schema=Out, creator_id=None)
     assert seen["messages"][0]["content"].startswith("Write like a person") and "showrunner" in seen["messages"][0]["content"]
     assert seen["temperature"] == 0.8 and seen["min_p"] == 0.05
+
+
+def test_json_mode_prompt_sends_the_schema_in_the_prompt_and_no_grammar(conn, policy):
+    seen = {}
+
+    def post(url, body, key, timeout):
+        seen.update(body)
+        return {"choices": [{"message": {"content": 'Here it is: {"answer": "ok"}',
+                                         "reasoning_content": "thinking {not json}"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        answer: str
+
+    import os
+    assert policy.get("llm", "open_models", "glm-5.3", "json_mode") == "prompt"
+    os.environ.setdefault(policy.get("llm", "hosts", "together")["key_env"], "test-key")
+    got = llm_mod.Claude(conn, policy, post=post)._open("glm-5.3", system="s", content="write it", schema=Out,
+                                                         creator_id=None)
+    assert got.answer == "ok" and "response_format" not in seen
+    assert "JSON schema" in seen["messages"][1]["content"] and "write it" in seen["messages"][1]["content"]

@@ -559,15 +559,22 @@ class LLM:
         prefix = str(spec.get("system_prefix") or "")      # the model's own prompting needs (registry), if any
         if prefix and isinstance(system, str):
             system = prefix + "\n\n" + system
+        # json_mode `prompt`: the schema rides in the prompt and no grammar constrains the answer. A reasoning model
+        # under a JSON grammar thinks inside the first string field (2026-11-27: GLM-5.3 wrote 15,000 characters of
+        # "Let me think about this carefully..." into the answer, 0 reasoning tokens, cut off at the limit); without
+        # one it thinks in its own reasoning channel and answers with the object (_json_text finds it).
+        in_prompt = spec.get("json_mode") == "prompt"
+        user = json_prompt(content, schema) if in_prompt else content
         body = {"model": spec["id"],
                 "messages": [{"role": "system", "content": system},
-                             {"role": "user", "content": _openai_content(content, bool(spec.get("vision")),
+                             {"role": "user", "content": _openai_content(user, bool(spec.get("vision")),
                                                                          bool(spec.get("audio")))}],
-                "max_tokens": int(spec.get("max_tokens", self.policy.get("llm", "max_output_tokens", default=16000))),
-                "response_format": {"type": "json_schema", "json_schema": {
-                    "name": schema.__name__, "strict": False,
-                    "schema": strict_json_schema(schema) if getattr(schema, "strict_required", False)
-                    else schema.model_json_schema()}}}
+                "max_tokens": int(spec.get("max_tokens", self.policy.get("llm", "max_output_tokens", default=16000)))}
+        if not in_prompt:
+            body["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": schema.__name__, "strict": False,
+                "schema": strict_json_schema(schema) if getattr(schema, "strict_required", False)
+                else schema.model_json_schema()}}
         if spec.get("stream"):
             body.update(stream=True, stream_options={"include_usage": True})
         for k in ("temperature", "top_p", "min_p"):            # per-model sampling (creative models need it)

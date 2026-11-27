@@ -4210,10 +4210,9 @@ llm:
     # Kimi thinks before it answers: long outputs timed out at 120 s, and it spent 2.5x Sonnet on one evaluation.
     kimi-k3.1-pro:       {host: together, id: moonshotai/Kimi-K3.1-Pro, usd_per_mtok: [2.00, 10.00], vision: true,
                           timeout_seconds: 300}
-    # GLM writes its drafting into the answer field unless told not to (2026-11-27 bench: "maren is a dispatcher, not
-    # a bartender — but the user asks..." as the monologue); its own prompting need, kept with the model
-    glm-5.3:             {host: together, id: zai-org/GLM-5.3, usd_per_mtok: [1.40, 4.40],
-                          system_prefix: "Think privately. Every JSON field holds only the finished answer, exactly as it will be used: no drafting, no notes to yourself, no word counts, no commentary."}
+    # GLM thinks inside the first string field under a JSON grammar (2026-11-27: 15,000 characters of reasoning as the
+    # "answer", 0 reasoning tokens): its schema rides in the prompt instead (json_mode: prompt)
+    glm-5.3:             {host: together, id: zai-org/GLM-5.3, usd_per_mtok: [1.40, 4.40], json_mode: prompt}
     glm-5.3-flash:       {host: together, id: zai-org/GLM-5.3-Flash, usd_per_mtok: [0.15, 0.50]}
     deepseek-v4.1-flash: {host: together, id: deepseek-ai/DeepSeek-V4.1-Flash, usd_per_mtok: [0.30, 1.20]}
     minimax-m3.1-flash:  {host: together, id: MiniMaxAI/MiniMax-M3.1-Flash, usd_per_mtok: [0.15, 0.60]}
