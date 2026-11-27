@@ -600,6 +600,6 @@ def test_a_clip_no_better_than_chance_is_rejected_once_a_null_margin_is_set(conn
     job = _short_take(conn, store, tmp_path, cid, np.concatenate([0.02 + env * 0.12, np.full(29, 0.14)]))
     conn.execute("UPDATE assets SET meta = jsonb_set(meta, '{sync,corr}', '0.5') WHERE job_id = %s AND kind = 'video'",
                  (job,))
-    null = {**policy.get("review", "video", "lip_sync", "null"), "min_margin": 2.0}   # unreachable: must reject
-    [r] = video.review_job(conn, _with_sync(policy, null=null), ClipStub(clip(), clip()), store, job, tmp_path)
+    chance = {**policy.get("review", "video", "lip_sync", "chance"), "min_margin": 2.0}   # unreachable: must reject
+    [r] = video.review_job(conn, _with_sync(policy, chance=chance), ClipStub(clip(), clip()), store, job, tmp_path)
     assert r["lip_sync"] is False and r["sync"]["null"]["margin"] < 2.0

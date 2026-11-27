@@ -433,7 +433,7 @@ def lip_sync_ok(cfg: dict, sync: dict | None) -> bool | None:
         return None
     face = float(sync.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8))
     whole = sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
-    floor = (ls.get("null") or {}).get("min_margin")   # beats chance by this much (report-only while unset)
+    floor = (ls.get("chance") or {}).get("min_margin")   # beats chance by this much (report-only while unset)
     if floor is not None and sync.get("null") and float(sync["null"]["margin"]) < float(floor):
         return False
     return face and (whole or _voiced_ok(ls, sync.get("voiced")))
@@ -531,9 +531,9 @@ def _clip_loudness(conn, store: ObjectStore, job_id, payload: dict, video: dict,
 
 def _sync_null(conn, cfg: dict, store: ObjectStore, job_id, payload: dict, video: dict, sync: dict | None,
                workdir: Path) -> dict | None:
-    """The clip's sync against chance (lipsync.null_margin, policy review.video.lip_sync.null), or None when off or
+    """The clip's sync against chance (lipsync.null_margin, policy review.video.lip_sync.chance), or None when off or
     unmeasurable."""
-    nc = (cfg.get("lip_sync") or {}).get("null") or {}
+    nc = (cfg.get("lip_sync") or {}).get("chance") or {}
     if not nc.get("enabled") or not sync or sync.get("corr") is None:
         return None
     got = _clip_loudness(conn, store, job_id, payload, video, sync, int(nc.get("audio_rate", 16000)), workdir)

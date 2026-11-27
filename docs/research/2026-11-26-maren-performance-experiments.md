@@ -121,7 +121,7 @@ photo were unaffected: photo-start lip sync, story clips, LongCat and LTX.
 | Older photo-start takes | 0.18–0.79 | — | −0.13 to +0.30 |
 | Today's photo-start takes (silent lead-in and hold) | 0.66–0.67 | 0.00–0.13 | +0.54 to +0.66 |
 
-The margin is now recorded on every lip_sync row (`review.video.lip_sync.null`). It is report-only until it is calibrated against clips judged by eye. The lead-in also makes the score far more informative.
+The margin is now recorded on every lip_sync row (`review.video.lip_sync.chance`). It is report-only until it is calibrated against clips judged by eye. The lead-in also makes the score far more informative.
 
 **Timing checks before any new render** (§3's two real renders): the cheap, deterministic causes are ruled out.
 - The mouth opens at frame 3 against speech at frame 1, and closes at frame 90 against 88.
