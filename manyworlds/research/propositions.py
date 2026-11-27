@@ -73,6 +73,8 @@ def digest(conn, creator_id) -> dict:
 def read(conn, policy: Policy, llm, creator_ids: list[str], *, role: str | None = None, purpose: str = "production",
          usd: float | None = None) -> dict:
     """Code these reference creators (batched), within the run cap and the monthly research ceiling."""
+    from . import external
+    external.require(policy, "reference creator proposition reads")
     c = cfg(policy)
     role = role or str(c.get("role", "research_question"))
     per_call = int(c.get("per_call", 10))

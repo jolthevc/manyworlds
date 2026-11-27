@@ -385,6 +385,9 @@ def ensure_due(conn, policy: Policy, *, now: datetime | None = None):
     from .. import operations, queue
     if not cfg(policy).get("enabled"):
         return None
+    from . import external
+    if not external.allowed(policy):   # owner 2026-11-27: third-party monitoring discontinued
+        return None
     live = operations.is_live(policy)
     if not live and "research_monitor" not in (policy.get("operations", "while_paused", default=[]) or []):
         return None

@@ -339,6 +339,9 @@ class Intelligence:
         mode = p.get("mode") or "pilot"
         if mode not in MODES:
             raise NonRetryable(f"intelligence mode must be one of {MODES}")
+        from ...research import external
+        if mode in external.EXTERNAL_MODES and not external.allowed(ctx.policy):
+            raise NonRetryable(f"intelligence mode {mode}: {external.reason(ctx.policy)}")
         cfg = _cfg(ctx.policy)
         default_cap = (watch.cfg(ctx.policy).get("daily_usd", 0) if mode == "monitor" else
                        (ctx.policy.get("intelligence", "desk", "daily_usd", default=0) if mode == "desk" else

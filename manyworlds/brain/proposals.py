@@ -203,6 +203,9 @@ def _commission_intelligence(conn, policy: Policy, p: dict) -> dict:
     named reference handles, capped at intelligence.agent.max_usd_per_commission (a larger ask is cut to the cap, not
     sent to the owner: no approval gate, the cap is the control)."""
     subject = p["subject"] or {}
+    from ..research import external
+    if not external.allowed(policy):   # owner 2026-11-27: no third-party creator research, whoever asks
+        return {"applied": None, "declined": external.reason(policy)}
     cap = float(policy.get("intelligence", "agent", "max_usd_per_commission", default=5.0))
     usd = min(float(subject.get("usd") or cap), cap)
     text = str(subject.get("question") or subject.get("hypothesis") or p["argument"] or "")[:1000]

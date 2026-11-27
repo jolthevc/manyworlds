@@ -128,6 +128,8 @@ def run_actor(actor: str, payload: dict, *, token: str | None = None, timeout: i
     the scraped items stayed in Apify storage for its retention period; the data policy wants no third-party copy
     kept longer than our own use). API v2: POST /acts/{actor}/runs, GET /actor-runs/{id}?waitForFinish=60 until a
     terminal status, GET /datasets/{id}/items, DELETE /datasets/{id}, DELETE /key-value-stores/{id} (204)."""
+    from . import external
+    external.require(None, f"Apify actor {actor}")   # owner 2026-11-27: third-party collection discontinued
     token = token or os.environ["APIFY_TOKEN"]
     call = call or (lambda m, url, body=None, t=90: _call(m, url, token, body=body, timeout=t))
     run = (call("POST", f"{API}/acts/{actor}/runs?waitForFinish=60&timeout={timeout - 10}", payload, 90) or {})["data"]

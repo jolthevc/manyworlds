@@ -58,12 +58,12 @@ def test_paused_producer_queues_only_the_research_the_owner_allows(conn, policy,
     called = []
     monkeypatch.setattr(production, "advance", lambda *a, **k: called.append("advance") or {})
     out = cli.produce_tick(conn, _paused(policy))
-    assert {"monitor", "desk"} <= set(out["research"]) <= {"monitor", "desk", "research_loop", "verify"}
+    assert {"desk"} <= set(out["research"]) <= {"desk", "research_loop", "verify"}   # monitor: discontinued 2026-11-27
     assert called == []                                       # the research loop and checks run too (owner 2026-11-27)
     modes = sorted(r["payload"]["mode"] for r in conn.execute("SELECT payload FROM jobs"))
-    assert modes == ["desk", "monitor"]
+    assert modes == ["desk"]                                  # no third-party monitoring (owner 2026-11-27)
     cli.produce_tick(conn, _paused(policy))
-    assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 2          # once a day
+    assert conn.execute("SELECT count(*) n FROM jobs").fetchone()["n"] == 1          # once a day
 
 
 def test_paused_producer_still_stores_finished_casts(conn, policy, monkeypatch):

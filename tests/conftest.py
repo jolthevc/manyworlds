@@ -35,6 +35,11 @@ def raw_policy():
     return policy_mod.load(ROOT / "policy" / "default.yaml")
 
 
+def _external_on(intel: dict) -> dict:
+    return {**intel, "external": {**(intel.get("external") or {}), "enabled": True},
+            "monitor": {**intel["monitor"], "enabled": True}}
+
+
 @pytest.fixture(scope="session")
 def policy(raw_policy):
     """The shipped policy with operations live: tests describe what runs once the owner turns it on
@@ -56,6 +61,14 @@ def policy(raw_policy):
         # retries are claimable at once: worker tests run a failing job's attempts back to back (test_queue.py
         # covers the backoff itself)
         "queue": {**raw_policy.body["queue"], "retry_backoff_seconds": 0},
+        # the dormant third-party research machinery stays tested as it ran before the owner discontinued it
+        # (2026-11-27); the shipped off-state is tested on raw_policy (test_external_research_off.py)
+        "intelligence": _external_on(raw_policy.body["intelligence"]),
+        "data_policy": {**raw_policy.body["data_policy"], "sources": {
+            **raw_policy.body["data_policy"]["sources"],
+            "apify": {**raw_policy.body["data_policy"]["sources"]["apify"], "status": "approved"},
+            "scrapecreators": {**raw_policy.body["data_policy"]["sources"]["scrapecreators"], "status": "paused"},
+            "graph": {**raw_policy.body["data_policy"]["sources"]["graph"], "status": "approved"}}},
         # the image confirm runs on every screen pass the old way (test_review.py tests clear passes and the
         # report-only direction gate itself); the direction gate rejects below 6, as it did when it was enforced
         "review": {**raw_policy.body["review"],

@@ -1505,19 +1505,24 @@ data_policy:
     # status: approved | paused (rights unclear: nothing runs until clarified) | blocked. basis: why we may use it.
     # Owner 2026-11-25 (later): no third-party media downloads while the just-in-time redesign and the rights audit
     # are open (docs/research/2026-11-25-data-audit.md): posts_media is not approved; factual metadata continues.
+    # Owner 2026-11-27: third-party creator scraping, discovery, monitoring and media analysis are discontinued (a
+    # strategic decision, not a problem to work around). These sources stay blocked; intelligence.external.enabled
+    # false also stops every scheduler and agent mode that collected or analysed other creators.
     apify:
-      status: approved
+      status: blocked
+      why: "owner 2026-11-27: third-party creator collection discontinued"
       basis: "logged-out public data via Apify actors; Instagram Terms 4.2 (no automated collection without permission) is a known risk the owner accepted, bounded, 2026-11-25; media downloads paused pending audit"
       tasks: [profiles, posts, search]
       transient_media: false
     scrapecreators:
-      status: paused
-      why: "owner deferred further spending until the revised research architecture confirms its use cases and permissions (2026-11-25); free credits used"
+      status: blocked
+      why: "owner 2026-11-27: third-party creator collection discontinued"
       basis: "public data API; its terms allow commercial use of returned data; whether it uses logged-in sessions is not stated (asked; owner accepted bounded risk 2026-11-25)"
       tasks: [profiles, posts, posts_media, search]
       transient_media: true
     graph:
-      status: approved
+      status: blocked
+      why: "owner 2026-11-27: Business Discovery looks up other accounts; platform APIs are for our own accounts only"
       basis: "Instagram Graph API Business Discovery through our own professional account (Meta Platform Terms): factual metadata; media (media_url) uncertain under Platform Terms 3.a.v until counsel reviews"
       tasks: [profiles, posts]
       transient_media: false
@@ -1562,6 +1567,10 @@ data_policy:
 # stage. Nothing here runs while operations are paused except retention.
 intelligence:
   enabled: false
+  # Owner 2026-11-27: no third-party creator research (scraping, discovery, monitoring, scouting, annotation, distillation,
+  # creator proposition reads, external gold sets). Checked by every entry point (manyworlds.research.external); the
+  # research desk (web research), research questions and everything about our own content are unaffected.
+  external: {enabled: false, reason: "owner 2026-11-27: third-party creator research discontinued"}
   purpose: >-
     Learn which creative and social patterns make public creators worth following, to direct original AI creators.
     Not contacting, impersonating or copying anyone. Logged-out public data within law and provider terms; deletion
@@ -1687,7 +1696,7 @@ intelligence:
   # ScrapeCreators $0.00188 a page; Business Discovery free). mix, select_rate, usd_per_vision_post: for
   # `mw research monitor --estimate N` ($/month at N creators). Off until the owner turns it on.
   monitor:
-    enabled: true            # owner 2026-11-25: on, also while paused (operations.while_paused)
+    enabled: false           # owner 2026-11-27: third-party monitoring discontinued (was on while paused)
     daily_usd: 1.0                 # within research_budget (owner 2026-11-26: $100/month replaced the $1/day)
     max_checks_per_tick: 400
     max_enroll_per_tick: 500
@@ -2091,7 +2100,7 @@ creators:
 # while_paused: what the owner lets run on its own while paused (2026-11-25: research monitoring keeps learning during
 # the build, at intelligence.monitor.daily_usd); its jobs are in `research-` batches.
 operations: {mode: paused, test_batch_prefixes: [bench-, test-, research-],
-             while_paused: [research_monitor, research_loop, verify],
+             while_paused: [research_loop, verify],   # research_monitor removed: owner 2026-11-27
              test_overlay: {path: policy/test_overlay.yaml, batches: [test-breadth-]}}
 
 # What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).
@@ -2368,7 +2377,7 @@ brain:
              intelligence: intelligence}
     # kinds accepted as filed (within the requester's weekly allowance below): research runs the analyst at once,
     # an experiment is the manager's own call
-    auto_accept: [research, experiment, intelligence]   # intelligence: capped at intelligence.agent.max_usd_per_commission
+    auto_accept: [research, experiment, intelligence]   # intelligence: declined while intelligence.external is off (2026-11-27)
     cooldown_days: 14              # a rejected request comes back only with new evidence or after this
     due_days: 3                    # undecided past this, it expires (the chief of staff reports it)
     max_open_per_creator: 3

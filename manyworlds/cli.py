@@ -1122,7 +1122,10 @@ def _brain(args, conn, pol) -> int:
 def _research(args, conn, pol) -> int:
     """mw research forget|purge|patterns (manyworlds.research.references, manyworlds.brain.patterns)."""
     from .brain import patterns
-    from .research import references
+    from .research import external, references
+    if args.action in ("pilot", "monitor", "graph-check", "propositions", "gold") and not external.allowed(pol):
+        print(f"mw research {args.action}: {external.reason(pol)}")   # owner 2026-11-27
+        return 2
     if args.action == "graph-check":   # one live Business Discovery call: which fields Meta returns to us
         from .research.providers import GraphProvider
         if not args.who:

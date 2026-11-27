@@ -173,8 +173,9 @@ def ensure_due(conn, policy: Policy, *, now=None):
     from datetime import datetime, timedelta, timezone
 
     from .. import operations, queue
+    from ..research import external
 
-    if not operations.is_live(policy):
+    if not operations.is_live(policy) or not external.allowed(policy):   # owner 2026-11-27: discontinued
         return None
     every = float(policy.get("research", "discover", "every_days", default=7) or 0)
     if every <= 0:

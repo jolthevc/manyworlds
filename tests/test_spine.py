@@ -435,9 +435,11 @@ def test_the_gpu_development_envelope_caps_each_experiment_and_the_week(conn, po
     assert not ok and "per-experiment" in why
 
 
-def test_an_apify_run_is_read_then_its_dataset_and_store_are_deleted():
-    """2026-11-27 inventory: scraped items stayed in Apify storage; now each run's storages are deleted after reading."""
-    from manyworlds.research import apify
+def test_an_apify_run_is_read_then_its_dataset_and_store_are_deleted(monkeypatch):
+    """2026-11-27 inventory: scraped items stayed in Apify storage; now each run's storages are deleted after reading.
+    (Dormant since the owner discontinued third-party collection the same day: tested with the switch on.)"""
+    from manyworlds.research import apify, external
+    monkeypatch.setattr(external, "allowed", lambda policy: True)
     calls = []
 
     def call(method, url, body=None, t=90):

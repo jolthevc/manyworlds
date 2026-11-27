@@ -326,6 +326,8 @@ def run_external(conn, policy: Policy, llm, *, n: int | None = None, usd: float 
     """The repeat and reference reads of up to n third-party posts the production annotator has already read (its
     read is the `production` coder, mirrored by the spine sync), with the external annotator's own image loading;
     only to processors the data policy lists. Within the run cap and the monthly ceiling; then the agreement report."""
+    from . import external as ext_
+    ext_.require(policy, "gold sets on third-party posts")
     from datetime import datetime, timezone
 
     from ..brain.agents.intelligence import Intelligence, ReadBatch, read_system
