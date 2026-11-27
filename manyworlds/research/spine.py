@@ -307,11 +307,21 @@ def _external(conn, policy: Policy, problems: list) -> dict:
 def _own(conn, policy: Policy, problems: list) -> dict:
     c = cfg(policy)
     creators = {}
+    from ..creator import profile as profile_mod
+    jobs_by_series: dict = {}
     for r in conn.execute("SELECT id, handle, publish_mode, vertical, anchors FROM creators").fetchall():
+        got = profile_mod.current(conn, r["id"])
+        prof = (got[1] if got else {}) or {}
+        verticals = prof.get("verticals") or ([r.get("vertical")] if r.get("vertical") else [])
         creators[str(r["id"])] = upsert_unit(
             conn, source="own", level="creator", ref_table="creators", ref_id=r["id"], platform="own",
-            vertical=_known(policy, "verticals", r.get("vertical"), problems),
-            context={"handle": r["handle"], "sandbox": r["publish_mode"] != "instagram"})
+            vertical=_known(policy, "verticals", verticals[0] if verticals else None, problems),
+            context={"handle": r["handle"], "sandbox": r["publish_mode"] != "instagram",
+                     "propositions": prof.get("propositions") or [], "verticals": verticals,
+                     "playbooks": prof.get("archetypes") or []})
+        for s in ((prof.get("content_system") or {}).get("series") or []):
+            jobs_by_series[(str(r["id"]), str(s.get("name") or ""))] = {
+                "job": s.get("job"), "arc": s.get("arc"), "proposition": s.get("proposition")}
     posts = conn.execute(
         """SELECT p.id, p.creator_id, p.format, p.status, p.body->>'series' AS series,
                   coalesce((SELECT min(published_at) FROM publications pb WHERE pb.post_id = p.id AND NOT pb.simulated),
@@ -324,9 +334,11 @@ def _own(conn, policy: Policy, problems: list) -> dict:
             parent = upsert_unit(conn, source="own", level="series", ref_table="series",
                                  ref_id=f"{p['creator_id']}:{p['series']}", parent_id=parent, platform="own",
                                  context={"series": p["series"]})
+        role = jobs_by_series.get((str(p["creator_id"]), str(p["series"] or ""))) or {}
         unit = upsert_unit(conn, source="own", level="post", ref_table="posts", ref_id=p["id"], parent_id=parent,
                            platform="own", format=_known(policy, "formats", p["format"], problems),
-                           published_at=p["published_at"], context={"status": p["status"]})
+                           published_at=p["published_at"],
+                           context={"status": p["status"], **{k: v for k, v in role.items() if v}})
         units += 1
         usd = conn.execute("SELECT coalesce(sum(c.usd), 0) u FROM cost_entries c WHERE c.post_id = %s",
                            (p["id"],)).fetchone()["u"]

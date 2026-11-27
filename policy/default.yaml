@@ -1943,7 +1943,7 @@ intelligence:
     # Every metric is kept raw; `normalized` is the log of raw over the creator's median of the same metric at the
     # same horizon over their other posts in the trailing baseline_days, when at least baseline_min_n exist.
     external_metrics: [views, likes, comments, shares, saves]
-    own_metrics: [reach, views, likes, comments, shares, saves, follows, profile_visits, watch_time_s,
+    own_metrics: [reach, views, likes, comments, shares, saves, follows, profile_visits, returning_viewers, watch_time_s,
                   avg_watch_pct, link_clicks, revenue_usd]
     derived: {engagement: [likes, comments, shares, saves]}     # sums kept as metrics of their own
     baseline_days: 180
@@ -1988,6 +1988,9 @@ intelligence:
     product_categories: {tier: context, class: objective, level: nominal}
     production_complexity: {tier: production, class: subjective, level: ordinal}
     renderable_now: {tier: production, class: inferred, level: nominal}
+    # creator level (manyworlds.research.propositions; owner 2026-11-26): why people follow, what she posts about
+    proposition: {tier: context, class: inferred, level: nominal, unit: creator}
+    vertical: {tier: context, class: inferred, level: nominal, unit: creator}
     # measured by code (research.video_measure): objective by construction, the reference for model reads of pace
     cuts_per_10s: {tier: universal, class: objective, level: interval, measured: code}
     duration_s: {tier: universal, class: objective, level: interval, measured: code}
@@ -2010,6 +2013,9 @@ intelligence:
     max_usd_per_run: 15.0
     share_at_read: 0.05                                # external reads that also get the reference reads, at read time
     agent: research:gold
+  # Creator-level reads of reference creators (manyworlds.research.propositions): text only (bio and a digest of our
+  # own coded reads of their posts; no media sent), batched on a cheap role, within max_usd_per_run and the ceiling.
+  propositions: {role: research_question, per_call: 10, max_usd_per_run: 1.0}
   # Pegasus (manyworlds.research.pegasus): native audiovisual reads of OUR OWN videos only (owner 2026-11-26), off
   # until the owner has an account (TWELVELABS_API_KEY) AND has turned off training on customer data in its settings
   # (training_opt_out_confirmed: the owner sets it). Each upload is deleted after its read. Prices: a third-party
@@ -2124,7 +2130,8 @@ budget: {master_usd_per_month: 750, reserve_share: 0.15}
 brain:
   # The archetype library (manyworlds.brain.archetypes): playbooks the talent manager, showrunner and director read.
   # extra: more playbook files merged in (a name already in `file` wins); musician-v1: AI musician creators (music.*).
-  archetypes: {file: archetypes-v1.yaml, extra: [musician-v1.yaml]}
+  # propositions_file: WHY people follow (owner 2026-11-26), apart from the vertical playbooks in `file`
+  archetypes: {file: archetypes-v1.yaml, extra: [musician-v1.yaml], propositions_file: propositions-v1.yaml}
   # The aesthetics library (policy/aesthetics): shot vocabulary, consistency and variety rules, grades, carousel templates.
   aesthetics: {file: aesthetics-v1.yaml}
   # The style director (brain/agents/style_director.py): each creator's style, world (anchor sets, travel, carousel

@@ -217,3 +217,73 @@ def test_a_pegasus_read_lands_as_time_ordered_beats_and_is_charged(conn, policy,
     assert conn.execute("SELECT usd FROM cost_entries WHERE agent = 'research:pegasus'").fetchone()["usd"] > 0
     # a reference post's media is never sent
     assert "own posts" in pegasus.refused(conn, on, "00000000-0000-0000-0000-000000000000")
+
+
+# --- audience propositions (owner 2026-11-26: why people follow, apart from what she posts about) -------------------
+def test_the_proposition_library_names_the_owners_ten_and_four_jobs(policy):
+    from manyworlds.brain import archetypes
+    names = archetypes.proposition_names(policy)
+    assert len(names) == 10 and {"aspirational_icon", "protagonist", "comfort_figure"} <= set(names)
+    assert archetypes.jobs(policy) == ["attention", "follow", "return", "affinity"]
+    for p in archetypes.propositions(policy)["propositions"].values():
+        assert all(p.get(j) for j in ("follow_reason", "attention", "follow", "return", "affinity", "signals"))
+
+
+def test_a_mix_is_normalised_and_unknown_reasons_become_candidates(policy):
+    from manyworlds.brain import archetypes
+    mix = archetypes.clean_mix(policy, [{"name": "Muse", "share": 3}, {"name": "cozy chaos", "share": 1},
+                                        {"name": "x", "share": 0}])
+    assert mix == [{"name": "muse", "share": 0.75}, {"name": "other:cozy_chaos", "share": 0.25}]
+    assert archetypes.clean_mix(policy, []) == []
+
+
+def test_the_dossier_keeps_propositions_verticals_jobs_and_arcs_apart_from_playbooks(policy):
+    from manyworlds.brain import archetypes
+    from manyworlds.creator import dossier
+    play = archetypes.names(policy)[0]
+    pick = dossier.ArchetypePick(primary=play, why="w", verticals=["Fashion", "astrology"],
+                                 propositions=[{"name": "tastemaker", "share": 0.6}, {"name": "maverick", "share": 0.4}])
+    out = dossier.clean(policy, "archetypes", pick, {})
+    assert out["archetypes"] == [play] and out["verticals"] == ["fashion"]
+    assert [m["name"] for m in out["propositions"]] == ["tastemaker", "maverick"]
+    cs = dossier.ContentSystem(mix={"photo": 1, "carousel": 1, "story": 0, "video": 0}, talk_share=0.2, hooks=[],
+                               never_makes=[], idea_engines=["Sunday market run"],
+                               job_mix={"attention": 2, "follow": 1, "bring_back": 1, "affinity": 0},
+                               series=[{"name": "Finds", "premise": "p", "archetype": play, "proposition": "nope",
+                                        "job": "return", "arc": "episodic", "capabilities": [], "per_week": 2,
+                                        "hook": "h", "why_it_works": "w"},
+                                       {"name": "Odd", "premise": "p", "archetype": play, "job": "viral",
+                                        "arc": "forever", "capabilities": [], "per_week": 1, "hook": "h",
+                                        "why_it_works": "w"}])
+    got = dossier.clean(policy, "content_system", cs, {"archetypes": [play], "propositions": out["propositions"]})
+    s = got["content_system"]["series"]
+    assert (s[0]["job"], s[0]["arc"], s[0]["proposition"]) == ("return", "episodic", "tastemaker")
+    assert (s[1]["job"], s[1]["arc"]) == ("", "")
+    assert got["content_system"]["job_mix"] == {"attention": 0.5, "follow": 0.25, "return": 0.25, "affinity": 0.0}
+
+
+def test_reference_creators_are_coded_for_why_people_follow_them(conn, policy):
+    from manyworlds.research import propositions
+
+    class FakeLLM:
+        def tagged(self, *a):
+            import contextlib
+            return contextlib.nullcontext()
+
+        def model_for(self, role):
+            return "haiku"
+
+        def structured(self, role, *, system, schema, effort, content):
+            assert "Propositions" in content and "Creator 1:" in content
+            return schema.model_validate({"creators": [{"index": 1, "verticals": ["fashion"], "propositions": [
+                {"name": "aspirational_icon", "share": 0.7}, {"name": "quiet rebel", "share": 0.3}]}]})
+
+    c = _ref_creator(conn)
+    spine.sync(conn, policy)
+    out = propositions.read(conn, policy, FakeLLM(), [str(c)], usd=1.0)
+    assert out["creators"] == 1
+    vals = {(r["attribute"], r["value"]) for r in conn.execute(
+        "SELECT v.attribute, v.value FROM attribute_values v JOIN content_units u ON u.id = v.unit_id "
+        "WHERE u.ref_id = %s AND u.level = 'creator'", (str(c),)).fetchall()}
+    assert {("proposition", "aspirational_icon"), ("proposition", "other:quiet_rebel"), ("vertical", "fashion")} <= vals
+    assert propositions.candidates(conn)[0]["value"] == "other:quiet_rebel"

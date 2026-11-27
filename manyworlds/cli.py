@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
                                          "patterns, pilot (the influencer intelligence agent: scout, annotate, distill)")
     rs.add_argument("action", choices=["forget", "purge", "patterns", "feedback", "pilot", "monitor", "data-audit", "graph-check",
                                        "vision-bench", "spine", "gold", "agreement", "ask", "answer", "gaps",
-                                       "spot-check", "budget"])
+                                       "spot-check", "budget", "propositions"])
     rs.add_argument("--apply", action="store_true", help="data-audit: clean what the data policy no longer allows "
                                                          "(contact details in bios, caption features backfilled)")
     rs.add_argument("who", nargs="?", help="forget: a handle (@ optional), profile URL or one of their post URLs")
@@ -1125,7 +1125,7 @@ def _research(args, conn, pol) -> int:
         return _research_monitor(args, conn, pol)
     elif args.action == "vision-bench":
         return _research_vision_bench(args, conn, pol)
-    elif args.action in ("spine", "gold", "agreement", "ask", "answer", "gaps", "spot-check", "budget"):
+    elif args.action in ("spine", "gold", "agreement", "ask", "answer", "gaps", "spot-check", "budget", "propositions"):
         return _research_loop(args, conn, pol)
     else:
         out = patterns.validate(pol)
@@ -1151,6 +1151,16 @@ def _research_loop(args, conn, pol) -> int:
         _print(spine.sync(conn, pol))
     elif args.action == "budget":
         _print(budget.status(conn, pol))
+    elif args.action == "propositions":   # code every reference creator's propositions and verticals (text only)
+        from .research import propositions
+        ids = [str(r["id"]) for r in conn.execute("SELECT id FROM reference_creators ORDER BY id").fetchall()]
+        if args.dry_run:
+            _print({"dry_run": True, "creators": len(ids), "cap_usd": args.usd or propositions.cfg(pol).get(
+                "max_usd_per_run"), "candidates": propositions.candidates(conn)})
+            return 0
+        from .llm import Claude
+        _print({**propositions.read(conn, pol, Claude(conn, pol), ids, usd=args.usd),
+                "candidates": propositions.candidates(conn)})
     elif args.action == "agreement":
         _print(gold.report(conn, pol, requester="cli"))
     elif args.action == "gold":

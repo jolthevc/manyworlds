@@ -128,3 +128,64 @@ def unknown_capabilities(policy: Policy) -> list[str]:
         refs += [u for s in a.get("series_patterns") or [] for u in s.get("uses") or []]
         bad |= {f"{name}:{r}" for r in refs if r not in known}
     return sorted(bad)
+
+
+# --- audience propositions (owner 2026-11-26) -----------------------------------------------------------------------
+# WHY someone follows (policy/archetypes/propositions-v1.yaml), kept apart from the vertical playbooks above (WHAT she
+# posts about and how it is shaped). A creator is a weighted mix of propositions; a series names the proposition it
+# serves and the job it does (attention, follow, return, affinity).
+PROPOSITIONS_FILE = "propositions-v1.yaml"
+PROPOSITION_FIELDS = ("follow_reason", "attention", "follow", "return", "affinity", "outcome_focus", "pitfalls")
+
+
+def propositions(policy: Policy | None = None) -> dict:
+    """{version, jobs, propositions: {name: {...}}}; empty when the file is missing."""
+    name = (policy.get("brain", "archetypes", "propositions_file", default=PROPOSITIONS_FILE) if policy
+            else PROPOSITIONS_FILE) or PROPOSITIONS_FILE
+    lib = _read(str(name)) or {}
+    return {"version": lib.get("version"), "jobs": list(lib.get("jobs") or ["attention", "follow", "return", "affinity"]),
+            "propositions": dict(lib.get("propositions") or {})}
+
+
+def proposition_names(policy: Policy | None = None) -> list[str]:
+    return list(propositions(policy)["propositions"])
+
+
+def jobs(policy: Policy | None = None) -> list[str]:
+    return propositions(policy)["jobs"]
+
+
+def proposition_catalogue(policy: Policy | None = None) -> dict:
+    """{name: follow_reason}: what casting and the talent manager choose a creator's mix from."""
+    return {n: p.get("follow_reason", "") for n, p in propositions(policy)["propositions"].items()}
+
+
+def proposition_playbooks(policy: Policy | None, mix: list[dict] | None) -> list[dict]:
+    """The planning view of a creator's propositions ([{name, share}], largest first), unknown names dropped."""
+    lib = propositions(policy)["propositions"]
+    out = []
+    for m in sorted(mix or [], key=lambda x: -float(x.get("share") or 0)):
+        p = lib.get(str(m.get("name")))
+        if p:
+            out.append({"proposition": m["name"], "share": m.get("share"),
+                        **{k: p[k] for k in PROPOSITION_FIELDS if k in p}})
+    return out
+
+
+def clean_mix(policy: Policy | None, mix) -> list[dict]:
+    """A proposition mix with unknown names kept only as `other:<words>` candidates (research harvests them), shares
+    normalised to sum to 1. An empty or unusable mix is []."""
+    known = set(proposition_names(policy))
+    out = []
+    for m in mix or []:
+        m = m if isinstance(m, dict) else {"name": getattr(m, "name", ""), "share": getattr(m, "share", 0)}
+        name = str(m.get("name") or "").strip().lower().replace(" ", "_")
+        try:
+            share = max(0.0, float(m.get("share") or 0))
+        except (TypeError, ValueError):
+            share = 0.0
+        if not name or share <= 0:
+            continue
+        out.append({"name": name if name in known or name.startswith("other:") else f"other:{name}", "share": share})
+    total = sum(m["share"] for m in out)
+    return [{**m, "share": round(m["share"] / total, 3)} for m in out] if total else []

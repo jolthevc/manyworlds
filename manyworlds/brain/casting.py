@@ -94,7 +94,10 @@ class Concept(BaseModel):
     display_name: str
     handle: str = Field(description="lowercase, letters, digits, underscores, periods")
     one_line: str
-    archetype: str = Field(description="one archetype name from the library")
+    archetype: str = Field(description="one playbook name from the library: how her content is built")
+    propositions: list[dossier.PropositionShare] = Field(default_factory=list, description="WHY people would "
+                                                         "follow: 1-3 audience propositions with shares")
+    verticals: list[str] = Field(default_factory=list, description="WHAT she posts about: 1-3 verticals")
     desire: str = Field(description="the desire or aspiration they embody")
     why_follow: str
     signature: str = Field(description="the memorable element: a look, ritual, place or point of view")
@@ -225,7 +228,9 @@ def develop(conn, policy: Policy, llm, t: dict) -> list[dict]:
     taken = [r["handle"] for r in conn.execute("SELECT handle FROM creators").fetchall()]
     prompt = "\n\n".join([
         _context(conn, policy, t),
-        f"The archetype library (name: what it is): {json.dumps(archetypes.catalogue(policy))}",
+        f"The playbook library (name: how content is built): {json.dumps(archetypes.catalogue(policy))}",
+        f"Audience propositions (name: why people follow; give each concept a mix, and vary them across concepts): "
+        f"{json.dumps(archetypes.proposition_catalogue(policy))}",
         (f"Pattern cards for casting (what makes creators like this worth following; patterns, never a person):\n"
          f"{patterns.brief(cards)}" if cards else ""),
         _hypotheses_text(conn, policy),
@@ -268,7 +273,8 @@ def _pseudo_profile(c: dict) -> dict:
     core = c.get("brand_core") or {}
     return {"positioning": {"why_follow": c.get("why_follow", ""), "the_gap": c.get("desire", ""),
                             "point_of_view": core.get("ethos", ""), "signature_angle": c.get("signature", "")},
-            "niche": c.get("archetype", ""), "one_line": c.get("one_line", "")}
+            "niche": c.get("archetype", ""), "one_line": c.get("one_line", ""),
+            "propositions": archetypes.clean_mix(None, c.get("propositions")), "verticals": c.get("verticals") or []}
 
 
 def score(conn, policy: Policy, concepts: list[dict], judged: dict, references: list[dict]) -> list[dict]:

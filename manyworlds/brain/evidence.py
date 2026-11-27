@@ -286,6 +286,14 @@ def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], c
             """SELECT u.ref_id, o.normalized FROM outcomes o JOIN content_units u ON u.id = o.unit_id
                WHERE u.ref_table = 'reference_posts' AND u.level = 'post' AND o.metric = %s AND o.horizon = %s
                  AND o.normalized IS NOT NULL""", (str(outcome[0]), str(outcome[1]))).fetchall()}
+    # the creator's main proposition and vertical, coded at the creator level (manyworlds.research.propositions)
+    who: dict = {}
+    for c in conn.execute(
+            """SELECT DISTINCT ON (u.ref_id, v.attribute) u.ref_id, v.attribute, v.value FROM content_units u
+               JOIN attribute_values v ON v.unit_id = u.id AND v.purpose = 'production'
+               WHERE u.ref_table = 'reference_creators' AND v.attribute IN ('proposition', 'vertical')
+               ORDER BY u.ref_id, v.attribute, v.num DESC NULLS LAST""").fetchall():
+        who.setdefault(c["ref_id"], {})[c["attribute"]] = c["value"]
     out = []
     for r in rows:
         m, ev = r["metrics"] or {}, r["evidence"] or {}
@@ -296,7 +304,9 @@ def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], c
                     "media_type": r["media_type"], "posted_at": r["posted_at"], "fetched_at": r["fetched_at"],
                     "schema": r["schema"], "observed": r["observed"] or {}, "over_own_median": ratio,
                     "metrics": {k: m[k] for k in keys if m.get(k) is not None},
-                    "archetype": r["archetype"], "followers": r["followers"]})
+                    "archetype": r["archetype"], "followers": r["followers"],
+                    "proposition": (who.get(str(r["creator_id"])) or {}).get("proposition"),
+                    "vertical": (who.get(str(r["creator_id"])) or {}).get("vertical")})
     return out
 
 

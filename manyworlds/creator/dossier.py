@@ -66,9 +66,18 @@ and aspirational in the creator's own register, judged in context, never explici
 person or existing creator; describe patterns, not people. Never touch excluded topics."""
 
 
+class PropositionShare(BaseModel):
+    name: str = Field(description="a proposition name from the list, or other:<two or three words> for a reason to "
+                                  "follow the list lacks")
+    share: float = Field(description="its share of why people follow her, 0-1; the shares sum to 1")
+
+
 class ArchetypePick(BaseModel):
-    primary: str = Field(description="one archetype name from the library")
-    secondary: str | None = Field(default=None, description="an optional second archetype name, or null")
+    primary: str = Field(description="one playbook name from the library: how her content is mostly built")
+    secondary: str | None = Field(default=None, description="an optional second playbook name, or null")
+    propositions: list[PropositionShare] = Field(default_factory=list, description="WHY people follow her: 1-3 "
+                                                 "propositions with shares, largest first (owner 2026-11-26)")
+    verticals: list[str] = Field(default_factory=list, description="WHAT she posts about: 1-3 verticals from the list")
     why: str
 
 
@@ -114,10 +123,23 @@ class Series(BaseModel):
     name: str
     premise: str
     archetype: str = Field(description="which of her archetypes it serves")
+    proposition: str = Field(default="", description="which of her propositions it serves")
+    job: str = Field(default="", description="what it does for her audience: attention (stops strangers), follow "
+                                             "(turns viewers into followers), return (brings followers back) or "
+                                             "affinity (deepens the bond)")
+    arc: str = Field(default="", description="evergreen, seasonal, episodic (self-contained episodes) or serial "
+                                             "(an ongoing story with open threads)")
     capabilities: list[str] = Field(description="capability ids (group.name) from the list given that carry it")
     per_week: float
     hook: str = Field(description="how an episode opens")
     why_it_works: str = Field(description="what it gives the audience and adds to her brand")
+
+
+class JobMix(BaseModel):
+    attention: float = Field(description="posts made to stop strangers")
+    follow: float = Field(description="posts that turn viewers into followers")
+    bring_back: float = Field(description="posts that bring followers back (the return job)")
+    affinity: float = Field(description="posts that deepen the bond")
 
 
 class ContentSystem(BaseModel):
@@ -126,6 +148,9 @@ class ContentSystem(BaseModel):
     series: list[Series] = Field(description="3-5 recurring series")
     hooks: list[str] = Field(description="her go-to openings")
     never_makes: list[str] = Field(description="content shapes she never makes, and why")
+    idea_engines: list[str] = Field(default_factory=list, description="what in her life keeps generating ideas "
+                                    "without effort: rituals, places, the calendar, ongoing goals, recurring people")
+    job_mix: JobMix | None = Field(default=None, description="share of posts doing each job; sums to 1")
 
 
 class Presentation(BaseModel):
@@ -291,13 +316,18 @@ class PerformanceProfile(BaseModel):
         return out
 
 
+ARCS = ("evergreen", "seasonal", "episodic", "serial")
+
 SCHEMAS = {"archetypes": ArchetypePick, "positioning": Positioning, "audience_insight": AudienceInsight,
            "story": Story, "content_system": ContentSystem, "brand_core": BrandCore, "brand_world": BrandWorld,
            "brand_commerce": BrandCommerce, "performance": PerformanceProfile}
 
 ASK = {
-    "archetypes": "Choose her archetypes from the library: the one her content is mostly built on, and a secondary "
-                  "only if a real part of her content needs a different playbook.",
+    "archetypes": "Choose her playbooks from the library: the one her content is mostly built on, and a secondary "
+                  "only if a real part of her content needs a different playbook. Then, separately, why people follow "
+                  "her: 1-3 audience propositions with shares (an other:<words> one when none fits), and what she "
+                  "posts about: 1-3 verticals. A vertical is not a reason to follow: two fashion creators can be "
+                  "followed for opposite reasons.",
     "positioning": "Write her positioning: why anyone follows her, the gap she fills, her point of view and signature "
                    "angle, and how she is clearly different from the sibling creators listed.",
     "audience_insight": "Describe the audience she is for, forensically: the one person, what they want, what they "
@@ -306,7 +336,10 @@ ASK = {
              "plan a year of posts that feel like the same life.",
     "content_system": "Design her content system from her archetypes' playbooks: the mix, how often she talks to "
                       "camera, 3-5 series built only from the capabilities listed, her hooks, and what she never "
-                      "makes. Series serve her positioning and audience, not trends. Allocate the mix by expected "
+                      "makes. Give each series the proposition it serves, its job (attention: stops strangers; follow: "
+                      "turns viewers into followers; return: brings followers back; affinity: deepens the bond) and its "
+                      "arc (evergreen, seasonal, episodic or serial); a healthy system has every job covered. Name the "
+                      "idea engines in her life that keep generating posts, and the share of posts per job. Series serve her positioning and audience, not trends. Allocate the mix by expected "
                       "return per dollar using the capability card's cost and reliability: photo-led at launch, with "
                       "motion or talking only where her archetype needs it or evidence shows it buys more growth or "
                       "commercial value per dollar.",
@@ -463,11 +496,20 @@ def clean(policy: Policy, section: str, out: BaseModel, prof: dict) -> dict:
         picked = [a for a in (d.get("primary"), d.get("secondary")) if a and a in lib]
         if not picked:
             raise ValueError(f"no known archetype in {d.get('primary')!r}/{d.get('secondary')!r}")
-        return {"archetypes": list(dict.fromkeys(picked)), "archetype_why": d.get("why", "")}
+        verticals = set((policy.get("intelligence", "spine", "verticals", default=[]) or []))
+        return {"archetypes": list(dict.fromkeys(picked)), "archetype_why": d.get("why", ""),
+                "propositions": arch.clean_mix(policy, d.get("propositions")),
+                "verticals": [v for v in dict.fromkeys(str(x).lower() for x in d.get("verticals") or [])
+                              if not verticals or v in verticals][:3]}
     if section == "content_system":
         ok = set(direction.capability_ids(policy, available_only=True))
         own = set((prof.get("archetypes") or []))
         for s in d["series"]:
+            s["job"] = s.get("job") if s.get("job") in arch.jobs(policy) else ""
+            s["arc"] = s.get("arc") if s.get("arc") in ARCS else ""
+            props = [m["name"] for m in prof.get("propositions") or []]
+            if props and s.get("proposition") not in props:
+                s["proposition"] = props[0]
             s["capabilities"] = [c for c in s.get("capabilities") or [] if c in ok]
             if own and s.get("archetype") not in own:
                 s["archetype"] = (prof.get("archetypes") or [None])[0]
@@ -475,6 +517,11 @@ def clean(policy: Policy, section: str, out: BaseModel, prof: dict) -> dict:
         mix = {k: max(float(v or 0), 0.0) for k, v in d["mix"].items()}
         total = sum(mix.values())
         d["mix"] = {k: round(v / total, 3) for k, v in mix.items()} if total else mix
+        jm = d.get("job_mix") or {}
+        jm = {"attention": jm.get("attention"), "follow": jm.get("follow"), "return": jm.get("bring_back"),
+              "affinity": jm.get("affinity")}
+        tot = sum(max(float(v or 0), 0.0) for v in jm.values())
+        d["job_mix"] = {k: round(max(float(v or 0), 0.0) / tot, 3) for k, v in jm.items()} if tot else {}
         d["talk_share"] = max(0.0, min(float(d.get("talk_share") or 0), 1.0))
         return {"content_system": d}
     if section == "brand_core":
@@ -552,9 +599,14 @@ def section_prompt(conn, policy: Policy, creator_id, section: str, prof: dict, *
     who = {k: v for k, v in prof.items() if k not in ("dials", "identity", "commercialization")}
     parts = [f"The creator's profile so far:\n{json.dumps(who, default=str)}"]
     if section == "archetypes":
-        parts.append(f"The archetype library (name: what it is): {json.dumps(arch.catalogue(policy))}")
+        parts.append(f"The playbook library (name: how content is built): {json.dumps(arch.catalogue(policy))}")
+        parts.append(f"Audience propositions (name: why people follow): {json.dumps(arch.proposition_catalogue(policy))}")
+        parts.append(f"Verticals: {', '.join(policy.get('intelligence', 'spine', 'verticals', default=[]) or [])}")
     else:
         parts.append(f"Her archetypes' playbooks: {json.dumps(arch.playbooks(policy, prof), default=str)}")
+        if prof.get("propositions"):
+            parts.append("Why people follow her (propositions, with the attention, follow, return and affinity jobs "
+                         f"each needs): {json.dumps(arch.proposition_playbooks(policy, prof['propositions']), default=str)}")
     if section in ("positioning", "content_system"):
         parts.append(f"Sibling creators in the portfolio (she must be clearly different): "
                      f"{json.dumps(sibling_summary(conn, creator_id), default=str)}")

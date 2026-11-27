@@ -159,7 +159,7 @@ def clean_spec(policy, draft) -> tuple[dict, list[str]]:
         filters["archetype"] = arch
     elif arch:
         dropped.append(f"archetype {arch}")
-    for k in ("platform", "follower_band"):
+    for k in ("platform", "follower_band", "proposition", "vertical"):
         if raw.get(k):
             filters[k] = str(raw[k])
     explore, outcome = _clean_explore(policy, d, ok_attrs, ok_ctx, dropped), _clean_outcome(policy, d, dropped)

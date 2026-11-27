@@ -1,0 +1,118 @@
+# Audience propositions (owner 2026-11-26): WHY someone follows a personality, kept apart from WHAT she posts about
+# (her verticals: fashion, travel, fitness... intelligence.spine.verticals) and HOW her content is shaped (the vertical
+# playbooks in archetypes-v1.yaml). A creator is a weighted mix of propositions (shares summing to 1), not one label;
+# the mix can drift as she evolves. Starting hypotheses, not classifications: research codes them, measures whether
+# they can be told apart reliably (manyworlds.research.gold), and may merge, split or add some (`other:<words>`
+# answers are harvested as candidates).
+#
+# Each proposition separates four jobs content does, which need different content and are measured differently
+# (manyworlds.research.spine outcomes):
+#   attention  what stops a stranger on one post            views, shares, watch time, non-follower reach
+#   follow     what turns that viewer into a follower        follows and profile visits per reach
+#   return     what brings followers back                    returning viewers, saves, series completion
+#   affinity   what makes it last                            comments in their own words, replies, time following
+# `signals` are what a reader can observe in public content (for coding other creators); `own_signals` are what our
+# own analytics and comment themes show. `outcome_focus`: the outcomes that matter most for this proposition.
+version: propositions-v1
+jobs: [attention, follow, return, affinity]
+propositions:
+  aspirational_icon:
+    follow_reason: "I want to be like you, or live like you"
+    attention: "a striking image of a life the viewer wants: the look, the place, the moment, polished"
+    follow: "consistency of that life across posts: one post is luck, nine is a person worth following"
+    return: "new chapters of the same life (trips, seasons, wardrobe), often enough to stay in the feed"
+    affinity: "glimpses of how she got there and what she values, without breaking the aspiration"
+    signals: [polished or editorial framing, aspirational settings, consistent high-status styling, few talking clips]
+    own_signals: [saves, "goals" and "where is this" comments, profile visits after a hero post]
+    outcome_focus: [shares, saves, follows]
+    pitfalls: [distance with no warmth, sameness, aspiration that tips into showing off]
+  muse:
+    follow_reason: "I find you and your aesthetic captivating"
+    attention: "a mood: light, colour, texture, her presence in it; the image itself is the reward"
+    follow: "a recognisable visual world the viewer wants more of"
+    return: "variations on the world that never feel repeated"
+    affinity: "mystery kept, small personal details let in slowly"
+    signals: [strong consistent grade or palette, faceless or partial-face shots, little text, art-directed sets]
+    own_signals: [saves, emoji-only comments, high watch time on slow clips]
+    outcome_focus: [saves, watch_time_s, follows]
+    pitfalls: [mood without a person, monotony, a look other accounts can copy]
+  best_friend:
+    follow_reason: "I relate to you and enjoy your personality"
+    attention: "a relatable moment or confession, said the way a friend would"
+    follow: "a voice and humour the viewer wants in their day"
+    return: "ongoing life updates, recurring bits, talking to camera"
+    affinity: "replies, inside jokes, remembering what the audience said"
+    signals: [talking to camera, casual framing, self-deprecating humour, direct address, story-like updates]
+    own_signals: [long comments, replies to replies, story replies, returning viewers]
+    outcome_focus: [comments, follows, returning_viewers]
+    pitfalls: [oversharing, flat delivery, relatability with no point of view]
+  entertainer:
+    follow_reason: "you consistently entertain me"
+    attention: "a hook and a payoff inside seconds: a bit, a twist, timing"
+    follow: "the promise of more of the same quality, a recognisable comic or performing style"
+    return: "running formats and characters, reliable cadence"
+    affinity: "callbacks and audience-made running jokes"
+    signals: [fast hooks, punchlines, sketches or bits, strong timing, recurring formats]
+    own_signals: [shares, rewatches, "I'm crying" comments, tags of friends]
+    outcome_focus: [shares, views, follows]
+    pitfalls: [a format that wears out, chasing trends, no person behind the bits]
+  authority:
+    follow_reason: "I trust your knowledge and judgment"
+    attention: "a specific, useful claim or fix with a clear payoff"
+    follow: "a track record of being right and clear"
+    return: "series of lessons, answers to questions, updates on the field"
+    affinity: "admitted limits, taking questions, consistency of method"
+    signals: [explanations, lists and steps, demonstrations, comparisons, numbers]
+    own_signals: [saves, questions in comments, shares to friends]
+    outcome_focus: [saves, shares, follows]
+    pitfalls: [advice in excluded topics (medical, financial), lecturing, unearned certainty]
+  tastemaker:
+    follow_reason: "you introduce me to desirable things before everyone else"
+    attention: "a find: the object, place or idea the viewer didn't know they wanted"
+    follow: "a reliable eye; her picks are worth following"
+    return: "regular drops of new finds, edits and lists"
+    affinity: "her reasons for choosing, the taste behind the picks"
+    signals: [product or place focus, curated lists, close-ups of things, "where to find" captions]
+    own_signals: ["where is this from" comments, saves, link clicks]
+    outcome_focus: [saves, link_clicks, revenue_usd]
+    pitfalls: [catalogue without taste, too many sponsored picks, real brands we can't show]
+  protagonist:
+    follow_reason: "I want to see what happens next"
+    attention: "an unresolved situation: a decision, a conflict, a cliffhanger"
+    follow: "an ongoing story worth following, with her at its centre"
+    return: "episodes, open threads and their payoffs"
+    affinity: "the audience's investment in how it turns out, and being heard about it"
+    signals: [episodic numbering, "part 2", open endings, recurring characters, voiceover storytelling]
+    own_signals: [returning viewers, series completion, "part 2 please" comments]
+    outcome_focus: [returning_viewers, follows, comments]
+    pitfalls: [threads that never pay off, manufactured drama, a story the production can't keep consistent]
+  explorer:
+    follow_reason: "you show me interesting experiences and places"
+    attention: "a place or experience seen in a way the viewer hasn't seen it"
+    follow: "a steady stream of discoveries and a guide they like"
+    return: "new places and experiences, seasons, journeys"
+    affinity: "her way of seeing places, the small human moments in them"
+    signals: [travel and venues, POV, establishing shots, maps or itinerary text, movement through spaces]
+    own_signals: [saves, shares, "adding this to my list" comments]
+    outcome_focus: [saves, shares, views]
+    pitfalls: [postcards without a person, generic locations, places production can't render convincingly]
+  maverick:
+    follow_reason: "your individuality and perspectives are compelling"
+    attention: "a take, look or choice that breaks the norm of her vertical"
+    follow: "a consistent point of view the viewer agrees with, or loves to argue with"
+    return: "new takes on what everyone is talking about"
+    affinity: "loyalty of the people who share her view"
+    signals: [contrarian captions, unusual styling, opinions to camera, breaking the vertical's conventions]
+    own_signals: [comment debates, shares with commentary, polarised reactions]
+    outcome_focus: [comments, shares, follows]
+    pitfalls: [contrarian for its own sake, controversy that breaks policy, a take with no taste behind it]
+  comfort_figure:
+    follow_reason: "your content makes me feel good"
+    attention: "a calm, warm or soothing moment that lowers the viewer's pulse"
+    follow: "a reliable feeling the viewer can come back to"
+    return: "rituals and routines on a steady rhythm"
+    affinity: "gentleness, small encouragements, being part of the viewer's routine"
+    signals: [slow pacing, soft light, routines, ASMR-like sound, warm voice, cosy settings]
+    own_signals: [watch time, returning viewers, "this is my comfort account" comments]
+    outcome_focus: [watch_time_s, returning_viewers, follows]
+    pitfalls: [sleepiness without warmth, monotony, an inspirational-quote voice]

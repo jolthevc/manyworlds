@@ -50,7 +50,7 @@ from datetime import datetime
 from ..research import annotation as ann
 
 KINDS = ("main", "interaction", "conditional", "recipe")
-CONTEXT_FIELDS = ("medium", "platform", "archetype", "follower_band", "month", "age_band")
+CONTEXT_FIELDS = ("medium", "platform", "archetype", "proposition", "vertical", "follower_band", "month", "age_band")
 STAGES = ("confirmed", "discovery", "failed", "insufficient")
 TIE = 1e-9            # numerical tolerance: a creator effect this close to zero is a tie, not a sign
 _HASH_SPAN = 16 ** 8  # the split reads the first 8 hex digits of a sha256
@@ -144,6 +144,7 @@ def prepare(raw: list[dict], policy) -> list[Row]:
         posted, fetched = _dt(r.get("posted_at")), _dt(r.get("fetched_at"))
         age = (fetched - posted).total_seconds() / 86400 if posted and fetched else None
         context = {"medium": medium, "platform": r.get("platform"), "archetype": r.get("archetype"),
+                   "proposition": r.get("proposition"), "vertical": r.get("vertical"),
                    "follower_band": _band(r.get("followers"), c.get("follower_bands")),
                    "month": posted.strftime("%Y-%m") if posted else None,
                    "age_band": _band(age, c.get("age_bands_days"))}
