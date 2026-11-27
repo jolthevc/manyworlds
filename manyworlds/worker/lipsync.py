@@ -74,6 +74,8 @@ def null_margin(openness, loud, corr: float | None, *, min_lag: int, max_lag: in
     a, b = a[:n], b[:n]
     rs = []
     for lag in [*range(-int(max_lag), -int(min_lag) + 1), *range(int(min_lag), int(max_lag) + 1)]:
+        if abs(lag) >= n:
+            continue
         x, y = (a[lag:], b[:n - lag]) if lag >= 0 else (a[:n + lag], b[-lag:])
         keep = ~np.isnan(x) & ~np.isnan(y)
         if keep.sum() < min_frames or np.std(x[keep]) < 1e-6 or np.std(y[keep]) < 1e-6:
