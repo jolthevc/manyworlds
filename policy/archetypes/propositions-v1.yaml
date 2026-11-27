@@ -23,7 +23,7 @@ propositions:
     return: "new chapters of the same life (trips, seasons, wardrobe), often enough to stay in the feed"
     affinity: "glimpses of how she got there and what she values, without breaking the aspiration"
     signals: [polished or editorial framing, aspirational settings, consistent high-status styling, few talking clips]
-    own_signals: [saves, "goals" and "where is this" comments, profile visits after a hero post]
+    own_signals: [saves, 'goals and where-is-this comments', profile visits after a hero post]
     outcome_focus: [shares, saves, follows]
     pitfalls: [distance with no warmth, sameness, aspiration that tips into showing off]
   muse:
@@ -53,7 +53,7 @@ propositions:
     return: "running formats and characters, reliable cadence"
     affinity: "callbacks and audience-made running jokes"
     signals: [fast hooks, punchlines, sketches or bits, strong timing, recurring formats]
-    own_signals: [shares, rewatches, "I'm crying" comments, tags of friends]
+    own_signals: [shares, rewatches, 'I am crying comments', tags of friends]
     outcome_focus: [shares, views, follows]
     pitfalls: [a format that wears out, chasing trends, no person behind the bits]
   authority:
@@ -65,15 +65,15 @@ propositions:
     signals: [explanations, lists and steps, demonstrations, comparisons, numbers]
     own_signals: [saves, questions in comments, shares to friends]
     outcome_focus: [saves, shares, follows]
-    pitfalls: [advice in excluded topics (medical, financial), lecturing, unearned certainty]
+    pitfalls: [advice in excluded topics such as medical or financial, lecturing, unearned certainty]
   tastemaker:
     follow_reason: "you introduce me to desirable things before everyone else"
     attention: "a find: the object, place or idea the viewer didn't know they wanted"
     follow: "a reliable eye; her picks are worth following"
     return: "regular drops of new finds, edits and lists"
     affinity: "her reasons for choosing, the taste behind the picks"
-    signals: [product or place focus, curated lists, close-ups of things, "where to find" captions]
-    own_signals: ["where is this from" comments, saves, link clicks]
+    signals: [product or place focus, curated lists, close-ups of things, 'where to find captions']
+    own_signals: ['where is this from comments', saves, link clicks]
     outcome_focus: [saves, link_clicks, revenue_usd]
     pitfalls: [catalogue without taste, too many sponsored picks, real brands we can't show]
   protagonist:
@@ -82,8 +82,8 @@ propositions:
     follow: "an ongoing story worth following, with her at its centre"
     return: "episodes, open threads and their payoffs"
     affinity: "the audience's investment in how it turns out, and being heard about it"
-    signals: [episodic numbering, "part 2", open endings, recurring characters, voiceover storytelling]
-    own_signals: [returning viewers, series completion, "part 2 please" comments]
+    signals: [episodic numbering, 'part 2 labels', open endings, recurring characters, voiceover storytelling]
+    own_signals: [returning viewers, series completion, 'part 2 please comments']
     outcome_focus: [returning_viewers, follows, comments]
     pitfalls: [threads that never pay off, manufactured drama, a story the production can't keep consistent]
   explorer:
@@ -93,7 +93,7 @@ propositions:
     return: "new places and experiences, seasons, journeys"
     affinity: "her way of seeing places, the small human moments in them"
     signals: [travel and venues, POV, establishing shots, maps or itinerary text, movement through spaces]
-    own_signals: [saves, shares, "adding this to my list" comments]
+    own_signals: [saves, shares, 'adding this to my list comments']
     outcome_focus: [saves, shares, views]
     pitfalls: [postcards without a person, generic locations, places production can't render convincingly]
   maverick:
@@ -113,6 +113,6 @@ propositions:
     return: "rituals and routines on a steady rhythm"
     affinity: "gentleness, small encouragements, being part of the viewer's routine"
     signals: [slow pacing, soft light, routines, ASMR-like sound, warm voice, cosy settings]
-    own_signals: [watch time, returning viewers, "this is my comfort account" comments]
+    own_signals: [watch time, returning viewers, 'this is my comfort account comments']
     outcome_focus: [watch_time_s, returning_viewers, follows]
     pitfalls: [sleepiness without warmth, monotony, an inspirational-quote voice]
