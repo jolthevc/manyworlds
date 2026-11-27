@@ -42,9 +42,29 @@ class BaseModel(_PydanticModel):
     @model_validator(mode="before")
     @classmethod
     def _blank_is_default(cls, data):
-        if isinstance(data, dict):
-            return {k: v for k, v in data.items() if v != ""}
-        return data
+        """A "" falls back to the default; so does a value outside a closed list (2026-11-27: one Haiku answer of a
+        `situation` off the list failed the whole batched read, three times, and killed the annotation job). In a
+        list of closed values, the values outside it are dropped. The read stays; only the stray label is lost."""
+        if not isinstance(data, dict):
+            return data
+        from typing import get_args, get_origin
+        out = {}
+        for k, v in data.items():
+            if v == "":
+                continue
+            field = cls.model_fields.get(k)
+            ann_ = field.annotation if field is not None else None
+            lits = [a for a in get_args(ann_) if get_origin(a) is Literal] if get_origin(ann_) is not Literal else []
+            if lits and isinstance(v, str) and type(None) in get_args(ann_) and v not in get_args(lits[0]):
+                continue                     # an optional closed value (Note.audience_role): off the list -> None
+            if get_origin(ann_) is Literal and isinstance(v, str) and v not in get_args(ann_):
+                continue
+            if get_origin(ann_) is list and isinstance(v, list):
+                inner = (get_args(ann_) or (None,))[0]
+                if get_origin(inner) is Literal:
+                    v = [x for x in v if x in get_args(inner)]
+            out[k] = v
+        return out
 
 ANNOTATION_SCHEMA = "iia_v2"
 READ_SCHEMAS = ("iia_v2", "iia_v1")    # newest first

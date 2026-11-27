@@ -387,3 +387,14 @@ def test_the_gold_sample_is_third_party_posts_still_held_spread_across_creators(
     assert len(got) == 6 and all(p["media"] for p in got)
     assert sorted({str(p["creator_id"]) for p in got}) == sorted({str(p["creator_id"]) for p in got})
     assert max(sum(1 for q in got if q["creator_id"] == p["creator_id"]) for p in got) == 2
+
+
+def test_a_label_off_a_closed_list_falls_back_instead_of_failing_the_read():
+    """2026-11-27: one `situation` outside the list failed the whole batched read and killed the annotation job."""
+    from manyworlds.research import annotation as ann
+    v = ann.Visual.model_validate({"situation": "rooftop_party", "gaze": "lens"})
+    assert v.situation == "unknown" and v.gaze == "lens"
+    p = ann.Personality.model_validate({"parasocial_hooks": ["question", "telepathy"]})
+    assert p.parasocial_hooks == ["question"]
+    n = ann.Note.model_validate({"text": "warm", "audience_role": "nostalgia"})
+    assert n.audience_role is None and n.text == "warm"
