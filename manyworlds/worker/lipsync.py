@@ -61,6 +61,32 @@ def sync_score(openness: np.ndarray, loud: np.ndarray, *, max_offset_frames: int
     return best
 
 
+def null_margin(openness, loud, corr: float | None, *, min_lag: int, max_lag: int, percentile: float,
+                min_frames: int = 20) -> dict | None:
+    """How far the clip's sync beats chance: its correlation minus the `percentile` of the correlations at lags of
+    `min_lag`..`max_lag` frames either way (the voice shifted well away from the mouth). Speech loudness moves
+    slowly, so a mouth that just opens and closes now and then correlates about as well with the shifted voice as
+    with the true one (2026-11-26: walk-and-talk takes that were really the untouched source clip scored up to 0.87
+    against a null of 0.87 and passed the 0.3 gate; real lip sync with a silent lead-in scored 0.66 against 0.00).
+    None when the clip is too short for enough shifted lags."""
+    a, b = np.asarray(openness, dtype=float), np.asarray(loud, dtype=float)
+    n = min(len(a), len(b))
+    a, b = a[:n], b[:n]
+    rs = []
+    for lag in [*range(-int(max_lag), -int(min_lag) + 1), *range(int(min_lag), int(max_lag) + 1)]:
+        x, y = (a[lag:], b[:n - lag]) if lag >= 0 else (a[:n + lag], b[-lag:])
+        keep = ~np.isnan(x) & ~np.isnan(y)
+        if keep.sum() < min_frames or np.std(x[keep]) < 1e-6 or np.std(y[keep]) < 1e-6:
+            continue
+        r = float(np.corrcoef(x[keep], y[keep])[0, 1])
+        if np.isfinite(r):
+            rs.append(r)
+    if corr is None or len(rs) < 5:
+        return None
+    null = float(np.percentile(rs, float(percentile)))
+    return {"null": round(null, 3), "margin": round(float(corr) - null, 3), "lags": len(rs)}
+
+
 def voiced_score(openness, loud, voiced_frames: int, *, max_offset_frames: int = 5, min_frames: int = 25,
                  tail_frames: int = 0) -> dict | None:
     """The sync score over the frames the voice line spans (plus `tail_frames` after it), or None when the clip

@@ -519,8 +519,9 @@ def _short_line_wav(path, voiced_frames=52, seed=0, fps=25, rate=16000):
     return env
 
 
-def _short_take(conn, store, tmp_path, cid, mouth):
-    """A talking clip of len(mouth) frames whose voice line (its audio output) covers 52 of them."""
+def _short_take(conn, store, tmp_path, cid, mouth, lead_s=0.0):
+    """A talking clip of len(mouth) frames whose voice line (its audio output) covers 52 of them, after `lead_s` of
+    silence (the take's lead-in, meta.lead_s)."""
     job = clip_job(conn, store, tmp_path, cid, kind="talk.infinitetalk")
     rendered(conn, store, tmp_path, job)
     wav = tmp_path / f"{uuid.uuid4().hex}.wav"
@@ -528,7 +529,7 @@ def _short_take(conn, store, tmp_path, cid, mouth):
     conn.execute("INSERT INTO assets (job_id, creator_id, kind, uri, sha256, bytes, meta) VALUES (%s, %s, 'audio', %s, 'x', 1, %s)",
                  (job, cid, store.put_file(wav, f"v/{wav.name}").uri, Jsonb({"seconds": 52 / 25})))
     conn.execute("UPDATE assets SET meta = %s WHERE job_id = %s AND kind = 'video'",
-                 (Jsonb({"sync": {"corr": -0.46, "offset_frames": -5, "face_share": 1.0, "frames": len(mouth),
+                 (Jsonb({"lead_s": lead_s, "sync": {"corr": -0.46, "offset_frames": -5, "face_share": 1.0, "frames": len(mouth),
                                   "fps": 25.0, "openness": [round(float(x), 4) for x in mouth]}}), job))
     return job
 
@@ -574,3 +575,31 @@ def test_the_voiced_span_can_be_turned_off(conn, policy, store, tmp_path):
     pol = _with_sync(policy, voiced_span={**policy.get("review", "video", "lip_sync", "voiced_span"), "enabled": False})
     [r] = video.review_job(conn, pol, ClipStub(clip(), clip()), store, job, tmp_path)
     assert r["lip_sync"] is False and "voiced" not in r["sync"]
+
+
+def test_a_rolled_take_is_scored_against_its_line_after_the_lead_in(conn, policy, store, tmp_path):
+    """Review 2026-11-26: a take opens on 0.3 s of silence (talk_comfy.rolls), but its stored voice line starts at 0;
+    unshifted, the line sat 8 frames early (past the 5-frame lag search) and the voiced span could not pass."""
+    import numpy as np
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    env = _short_line_wav(tmp_path / "probe.wav")
+    mouth = np.concatenate([np.full(8, 0.02), 0.02 + env * 0.12, np.full(29, 0.14)])   # 0.3 s lead-in at 25 fps
+    job = _short_take(conn, store, tmp_path, cid, mouth, lead_s=0.32)
+    [r] = video.review_job(conn, policy, ClipStub(clip(), clip()), store, job, tmp_path)
+    assert r["lip_sync"] is True and abs(r["sync"]["voiced"]["offset_frames"]) <= 1
+    assert r["sync"]["voiced"]["voiced_frames"] == 60                                  # 8 lead-in + 52 voiced
+    assert r["sync"]["null"]["margin"] is not None                                     # recorded, report-only
+
+
+def test_a_clip_no_better_than_chance_is_rejected_once_a_null_margin_is_set(conn, policy, store, tmp_path):
+    import numpy as np
+    cid = creator(conn)
+    real_refs(conn, store, tmp_path, cid)
+    env = _short_line_wav(tmp_path / "probe.wav")
+    job = _short_take(conn, store, tmp_path, cid, np.concatenate([0.02 + env * 0.12, np.full(29, 0.14)]))
+    conn.execute("UPDATE assets SET meta = jsonb_set(meta, '{sync,corr}', '0.5') WHERE job_id = %s AND kind = 'video'",
+                 (job,))
+    null = {**policy.get("review", "video", "lip_sync", "null"), "min_margin": 2.0}   # unreachable: must reject
+    [r] = video.review_job(conn, _with_sync(policy, null=null), ClipStub(clip(), clip()), store, job, tmp_path)
+    assert r["lip_sync"] is False and r["sync"]["null"]["margin"] < 2.0

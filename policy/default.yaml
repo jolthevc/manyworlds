@@ -452,9 +452,16 @@ review:
     # head motion was lower than in passing clips, the clip's sound matched the line). When the whole clip fails, the
     # reviewer scores the voiced frames (+ tail_frames) with the same min_corr; the mouth must move over them
     # (min_open_std: talking clips 0.041-0.17, never-redrawn V2V mouths 0.001-0.003). A pass needs one of the two.
+    # null: the score against chance (worker/lipsync.null_margin): the correlation minus the `percentile` of those
+    # with the voice shifted min..max_lag_frames away. 2026-11-26 audit: walk-and-talk takes that were really the
+    # untouched source clip passed min_corr at up to 0.87 against a null of 0.87; real sync with a silent lead-in
+    # beat its null by 0.54-0.66. Recorded on every lip_sync row; it rejects only once min_margin is set (calibrate
+    # it against clips judged by eye first).
     lip_sync: {enforce: true, min_corr: 0.3, min_face_share: 0.8,
                voiced_span: {enabled: true, tail_frames: 0, min_open_std: 0.02, audio_rate: 16000, min_frames: 25,
-                             max_offset_frames: 5}}
+                             max_offset_frames: 5},
+               null: {enabled: true, min_lag_frames: 13, max_lag_frames: 40, percentile: 95, audio_rate: 16000,
+                      min_margin: null}}
     # Repairs of a rejected talking take (production.talk.talk_repair). perf_compare 2026-11-25: segment 8 failed
     # lip_sync at -0.46, -0.34, -0.43, every repair a new seed. Per gate, the escalation in order (a V2V lip-sync take
     # tries generation.talk_motion.v2v_repair's start_step first): a knob whose repair failed the same gate within

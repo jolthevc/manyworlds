@@ -256,6 +256,9 @@ def review_job(conn, policy: Policy, llm: StructuredLLM, store: ObjectStore, job
                 continue
         sync = (v["meta"] or {}).get("sync")
         if sync is not None:
+            null = _sync_null(conn, cfg, store, job_id, payload, v, sync, workdir)
+            if null is not None:   # the score against chance: recorded, and a gate only with null.min_margin set
+                sync = {**sync, "null": null}
             res["sync"] = sync
         synced = lip_sync_ok(cfg, sync)
         if synced is False:   # the whole clip failed: score the frames its voice covers (the join drops the rest)
@@ -430,6 +433,9 @@ def lip_sync_ok(cfg: dict, sync: dict | None) -> bool | None:
         return None
     face = float(sync.get("face_share") or 0) >= float(ls.get("min_face_share", 0.8))
     whole = sync.get("corr") is not None and float(sync["corr"]) >= float(ls.get("min_corr", 0.3))
+    floor = (ls.get("null") or {}).get("min_margin")   # beats chance by this much (report-only while unset)
+    if floor is not None and sync.get("null") and float(sync["null"]["margin"]) < float(floor):
+        return False
     return face and (whole or _voiced_ok(ls, sync.get("voiced")))
 
 
@@ -488,8 +494,27 @@ def _voiced_sync(conn, cfg: dict, store: ObjectStore, job_id, payload: dict, vid
     series = (sync or {}).get("openness")
     if not vs.get("enabled") or not series:
         return None
+    got = _clip_loudness(conn, store, job_id, payload, video, sync, int(vs.get("audio_rate", 16000)), workdir)
+    if got is None:
+        return None
+    openness, loud, voiced = got
+    return lipsync.voiced_score(openness, loud, voiced, max_offset_frames=int(vs.get("max_offset_frames", 5)),
+                                min_frames=int(vs.get("min_frames", 25)), tail_frames=int(vs.get("tail_frames", 0)))
+
+
+def _clip_loudness(conn, store: ObjectStore, job_id, payload: dict, video: dict, sync: dict, rate: int,
+                   workdir: Path):
+    """(the clip's mouth series, its voice line's loudness per frame on the clip's clock, the frames the line spans
+    from the clip's start) or None when there is no series or the line can't be read. The line starts after the
+    take's lead-in (meta.lead_s, worker talk_comfy.rolls): unshifted, a rolled take's line sat 7-8 frames early,
+    past the lag search, and the voiced-span score could not pass a good take (review 2026-11-26)."""
+    import numpy as np
+
+    from ..worker import lipsync
+    series = (sync or {}).get("openness")
+    if not series:
+        return None
     fps = float(sync.get("fps") or 25)
-    rate = int(vs.get("audio_rate", 16000))
     uri = _line_audio(conn, job_id, payload, video["uri"])
     try:
         samples = _decode_mono(store.get_file(uri, Path(workdir) / f"line_{video['id']}{Path(uri).suffix}"), rate)
@@ -497,11 +522,27 @@ def _voiced_sync(conn, cfg: dict, store: ObjectStore, job_id, payload: dict, vid
         return None
     if not len(samples):
         return None
+    lead = float(((video.get("meta") or {}).get("lead_s")) or 0)
+    if lead > 0 and uri != video["uri"]:   # the clip's own track already carries its lead-in
+        samples = np.concatenate([np.zeros(int(round(lead * rate)), dtype=samples.dtype), samples])
     openness = np.array([np.nan if x is None else float(x) for x in series], dtype=float)
-    loud = lipsync.loudness(samples, rate, fps, len(openness))
-    voiced = int(np.ceil(len(samples) / rate * fps))
-    return lipsync.voiced_score(openness, loud, voiced, max_offset_frames=int(vs.get("max_offset_frames", 5)),
-                                min_frames=int(vs.get("min_frames", 25)), tail_frames=int(vs.get("tail_frames", 0)))
+    return openness, lipsync.loudness(samples, rate, fps, len(openness)), int(np.ceil(len(samples) / rate * fps))
+
+
+def _sync_null(conn, cfg: dict, store: ObjectStore, job_id, payload: dict, video: dict, sync: dict | None,
+               workdir: Path) -> dict | None:
+    """The clip's sync against chance (lipsync.null_margin, policy review.video.lip_sync.null), or None when off or
+    unmeasurable."""
+    nc = (cfg.get("lip_sync") or {}).get("null") or {}
+    if not nc.get("enabled") or not sync or sync.get("corr") is None:
+        return None
+    got = _clip_loudness(conn, store, job_id, payload, video, sync, int(nc.get("audio_rate", 16000)), workdir)
+    if got is None:
+        return None
+    from ..worker import lipsync
+    openness, loud, _ = got
+    return lipsync.null_margin(openness, loud, float(sync["corr"]), min_lag=int(nc["min_lag_frames"]),
+                               max_lag=int(nc["max_lag_frames"]), percentile=float(nc["percentile"]))
 
 
 def pending_jobs(conn, policy: Policy, *, batch: str | None = None, limit: int | None = None) -> list:
