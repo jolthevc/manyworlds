@@ -4172,7 +4172,7 @@ llm:
                         data_terms: "Together: verify retention before media", status: candidate,
                         evidence: [{kind: benchmark, claim: "Mazur story board: top open-weight (9th)", date: "2026-11-17"},
                                    {kind: own, claim: "lost director 4/4, style 3/3, talent 2/2 blind (2026-11-23)", date: "2026-11-23"},
-                                   {kind: own, claim: "creative bench v1: lost 14/14 to Sonnet, but its drafting leaked into the answers (fixed with a system prefix); rerun needed", date: "2026-11-27"}]}
+                                   {kind: own, claim: "creative bench v1: lost 14/14 to Sonnet, but its drafting leaked into the answers; with a system prefix it returned a bible summary instead of a script (2/2 judges): an integration fault in Together JSON mode, unresolved; no quality verdict yet", date: "2026-11-27"}]}
     glm-5.3-flash:     {family: glm, provider: together, modalities: [text], licence: MIT, data_terms: "Together", status: candidate, evidence: []}
     deepseek-v4.1-flash: {family: deepseek, provider: together, modalities: [text], licence: "check", data_terms: "Together", status: candidate,
                         evidence: [{kind: community, claim: "most-used roleplay model on OpenRouter (usage, not quality)", date: "2026-11"}]}
