@@ -4167,12 +4167,14 @@ llm:
                         data_terms: "Together: verify retention before media", status: candidate,
                         evidence: [{kind: benchmark, claim: "EQ-Bench creative writing: 2nd (later snapshot); humor boards 2nd", date: "2026-11"},
                                    {kind: own, claim: "timed out often, cost the most, lost its trials (2026-11-22)", date: "2026-11-22"},
-                                   {kind: own, claim: "creative bench v1: 11-14-1 vs Sonnet; won the monologue 4/4 and series ideas 3/4; 3.5x Sonnet per answer, 104 s average, one timeout; judges split", date: "2026-11-27"}]}
+                                   {kind: own, claim: "creative bench v1: 11-14-1 vs Sonnet; won the monologue 4/4 and series ideas 3/4; 3.5x Sonnet per answer, 104 s average, one timeout; judges split", date: "2026-11-27"},
+                                   {kind: own, claim: "creative bench v1.1 (3 judges, non-Claude, all agree): 29-7 vs Sonnet; monologue 6/6, restrained reaction 6/6, photo direction 6/6, high-energy reaction 3-3; 4.4x Sonnet per answer, 92 s", date: "2026-11-27"}]}
     glm-5.3:           {family: glm, provider: together, modalities: [text], licence: "MIT-style (security review above $10B revenue)",
                         data_terms: "Together: verify retention before media", status: candidate,
                         evidence: [{kind: benchmark, claim: "Mazur story board: top open-weight (9th)", date: "2026-11-17"},
                                    {kind: own, claim: "lost director 4/4, style 3/3, talent 2/2 blind (2026-11-23)", date: "2026-11-23"},
-                                   {kind: own, claim: "creative bench v1: lost 14/14 to Sonnet, but its drafting leaked into the answers; with a system prefix it returned a bible summary instead of a script (2/2 judges): an integration fault in Together JSON mode, unresolved; no quality verdict yet", date: "2026-11-27"}]}
+                                   {kind: own, claim: "creative bench v1: lost 14/14 to Sonnet, but its drafting leaked into the answers; with a system prefix it returned a bible summary instead of a script (2/2 judges): an integration fault in Together JSON mode, unresolved; no quality verdict yet", date: "2026-11-27"},
+                                   {kind: own, claim: "creative bench v1.1 (json_mode prompt, 2 judges, non-Claude): 18-6 vs Sonnet; won both behavioural-temperature reactions 8/8 and series ideas 4/4, lost photo direction 1-3; 2.5x Sonnet per answer, 30 s", date: "2026-11-27"}]}
     glm-5.3-flash:     {family: glm, provider: together, modalities: [text], licence: MIT, data_terms: "Together", status: candidate, evidence: []}
     deepseek-v4.1-flash: {family: deepseek, provider: together, modalities: [text], licence: "check", data_terms: "Together", status: candidate,
                         evidence: [{kind: community, claim: "most-used roleplay model on OpenRouter (usage, not quality)", date: "2026-11"}]}
@@ -4187,7 +4189,8 @@ llm:
                         data_terms: "Together via a third-party provider; data sharing enabled", status: approved,
                         evidence: [{kind: benchmark, claim: "Mazur story board 3rd (3.55)", date: "2026-11-17"},
                                    {kind: own, claim: "style director: won 3/3 blind at ~53% of Sonnet's cost (2026-11-23)", date: "2026-11-23"},
-                                   {kind: own, claim: "creative bench v1: 10-4 vs Sonnet at 72% of its cost per answer (one judge, GLM); lost the house tour 2/2", date: "2026-11-27"}]}
+                                   {kind: own, claim: "creative bench v1: 10-4 vs Sonnet at 72% of its cost per answer (one judge, GLM); lost the house tour 2/2", date: "2026-11-27"},
+                                   {kind: own, claim: "creative bench v1.1 (2 judges, non-Claude): 15-6 vs Sonnet at 77% of its cost; photo direction 4/4, reactions 7/8, lost series ideas 0/4", date: "2026-11-27"}]}
   max_output_tokens: 16000
   # Claude's server-side web tools (llm.web_research, research.desk): $10 per 1,000 searches (failed ones free), fetch
   # tokens only; at most max_continuations pause_turn continuations per question.
