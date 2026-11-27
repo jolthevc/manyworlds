@@ -90,14 +90,31 @@ class ContentMix(BaseModel):
     talking_video: float = 0.0
 
 
+class ConceptStrategy(BaseModel):
+    """Nested so the concept stays under the structured-output limit of 20 properties per object (measured
+    2026-11-26: 21 fails). `flatten` lifts these back onto the concept, so downstream code reads them flat."""
+    propositions: list[dossier.PropositionShare] = Field(default_factory=list, description="WHY people would "
+                                                         "follow: 1-3 audience propositions with shares")
+    verticals: list[str] = Field(default_factory=list, description="WHAT she posts about: 1-3 verticals")
+    core_formats: list[str] = Field(default_factory=list, description="the 1-3 formats that directly deliver her "
+                                    "appeal (her creator-content fit's core); a personality need not talk to camera")
+    commercial_categories: list[str] = Field(description="2-5 keys from the commercial registry")
+    content_mix: ContentMix = Field(description="share of posts by format; photography first")
+    production_risks: list[str] = Field(default_factory=list, description="what production may struggle with")
+
+
+def flatten(concept: dict) -> dict:
+    """A concept with its strategy's fields at the top level (where the scoring, auditions and launch read them)."""
+    out = {k: v for k, v in concept.items() if k != "strategy"}
+    out.update(concept.get("strategy") or {})
+    return out
+
+
 class Concept(BaseModel):
     display_name: str
     handle: str = Field(description="lowercase, letters, digits, underscores, periods")
     one_line: str
     archetype: str = Field(description="one playbook name from the library: how her content is built")
-    propositions: list[dossier.PropositionShare] = Field(default_factory=list, description="WHY people would "
-                                                         "follow: 1-3 audience propositions with shares")
-    verticals: list[str] = Field(default_factory=list, description="WHAT she posts about: 1-3 verticals")
     desire: str = Field(description="the desire or aspiration they embody")
     why_follow: str
     signature: str = Field(description="the memorable element: a look, ritual, place or point of view")
@@ -108,11 +125,7 @@ class Concept(BaseModel):
     environments: list[str]
     audience: Audience
     brand_core: dossier.BrandCore
-    commercial_categories: list[str] = Field(description="2-5 keys from the commercial registry")
-    content_mix: ContentMix = Field(description="share of posts by format; photography first")
-    core_formats: list[str] = Field(default_factory=list, description="the 1-3 formats that directly deliver her "
-                                    "appeal (her creator-content fit's core); a personality need not talk to camera")
-    production_risks: list[str] = Field(default_factory=list, description="what production may struggle with")
+    strategy: ConceptStrategy = Field(description="why people follow, what she posts, how and at what cost")
 
 
 class Concepts(BaseModel):
@@ -248,7 +261,7 @@ def develop(conn, policy: Policy, llm, t: dict) -> list[dict]:
         f"leans on what production does reliably (photography first; a minority of cheap motion for discovery)."])
     out = llm.structured(str(cfg.get("role", "casting")), system=lab.persona_system(policy, SYSTEM), content=prompt,
                          schema=Concepts, effort=str(cfg.get("effort", "high")))
-    concepts = [c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in (out.concepts or [])][:len(ARMS)]
+    concepts = [flatten(c.model_dump() if hasattr(c, "model_dump") else dict(c)) for c in (out.concepts or [])][:len(ARMS)]
     return concepts
 
 

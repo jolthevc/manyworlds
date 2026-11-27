@@ -13,6 +13,12 @@ budgets:
   # Off (0) after the 2026-11-25 review: kinds-level headroom let new posts ride on it and its end killed in-flight
   # renders. Rebuild it per job before turning it on; one-day owner grants (mw budget grant) remain.
   completion_usd: 0
+  # GPU development envelope (owner 2026-11-27): experiments that improve the factory (bench-, test-breadth-, test-dev-
+  # batches) may spend up to weekly_usd a week (Monday UTC; unused budget does not roll over), at most
+  # per_experiment_usd each, inside gpu_runs.daily_gpu_usd, without a new approval each run. Separate from the
+  # research ceiling (research_budget). manyworlds.budget.dev_status; every experiment records its hypothesis,
+  # estimate, actual cost and learning (docs/research/dev-experiments.md).
+  gpu_development: {weekly_usd: 15.0, per_experiment_usd: 3.0, batches: [bench-, test-breadth-, test-dev-]}
 
 # Storage retention (manyworlds.retention): rejected media (and a rejected clip's keyframes and voice line) older than
 # retention_days is deleted once a day; anything a post or creator names is kept. ~60 MB a creator a day otherwise.
@@ -4140,7 +4146,9 @@ llm:
   # second: never the director, review or comment replies (those run outside brain jobs anyway).
   batch:
     enabled: true
-    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes, idea_revise, head_of_music, a_and_r, music_curator, iia_annotate, iia_distill]   # iia: research runs, nobody waits; music: nobody waits on the slate, pitches or a release
+    # iia_annotate runs direct during development (owner 2026-11-27: speed of learning beats the batch discount while
+    # we build; batch the routine research roles where latency doesn't matter)
+    roles: [evaluator, evaluator_check, brain, talent_manager, style_director, market_lead, comment_themes, idea_revise, head_of_music, a_and_r, music_curator, iia_distill]   # music: nobody waits on the slate, pitches or a release
     discount: 0.5              # the batch price as a share of the standard one (Anthropic pricing, checked 2026-11-23)
     gather_seconds: 30         # wait this long for other jobs' calls so they share a batch
     max_requests: 1000         # per batch (the API takes up to 100,000)

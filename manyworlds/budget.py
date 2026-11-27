@@ -111,3 +111,36 @@ def status(conn, policy: Policy) -> dict:
     c, s = caps(conn, policy), spent(conn)
     return {"caps": c, "spent": {k: round(v, 2) for k, v in s.items()}, "over": over(conn, policy),
             "completion_open": completion_open(conn, policy)}
+
+
+def dev_status(conn, policy: Policy, now=None) -> dict:
+    """The GPU development envelope this week (policy budgets.gpu_development; owner 2026-11-27): what development
+    batches have cost since Monday 00:00 UTC (each run's jobs plus the machines they ran on, as breadth.run_spend
+    counts it; a machine shared by two runs counts in both, so the total errs high), what is left, and the per
+    experiment cap."""
+    from datetime import datetime, timedelta, timezone
+
+    from . import breadth
+    c = policy.get("budgets", "gpu_development", default={}) or {}
+    now = now or datetime.now(timezone.utc)
+    monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    prefixes = [str(p) for p in c.get("batches") or []]
+    runs = [r["batch"] for r in conn.execute(
+        "SELECT DISTINCT split_part(batch, '-', 1) || '-' || split_part(batch, '-', 2) AS batch FROM jobs "
+        "WHERE created_at >= %s AND batch LIKE ANY(%s)", (monday, [p + "%" for p in prefixes])).fetchall()]
+    spent = sum(breadth.run_spend(conn, b) for b in runs)
+    weekly = float(c.get("weekly_usd", 0))
+    return {"week_from": monday.isoformat(), "weekly_usd": weekly, "spent_usd": round(spent, 4),
+            "left_usd": round(max(0.0, weekly - spent), 4), "per_experiment_usd": float(c.get("per_experiment_usd", 0)),
+            "runs": runs}
+
+
+def dev_allows(conn, policy: Policy, est_usd: float, now=None) -> tuple[bool, str]:
+    """Whether a development experiment estimated at est_usd fits: under the per-experiment cap and what is left
+    this week. The daily GPU cap is enforced by the autoscaler, as for any run."""
+    s = dev_status(conn, policy, now)
+    if est_usd > s["per_experiment_usd"]:
+        return False, f"${est_usd:.2f} is over the ${s['per_experiment_usd']:.2f} per-experiment cap"
+    if est_usd > s["left_usd"]:
+        return False, f"${est_usd:.2f} is over the ${s['left_usd']:.2f} left this week"
+    return True, "ok"

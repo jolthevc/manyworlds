@@ -172,8 +172,10 @@ def _concept(i: int, **kw) -> dict:
             "signature": f"signature {i}", "apparent_age": 34, "gender_presentation": "man", "look": "tall",
             "styling": "tailoring", "environments": ["terrace"],
             "audience": {"core": "c", "age_range": "35-54", "gender": "men", "regions": "EU"},
-            "brand_core": SECTION_OUT["BrandCore"], "commercial_categories": ["mens_fashion", "travel_hospitality"],
-            "content_mix": {"photo": 0.6, "carousel": 0.3, "narrated_edit": 0.1}, **kw}
+            "brand_core": SECTION_OUT["BrandCore"],
+            "strategy": {"commercial_categories": ["mens_fashion", "travel_hospitality"],   # nested (casting.flatten)
+                         "content_mix": kw.pop("content_mix", {"photo": 0.6, "carousel": 0.3, "narrated_edit": 0.1})},
+            **kw}
 
 
 def _scores(i: int, total: float, **kw) -> dict:

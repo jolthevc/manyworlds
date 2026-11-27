@@ -398,3 +398,38 @@ def test_a_label_off_a_closed_list_falls_back_instead_of_failing_the_read():
     assert p.parasocial_hooks == ["question"]
     n = ann.Note.model_validate({"text": "warm", "audience_role": "nostalgia"})
     assert n.audience_role is None and n.text == "warm"
+
+
+# --- the structured-output limit (2026-11-26: 21 properties in one object fail on messages.parse) --------------------
+def _objects(schema: dict):
+    yield schema
+    for d in (schema.get("$defs") or {}).values():
+        yield d
+
+
+def test_no_parsed_llm_schema_object_has_more_than_20_properties():
+    """Every schema sent through messages.parse (not strict_required: those take the compact JSON path) keeps each
+    object at 20 properties or fewer, so a new field can't silently break casting or the dossier again."""
+    from manyworlds.brain import casting, research_questions
+    from manyworlds.creator import dossier
+    from manyworlds.research import propositions
+    schemas = [casting.Concepts, casting.ConceptScore, research_questions.SpecDraft, research_questions.Proposals,
+               propositions.Reads, *dossier.SCHEMAS.values()]
+    over = []
+    for s in schemas:
+        if getattr(s, "strict_required", False):
+            continue
+        for obj in _objects(s.model_json_schema()):
+            n = len(obj.get("properties") or {})
+            if n > 20:
+                over.append(f"{s.__name__}:{obj.get('title')} has {n}")
+    assert over == []
+
+
+def test_the_gpu_development_envelope_caps_each_experiment_and_the_week(conn, policy):
+    from manyworlds import budget
+    s = budget.dev_status(conn, policy)
+    assert s["weekly_usd"] == 15.0 and s["per_experiment_usd"] == 3.0 and s["spent_usd"] == 0
+    assert budget.dev_allows(conn, policy, 2.5) == (True, "ok")
+    ok, why = budget.dev_allows(conn, policy, 3.5)
+    assert not ok and "per-experiment" in why
