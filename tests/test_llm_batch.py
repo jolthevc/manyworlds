@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
 from manyworlds import llm_batch, policy as policy_mod, queue
@@ -255,3 +256,23 @@ def test_shipped_batch_roles_exist_and_are_never_on_the_critical_path(raw_policy
     roles = raw_policy.get("llm", "batch", "roles")
     assert set(roles) <= set(raw_policy.get("llm", "roles"))
     assert not {"director", "review", "review_confirm", "comment_reply"} & set(roles)
+
+
+def test_a_malformed_batched_answer_is_answered_directly_never_replayed(conn, bpolicy):
+    """2026-11-27: one malformed JSON answer in a batch looped an annotation job: every rerun replayed it."""
+    client = FakeClaude()
+    llm = _llm(conn, bpolicy, client)
+    job = queue.enqueue(conn, "brain.echo", {})
+    with llm.tagged("echo", job, attempt=1), pytest.raises(Deferred):
+        llm.structured("brain", system="s", content="x", schema=Score)
+    llm_batch.flush(conn, bpolicy, client)
+    client.end_all()
+    llm_batch.flush(conn, bpolicy, client)
+    conn.execute("UPDATE llm_journal SET output = NULL, result = %s",
+                 (Jsonb({"text": '{"score": 7,,,', "stop_reason": "end_turn"}),))     # what the batch returned
+    with llm.tagged("echo", job, attempt=1):
+        assert llm.structured("brain", system="s", content="x", schema=Score).score == 7
+    row = conn.execute("SELECT mode, output FROM llm_journal").fetchone()
+    assert row["mode"] == "batch_repair" and row["output"]["score"] == 7
+    with llm.tagged("echo", job, attempt=1):                                           # the next rerun replays
+        assert llm.structured("brain", system="s", content="x", schema=Score).score == 7   # the repaired answer

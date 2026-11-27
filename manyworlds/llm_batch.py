@@ -120,7 +120,15 @@ def journaled(llm, role: str, model: str, fallback: str | None, *, system, conte
     if row is not None:
         seen.add(row["id"])
         if row["status"] == "done":
-            out = _read(llm, model, schema, row)
+            try:
+                out = _read(llm, model, schema, row)
+            except RuntimeError as e:   # an invalid batched answer is never replayed (2026-11-27: one malformed
+                log.warning("batched %s call %s unusable (%s); answering it directly", role, row["id"], str(e)[:200])
+                out, usd = _direct(llm, role, model, fallback, **call)   # JSON answer looped a job on every rerun)
+                llm.conn.execute(
+                    "UPDATE llm_journal SET mode = 'batch_repair', output = %s, usd = usd + %s, shadowed = true, "
+                    "done_at = now() WHERE id = %s", (Jsonb(out.model_dump(mode="json")), usd, row["id"]))
+                return out
             if not row["shadowed"]:
                 llm.conn.execute("UPDATE llm_journal SET shadowed = true WHERE id = %s", (row["id"],))
                 llm._shadow(role, model, out, float(row["usd"]), **call)
