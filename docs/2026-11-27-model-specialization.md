@@ -141,3 +141,53 @@ Each step records what it measured. Adoption goes through the registry, from can
 - **Any new provider account or key:** an OpenRouter account with zero-retention routing, or a DeepInfra key if we don't have one. Creating accounts and keys is yours.
 - **Twelve Labs:** only with the training opt-out set, and the terms' clause on identifiable people checked.
 - **The unread licences, before adoption:** HY-Motion and SMPL, the Kimi K3.1 Pro text, the Qwen 4 Max terms, and the MoGe-2 and Wan Fun Control weights.
+
+## 8. Evaluation as a standing capability (2026-11-27, later)
+
+**What the first benchmark showed** (creative-v1.1: 7 scenarios on Maren, 2 independent samples each). These are hypotheses per task, not assignments:
+
+| Model | vs Sonnet (judgements) | Strongest | Weakest | $/answer vs Sonnet | Latency |
+|---|---|---|---|---|---|
+| Kimi K3.1 Pro | 29–7 | monologue 6/6, restrained reaction 6/6, photo direction 6/6 | high-energy reaction 3–3 | 4.4× | 92 s |
+| GLM-5.3 | 18–6 | both reactions 8/8, series ideas 4/4 | photo direction 1–3 | 2.5× | 30 s |
+| Qwen 4 Max | 15–6 | photo direction 4/4, reactions 7/8 | series ideas 0/4 | 0.77× | 20 s |
+
+The narrative scene is **untested**: the run stopped at its cap before judging it. All the judges were non-Claude, and every result is from one creator.
+
+**Built since:**
+- **Rigorous judging.**
+  - Every judge family judges, Claude included.
+  - One majority vote per independent sample, reported apart from raw judgements, with and without judges who have a stake.
+  - A **self-preference measure** per judge family: how much more often it picks its own family than judges with no stake do on the same pairs.
+  - How often the longer answer won.
+  - 13 creative dimensions scored 1–5: originality, delight, wit, voice, nuance, naturalness, charisma, memorability, aspiration, distinctiveness, taste, surprise, plausibility. They are evidence only, never gates.
+  - Untested scenarios are named. `mw llm evidence` pools every trial per model and task from the ledger.
+- **The cap holds.**
+  - Every call is reserved at its estimate before it is made, using observed token use as the run goes.
+  - The run stops when actual plus reserved would pass the cap.
+  - Results report estimated, committed and actual cost.
+  - The $0.01 overrun happened because a call was checked only after spending.
+- **Evidence from normal work: `llm.splits.<task>`.** A share of a task's real calls go to a candidate, whose answer is used, with the incumbent as fallback. The ledger now records each call's **task and route** (role, task, override, split, shadow; migration 057). So every model joins downstream to review acceptance, rerenders, cost per accepted post and, later, audience outcomes, through the spine and attribution we already have. It's off as shipped. Incumbent routes and fallbacks are unchanged, and a promotion is a reversible override.
+- **Inference controls per model:** `extra_body` passes host-specific parameters (reasoning budgets, thinking toggles), next to `system_prefix`, sampling and `json_mode`.
+
+**Why GLM's reasoning ran away.** Under Together's `json_schema` mode, the grammar constrains output from the first token. A reasoning model then has nowhere to think except inside the first string field:
+- 15,000 characters of "Let me think about this carefully…";
+- zero reported reasoning tokens;
+- cut off at the token limit.
+
+With the schema in the prompt instead (`json_mode: prompt`), it reasons in its own channel (`reasoning_content`) and answers cleanly. Its cost is now $0.022 per answer, 2.5× Sonnet, because the hidden reasoning is still billed as output. Whether Together honours a reasoning budget or thinking toggle for GLM (and Kimi) is unverified. `extra_body` is ready to test it; that's a few cents.
+
+**Cost in context.** The premium models cost 1–3 cents more per creative answer. A director's shot sheet feeds about $0.05–0.20 of GPU, and a failed render costs $0.02–0.10. So for concept, script and direction tasks, the price is noise next to any effect on acceptance or rerenders. For high-volume routine tasks (reviews, captions, classification) it isn't, and those should stay on the cheapest model that holds up. The 92-second latency is fine for background brain jobs, but not for anything interactive or run hundreds of times a day.
+
+## 9. Highest-value next steps
+
+In order of value. Each needs your yes for its spend.
+
+1. **Camera conditioning for photos** (~$1.5–2 GPU, plus a worker image with Z-Image's Fun ControlNet, Apache-2.0). The range audit's largest gap was camera distance, height and angle (54–60%). A depth or layout map, generated from the director's framing, is the direct fix. Measure with the same audit readers on the same 20 concepts: before and after on finished images.
+2. **Direction to finished images: Sonnet vs Qwen 4 Max vs Kimi** (~$1–1.5). The same 8 ideas, each model writes the shot sheets (`as_task director_shots`), the renders are identical otherwise. Judged on the images: readers for intent executed, gates, a blind pairwise image comparison across families, and rerender counts. This answers "does better direction make better pictures".
+3. **Dialogue to spoken lines** (~$0.5). Kimi's and Sonnet's monologues spoken by her Qwen3-TTS voice. The existing voice judges measure naturalness, intelligibility and timing, and a cross-family judge reads the transcripts against delivery. Text that reads well can speak badly.
+4. **Judge calibration** (~$1.5). Re-run creative-v1.1 with Claude judges included, the narrative scene, and a second persona. The sandbox music artist's bible exists, so no new launch is needed. This measures each family's self-preference directly.
+5. **Reasoning controls** (cents). GLM and Kimi with a capped reasoning budget through `extra_body`, on the 2 scenarios where each is strongest. Does the quality hold at lower cost and latency?
+6. **Splits in normal production** (no extra cost beyond the work itself, once test or production runs resume). Qwen 4 Max on `director_shots` at 30%; Kimi on series-idea and hook generation at 30%. Promote only on downstream evidence, through a reversible override.
+
+The spatial, director and performance side (measurement pass, ShotVL, image-to-motion with structural control) follows step 1, sharing its worker image.
