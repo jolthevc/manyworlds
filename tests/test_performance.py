@@ -418,7 +418,10 @@ def test_variety_prefers_a_frame_that_does_not_repeat_an_earlier_scene(conn, pol
     assert no_penalty and _best_confirmed(conn, [str(first)])["id"] == _uris(conn, first)[0]
     # The producer's scene state chooses under the POLICY's library, not the default file (review 2026-11-26).
     from manyworlds.production import steps
-    state, best = steps._scene_state(conn, [str(second)], _with(policy, observe={"variety_penalty": 0}))
+    import dataclasses
+    other = dataclasses.replace(policy, body={**policy.body, "performance": {**policy.body["performance"],
+                                                                              "file": "no-such-library.yaml"}})
+    state, best = steps._scene_state(conn, [str(second)], other)   # the policy names another (empty) library
     top = conn.execute(steps._CANDIDATES + " LIMIT 1", (steps.RANKED_GATES, steps.RANKED_GATES, [str(second)])).fetchone()
     assert state == "chosen" and best["id"] == top["id"]                 # no penalty there: plain rank order
     assert steps._scene_state(conn, [str(second)], policy)[1]["id"] == b  # the shipped library's penalty applies
