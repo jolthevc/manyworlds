@@ -147,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "WORKER_DATABASE_URL=... for piping into `fly secrets import` (never into a terminal)")
     wc.add_argument("--force", action="store_true", help="rotate even while GPU machines are up (they lose access)")
     lm = sub.add_parser("llm", help="LLM models: compare candidates with a role's model, choose the best per job")
-    lm.add_argument("action", choices=["shadow-report", "recommend", "judge", "batches"],
+    lm.add_argument("action", choices=["shadow-report", "recommend", "judge", "batches", "bench", "registry"],
                     help="shadow-report: the comparisons; recommend: which candidate qualifies (--propose files it as "
                          "an approval); judge: score a generative role's answers blind (spends up to --usd); "
                          "batches: the brain's call journal and Message Batches (what batching saved)")
@@ -156,6 +156,14 @@ def build_parser() -> argparse.ArgumentParser:
     lm.add_argument("--usd", type=float, default=1.0, help="judge: most to spend")
     lm.add_argument("--days", type=float, default=30)
     lm.add_argument("--tolerance", type=float, default=1.0, help="numeric difference counted as agreeing")
+    lm.add_argument("--models", help="bench: comma-separated candidate models (from llm.registry)")
+    lm.add_argument("--baseline", default="claude-sonnet-5-5", help="bench: the incumbent the candidates are compared with")
+    lm.add_argument("--judges", default="claude-opus-5-5,glm-5.3", help="bench: judge models (never one of a contestant's family)")
+    lm.add_argument("--samples", type=int, default=2, help="bench: answers per model per scenario")
+    lm.add_argument("--scenarios", help="bench: comma-separated scenario ids (default: all in the bench)")
+    lm.add_argument("--bench", default="creative-v1", help="bench: the scenario file in policy/benchmarks")
+    lm.add_argument("--creator", default="maren.afterhours", help="bench: whose bible the assignments are written for")
+    lm.add_argument("--dry-run", action="store_true", help="bench: the plan and estimated cost only")
     mu = sub.add_parser("music", help="songs: measure them, list an artist's songs, analyse what works")
     mu.add_argument("action", choices=["measure", "songs", "analyse", "sandbox"])
     mu.add_argument("handle", nargs="?", help="sandbox: the sandbox artist's handle (a real creator is refused)")
@@ -480,6 +488,20 @@ def main(argv: list[str] | None = None) -> int:
             _print(llm_batch.status(conn, pol))
         elif args.action == "shadow-report":
             _print(shadow.report(conn, args.role, days=args.days, tolerance=args.tolerance))
+        elif args.action == "registry":
+            _print(pol.get("llm", "registry", default={}))
+        elif args.action == "bench":
+            from . import benchmarks
+            from .llm import LLM
+            cid = conn.execute("SELECT id FROM creators WHERE handle = %s", (args.creator,)).fetchone()
+            if not cid:
+                raise SystemExit(f"no creator {args.creator}")
+            _print(benchmarks.run(conn, pol, LLM(conn, pol), creator_id=cid["id"], bench=args.bench,
+                                  scenarios=args.scenarios.split(",") if args.scenarios else None,
+                                  models=[m for m in (args.models or "").split(",") if m], baseline=args.baseline,
+                                  judges=[j for j in args.judges.split(",") if j], samples=args.samples,
+                                  usd=args.usd, dry_run=args.dry_run))
+            conn.commit()
         elif args.action == "judge":
             from .llm import LLM
             _print(selection.judge(conn, pol, LLM(conn, pol), args.role, usd=args.usd))

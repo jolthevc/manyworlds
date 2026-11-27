@@ -1,0 +1,55 @@
+# Creative benchmarks on our own creator (owner 2026-11-27: benchmark models on Manyworlds' actual tasks, not
+# leaderboards). Each scenario is one assignment given identically to every candidate; answers are compared blind
+# against the incumbent by judges from other model families (manyworlds.benchmarks). {bible} is the creator's bible,
+# {voice} her voice rules. These are test assignments, never posts.
+version: creative-v1
+scenarios:
+  bartender_monologue:
+    task: dialogue
+    brief: |
+      Write a 20-second piece to camera for her: an original, genuinely funny observation about something she sees
+      behind the bar at closing time. It must sound like her talking, not an AI scriptwriter: her rhythm, her words,
+      one pause before the turn, subtext over explanation. Mark the pause with [beat] and the one emphasised word
+      with *asterisks*. 45-60 words.
+    criteria: "funny for a real reason; sounds like this specific person speaking aloud; subtext and timing; no stock AI phrasing (no 'let's be honest', 'here's the thing', 'not gonna lie'); usable as written"
+  embodiment_low:
+    task: embodiment
+    brief: |
+      A regular she likes tells her, at the bar, that he finally quit the job he hated. Write exactly what she says
+      and does in the next ten seconds. Behavioural temperature LOW: restrained, a little dry, warmth shown not said.
+      Give her line(s) and one physical action.
+    criteria: "true to her character; the intensity is restrained as asked, without losing warmth; specific, not generic; the action fits the line"
+  embodiment_high:
+    task: embodiment
+    brief: |
+      The same regular tells her he got engaged. Write exactly what she says and does in the next ten seconds.
+      Behavioural temperature HIGH: unguarded, delighted, louder than usual, still unmistakably her.
+      Give her line(s) and one physical action.
+    criteria: "true to her character at a higher intensity; genuine, not performed; still her voice; the action fits"
+  series_ideas:
+    task: ideation
+    brief: |
+      Propose three ideas for a recurring short-video series for her that nobody else could make, each in two
+      sentences: the premise and what makes episode 7 still interesting. Avoid trends everyone does.
+    criteria: "original; specific to her life and voice; sustainable across many episodes; clear hook; not generic creator content"
+  lifestyle_photo_direction:
+    task: direction
+    brief: |
+      Direct one photograph for her feed on her day off that has real taste and personality: where she is, what she
+      wears, her posture and what her hands do, her expression and gaze, the framing, lens and light, and the one
+      detail that makes it hers. Write it as a director's note in under 120 words.
+    criteria: "visual taste; physically specific and drawable; personality in the posture and detail; composition and light chosen for a reason; avoids the generic AI influencer look"
+  house_tour_plan:
+    task: direction
+    brief: |
+      Plan a 30-second tour of her small flat in five shots: for each, where the camera is, how it moves, what she
+      does and says (her words), and how it cuts to the next. Keep the space consistent: name where each room is
+      relative to the last.
+    criteria: "spatially consistent; each shot physically possible with a phone; her lines are natural and in her voice; cuts motivated; would hold attention"
+  narrative_scene:
+    task: narrative
+    brief: |
+      Write a 40-second fictional scene in three beats: she finds a note left under a glass at the end of a shift.
+      Show her emotional progression through what she does and says, with subtext; give her lines and actions per
+      beat.
+    criteria: "clear emotional progression; subtext; consistent character; visual storytelling over explanation; a satisfying turn"
