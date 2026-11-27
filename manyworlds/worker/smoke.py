@@ -261,6 +261,38 @@ def _check_interpolation(d: Path, interpolate: dict | None = None) -> str:
     return "motion clip interpolated (minterpolate) to the talk frame rate"
 
 
+def _check_saved_output() -> str:
+    """A real (CPU) ComfyUI run of the walk-and-talk input path, end to end: a clip loaded with core LoadVideo,
+    re-made and saved. comfy.run must return the SAVED file, never the loader's preview of its input, and only once
+    the prompt has completed (2026-11-26: the picker returned the source clip as every V2V render; the node
+    catalogue checks above all passed, because no graph was ever run before a paid machine)."""
+    import imageio.v3 as iio
+    import numpy as np
+
+    from . import comfy
+    inp = comfy.COMFY_DIR / "input"
+    inp.mkdir(parents=True, exist_ok=True)
+    frames = np.zeros((8, 64, 64, 3), dtype=np.uint8)
+    frames[:, :, :, 0] = np.arange(8, dtype=np.uint8)[:, None, None] * 30
+    iio.imwrite(str(inp / "mw_smoke_src.mp4"), frames, fps=8)
+    g = {"load": {"class_type": "LoadVideo", "inputs": {"file": "mw_smoke_src.mp4"}},
+         "parts": {"class_type": "GetVideoComponents", "inputs": {"video": ["load", 0]}},
+         "video": {"class_type": "CreateVideo", "inputs": {"images": ["parts", 0], "fps": 25.0}},
+         "save": {"class_type": "SaveVideo",
+                  "inputs": {"video": ["video", 0], "filename_prefix": "mw_smoke_saved", "format": "mp4",
+                             "codec": "h264"}}}
+    try:
+        out = comfy.run(g, timeout_s=300)
+    finally:
+        (inp / "mw_smoke_src.mp4").unlink(missing_ok=True)
+    if not out.name.startswith("mw_smoke_saved") or out.parent != comfy.COMFY_DIR / "output" or not out.is_file():
+        raise RuntimeError(f"comfy.run returned {out}, not the file SaveVideo wrote")
+    if not comfy.last_run().get("outputs"):
+        raise RuntimeError("comfy.run recorded no provenance for its render")
+    out.unlink(missing_ok=True)
+    return "a real LoadVideo -> SaveVideo run returns the saved render, verified, never the input preview"
+
+
 def check_talkcomfy() -> list[str]:
     """The ComfyUI talk worker: its imports, the handler, ComfyUI starting (on the CPU here) with WanVideoWrapper
     loaded, and the InfiniteTalk graph valid against ComfyUI's own node catalogue, so a wiring mistake fails the
@@ -329,6 +361,7 @@ def check_talkcomfy() -> list[str]:
             if problems:
                 raise RuntimeError(f"Wan-Animate-2 graph (cache={cached}) doesn't match ComfyUI's nodes: "
                                    + "; ".join(problems))
+        saved = _check_saved_output()
         negatives = _check_negatives(info)
         song = _check_song_graph(info)
         named = _check_named_graphs(info)
@@ -343,6 +376,7 @@ def check_talkcomfy() -> list[str]:
     handlers_for(["comfy.wan_i2v", "comfy.wan_animate2", "comfy.graph"])
     done.append("ComfyUI + WanVideoWrapper nodes match the talk (InfiniteTalk, V2V, LongCat, longcat_fast), "
                 "story-clip and Wan-Animate-2 graphs")
+    done.append(saved)
     done.append(negatives)
     done.append(song)
     done.append(named)
