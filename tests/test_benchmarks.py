@@ -55,9 +55,10 @@ def test_candidates_are_judged_blind_by_other_families_and_recorded(conn, policy
 
 def test_the_cap_stops_spending_and_a_dry_run_spends_nothing(conn, policy):
     llm = BenchLLM(usd_per_call=0.5)
-    plan = benchmarks.run(conn, policy, llm, creator_id=_creator(conn), scenarios=None, models=["glm-5.3"],
+    me = _creator(conn)
+    plan = benchmarks.run(conn, policy, llm, creator_id=me, scenarios=None, models=["glm-5.3"],
                           baseline="claude-sonnet-5-5", judges=["qwen4-max"], samples=2, usd=1.0, dry_run=True)
     assert llm.calls == [] and plan["estimate_usd"] > 0 and len(plan["scenarios"]) >= 7
-    benchmarks.run(conn, policy, llm, creator_id=_creator(conn), scenarios=None, models=["glm-5.3"],
+    benchmarks.run(conn, policy, llm, creator_id=me, scenarios=None, models=["glm-5.3"],
                    baseline="claude-sonnet-5-5", judges=["qwen4-max"], samples=2, usd=1.0)
     assert llm.spent <= 1.0 + 0.5                                # stops at the first call past the cap
