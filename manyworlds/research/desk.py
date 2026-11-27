@@ -220,12 +220,13 @@ def brief(conn, policy: Policy, *, use: str, tags: list[str] | None = None, k: i
 
 def ensure_due(conn, policy: Policy, *, now: datetime | None = None):
     """One desk run a day (a brain.intelligence job, mode desk), while the desk is enabled and operations are live or
-    paused with `research_monitor` in operations.while_paused."""
+    paused with `research_desk` (or the older `research_monitor`) in operations.while_paused."""
     from .. import operations, queue
     if not cfg(policy).get("enabled") or not cfg(policy).get("topics"):
         return None
     live = operations.is_live(policy)
-    if not live and "research_monitor" not in (policy.get("operations", "while_paused", default=[]) or []):
+    leave = policy.get("operations", "while_paused", default=[]) or []
+    if not live and "research_desk" not in leave and "research_monitor" not in leave:   # web research (2026-11-27)
         return None
     day = (now or datetime.now(timezone.utc)).date().isoformat()
     return queue.enqueue(conn, "brain.intelligence", {"mode": "desk", "day": day, **({} if live else {"test": True})},

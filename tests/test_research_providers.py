@@ -266,8 +266,13 @@ def test_monitor_is_queued_once_a_day_only_when_enabled(conn, policy):
 
 def test_monitor_runs_while_paused_only_with_the_owners_leave(conn, raw_policy):
     # owner 2026-11-25: on at $1/day during the build; a test job so the paused Brain worker claims it, in a research-
-    # batch the paused autoscaler admits (its video measurements need the finisher)
-    assert raw_policy.get("intelligence", "monitor", "enabled") is True
+    # batch the paused autoscaler admits (its video measurements need the finisher). Owner 2026-11-27: discontinued,
+    # so the shipped policy is off; the mechanism is tested with the switch, the monitor and the leave turned back on.
+    assert raw_policy.get("intelligence", "monitor", "enabled") is False
+    raw_policy = dataclasses.replace(raw_policy, body={**raw_policy.body, "intelligence": {
+        **raw_policy.body["intelligence"], "external": {"enabled": True},
+        "monitor": {**raw_policy.body["intelligence"]["monitor"], "enabled": True}},
+        "operations": {**raw_policy.body["operations"], "while_paused": ["research_monitor"]}})
     job = monitor.ensure_due(conn, raw_policy, now=NOW)
     row = conn.execute("SELECT payload, batch FROM jobs WHERE id = %s", (job,)).fetchone()
     assert row["payload"]["test"] is True and row["batch"].startswith("research-")
@@ -310,6 +315,7 @@ def test_monitor_mode_reads_only_selected_posts_and_never_rereads_unchanged_cont
 
 def test_mw_research_monitor_estimate_and_dry_run_queue_nothing(conn, policy, capsys, database_url, monkeypatch):
     from manyworlds import cli
+    monkeypatch.setattr("manyworlds.research.external.allowed", lambda p: True)   # dormant since 2026-11-27
     monkeypatch.setenv("DATABASE_URL", database_url)
     assert cli.main(["research", "monitor", "--estimate", "5000"]) == 0
     assert '"creators": 5000' in capsys.readouterr().out

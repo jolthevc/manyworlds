@@ -427,6 +427,7 @@ def test_the_estimate_adds_up_from_policy_prices(policy):
 
 def test_mw_research_pilot_dry_run_queues_nothing(conn, policy, capsys, database_url, monkeypatch):
     from manyworlds import cli
+    monkeypatch.setattr("manyworlds.research.external.allowed", lambda p: True)   # dormant since 2026-11-27
     monkeypatch.setenv("DATABASE_URL", database_url)
     rc = cli.main(["research", "pilot", "--hypothesis", "aspirational yet relatable night-out", "--usd", "16",
                    "--dry-run"])
@@ -456,6 +457,7 @@ def test_research_media_defaults_to_the_main_bucket_under_its_prefix(policy, mon
 def test_a_queued_pilot_is_test_work_so_a_paused_brain_worker_takes_it(conn, policy, capsys, database_url, monkeypatch):
     # 2026-11-25: the first pilot sat queued: while paused, workers claim only payload.test jobs.
     from manyworlds import cli
+    monkeypatch.setattr("manyworlds.research.external.allowed", lambda p: True)   # dormant since 2026-11-27
     monkeypatch.setenv("DATABASE_URL", database_url)
     assert cli.main(["research", "pilot", "--hypothesis", "aspirational yet relatable night-out", "--usd", "16"]) == 0
     job = conn.execute("SELECT payload FROM jobs WHERE kind = 'brain.intelligence'").fetchone()

@@ -2100,7 +2100,7 @@ creators:
 # while_paused: what the owner lets run on its own while paused (2026-11-25: research monitoring keeps learning during
 # the build, at intelligence.monitor.daily_usd); its jobs are in `research-` batches.
 operations: {mode: paused, test_batch_prefixes: [bench-, test-, research-],
-             while_paused: [research_loop, verify],   # research_monitor removed: owner 2026-11-27
+             while_paused: [research_desk, research_loop, verify],   # research_monitor removed: owner 2026-11-27
              test_overlay: {path: policy/test_overlay.yaml, batches: [test-breadth-]}}
 
 # What rented GPU machines (hosts we don't control) may hold (manyworlds.deploy.credentials).

@@ -180,6 +180,7 @@ def test_a_profile_not_found_pulls_no_posts(conn, policy, tmp_path):
 def test_resume_annotates_and_distills_a_batchs_stored_posts_without_pulling(conn, policy, tmp_path, capsys,
                                                                               database_url, monkeypatch):
     from manyworlds import cli
+    monkeypatch.setattr("manyworlds.research.external.allowed", lambda p: True)   # dormant since 2026-11-27
     agent = _agent(LocalStore(tmp_path / "objects"))
     pol = _small(policy)
     scout = _ctx(conn, pol, _scout_payload(handles=["instagram:mira.lou", "instagram:jo.bee"], creators=2,
