@@ -124,6 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
     cr = sub.add_parser("creator", help="show a creator's bible, anchors and jobs")
     cr.add_argument("creator")
     sub.add_parser("status", help="job counts, spend and where GPU money went (72 h)")
+    vf = sub.add_parser("verify", help="live end-to-end checks on real data (manyworlds.verify): did each stage really do its work")
+    vf.add_argument("--alert", action="store_true", help="also tell the owner about failing checks")
     ib = sub.add_parser("inbox", help="what needs the owner: alerts not yet marked done, pending approvals, requests")
     ib.add_argument("--done", nargs="*", type=int, metavar="ID", help="mark these alert ids done (no ids: all of them)")
     ib.add_argument("--type", help="with --done: only alerts of this type")
@@ -501,6 +503,13 @@ def main(argv: list[str] | None = None) -> int:
         return _performance(args, conn, pol)
     elif args.cmd == "policy":
         return _policy_overrides(args, conn, pol)
+    elif args.cmd == "verify":
+        from . import verify
+        got = verify.run(conn, pol)
+        if args.alert:
+            got["alerted"] = verify.alert(conn, pol, got)
+        _print(got)
+        return 1 if got["failing"] else 0
     elif args.cmd == "research":
         return _research(args, conn, pol)
     elif args.cmd in ("discover", "choose", "launch-creator", "anchors", "train-lora", "creator", "review", "plan", "profile", "produce", "trends"):

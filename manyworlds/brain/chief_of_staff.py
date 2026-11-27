@@ -47,6 +47,7 @@ def tick(conn, policy: Policy, *, now: datetime | None = None) -> dict:
     out["performance_calibration"] = {k: cal.get(k) for k in ("enabled", "judge", "reason") if cal.get(k)} | {
         "changed": len(cal.get("changed") or [])}
     out["research"] = research_tick(conn, policy, now)
+    out["verify"] = verify_tick(conn, policy, now)
     if out["expired_requests"]:
         notify.owner_event(conn, "requests_expired", payload={"n": out["expired_requests"]},
                            dedupe_key=f"requests_expired:{now:%Y-%m-%dT%H}")
@@ -102,3 +103,21 @@ def research_tick(conn, policy: Policy, now: datetime) -> dict:
     except Exception as e:  # noqa: BLE001
         out["gaps_error"] = f"{type(e).__name__}: {str(e)[:200]}"
     return out
+
+
+def verify_tick(conn, policy: Policy, now: datetime) -> dict:
+    """The live end-to-end checks (manyworlds.verify) every verify.every_hours; failing checks reach the owner."""
+    from .. import verify
+    from . import inquiry
+    every = float((policy.get("verify", default={}) or {}).get("every_hours", 24))
+    last = conn.execute("SELECT max(created_at) t FROM analysis_runs WHERE method = 'verify'").fetchone()["t"]
+    if last is not None and last > now - timedelta(hours=every):
+        return {"skipped": "ran recently"}
+    try:
+        with conn.transaction():
+            got = verify.run(conn, policy, now=now)
+            inquiry.record(conn, policy, requester="chief_of_staff", method="verify", spec={}, result=got)
+            alerted = verify.alert(conn, policy, got, now=now)
+        return {"failing": got["failing"], "alerted": alerted}
+    except Exception as e:  # noqa: BLE001 - the tick goes on
+        return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
