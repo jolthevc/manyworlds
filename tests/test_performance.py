@@ -417,9 +417,11 @@ def test_variety_prefers_a_frame_that_does_not_repeat_an_earlier_scene(conn, pol
     no_penalty = conn.execute("SELECT id FROM assets WHERE id = %s", (a,)).fetchone()
     assert no_penalty and _best_confirmed(conn, [str(first)])["id"] == _uris(conn, first)[0]
     # The producer's scene state chooses under the POLICY's library, not the default file (review 2026-11-26).
-    from manyworlds.production.steps import _scene_state
-    state, best = _scene_state(conn, [str(second)], _with(policy, observe={"variety_penalty": 0}))
-    assert state == "chosen" and best["id"] == a                         # no penalty there: the top score wins
+    from manyworlds.production import steps
+    state, best = steps._scene_state(conn, [str(second)], _with(policy, observe={"variety_penalty": 0}))
+    top = conn.execute(steps._CANDIDATES + " LIMIT 1", (steps.RANKED_GATES, steps.RANKED_GATES, [str(second)])).fetchone()
+    assert state == "chosen" and best["id"] == top["id"]                 # no penalty there: plain rank order
+    assert steps._scene_state(conn, [str(second)], policy)[1]["id"] == b  # the shipped library's penalty applies
 
 
 def test_the_clip_judge_observes_too(conn, policy, store, tmp_path):
