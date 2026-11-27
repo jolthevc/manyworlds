@@ -135,9 +135,9 @@ def alert(conn, policy: Policy, result: dict, *, now: datetime | None = None) ->
     n = 0
     for name in result.get("failing") or []:
         c = result["checks"][name]
-        notify.owner_event(conn, "verification_failed", subject={"check": name},
-                           payload={"count": c.get("count"), "severity": c.get("severity"),
-                                    "examples": c.get("examples"), "error": c.get("error")},
-                           dedupe_key=f"verification_failed:{name}:{day}")
-        n += 1
+        sent = notify.owner_event(conn, "verification_failed", subject={"check": name},
+                                  payload={"count": c.get("count"), "severity": c.get("severity"),
+                                           "examples": c.get("examples"), "error": c.get("error")},
+                                  dedupe_key=f"verification_failed:{name}:{day}")
+        n += 1 if sent is not None else 0
     return n
