@@ -1909,6 +1909,7 @@ intelligence:
   # at fdr_q over the run's whole declared family; only what passes is retested on holdout (BH over those again, same
   # direction) and only holdout-confirmed results may back a `correlation` card.
   recipes:
+    own_outcome: [engagement, d7]  # what our own posts are analysed on while third-party research is off (owner 2026-11-27)
     min_ratio: 0.05                # an over_own_median below this (near-zero engagement) is clipped here before the log
     min_creators: 6                # creators with eligible posts (metric present, fields known) for a test to run
     min_posts_per_arm: 3           # posts in each arm (each cell of an interaction) within one creator x medium stratum
@@ -2137,6 +2138,7 @@ verify:
   media_kinds: [image., comfy., talk., voice.speak, hosted.video, finish.video, music.song]
   comfy_kinds: [comfy., talk.infinitetalk]
   sync_min_margin_report: 0.1
+  analysis_bookkeeping: [spine_sync, verify]   # trial-ledger methods that are bookkeeping, not analyses of posts
   spend_min_usd: 0.02
   outputs:
     research:gold: "SELECT count(*) n FROM attribute_values WHERE purpose IN ('gold', 'repeat') AND created_at >= %s"

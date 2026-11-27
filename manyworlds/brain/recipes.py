@@ -154,15 +154,31 @@ def prepare(raw: list[dict], policy) -> list[Row]:
     return out
 
 
-def load(conn, policy, *, creator_ids=None, outcome: tuple[str, str] | None = None) -> list[Row]:
-    """The annotated research posts as rows (through manyworlds.brain.evidence, real mode). `outcome` (metric,
-    horizon) analyses that spine outcome instead of over_own_median. Fields the latest gold run flagged unreliable
-    (manyworlds.research.gold) are left out of every row, so no test rests on an attribute we can't trust."""
+def source(policy) -> str:
+    """Which posts the analysis reads: `own` (our published posts and their first-party outcomes) while third-party
+    research is discontinued (intelligence.external.enabled false, owner 2026-11-27), else `external`."""
+    from ..research import external
+    return "external" if external.allowed(policy) else "own"
+
+
+def load(conn, policy, *, creator_ids=None, outcome: tuple[str, str] | None = None,
+         source_: str | None = None) -> list[Row]:
+    """The annotated posts as rows (through manyworlds.brain.evidence, real mode): research reference posts
+    (`external`) or our own (`own`, the default while external research is off; outcome defaults to
+    intelligence.recipes.own_outcome). `outcome` (metric, horizon) analyses that spine outcome instead of
+    over_own_median. Fields the latest gold run flagged unreliable (manyworlds.research.gold) are left out of every
+    row, so no test rests on an attribute we can't trust."""
     from ..research import gold
     from . import evidence
-    rows = prepare(evidence.annotated_posts(conn, mode="real", schemas=ann.READ_SCHEMAS, creator_ids=creator_ids,
-                                            outcome=outcome), policy)
-    return drop_fields(rows, gold.unreliable(conn))
+    src = source_ or source(policy)
+    if src == "own":
+        key = outcome or tuple(cfg(policy).get("own_outcome") or ("engagement", "d7"))
+        raw = evidence.own_annotated_posts(conn, mode="real", schemas=ann.READ_SCHEMAS, outcome=key,
+                                           creator_ids=creator_ids)
+    else:
+        raw = evidence.annotated_posts(conn, mode="real", schemas=ann.READ_SCHEMAS, creator_ids=creator_ids,
+                                       outcome=outcome)
+    return drop_fields(prepare(raw, policy), gold.unreliable(conn))
 
 
 def drop_fields(rows: list[Row], fields: set[str]) -> list[Row]:

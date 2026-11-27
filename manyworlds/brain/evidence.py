@@ -310,6 +310,37 @@ def annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], c
     return out
 
 
+def own_annotated_posts(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], outcome: tuple[str, str],
+                        creator_ids=None) -> list[dict]:
+    """Our own posts in the shape annotated_posts returns, for the recipe analysis on first-party content (owner
+    2026-11-27: third-party research discontinued). One row per post (its first coded asset); `over_own_median` is
+    exp of the post's normalised spine outcome (metric, horizon), None until the post has one (real, published,
+    never simulated: the spine takes own outcomes only from non-simulated insights). `real` leaves sandbox creators
+    out, as own_annotations does."""
+    reads = own_annotations(conn, mode=mode, schemas=schemas, creator_ids=creator_ids)
+    import math
+    got = {r["ref_id"]: math.exp(float(r["normalized"])) for r in conn.execute(
+        """SELECT u.ref_id, o.normalized FROM outcomes o JOIN content_units u ON u.id = o.unit_id
+           WHERE u.source = 'own' AND u.ref_table = 'posts' AND u.level = 'post' AND o.metric = %s AND o.horizon = %s
+             AND o.normalized IS NOT NULL""", (str(outcome[0]), str(outcome[1]))).fetchall()}
+    meta = {str(r["id"]): r for r in conn.execute(
+        "SELECT p.id, p.published_at, p.created_at FROM posts p WHERE p.id = ANY(%s::uuid[])",
+        (sorted({r["post_id"] for r in reads}),)).fetchall()} if reads else {}
+    out, seen = [], set()
+    for r in reads:
+        if r["post_id"] in seen:
+            continue
+        seen.add(r["post_id"])
+        m = meta.get(r["post_id"]) or {}
+        out.append({"post_id": r["post_id"], "creator_id": r["creator_id"], "platform": "own",
+                    "media_type": "video" if str(r.get("format") or "").endswith(("video", "clip", "edit")) else "photo",
+                    "posted_at": m.get("published_at") or m.get("created_at"), "fetched_at": None,
+                    "schema": r["schema"], "observed": r["observed"], "over_own_median": got.get(r["post_id"]),
+                    "metrics": {"outcome": 1} if r["post_id"] in got else {}, "archetype": None,
+                    "followers": None, "proposition": None, "vertical": None})
+    return out
+
+
 def own_annotations(conn, *, mode: Mode, schemas: tuple[str, ...] | list[str], creator_ids=None) -> list[dict]:
     """Our own accepted assets coded in the research vocabulary (reference_annotations source own; manyworlds.review
     .own_annotation), joined with what was directed and achieved and what it cost, so own and external posts compare

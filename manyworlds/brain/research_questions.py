@@ -337,8 +337,17 @@ def _answer_data(conn, policy, q, spec: dict, cache: dict) -> dict:
         cache[key] = recipes.load(conn, policy, outcome=key)
     rows = recipes.select(cache[key], spec.get("filters"))
     family = f"question:{q['id']}"
-    data: dict = {"outcome": list(key) if key else ["over_own_median", "latest"]}
-    if spec.get("tests") or spec.get("screen"):
+    src = recipes.source(policy)
+    data: dict = {"outcome": list(key) if key else ["over_own_median", "latest"], "source": src, "posts": len(rows)}
+    if not rows:
+        # nothing to analyse: said so, never an analysis over zero rows (the question ends unanswerable)
+        data["no_data"] = f"no {src} posts match"
+        return data
+    with_y = any(r.y is not None for r in rows)
+    if (spec.get("tests") or spec.get("screen")) and not with_y:
+        data["no_data"] = (f"{len(rows)} {src} posts match, none with this outcome yet"
+                           + (" (own outcomes arrive once posts are published)" if src == "own" else ""))
+    if (spec.get("tests") or spec.get("screen")) and with_y:
         data.update(recipes.answer(cache[key], policy, spec))
         inquiry.record(conn, policy, requester=str(q["requester"]), method="recipes", spec=spec, result=data,
                        question_id=q["id"], family=family, family_size=int(data.get("family_size") or 1),
@@ -349,6 +358,9 @@ def _answer_data(conn, policy, q, spec: dict, cache: dict) -> dict:
     looks = []
     own = None
     for e in spec.get("explore") or []:
+        if e["method"] == "contrast_sources" and src == "own":
+            looks.append({"method": e["method"], "skipped": "needs external posts to compare ours with (discontinued)"})
+            continue
         if e["method"] == "contrast_sources" and own is None:
             own = recipes.own_rows(conn, policy)
         res = inquiry.run(e["method"], rows, e, own_rows=own)
@@ -414,6 +426,11 @@ def file_gaps(conn, policy) -> dict:
     if not g.get("enabled"):
         return {"filed": [], "skipped": "intelligence.questions.gaps.enabled is false"}
     rows = [r for r in recipes.load(conn, policy) if r.y is not None]
+    src = recipes.source(policy)
+    if len(rows) < int(g.get("min_posts", 40)):
+        # too few posts with an outcome to file anything: reported, so an empty table never passes as "no gaps"
+        return {"filed": [], "posts": len(rows), "source": src,
+                "skipped": f"{len(rows)} {src} posts with an outcome, gaps need {int(g.get('min_posts', 40))}"}
     recent = conn.execute(
         "SELECT spec FROM research_questions WHERE status IN ('queued', 'answered') "
         "AND created_at > now() - make_interval(days => %s)", (int(g.get("retest_days", 30)),)).fetchall()

@@ -295,8 +295,8 @@ def test_the_translator_drops_unknown_names_and_its_spec_is_stored_before_testin
             "medium hologram", "interaction test without enough known attributes"} <= dropped
     assert [c["role"] for c in llm.calls] == [policy.get("intelligence", "questions", "role")]
     assert llm.calls[0]["agent"] == rq.AGENT and "garments=blazer" in llm.calls[0]["content"]
-    assert row["status"] == "answered"                               # no data yet: the test is insufficient
-    assert row["result"]["data"]["results"][0]["stage"] == "insufficient"
+    assert row["status"] == "unanswerable"                           # no data: said so, no tests over zero rows
+    assert row["result"]["data"]["no_data"] and row["result"]["data"]["posts"] == 0
 
 
 def test_a_question_needing_a_call_waits_when_the_day_is_spent(conn, policy):

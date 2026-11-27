@@ -13,6 +13,8 @@ an annotation job. Each check here asks the database whether a stage really did 
     spend_without_output    research spend in the window with nothing written by that agent (a stage that pays and
                             produces nothing)
     unattributed_gpu        finished attempts that used GPU seconds with no cost entry for their job
+    empty_analyses          analyses recorded in the trial ledger that ran on zero posts (an empty table analysed as if
+                            it said something; since 2026-11-27 the third-party tables are empty by design)
 
 `run(conn, policy)` returns {check: {count, examples, severity}}; `alert(conn, policy, out)` tells the owner once a
 day per failing check (notify.owner_event). `mw verify` prints it; the chief of staff runs it daily. Thresholds and
@@ -104,13 +106,21 @@ def unattributed_gpu(conn, policy: Policy, since) -> list[dict]:
                           AND NOT EXISTS (SELECT 1 FROM cost_entries c WHERE c.job_id = a.job_id) LIMIT 50""", (since,))
 
 
+def empty_analyses(conn, policy: Policy, since) -> list[dict]:
+    skip = list(cfg(policy).get("analysis_bookkeeping") or ["spine_sync", "verify"])
+    return _rows(conn, """SELECT id, requester, method, question_id FROM analysis_runs
+                          WHERE created_at >= %s AND NOT (method = ANY(%s)) AND data ? 'posts'
+                          AND (data->>'posts')::int = 0 ORDER BY created_at DESC LIMIT 50""", (since, skip))
+
+
 CHECKS = {"done_without_output": (done_without_output, "error"),
           "output_is_input": (output_is_input, "error"),
           "render_without_provenance": (render_without_provenance, "warning"),
           "sync_pass_near_chance": (sync_pass_near_chance, "warning"),
           "empty_reads": (empty_reads, "error"),
           "spend_without_output": (spend_without_output, "error"),
-          "unattributed_gpu": (unattributed_gpu, "warning")}
+          "unattributed_gpu": (unattributed_gpu, "warning"),
+          "empty_analyses": (empty_analyses, "error")}
 
 
 def run(conn, policy: Policy, *, now: datetime | None = None) -> dict:
