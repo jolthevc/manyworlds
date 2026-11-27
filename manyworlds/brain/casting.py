@@ -110,6 +110,8 @@ class Concept(BaseModel):
     brand_core: dossier.BrandCore
     commercial_categories: list[str] = Field(description="2-5 keys from the commercial registry")
     content_mix: ContentMix = Field(description="share of posts by format; photography first")
+    core_formats: list[str] = Field(default_factory=list, description="the 1-3 formats that directly deliver her "
+                                    "appeal (her creator-content fit's core); a personality need not talk to camera")
     production_risks: list[str] = Field(default_factory=list, description="what production may struggle with")
 
 
@@ -299,9 +301,12 @@ def score(conn, policy: Policy, concepts: list[dict], judged: dict, references: 
                 why_not.append(f"the judge gave no {k} score")
             reasons[k] = v.get("why", "")
         code = {"feasibility": capability_card.feasibility(card, c.get("content_mix")),
-                "commercial": commerce.mean_index(conn, policy, c.get("commercial_categories"))}
+                "commercial": commerce.mean_index(conn, policy, c.get("commercial_categories")),
+                "delivery": capability_card.delivery(card, c.get("core_formats"))}
         if code["feasibility"] is not None:
             scores["feasibility"] = min(scores["feasibility"], code["feasibility"])
+        if code["delivery"] is not None:   # her appeal rests on her core formats: as feasible as the weakest
+            scores["feasibility"] = min(scores["feasibility"], code["delivery"]["score"])
         if code["commercial"] is not None:
             scores["commercial"] = round((scores["commercial"] + code["commercial"]) / 2, 2)
         closest = max(((dossier.overlap(_pseudo_profile(c), sb["profile"]), sb["handle"]) for sb in sibs),

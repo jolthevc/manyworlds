@@ -135,6 +135,16 @@ class Series(BaseModel):
     why_it_works: str = Field(description="what it gives the audience and adds to her brand")
 
 
+class FormatFit(BaseModel):
+    format: str = Field(description="a format from the list given (made now or later)")
+    tier: str = Field(description="core (directly delivers her main proposition), complementary (reinforces or deepens "
+                                  "it), experimental (might unlock growth: tried in exploration slots) or deferred "
+                                  "(not worth it now, creatively or economically)")
+    why: str = Field(description="why this tier for her, in one line: her appeal, her audience, the economics")
+    revisit_when: str = Field(default="", description="what would change the tier (evidence, maturity, a new "
+                                                     "capability); empty for core")
+
+
 class JobMix(BaseModel):
     attention: float = Field(description="posts made to stop strangers")
     follow: float = Field(description="posts that turn viewers into followers")
@@ -151,6 +161,8 @@ class ContentSystem(BaseModel):
     idea_engines: list[str] = Field(default_factory=list, description="what in her life keeps generating ideas "
                                     "without effort: rituals, places, the calendar, ongoing goals, recurring people")
     job_mix: JobMix | None = Field(default=None, description="share of posts doing each job; sums to 1")
+    format_fit: list[FormatFit] = Field(default_factory=list, description="her creator-content fit: every format "
+                                        "from the list with its tier; no format is required of every creator")
 
 
 class Presentation(BaseModel):
@@ -317,6 +329,34 @@ class PerformanceProfile(BaseModel):
 
 
 ARCS = ("evergreen", "seasonal", "episodic", "serial")
+FIT_TIERS = ("core", "complementary", "experimental", "deferred")
+
+
+def fit_formats_known(policy: Policy) -> list[str]:
+    """Formats a creator's fit may name: what the planner makes now and the spine's wider registry (podcasts, long
+    video...: modular capabilities, deferred or experimental until production makes them)."""
+    planned = list(((policy.get("planner", default={}) or {}).get("formats") or {}).keys())
+    wider = list(policy.get("intelligence", "spine", "formats", default=[]) or [])
+    return list(dict.fromkeys(planned + [f for f in wider if f != "other"] + ["podcast"]))
+
+
+def format_fit(prof: dict | None) -> dict[str, str]:
+    """{format: tier} from the creator's content system; {} when she has none (every format open, as before)."""
+    return {x["format"]: x["tier"] for x in ((prof or {}).get("content_system") or {}).get("format_fit") or []
+            if x.get("format") and x.get("tier") in FIT_TIERS}
+
+
+def fit_text(prof: dict | None) -> str:
+    """Her format fit as one planning line, or empty."""
+    fit = format_fit(prof)
+    if not fit:
+        return ""
+    by = {t: [f for f, x in fit.items() if x == t] for t in FIT_TIERS}
+    parts = [f"core (what delivers her appeal): {', '.join(by['core']) or '-'}",
+             f"complementary: {', '.join(by['complementary']) or '-'}",
+             f"experimental (only in adjacent or novel exploration slots): {', '.join(by['experimental']) or '-'}",
+             f"deferred (never now): {', '.join(by['deferred']) or '-'}"]
+    return "Her creator-content fit: " + "; ".join(parts) + "."
 
 SCHEMAS = {"archetypes": ArchetypePick, "positioning": Positioning, "audience_insight": AudienceInsight,
            "story": Story, "content_system": ContentSystem, "brand_core": BrandCore, "brand_world": BrandWorld,
@@ -339,10 +379,14 @@ ASK = {
                       "makes. Give each series the proposition it serves, its job (attention: stops strangers; follow: "
                       "turns viewers into followers; return: brings followers back; affinity: deepens the bond) and its "
                       "arc (evergreen, seasonal, episodic or serial); a healthy system has every job covered. Name the "
-                      "idea engines in her life that keep generating posts, and the share of posts per job. Series serve her positioning and audience, not trends. Allocate the mix by expected "
-                      "return per dollar using the capability card's cost and reliability: photo-led at launch, with "
-                      "motion or talking only where her archetype needs it or evidence shows it buys more growth or "
-                      "commercial value per dollar.",
+                      "idea engines in her life that keep generating posts, and the share of posts per job. Series serve her positioning and audience, not trends. Decide her creator-content "
+                      "fit first: every format listed gets a tier: core (directly delivers her main proposition), "
+                      "complementary (reinforces it), experimental (might unlock growth; tried in exploration slots) "
+                      "or deferred (not worth it now). No format is required of every creator: a personality whose "
+                      "appeal is photography, styling and presence may never need to talk to camera, and talking "
+                      "could cost her mystique; an entertainer or authority may need expressive video from day one. "
+                      "Then set the mix from the fit and the expected return per dollar (the capability card's cost "
+                      "and reliability); deferred formats get none.",
     "brand_core": "Write the core of her Talent & Brand Bible: why she exists as talent, the desire she embodies, what "
                   "she represents, why people follow, how her value compounds over years, her values, ethos, "
                   "aspirations, personality, the desirable traits of her look, her relationship with her audience and "
@@ -517,6 +561,14 @@ def clean(policy: Policy, section: str, out: BaseModel, prof: dict) -> dict:
         mix = {k: max(float(v or 0), 0.0) for k, v in d["mix"].items()}
         total = sum(mix.values())
         d["mix"] = {k: round(v / total, 3) for k, v in mix.items()} if total else mix
+        known_formats = set(fit_formats_known(policy))
+        fit, seen = [], set()
+        for x in d.get("format_fit") or []:
+            fmt, tier = str(x.get("format") or "").strip().lower(), str(x.get("tier") or "").strip().lower()
+            if fmt in known_formats and tier in FIT_TIERS and fmt not in seen:
+                fit.append({**x, "format": fmt, "tier": tier})
+                seen.add(fmt)
+        d["format_fit"] = fit
         jm = d.get("job_mix") or {}
         jm = {"attention": jm.get("attention"), "follow": jm.get("follow"), "return": jm.get("bring_back"),
               "affinity": jm.get("affinity")}
@@ -615,6 +667,8 @@ def section_prompt(conn, policy: Policy, creator_id, section: str, prof: dict, *
         usable, _ = catalogue(policy)
         parts.append(f"Capabilities the studio renders now (use only these ids, group.name): "
                      f"{json.dumps({f'{g}.{n}': e.get('description', '') for g, es in usable.items() for n, e in es.items()})}")
+        parts.append(f"Formats for her fit (made now: {list(((policy.get('planner', default={}) or {}).get('formats') or {}).keys())}; "
+                     f"all she may name, incl. later ones): {fit_formats_known(policy)}")
     if section in BRAND_SECTIONS:
         parts.append(strategy_text(policy))
     if section == "performance":

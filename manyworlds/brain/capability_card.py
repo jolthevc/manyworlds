@@ -166,6 +166,18 @@ def feasibility(card_: dict, mix: dict | None) -> float | None:
     return round(10 * sum(s / total * reliability(card_, f) for f, s in shares.items()), 2)
 
 
+def delivery(card_: dict, core_formats: list[str] | None) -> dict | None:
+    """Can production deliver a personality's appeal (owner 2026-11-26: creator-content fit informs casting): her
+    core formats' reliability and $ per accepted post. `score` 0-10 is the weakest core format's reliability (her
+    appeal is only as deliverable as the format it rests on); None without core formats."""
+    fmts = [str(f) for f in core_formats or [] if f]
+    if not fmts:
+        return None
+    by = {f: {"reliability": reliability(card_, f), "usd_per_accepted": (card_.get(f) or {}).get("usd_per_accepted"),
+              "status": (card_.get(f) or {}).get("status")} for f in fmts}
+    return {"score": round(10 * min(v["reliability"] for v in by.values()), 2), "by_format": by}
+
+
 def brief(card_: dict) -> str:
     """One compact line per format for a prompt."""
     lines = []

@@ -145,8 +145,8 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
     dials = instagram.ramp_dials(conn, policy, creator_id, dials,
                                  datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
     dials = proposals.tier_dials(policy, proposals.tier_of(conn, policy, creator_id), dials)   # within her tier
-    counts = planner._counts(policy, dials, days)
-    formats = planner._formats(policy)
+    counts = planner._counts(policy, dials, days, prof)
+    formats = planner._formats(policy, prof)
     who = {k: prof[k] for k in planner.ANALYSIS_FIELDS if k in prof} if prof else \
         {k: c["bible"].get(k) for k in planner.BIBLE_FIELDS if c["bible"].get(k)}
     mode = evidence.mode_for(conn, creator_id)
@@ -248,8 +248,9 @@ def _prompt(ctx: AgentContext, creator_id, start: date, days: int) -> tuple[str,
         f"weather, food and things to do follow the season). "
         f"Plan about {counts['total']} posts and Stories over {days} days (day 0 to {days - 1}): "
         f"{counts['per_platform']} per platform; about {counts['videos']} videos "
-        f"({planner._video_formats(policy)}), each in one of the creator's video series. "
+        f"({planner._video_formats(policy, prof)}), each in one of the creator's video series. "
         f"Formats and images per post: { {f: f'{lo}-{hi} images' for f, (lo, hi) in formats.items()} }. "
+        f"{dossier.fit_text(prof)} "
         f"What each format is: {json.dumps({f: n for f, n in notes.items() if f in formats})}. "
         f"{capability_text}{staging_text}{flavor_text}{move_text}"
         f"Exploration: of the {counts['total']} ideas, exactly {t['refine']} refine (build on what works), "

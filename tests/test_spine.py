@@ -287,3 +287,66 @@ def test_reference_creators_are_coded_for_why_people_follow_them(conn, policy):
         "WHERE u.ref_id = %s AND u.level = 'creator'", (str(c),)).fetchall()}
     assert {("proposition", "aspirational_icon"), ("proposition", "other:quiet_rebel"), ("vertical", "fashion")} <= vals
     assert propositions.candidates(conn)[0]["value"] == "other:quiet_rebel"
+
+
+# --- creator-content fit (owner 2026-11-26): no format is required of every creator ----------------------------------
+FIT_PROF = {"content_system": {"mix": {"photo": 0.6, "carousel": 0.4, "story": 0.0, "video": 0.0},
+                               "format_fit": [{"format": "photo", "tier": "core"}, {"format": "carousel", "tier": "core"},
+                                              {"format": "story_clip", "tier": "experimental"},
+                                              {"format": "talking_video", "tier": "deferred"},
+                                              {"format": "narrated_edit", "tier": "deferred"}]}}
+
+
+def test_a_deferred_format_leaves_her_plan_and_her_videos_follow_her_own_mix(policy):
+    from manyworlds.brain import planner
+    every = planner._formats(policy)
+    mine = planner._formats(policy, FIT_PROF)
+    assert "talking_video" not in mine and "narrated_edit" not in mine
+    assert set(mine) == set(every) - {"talking_video", "narrated_edit"}
+    dials = {"posts_per_day": {"instagram": 2}, "images_per_video": 3}
+    assert planner._counts(policy, dials, 5, FIT_PROF)["videos"] == 0          # her mix: no video share
+    talker = {"content_system": {"mix": {"photo": 0.3, "video": 0.7}, "format_fit": [
+        {"format": f, "tier": "core"} for f in planner._video_formats(policy)]}}
+    assert planner._counts(policy, dials, 5, talker)["videos"] == 7            # 70% of 10, not the 3:1 ratio
+    assert planner._counts(policy, dials, 5, None)["videos"] == planner._counts(policy, dials, 5)["videos"]
+
+
+def test_the_fit_is_cleaned_and_shown_to_the_showrunner(policy):
+    from manyworlds.creator import dossier
+    cs = dossier.ContentSystem(mix={"photo": 1, "carousel": 0, "story": 0, "video": 0}, talk_share=0, series=[],
+                               hooks=[], never_makes=[],
+                               format_fit=[{"format": "Photo", "tier": "core", "why": "presence"},
+                                           {"format": "podcast", "tier": "deferred", "why": "mystique",
+                                            "revisit_when": "a voice audience asks"},
+                                           {"format": "hologram", "tier": "core", "why": "x"},
+                                           {"format": "photo", "tier": "deferred", "why": "dup"}])
+    fit = dossier.clean(policy, "content_system", cs, {})["content_system"]["format_fit"]
+    assert [(x["format"], x["tier"]) for x in fit] == [("photo", "core"), ("podcast", "deferred")]
+    text = dossier.fit_text({"content_system": {"format_fit": fit}})
+    assert "core (what delivers her appeal): photo" in text and "deferred (never now): podcast" in text
+    assert dossier.fit_text({}) == ""
+
+
+def test_casting_prices_the_formats_her_appeal_rests_on():
+    from manyworlds.brain import capability_card
+    card = {"photo": {"reliability": 0.9, "usd_per_accepted": 0.02}, "talking_video": {"reliability": 0.3}}
+    got = capability_card.delivery(card, ["photo", "talking_video"])
+    assert got["score"] == 3.0 and got["by_format"]["photo"]["usd_per_accepted"] == 0.02
+    assert capability_card.delivery(card, ["photo"])["score"] == 9.0 and capability_card.delivery(card, []) is None
+
+
+def test_format_fit_and_evolution_read_formats_by_proposition_and_over_time():
+    rows = []
+    for c in range(4):
+        for i in range(8):
+            month = f"2026-0{1 + i // 4}"
+            medium = "photo" if i < 4 else "video"            # every creator moved from photos to video
+            y = 0.0 if medium == "photo" else 0.5             # and did better afterwards
+            r = _row(c * 10 + i, f"c{c}", y, set(), month=month)
+            r.medium, r.context = medium, {"medium": medium, "month": month, "proposition": "entertainer"}
+            rows.append(r)
+    fit = inquiry.format_fit(rows)
+    assert fit["groups"]["entertainer"]["video"]["median_x_own_median"] > fit["groups"]["entertainer"]["photo"][
+        "median_x_own_median"]
+    ev = inquiry.evolution(rows)
+    assert ev["shifts"]["toward_video"]["creators"] == 4 and ev["shifts"]["toward_video"]["median_outcome_change_log"] > 0

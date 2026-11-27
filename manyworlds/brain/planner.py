@@ -88,16 +88,19 @@ def _cfg(policy: Policy) -> dict:
     return policy.get("planner", default={})
 
 
-def _formats(policy: Policy) -> dict:
+def _formats(policy: Policy, prof: dict | None = None) -> dict:
     """Formats the planner may use: its own list, limited to what production makes now, so no
-    post waits for a capability that doesn't exist yet (story clips until video is verified)."""
+    post waits for a capability that doesn't exist yet (story clips until video is verified); for a creator with a
+    creator-content fit (dossier content_system.format_fit, owner 2026-11-26), without the formats it defers."""
     planned = _cfg(policy).get("formats", {"photo": [1, 1]})
     made = policy.get("production", "formats", default=None)
-    return {f: v for f, v in planned.items() if made is None or f in made}
+    from ..creator.dossier import format_fit
+    deferred = {f for f, t in format_fit(prof).items() if t == "deferred"}
+    return {f: v for f, v in planned.items() if (made is None or f in made) and f not in deferred}
 
 
-def _video_formats(policy: Policy) -> list[str]:
-    return [f for f in _cfg(policy).get("video_formats", []) if f in _formats(policy)]
+def _video_formats(policy: Policy, prof: dict | None = None) -> list[str]:
+    return [f for f in _cfg(policy).get("video_formats", []) if f in _formats(policy, prof)]
 
 
 def caption_issues(policy: Policy, text: str) -> list[str]:
@@ -217,11 +220,21 @@ def _thesis(conn, creator_id) -> dict:
     return {k: row["body"].get(k) for k in ("archetype", "audience", "format_mix")} if row else {}
 
 
-def _counts(policy: Policy, dials: dict, days: int) -> dict:
-    """Posts per platform over the period, and how many of them are videos."""
+def _counts(policy: Policy, dials: dict, days: int, prof: dict | None = None) -> dict:
+    """Posts per platform over the period, and how many of them are videos. A creator with a creator-content fit
+    gets her own video share: her content system's mix (none when every video format is deferred), never the
+    portfolio-wide images_per_video ratio, which stays only for creators without a fit."""
     per = {p: int(round(float(n) * days)) for p, n in (dials.get("posts_per_day") or {}).items()}
     total = sum(per.values())
-    videos = int(math.floor(total / (float(dials.get("images_per_video", 3)) + 1))) if _video_formats(policy) else 0
+    from ..creator.dossier import format_fit
+    vids = _video_formats(policy, prof)
+    share = (((prof or {}).get("content_system") or {}).get("mix") or {}).get("video")
+    if not vids:
+        videos = 0
+    elif format_fit(prof) and share is not None:
+        videos = int(round(total * max(0.0, min(float(share), 1.0))))
+    else:
+        videos = int(math.floor(total / (float(dials.get("images_per_video", 3)) + 1)))
     return {"per_platform": per, "total": total, "videos": videos}
 
 
@@ -264,7 +277,7 @@ def validate(policy: Policy, p, *, platforms: list[str], days: int, prof: dict |
              hashtags_max: dict) -> tuple:
     """Keep a planned post or idea only if production can make it and it reads like the creator:
     (the cleaned item, "") or (None, why it was dropped). Shared by the planner and the showrunner."""
-    formats = _formats(policy)
+    formats = _formats(policy, prof)
     if p.format not in formats:
         return None, f"format {p.format}"
     if p.platform not in platforms:
@@ -304,14 +317,14 @@ def plan_period(conn, policy: Policy, llm: StructuredLLM, creator_id, *, start: 
     c = conn.execute("SELECT handle, bible FROM creators WHERE id = %s", (creator_id,)).fetchone()
     scope = policy.get("scope", default={})
     platforms = list(scope.get("platforms") or ["instagram"])
-    formats = _formats(policy)
     cur = profile_mod.current(conn, creator_id)
     version, prof = cur if cur else (None, None)
+    formats = _formats(policy, prof)
     dials = (prof or {}).get("dials") or policy.get("creators", "dials_default", default={})
     from ..publish import instagram
     dials = instagram.ramp_dials(conn, policy, creator_id, dials,
                                  datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
-    counts = _counts(policy, dials, days)
+    counts = _counts(policy, dials, days, prof)
     hashtags_max = dials.get("hashtags_max") or {}
     if prof:
         who = {k: prof[k] for k in ANALYSIS_FIELDS if k in prof}

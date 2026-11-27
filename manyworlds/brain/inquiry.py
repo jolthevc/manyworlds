@@ -32,7 +32,7 @@ from psycopg.types.json import Jsonb
 
 from . import recipes
 
-METHODS = ("prevalence", "contrast_sources", "outliers", "trend", "groups")
+METHODS = ("prevalence", "contrast_sources", "outliers", "trend", "groups", "format_fit", "evolution")
 VERSION = "inquiry-v1"
 
 
@@ -161,6 +161,57 @@ def groups(rows: list[recipes.Row], by: str) -> dict:
             "posts": len(rs), "creators": len({r.creator_id for r in rs})} for g, rs in sorted(gs.items())}}
 
 
+def format_fit(rows: list[recipes.Row], by: str = "proposition", *, min_creators: int = 3) -> dict:
+    """Which formats carry which creators (owner 2026-11-26, creator-content fit): within each group of a creator-level
+    context (proposition by default), each medium's share of posts and its posts' median outcome over their own
+    creator's median. A medium a group's creators rarely use, or that underperforms their own median, is a
+    hypothesis that it doesn't fit them; never a rule (public posts, correlation, current window only)."""
+    groups: dict = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        if r.y is not None:
+            groups[str(_by(r, by))][r.medium].append(r)
+    out = {}
+    for g, media in sorted(groups.items()):
+        total = sum(len(v) for v in media.values())
+        out[g] = {m: {"share": round(len(rs) / total, 3), "posts": len(rs), "creators": len({r.creator_id for r in rs}),
+                      "median_x_own_median": round(math.exp(statistics.median([r.y for r in rs])), 3)}
+                  for m, rs in sorted(media.items()) if len({r.creator_id for r in rs}) >= min_creators}
+    return {"method": "format_fit", "by": by, "groups": out}
+
+
+def evolution(rows: list[recipes.Row], *, min_posts: int = 6) -> dict:
+    """How creators' format strategies change over time (owner 2026-11-26), as far as the posts held reach back: per
+    creator, each medium's share in the earlier and the later half of their posts by month, and the outcome in each
+    half; then, across creators, whether those who moved toward a medium did better afterwards than before. A lead for
+    questions, not a finding: the window is what was collected, usually months, never a career."""
+    by_creator: dict = defaultdict(list)
+    for r in rows:
+        if r.y is not None and r.context.get("month"):
+            by_creator[r.creator_id].append(r)
+    shifts: dict = defaultdict(list)
+    creators = {}
+    for cid, rs in by_creator.items():
+        if len(rs) < min_posts:
+            continue
+        rs = sorted(rs, key=lambda r: r.context["month"])
+        half = len(rs) // 2
+        early, late = rs[:half], rs[half:]
+        media = sorted({r.medium for r in rs})
+        share = lambda part, m: sum(r.medium == m for r in part) / len(part)   # noqa: E731
+        moved = {m: round(share(late, m) - share(early, m), 3) for m in media}
+        gain = round(statistics.median([r.y for r in late]) - statistics.median([r.y for r in early]), 4)
+        creators[cid] = {"posts": len(rs), "from": early[0].context["month"], "to": late[-1].context["month"],
+                         "share_change": moved, "outcome_change_log": gain}
+        for m, d in moved.items():
+            if abs(d) >= 0.2:
+                shifts[f"toward_{m}" if d > 0 else f"away_from_{m}"].append(gain)
+    return {"method": "evolution", "creators": creators,
+            "shifts": {k: {"creators": len(v), "median_outcome_change_log": round(statistics.median(v), 4)}
+                       for k, v in sorted(shifts.items())},
+            "note": "outcomes are each post over its creator's own median, so a change is relative to the creator; "
+                    "who chose to shift is not random (selection), so read it as a lead"}
+
+
 def run(method: str, rows: list[recipes.Row], args: dict, *, own_rows: list[recipes.Row] | None = None) -> dict:
     if method == "prevalence":
         return prevalence(rows, str(args["attr"]), args.get("by"))
@@ -172,6 +223,10 @@ def run(method: str, rows: list[recipes.Row], args: dict, *, own_rows: list[reci
         return trend(rows, str(args["attr"]))
     if method == "groups":
         return groups(rows, str(args.get("by") or "medium"))
+    if method == "format_fit":
+        return format_fit(rows, str(args.get("by") or "proposition"))
+    if method == "evolution":
+        return evolution(rows)
     raise ValueError(f"unknown method {method!r}")
 
 
