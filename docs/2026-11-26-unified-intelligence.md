@@ -380,3 +380,42 @@ Missing:
    4. Then I set `intelligence.pegasus.enabled` and `training_opt_out_confirmed` (both off now).
 4. **Spot checks**, optional but valuable: label a few gold items when asked (`mw research spot-check`). Your eye is one of the coders the agreement report compares.
 5. Still open from before: R2 rotation, infrastructure invoice figures, `NTFY_TOPIC`, `MW_HASH_SALT`.
+
+## 13. Creator-content fit (owner brief, 2026-11-26)
+
+**What we had.**
+- Every creator had a content mix (photo, carousel, story and video shares) and a talk share.
+- Two things worked against fit:
+  - The planner set the number of videos from one portfolio-wide ratio (`planner.images_per_video`). Every creator got the same video share, whatever her appeal.
+  - The talent manager was told "photo-led at launch". That is a sensible default, but it was a universal rule.
+- Casting judged feasibility on the concept's whole mix, not on the formats her appeal actually depends on.
+
+**What changed.**
+- **Format fit in the dossier.** The content system now decides a format fit before the mix. Each format, including later ones such as podcasts, gets a tier:
+  - **core:** directly delivers her main proposition;
+  - **complementary:** reinforces it;
+  - **experimental:** might unlock growth, and is planned only in the exploration slots;
+  - **deferred:** not worth it now.
+
+  Each tier comes with why, and with what would change it. The mix follows from the fit and the cost per accepted post.
+- **Planning follows the fit.**
+  - A deferred format leaves her plan.
+  - Her video count is her own mix's video share, which is none when every video format is deferred.
+  - The global ratio applies only to creators who don't have a fit yet.
+  - So the Italian gentleman can live on photographs, carousels and silent cinematic clips, with talking video deferred until evidence or a new capability says otherwise.
+- **Casting.**
+  - Each concept names the one to three core formats its appeal rests on.
+  - Code caps its feasibility at the weakest core format's reliability on the capability card, and shows the cost per accepted post. A proposition that needs talking video is judged on what talking video costs and how reliable it is today.
+- **Research.** Two new exploratory looks:
+  - `format_fit`: which formats carry which creators, by proposition or any other context.
+  - `evolution`: how creators' format mix changed over the posts we hold, and what followed.
+
+  Both run in the weekly gap questions.
+
+**Caveats and challenges.**
+1. **Our view of other creators' evolution is short.**
+   - We hold a recent window of posts per creator, usually months, not careers. `evolution` is a lead, and its sign is confounded: who chose to shift was not random.
+   - Real career-arc research needs older posts. Business Discovery and the YouTube API return a creator's history, so this improves once access exists.
+2. **Format fit for our own creators is the real experiment.** An experimental format sits in exploration slots, and its posts carry their format, job and proposition into the spine. The talent manager can therefore promote or defer it on our own outcomes, not on correlations elsewhere.
+3. **Keep a floor of exploration even in deferred formats.** "Deferred" means not now, not never. The `revisit_when` line names the evidence that would reopen it, and the talent manager's review cadence is where the tier gets revised.
+4. **Our production economics should not decide which personalities are worth having.** Casting should prefer propositions we can deliver well now, but a high-value proposition whose core format is expensive today is a reason to invest in that capability. That is the CEO's call, not a reason to never cast it.
