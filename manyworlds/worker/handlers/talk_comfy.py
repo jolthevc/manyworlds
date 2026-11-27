@@ -153,9 +153,9 @@ def rolls(payload: dict, params: dict) -> tuple[float, float]:
     moving at frame 0) and after it (params.end_hold_s: a beat to land the line). Owner 2026-11-26: the raw clips
     ran ~2.7 s past the last word and she sank back to a blank stare; a cut on the last syllable is abrupt the other
     way. A long take's segments join seamlessly, so only its first segment gets the lead-in and only its last the
-    hold. A walk-and-talk take (video_uri) keeps its motion clip's own timing: none."""
-    if payload.get("video_uri"):
-        return 0.0, 0.0
+    hold. A walk-and-talk take (video_uri) gets them too (owner 2026-11-26: beginnings and endings are directed): its
+    motion clip is made long enough for the padded line (production.motion), so she is already moving before the
+    first word and the clip's last beat lands after the last; a clip shorter than the line ends on its last frame."""
     seg = payload.get("segment") or {}
     i, n = int(seg.get("index", 0)), int(seg.get("of", 1))
     lead = float(params.get("lead_in_s") or 0) if i == 0 else 0.0
@@ -312,7 +312,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     outputs = [OutputFile(clip, "video", {"seconds": seconds, "width": params["width"], "height": params["height"],
                                           "lip_sync": True, "sync": sync, "engine": "comfy", "model": model,
                                           "v2v": bool(video_uri), "lead_s": lead, "tail_s": hold,
-                                          "speech_seconds": speech_seconds}),
+                                          "speech_seconds": speech_seconds, "render": comfy.last_run()}),
                *extract_keyframes(clip, work, int(payload["keyframes"]))]
     outputs += crops.crops_in_venv([o for o in outputs if o.kind == "keyframe"], work, payload.get("crops"))
     outputs += audio_outputs

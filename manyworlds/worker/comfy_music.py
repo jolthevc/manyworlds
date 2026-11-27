@@ -14,7 +14,6 @@ is pure (tested in CI); the smoke test checks it against ComfyUI's own /object_i
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 from . import comfy
@@ -71,30 +70,20 @@ def graph_song(*, tags: str, lyrics: str, seconds: float, seed: int, bpm: int, k
 
 
 def saved_audio(outputs: dict) -> list[Path]:
-    """Every audio file a finished prompt saved, by name (whatever key the save node reports it under)."""
-    found = [comfy.COMFY_DIR / (f.get("type") or "output") / f.get("subfolder", "") / f["filename"]
+    """Every audio file a finished prompt SAVED (type `output`), by name, whatever key the save node reports it under.
+    A loader's preview of its input (type `input`) or a temp preview is never one (the 2026-11-26 video picker bug)."""
+    found = [comfy.COMFY_DIR / "output" / f.get("subfolder", "") / f["filename"]
              for out in (outputs or {}).values() for files in out.values() if isinstance(files, list)
-             for f in files if isinstance(f, dict) and str(f.get("filename", "")).lower().endswith(AUDIO_SUFFIXES)]
+             for f in files if isinstance(f, dict) and str(f.get("filename", "")).lower().endswith(AUDIO_SUFFIXES)
+             and (f.get("type") or "output") == "output"]
     return sorted(found, key=lambda p: p.name)
 
 
 def run_audio(g: dict, *, timeout_s: float, poll_s: float = 2) -> Path:
-    """Queue the graph, wait until it has finished, return the saved audio file."""
-    prompt_id = comfy._submit(g)
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        h = comfy._get(f"/history/{prompt_id}").get(prompt_id)
-        if h:
-            status = h.get("status") or {}
-            if status.get("status_str") == "error":
-                raise RuntimeError(f"ComfyUI failed: {comfy.execution_error(status)}")
-            if status.get("completed"):
-                files = saved_audio(h.get("outputs"))
-                if not files:
-                    raise RuntimeError(f"ComfyUI finished with no audio: {json.dumps(h.get('outputs'))[:800]}")
-                return files[0]
-        proc = comfy._server.get("proc")
-        if proc is not None and proc.poll() is not None:
-            raise RuntimeError("ComfyUI exited while rendering (out of memory?); see its log")
-        time.sleep(poll_s)
-    raise RuntimeError(f"ComfyUI song not done after {timeout_s:.0f} s")
+    """Queue the graph, wait until it has COMPLETED, return the saved audio file, checked to be a new render
+    (comfy.verified)."""
+    prompt_id, h = comfy._finished(g, timeout_s=timeout_s, poll_s=poll_s)
+    files = saved_audio(h.get("outputs"))
+    if not files:
+        raise RuntimeError(f"ComfyUI finished with no audio: {json.dumps(h.get('outputs'))[:800]}")
+    return comfy.verified(files[:1], g, prompt_id, h.get("status") or {})[0]

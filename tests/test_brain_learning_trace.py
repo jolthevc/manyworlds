@@ -139,8 +139,25 @@ class ExperimentLLM(LoopLLM):
         return schema.model_validate({"rationale": "r", "ideas": ideas})
 
 
-def test_a_finding_becomes_an_experiment_whose_result_is_proven(conn, policy):
+class _StableRandom:
+    """`random` for the modules under test, with each distinct seed replaced by the order it was first seen: the same
+    key still gives the same draws, but a key that embeds a random uuid (an experiment's or a post's id) no longer
+    makes the run differ from the last (2026-11-26: the test failed about one run in ten on unlucky ids)."""
+
+    def __init__(self):
+        self.seen: dict[str, int] = {}
+
+    def Random(self, seed=None):
+        import random as _random
+        return _random.Random(self.seen.setdefault(str(seed), len(self.seen)))
+
+
+def test_a_finding_becomes_an_experiment_whose_result_is_proven(conn, policy, monkeypatch):
     import dataclasses
+    from manyworlds.brain import experiments, exploration, simulation
+    stable = _StableRandom()
+    for module in (experiments, exploration, simulation):   # slot days, exploration draws, the simulated audience
+        monkeypatch.setattr(module, "random", stable)
     # A strong planted effect and a large detectable effect keep the sample (and the test) small.
     # 20 a side (was 6, then 14): at 10 a side the planted effect missed significance about one run in five, and at 14
     # it still failed now and then (2026-11-23); slot days are seeded from the random experiment id

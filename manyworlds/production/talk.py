@@ -74,7 +74,7 @@ def _talk_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict], 
         return _cutaway_job(conn, policy, post, body, chosen, attempt, segment=segment, audio=audio)
     # Audio-first: the shot's beats re-timed to the take's real voice line (production.beats), so the prompt's timed
     # beats and the judge's shot follow the voice; the shot as it was without one.
-    shot = retimed_shot(conn, policy, post, body, shot, audio, params, segment=segment, moving=bool(motion))
+    shot = retimed_shot(conn, policy, post, body, shot, audio, params, segment=segment)
     seed = _seed(post, 700 + (segment or 0) * 1000, attempt)
     payload = {"image_uri": (repair or {}).get("image_uri") or photo, "script": script,
                "voice": voice.get("voice", default_voice), "speed": float(voice.get("speed", 1.0)),

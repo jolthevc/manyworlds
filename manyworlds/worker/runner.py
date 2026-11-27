@@ -59,9 +59,47 @@ class JobContext:
         """A hosted API billed us (a video render, a voice line): into the ledger as `hosted_api`, success or not."""
         self.charges.append({"provider": provider, "usd": float(usd), "quantity": quantity, "unit": unit})
 
+    fetched: list[Path] = field(default_factory=list)   # every input downloaded (not_an_input checks against them)
+
     def fetch(self, uri: str, name: str) -> Path:
         """Download an input (reference image, LoRA) into the job's working directory."""
-        return self.store.get_file(uri, self.workdir / "inputs" / name)
+        path = self.store.get_file(uri, self.workdir / "inputs" / name)
+        self.fetched.append(Path(path))
+        return path
+
+
+class PassedThrough(Exception):
+    """A job's media output is byte-for-byte one of its own inputs: nothing was made (2026-11-26, the ComfyUI picker
+    returned the walk-and-talk source clip as the render, and ~2,000 passing tests never noticed). A code fault."""
+
+
+def _digest(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def not_an_input(result: "HandlerResult", ctx: "JobContext") -> None:
+    """Refuse a result whose video, image or audio output is one of the files the job downloaded, unchanged. Sizes
+    are compared first, so a job hashes only same-sized pairs. An output that is meant to be its input says so in
+    its meta (`passthrough: true`)."""
+    sizes: dict[int, list[Path]] = {}
+    for p in ctx.fetched:
+        if p.is_file():
+            sizes.setdefault(p.stat().st_size, []).append(p)
+    for out in result.outputs:
+        if out.kind not in ("video", "image", "audio") or out.meta.get("passthrough") or not Path(out.path).is_file():
+            continue
+        same = sizes.get(Path(out.path).stat().st_size) or []
+        if same:
+            mine = _digest(Path(out.path))
+            for p in same:
+                if _digest(p) == mine:
+                    raise PassedThrough(f"the {out.kind} output {Path(out.path).name} is the job's input {p.name}, "
+                                        "unchanged: nothing was rendered")
 
 
 class Handler(Protocol):
@@ -96,7 +134,8 @@ WORKER_FAULT_MARKERS = ("CUDA error", "out of memory", "CUDA out of memory", "cu
 # Errors that mean the code (or the image) is wrong, not the machine or luck: a retry fails the same way on any
 # machine, so the job fails at once instead of paying for two more attempts (2026-11-22: 24 package/signature
 # errors and 49 InfiniteTalk failures of ~5 GPU-minutes each were retried).
-CODE_FAULT_TYPES = ("TypeError", "ImportError", "ModuleNotFoundError", "AttributeError", "NameError", "SyntaxError")
+CODE_FAULT_TYPES = ("TypeError", "ImportError", "ModuleNotFoundError", "AttributeError", "NameError", "SyntaxError",
+                    "NotRendered", "PassedThrough")   # outputs that are not new renders (2026-11-26)
 CODE_FAULT_MARKERS = ("Failed to find C compiler", "takes no keyword arguments", "unexpected keyword argument",
                       "ComfyUI exited at start", "No module named")
 
@@ -429,6 +468,7 @@ class Worker:
                 self._ensure_conn()
                 if lost.is_set():
                     raise RuntimeError("lease lost to another worker; discarding outputs")
+                not_an_input(result, ctx)
                 asset_ids = self._store_outputs(job, result, store)
             # Charge wall time including upload: the rented GPU is billed while we wait.
             gpu_seconds = time.monotonic() - t0

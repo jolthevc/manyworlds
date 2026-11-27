@@ -124,10 +124,10 @@ def _status(conn, job_id) -> str:
     return conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,)).fetchone()["status"]
 
 
-def _scene_state(conn, job_ids: list[str]) -> tuple[str, Any]:
+def _scene_state(conn, job_ids: list[str], policy=None) -> tuple[str, Any]:
     """chosen (an image passed both review stages), waiting (generating or being reviewed),
     rejected (every image reviewed, none passed) or failed (the job itself failed)."""
-    best = _best_confirmed(conn, job_ids)
+    best = _best_confirmed(conn, job_ids, policy)   # the policy's performance library (variety), not the default file
     if best:
         return "chosen", best
     last = _status(conn, job_ids[-1])

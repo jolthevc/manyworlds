@@ -517,6 +517,7 @@ def test_a_walking_take_is_a_motion_clip_first_then_lip_synced_onto_it(conn, pol
     fps = policy.get("generation", "comfy_video", "fps")
     seconds = len(WALK["performance"]["lines"][0]["text"].split()) / policy.get("generation", "talk_long",
                                                                                    "words_per_second")
+    seconds += policy.get("generation", "talk", "lead_in_s")   # the first of two takes: its lead-in, no hold
     assert p["params"]["frames"] == p["frames"] == production._wan_frames(seconds, fps)
     assert (p["frames"] - 1) % 4 == 0 and p["frames"] >= seconds * fps
     # The static take is lip-synced from its photo as before; the walking one waits for its motion clip.
@@ -622,7 +623,8 @@ def test_a_long_walking_take_chains_motion_clips_from_each_last_frame_then_joins
     production.advance(conn, policy, now=NOW, store=store)
     third = next(j for j in _motion_jobs(conn, pid, policy) if j["id"] not in (first["id"], second["id"]))
     assert third["idempotency_key"] == f"post:{pid}:motion:c2:0"
-    assert third["payload"]["frames"] == production._wan_frames(2.0, fps)
+    talk = policy.get("generation", "talk")   # the line plus its lead-in and end hold
+    assert third["payload"]["frames"] == production._wan_frames(2.0 + talk["lead_in_s"] + talk["end_hold_s"], fps)
     assert third["payload"]["image_uri"] == _key_of(conn, second["id"])
     rendered(conn, store, tmp_path, third["id"], keyframes=1)
     production.advance(conn, policy, now=NOW, store=store)

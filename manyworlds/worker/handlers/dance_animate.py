@@ -112,7 +112,7 @@ def generate(payload: dict, ctx: JobContext, *, policy: Policy | None = None) ->
               "reference": {k: ref.get(k) for k in ("id", "owner", "licence")}}
     return HandlerResult([OutputFile(clip, "video", {"seconds": seconds, "width": params["width"],
                                                      "height": params["height"], "engine": "comfy",
-                                                     "dance": True, "audio": False}), *keyframes],
+                                                     "dance": True, "audio": False, "render": comfy.last_run()}), *keyframes],
                          recipe=recipe, meta={"output_seconds": seconds, "render_seconds": render_s})
 
 

@@ -237,7 +237,7 @@ def generate(payload: dict, ctx: JobContext, *, policy_spec: dict | None = None)
              "render_seconds": render_s, "cold": cold, "vram": vram.result(), "frames": values["frames"],
              "seconds_per_output_second": round(render_s / max(seconds, 0.1), 1)}
     meta = {"seconds": seconds, "width": params["width"], "height": params["height"], "engine": "comfy",
-            "model": name, "graph": name, "bench": bench, "native_audio": bool(params.get("native_audio"))}
+            "model": name, "graph": name, "bench": bench, "native_audio": bool(params.get("native_audio")), "render": comfy.last_run()}
     if sync is not None:
         meta.update(lip_sync=True, sync=sync)
     outputs = [OutputFile(clip, "video", meta), *extract_keyframes(clip, work, int(payload["keyframes"]))]

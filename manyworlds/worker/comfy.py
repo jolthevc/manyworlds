@@ -462,8 +462,102 @@ def saved_videos(outputs: dict) -> list[Path]:
     return sorted(found, key=lambda p: p.name)
 
 
-def run_all(g: dict, *, timeout_s: float, poll_s: float = 3) -> list[Path]:
-    """Queue the graph, wait until it has finished, return every saved video (LongCat saves one per window)."""
+# --- what a finished prompt really made (2026-11-26) ----------------------------------------------------------------
+# The picker bug passed ~2,000 tests because nothing checked that the file a job returned was a new render of the
+# graph it sent. Every run now (1) waits for the prompt to COMPLETE successfully, never returning on the first
+# output that appears; (2) refuses an output that is missing, empty, or byte-identical to one of the graph's own
+# input files (a source clip, a start photo, a voice line); (3) records the render's provenance: the prompt id, the
+# graph's hash, the sampler, loader and length settings it ran with, and which nodes ComfyUI served from its cache
+# (a repair whose sampler was cached changed nothing). Handlers put `last_run()` into their output's meta.
+INPUT_NODES = {"LoadVideo": "file", "LoadImage": "image", "LoadAudio": "audio", "VHS_LoadVideo": "video"}
+_PROVENANCE_KEYS = ("model", "model_name", "steps", "start_step", "end_step", "seed", "cfg", "shift", "denoise",
+                    "denoise_strength", "num_frames", "frames", "length", "frame_window_size", "strength", "lora",
+                    "audio_scale", "lora_name", "clip_name")
+_last: dict = {}
+
+
+class NotRendered(RuntimeError):
+    """A prompt finished but what it returned is not a new render of it (an input passed through, an empty file):
+    a code fault, so the job fails at once instead of retrying the same mistake on another paid machine."""
+
+
+def last_run() -> dict:
+    """The provenance of the most recent run()/run_all() on this worker (see above), for the output's meta."""
+    return dict(_last)
+
+
+def _sha(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def graph_inputs(g: dict) -> list[Path]:
+    """The files in ComfyUI's input folder that the graph loads."""
+    out = []
+    for node in g.values():
+        key = INPUT_NODES.get(node.get("class_type"))
+        name = (node.get("inputs") or {}).get(key) if key else None
+        if isinstance(name, str) and name:
+            out.append(COMFY_DIR / "input" / name)
+    return out
+
+
+def _settings(g: dict) -> dict:
+    """The graph's samplers, loaders and length nodes with the settings that decide what they make."""
+    keep = {}
+    for node_id, node in g.items():
+        cls = str(node.get("class_type") or "")
+        if not any(w in cls for w in ("Sampler", "Loader", "LoraSelect", "Embeds", "Latent", "ImageToVideo")):
+            continue
+        inputs = node.get("inputs") or {}
+        keep[node_id] = {"class": cls, **{k: inputs[k] for k in _PROVENANCE_KEYS
+                                          if k in inputs and not isinstance(inputs[k], list)}}
+    return keep
+
+
+def _cached_nodes(status: dict) -> list[str]:
+    for kind, m in status.get("messages") or []:
+        if kind == "execution_cached":
+            return [str(n) for n in (m or {}).get("nodes") or []]
+    return []
+
+
+def _elapsed_s(status: dict) -> float | None:
+    times = {kind: (m or {}).get("timestamp") for kind, m in status.get("messages") or []}
+    start, end = times.get("execution_start"), times.get("execution_success")
+    return round((end - start) / 1000, 1) if isinstance(start, (int, float)) and isinstance(end, (int, float)) else None
+
+
+def verified(paths: list[Path], g: dict, prompt_id: str, status: dict) -> list[Path]:
+    """`paths` if each is a new, non-empty render of `g` (NotRendered otherwise); records their provenance."""
+    import hashlib
+    inputs = {_sha(p): p.name for p in graph_inputs(g) if p.is_file()}
+    made = []
+    for p in paths:
+        if not p.is_file() or p.stat().st_size == 0:
+            raise NotRendered(f"ComfyUI reported {p.name} but it is missing or empty")
+        digest = _sha(p)
+        if digest in inputs:
+            raise NotRendered(f"ComfyUI's output {p.name} is byte-identical to the graph's input {inputs[digest]}: "
+                              "an input passed through, not a render")
+        made.append({"file": p.name, "sha256": digest, "bytes": p.stat().st_size})
+    cached = _cached_nodes(status)
+    samplers = [n for n, node in g.items() if "Sampler" in str(node.get("class_type"))]
+    _last.clear()
+    _last.update(prompt_id=prompt_id, outputs=made, cached_nodes=cached,
+                 sampler_cached=bool(samplers) and all(s in cached for s in samplers),
+                 execution_s=_elapsed_s(status), settings=_settings(g),
+                 graph_sha256=hashlib.sha256(json.dumps(g, sort_keys=True, default=str).encode()).hexdigest())
+    return paths
+
+
+def _finished(g: dict, *, timeout_s: float, poll_s: float) -> tuple[str, dict]:
+    """Queue the graph and wait until ComfyUI says it COMPLETED successfully: (prompt id, its history entry)."""
+    _last.clear()
     prompt_id = _submit(g)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -473,36 +567,35 @@ def run_all(g: dict, *, timeout_s: float, poll_s: float = 3) -> list[Path]:
             if status.get("status_str") == "error":
                 raise RuntimeError(f"ComfyUI failed: {execution_error(status)}")
             if status.get("completed"):
-                videos = saved_videos(h.get("outputs"))
-                if not videos:
-                    raise RuntimeError(f"ComfyUI finished with no video: {json.dumps(h.get('outputs'))[:800]}")
-                return videos
+                if status.get("status_str") not in (None, "", "success"):
+                    raise RuntimeError(f"ComfyUI ended with status {status.get('status_str')!r}: "
+                                       f"{execution_error(status)}")
+                return prompt_id, h
         if _server["proc"] is not None and _server["proc"].poll() is not None:
             raise RuntimeError("ComfyUI exited while rendering (out of memory?); see its log")
         time.sleep(poll_s)
     raise RuntimeError(f"ComfyUI render not done after {timeout_s:.0f} s")
+
+
+def run_all(g: dict, *, timeout_s: float, poll_s: float = 3) -> list[Path]:
+    """Queue the graph, wait until it has finished, return every saved video (LongCat saves one per window)."""
+    prompt_id, h = _finished(g, timeout_s=timeout_s, poll_s=poll_s)
+    videos = saved_videos(h.get("outputs"))
+    if not videos:
+        raise RuntimeError(f"ComfyUI finished with no video: {json.dumps(h.get('outputs'))[:800]}")
+    return verified(videos, g, prompt_id, h.get("status") or {})
 
 
 def run(g: dict, *, timeout_s: float, poll_s: float = 3) -> Path:
-    """Queue the graph, wait for it, return the saved video's path."""
-    prompt_id = _submit(g)
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        h = _get(f"/history/{prompt_id}").get(prompt_id)
-        if h:
-            status = h.get("status") or {}
-            if status.get("status_str") == "error":
-                raise RuntimeError(f"ComfyUI failed: {execution_error(status)}")
-            videos = _videos(h.get("outputs"))
-            if videos:   # what the save node wrote, never a LoadVideo input preview (_saved)
-                f = videos[0]
-                return COMFY_DIR / "output" / f.get("subfolder", "") / f["filename"]
-            if status.get("completed"):
-                raise RuntimeError(f"ComfyUI finished with no video: {json.dumps(h.get('outputs'))[:800]}")
-        if _server["proc"] is not None and _server["proc"].poll() is not None:
-            raise RuntimeError("ComfyUI exited while rendering (out of memory?); see its log")
-        time.sleep(poll_s)
-    raise RuntimeError(f"ComfyUI render not done after {timeout_s:.0f} s")
+    """Queue the graph, wait until it has COMPLETED, return the saved video's path (never a LoadVideo input
+    preview: _saved), checked to be a new render (verified)."""
+    prompt_id, h = _finished(g, timeout_s=timeout_s, poll_s=poll_s)
+    videos = _videos(h.get("outputs"))
+    if not videos:
+        raise RuntimeError(f"ComfyUI finished with no video: {json.dumps(h.get('outputs'))[:800]}")
+    f = videos[0]
+    return verified([COMFY_DIR / "output" / f.get("subfolder", "") / f["filename"]], g, prompt_id,
+                    h.get("status") or {})[0]
 
 
 # --- story clips: Wan 2.2 I2V A14B, the two experts with the lightx2v LoRA ------------------------------------------

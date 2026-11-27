@@ -3,6 +3,7 @@ The real catalogue check runs in the talk image's smoke test; here the graph's s
 
 from __future__ import annotations
 
+import pytest
 from PIL import Image
 
 from manyworlds.worker import comfy
@@ -454,7 +455,7 @@ def test_only_a_takes_ends_get_a_lead_in_and_a_hold():
     assert talk_comfy.rolls({"segment": {"index": 0, "of": 3}}, p) == (0.3, 0.0)       # first of a long take
     assert talk_comfy.rolls({"segment": {"index": 1, "of": 3}}, p) == (0.0, 0.0)       # middle: joins seamlessly
     assert talk_comfy.rolls({"segment": {"index": 2, "of": 3}}, p) == (0.0, 0.6)       # last
-    assert talk_comfy.rolls({"video_uri": "s3://b/m.mp4"}, p) == (0.0, 0.0)            # walk-and-talk keeps its timing
+    assert talk_comfy.rolls({"video_uri": "s3://b/m.mp4"}, p) == (0.3, 0.6)            # walk-and-talk too (directed ends)
     assert talk_comfy.rolls({}, {}) == (0.0, 0.0)
 
 
@@ -495,16 +496,110 @@ def _history(prompt_id, done):
                                                              "type": "output"}]}} if done else {})}}}
 
 
-def test_run_returns_the_saved_render_never_the_loaded_source_clip(monkeypatch):
+_NO_WAIT = type("T", (), {"monotonic": staticmethod(lambda: 0.0), "sleep": staticmethod(lambda s: None)})
+
+
+def _comfy_dir(monkeypatch, tmp_path, files: dict[str, bytes]):
+    monkeypatch.setattr(comfy, "COMFY_DIR", tmp_path)
+    for rel, data in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(data)
+
+
+_V2V_GRAPH = {"motion": {"class_type": "LoadVideo", "inputs": {"file": "mw_job_motion.mp4"}},
+              "sampler": {"class_type": "WanVideoSampler", "inputs": {"steps": 4, "start_step": 1, "seed": 7,
+                                                                       "model": ["model", 0]}},
+              "save": {"class_type": "SaveVideo", "inputs": {"video": ["video", 0]}}}
+
+
+def test_run_returns_the_saved_render_never_the_loaded_source_clip(monkeypatch, tmp_path):
+    _comfy_dir(monkeypatch, tmp_path, {"input/mw_job_motion.mp4": b"source", "output/mw_talk_v2v_00001_.mp4": b"render"})
     calls = []
     monkeypatch.setattr(comfy, "_submit", lambda g: "p1")
     def get(path, timeout=10):
         calls.append(path)
         return _history("p1", done=len(calls) >= 2)        # first poll: only the input preview exists
     monkeypatch.setattr(comfy, "_get", get)
-    monkeypatch.setattr(comfy, "time", type("T", (), {"monotonic": staticmethod(lambda: 0.0), "sleep": staticmethod(lambda s: None)}))
-    out = comfy.run({}, timeout_s=60)
+    monkeypatch.setattr(comfy, "time", _NO_WAIT)
+    out = comfy.run(_V2V_GRAPH, timeout_s=60)
     assert out.name == "mw_talk_v2v_00001_.mp4" and out.parent.name == "output" and len(calls) == 2
+
+
+# --- end-to-end verification: the asset judged is a new, finished render of the graph sent (2026-11-26) -------------
+
+def test_run_waits_for_the_prompt_to_complete_not_for_the_first_saved_file(monkeypatch, tmp_path):
+    _comfy_dir(monkeypatch, tmp_path, {"output/mw_talk_v2v_00001_.mp4": b"render"})
+    polls = []
+    def get(path, timeout=10):
+        polls.append(path)
+        h = _history("p1", done=True)
+        h["p1"]["status"] = {"completed": len(polls) >= 3, "status_str": "success" if len(polls) >= 3 else ""}
+        return h                                           # the saved file is listed before the prompt has finished
+    monkeypatch.setattr(comfy, "_submit", lambda g: "p1")
+    monkeypatch.setattr(comfy, "_get", get)
+    monkeypatch.setattr(comfy, "time", _NO_WAIT)
+    comfy.run(_V2V_GRAPH, timeout_s=60)
+    assert len(polls) == 3
+
+
+def test_an_output_identical_to_the_graphs_input_is_refused_as_a_code_fault(monkeypatch, tmp_path):
+    from manyworlds.worker import runner
+    _comfy_dir(monkeypatch, tmp_path, {"input/mw_job_motion.mp4": b"same bytes",
+                                       "output/mw_talk_v2v_00001_.mp4": b"same bytes"})
+    monkeypatch.setattr(comfy, "_submit", lambda g: "p1")
+    monkeypatch.setattr(comfy, "_get", lambda path, timeout=10: _history("p1", done=True))
+    monkeypatch.setattr(comfy, "time", _NO_WAIT)
+    with pytest.raises(comfy.NotRendered, match="byte-identical") as e:
+        comfy.run(_V2V_GRAPH, timeout_s=60)
+    assert runner.is_code_fault(e.value)                   # fails at once: a retry would pay to repeat it
+
+
+def test_a_missing_or_empty_output_is_refused(monkeypatch, tmp_path):
+    _comfy_dir(monkeypatch, tmp_path, {"output/mw_talk_v2v_00001_.mp4": b""})
+    with pytest.raises(comfy.NotRendered, match="missing or empty"):
+        comfy.verified([tmp_path / "output" / "mw_talk_v2v_00001_.mp4"], _V2V_GRAPH, "p1", {})
+    with pytest.raises(comfy.NotRendered):
+        comfy.verified([tmp_path / "output" / "nope.mp4"], _V2V_GRAPH, "p1", {})
+
+
+def test_a_render_records_what_ran_and_whether_its_sampler_was_cached(monkeypatch, tmp_path):
+    _comfy_dir(monkeypatch, tmp_path, {"output/a.mp4": b"render"})
+    status = {"messages": [["execution_start", {"timestamp": 1000}], ["execution_cached", {"nodes": ["sampler"]}],
+                           ["execution_success", {"timestamp": 61000}]]}
+    comfy.verified([tmp_path / "output" / "a.mp4"], _V2V_GRAPH, "p1", status)
+    run = comfy.last_run()
+    assert run["prompt_id"] == "p1" and run["sampler_cached"] is True and run["execution_s"] == 60.0
+    assert run["settings"]["sampler"] == {"class": "WanVideoSampler", "steps": 4, "start_step": 1, "seed": 7}
+    assert len(run["graph_sha256"]) == 64 and run["outputs"][0]["bytes"] == 6
+    comfy.verified([tmp_path / "output" / "a.mp4"], _V2V_GRAPH, "p2", {"messages": []})
+    assert comfy.last_run()["sampler_cached"] is False     # a repair that changed the graph re-ran its sampler
+
+
+def test_the_worker_refuses_a_media_output_that_is_one_of_its_inputs(tmp_path):
+    from manyworlds.worker import runner
+    src = tmp_path / "inputs" / "motion.mp4"
+    src.parent.mkdir()
+    src.write_bytes(b"clip")
+    copy = tmp_path / "talk.mp4"
+    copy.write_bytes(b"clip")
+    ctx = runner.JobContext(job=None, workdir=tmp_path, store=None)
+    ctx.fetched.append(src)
+    with pytest.raises(runner.PassedThrough):
+        runner.not_an_input(runner.HandlerResult([runner.OutputFile(copy, "video")], recipe={}), ctx)
+    runner.not_an_input(runner.HandlerResult([runner.OutputFile(copy, "video", {"passthrough": True})], recipe={}), ctx)
+    runner.not_an_input(runner.HandlerResult([runner.OutputFile(copy, "keyframe")], recipe={}), ctx)
+    copy.write_bytes(b"new!")                               # same size, different bytes: a real render
+    runner.not_an_input(runner.HandlerResult([runner.OutputFile(copy, "video")], recipe={}), ctx)
+    assert runner.is_code_fault(runner.PassedThrough("x"))
+
+
+def test_music_takes_only_saved_audio_never_a_loaders_preview(tmp_path, monkeypatch):
+    from manyworlds.worker import comfy_music
+    monkeypatch.setattr(comfy, "COMFY_DIR", tmp_path)
+    outs = {"load": {"audio": [{"filename": "voice.wav", "type": "input"}]},
+            "prev": {"audio": [{"filename": "p.flac", "type": "temp"}]},
+            "save": {"audio": [{"filename": "song.flac", "subfolder": "audio", "type": "output"}]}}
+    assert comfy_music.saved_audio(outs) == [tmp_path / "output" / "audio" / "song.flac"]
 
 
 def test_saved_videos_skip_input_and_temp_previews():

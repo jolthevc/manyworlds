@@ -241,6 +241,16 @@ def _take_seconds(policy: Policy, body: dict, segment: int | None, audio: dict |
         unmarked(_take_script(body, segment)), float(_talk_long_cfg(policy).get("words_per_second", 2.5))))
 
 
+def _motion_seconds(policy: Policy, body: dict, segment: int | None, audio: dict | None) -> float:
+    """How long the take's motion clip must run: the line plus the lead-in and end hold the talk worker pads it with
+    (beats.take_rolls over generation.talk), so the walk-and-talk take moves before the first word and settles after
+    the last instead of freezing on the clip's last frame."""
+    from .beats import take_rolls
+    lead, hold = take_rolls(policy.get("generation", "talk", default={}) or {}, segment=segment,
+                            of=len(body.get("talk_segments") or []) or 1)
+    return _take_seconds(policy, body, segment, audio) + lead + hold
+
+
 def motion_lengths(policy: Policy, seconds: float) -> list[float]:
     """The motion clips a take of `seconds` gets, as their lengths: clips of max_motion_seconds (Wan's trained length)
     chained until the take is covered, at most max_motion_chain of them; a remainder under chain_min_seconds gets
@@ -278,7 +288,7 @@ def _motion_job(conn, policy: Policy, post: dict, body: dict, chosen: list[dict]
         return queue.enqueue(conn, _dance_kind(policy), payload, creator_id=post["creator_id"],
                              batch=f"post-{post['id']}", post_id=post["id"], idempotency_key=key)
     if seconds is None:
-        seconds = _take_seconds(policy, body, segment, audio)
+        seconds = _motion_seconds(policy, body, segment, audio)
     seconds = min(float(seconds), float(cfg.get("max_motion_seconds", 5)))
     vid = policy.get("generation", "video", default={})
     kind = cfg.get("kind") or _story_clip_kind(conn, policy, post)
@@ -347,7 +357,7 @@ def _advance_motion(conn, policy: Policy, post: dict, body: dict, chosen: list[d
     a clip with no last frame to continue from ends the chain there (the take ends on a hold)."""
     failures = ("follow_up_failures", int(_cfg(policy).get("max_job_failures_per_post", 6)))
     videos: list[dict] = []
-    lengths = motion_lengths(policy, _take_seconds(policy, body, segment, audio))
+    lengths = motion_lengths(policy, _motion_seconds(policy, body, segment, audio))
     if dance_reference(policy, _shot(body, _take_index(body, segment))):
         lengths = lengths[:1]   # one animate clip, as long as its reference: no chain (the talk holds past its end)
     for k, seconds in enumerate(lengths):

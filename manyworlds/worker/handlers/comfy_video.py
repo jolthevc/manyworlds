@@ -68,7 +68,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
               "prompt": payload["prompt"], "negative_prompt": comfy.negative_text(params, payload.get("negative_prompt")),
               "image_uri": payload["image_uri"], "seed": seed, "params": params}
     return HandlerResult([OutputFile(clip, "video", {"seconds": seconds, "width": params["width"],
-                                                     "height": params["height"], "engine": "comfy"}), *keyframes],
+                                                     "height": params["height"], "engine": "comfy", "render": comfy.last_run()}), *keyframes],
                          recipe=recipe, meta={"output_seconds": seconds, "render_seconds": render_s})
 
 

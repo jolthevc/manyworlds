@@ -50,11 +50,9 @@ def beats_cfg(policy: Policy) -> dict:
     return policy.get("production", "beats", default={}) or {}
 
 
-def take_rolls(params: dict, *, segment: int | None = None, of: int = 1, moving: bool = False) -> tuple[float, float]:
+def take_rolls(params: dict, *, segment: int | None = None, of: int = 1) -> tuple[float, float]:
     """The take's lead-in and end hold in seconds, as the talk worker renders them (worker talk_comfy.rolls: only a
-    long take's first segment gets the lead-in and its last the hold; a walk-and-talk take none)."""
-    if moving:
-        return 0.0, 0.0
+    long take's first segment gets the lead-in and its last the hold; a walk-and-talk take too)."""
     i, n = int(segment or 0), int(of or 1)
     lead = float(params.get("lead_in_s") or 0) if i == 0 else 0.0
     hold = float(params.get("end_hold_s") or 0) if i == n - 1 else 0.0
@@ -309,7 +307,7 @@ def take_key(segment: int | None) -> str:
 
 
 def for_take(conn, policy: Policy, post: dict, body: dict, shot: dict | None, audio: dict | None, params: dict, *,
-             segment: int | None = None, moving: bool = False, store=None) -> dict | None:
+             segment: int | None = None, store=None) -> dict | None:
     """The take's shot with its beats re-timed to its voice line (retime), kept in body.talk_beats[take] with the
     moves; the shot as it was when re-timing is off, the take has no designed voice line with line timings, or the
     line doesn't say exactly the shot's lines. Word timestamps are read from the line's cache (meta.words) or, when
@@ -327,7 +325,7 @@ def for_take(conn, policy: Policy, post: dict, body: dict, shot: dict | None, au
         from .captioning import voice_words
         words = voice_words(conn, policy, audio, store)
     of = len(body.get("talk_segments") or []) or 1
-    rolls = take_rolls(params, segment=segment, of=of, moving=moving)
+    rolls = take_rolls(params, segment=segment, of=of)
     wps = float(policy.get("generation", "talk_long", "words_per_second", default=2.5))
     made = retime(shot, meta, words, rolls, c, words_per_second=wps, caption_policy=policy)
     body.setdefault("talk_beats", {})[take_key(segment)] = {

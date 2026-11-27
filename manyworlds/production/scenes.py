@@ -106,7 +106,7 @@ def _shared_reference(conn, policy: Policy, post: dict, i: int) -> dict | None:
     jobs = (post["body"].get("scene_jobs") or [])
     if leader is None or leader >= len(jobs) or not jobs[leader]:
         return None
-    best = _best_confirmed(conn, [str(j) for j in jobs[leader]])
+    best = _best_confirmed(conn, [str(j) for j in jobs[leader]], policy)
     if not best:
         return None
     sid = ((post["body"]["shots"][i].get("set") or {}).get("set_id") or "").strip()
@@ -134,7 +134,7 @@ def _shared_plate(conn, policy: Policy, post: dict, leader: int, set_id: str, le
     ids = [str(r["id"]) for r in conn.execute(
         "SELECT id FROM jobs WHERE idempotency_key LIKE %s ORDER BY created_at", (prefix + "%",)).fetchall()]
     if ids:
-        state, best = _scene_state(conn, ids)
+        state, best = _scene_state(conn, ids, policy)
         if state == "chosen":
             return best["uri"]
         if state == "waiting":
@@ -202,5 +202,5 @@ def _scene_steps(conn, policy: Policy, post: dict, body: dict) -> list[Step]:
             return None
         return lambda: _shared_reference(conn, policy, post, i) is None   # until the leader's photo is accepted
 
-    return [Step(jobs, lambda j: _scene_state(conn, j), remake(i), repairs, ("job_failures", max_failures),
+    return [Step(jobs, lambda j: _scene_state(conn, j, policy), remake(i), repairs, ("job_failures", max_failures),
                  "image", f"scene {i}: ", hold=hold(i)) for i, jobs in enumerate(body["scene_jobs"])]

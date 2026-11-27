@@ -51,7 +51,7 @@ def test_the_rolls_are_the_talk_workers_own(policy):
     for seg, moving in [(None, False), ({"index": 0, "of": 3}, False), ({"index": 1, "of": 3}, False),
                         ({"index": 2, "of": 3}, False), (None, True)]:
         payload = {**({"segment": seg} if seg else {}), **({"video_uri": "s3://b/m.mp4"} if moving else {})}
-        mine = beats.take_rolls(params, segment=(seg or {}).get("index"), of=(seg or {}).get("of", 1), moving=moving)
+        mine = beats.take_rolls(params, segment=(seg or {}).get("index"), of=(seg or {}).get("of", 1))
         assert mine == talk_comfy.rolls(payload, params)
 
 
