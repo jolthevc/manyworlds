@@ -316,7 +316,7 @@ def test_the_intelligence_agent_answers_questions_in_its_questions_mode(conn, po
     out = intelligence.Intelligence().run(make_ctx(conn, policy, jid))
     assert out["questions"]["answered"][0]["id"] == qid
     assert conn.execute("SELECT status FROM research_questions WHERE id = %s", (qid,)).fetchone()["status"] == \
-        "answered"
+        "unanswerable"                                                   # no posts yet: no analysis over zero rows
 
 
 def test_new_reads_store_the_vocabulary_versions(conn, policy):
