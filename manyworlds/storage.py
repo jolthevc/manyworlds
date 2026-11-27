@@ -193,13 +193,17 @@ class UrlStore(ObjectStore):
 
     links: {"prefix": "s3://bucket/", "get": {key: url}, "put": {key: url}, "absent": [key, ...], "expires": epoch}"""
 
-    def __init__(self, links: dict, *, timeout: float = 600, chunk: int = 1 << 20):
+    def __init__(self, links: dict, *, timeout: float = 600, chunk: int = 1 << 20, resumes: int = 8,
+                 opener=None, pause: float = 2.0):
         self.prefix = str(links["prefix"])
         self.gets = dict(links.get("get") or {})
         self.puts = dict(links.get("put") or {})
         self.absent = set(links.get("absent") or [])
         self.timeout = timeout
         self.chunk = chunk
+        self.resumes = resumes      # a cut transfer resumes from the bytes it has (HTTP Range), this many times
+        self.pause = pause
+        self._open = opener
 
     def _key(self, uri: str) -> str:
         if not uri.startswith(self.prefix):
@@ -210,7 +214,14 @@ class UrlStore(ObjectStore):
         return self.prefix + key
 
     def get_file(self, uri: str, local: Path) -> Path:
-        from urllib.request import urlopen
+        """Download through the read link. A transfer cut short (it ends early, or the connection drops) resumes
+        from the bytes already on disk with an HTTP Range request, up to `resumes` times; the file is complete only
+        when it has the size the server announced. 2026-11-27: one plain GET per file returned 4-10 GB weights cut
+        short on Salad and Vast nodes, and every job that loaded them failed."""
+        import http.client
+        import time
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
 
         key = self._key(uri)
         url = self.gets.get(key)
@@ -218,8 +229,38 @@ class UrlStore(ObjectStore):
             raise MissingLink(f"no read link for {key}")
         local.parent.mkdir(parents=True, exist_ok=True)
         part = local.with_name(local.name + ".dl")
-        with urlopen(url, timeout=self.timeout) as r, part.open("wb") as f:
-            shutil.copyfileobj(r, f, self.chunk)
+        part.unlink(missing_ok=True)
+        opener = self._open or (lambda req: urlopen(req, timeout=self.timeout))
+        total: int | None = None
+        for attempt in range(self.resumes + 1):
+            have = part.stat().st_size if part.exists() else 0
+            req = Request(url, headers={"Range": f"bytes={have}-"} if have else {})
+            try:
+                with opener(req) as r:
+                    status = getattr(r, "status", 200)
+                    if have and status != 206:            # the server ignored the range: start again
+                        have = 0
+                    crange = r.headers.get("Content-Range") if hasattr(r, "headers") else None
+                    length = r.headers.get("Content-Length") if hasattr(r, "headers") else None
+                    if crange and "/" in crange and crange.rsplit("/", 1)[1].isdigit():
+                        total = int(crange.rsplit("/", 1)[1])
+                    elif length is not None and total is None:
+                        total = have + int(length)
+                    with part.open("ab" if have else "wb") as f:
+                        shutil.copyfileobj(r, f, self.chunk)
+            except HTTPError as e:
+                if e.code in (401, 403, 404, 416) or attempt == self.resumes:   # a dead link: no resume helps
+                    raise
+            except (OSError, http.client.HTTPException):
+                if attempt == self.resumes:
+                    raise
+            size = part.stat().st_size if part.exists() else 0
+            if total is None or size >= total:
+                break
+            time.sleep(min(30.0, self.pause * (2 ** attempt)))
+        size = part.stat().st_size if part.exists() else 0
+        if total is not None and size < total:
+            raise RuntimeError(f"download incomplete: {key} is {size} bytes, expected {total}")
         part.replace(local)
         return local
 

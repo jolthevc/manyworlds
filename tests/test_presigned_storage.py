@@ -234,3 +234,52 @@ def test_a_job_round_trips_through_s3_using_only_links(conn, database_url, polic
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "stand-in")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "stand-in")
     assert s3.read_bytes(f"assets/unassigned/{job}/00.png") == PNG[::-1]
+
+
+class _Cut:
+    """A response that announces the whole object but ends early (a dropped long transfer)."""
+
+    def __init__(self, data: bytes, start: int, total: int, cut: int | None, ranged: bool):
+        import io
+        self._b = io.BytesIO(data[start:start + cut] if cut is not None else data[start:])
+        self.status = 206 if ranged else 200
+        self.headers = {"Content-Length": str(total - start)}
+        if ranged:
+            self.headers["Content-Range"] = f"bytes {start}-{total - 1}/{total}"
+
+    def read(self, n=-1):
+        return self._b.read(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_a_cut_download_resumes_with_a_range_request_and_a_hopeless_one_is_a_machine_fault(tmp_path):
+    from manyworlds.worker import runner
+    data = bytes(range(256)) * 400                                   # 102,400 bytes
+    seen = []
+
+    def flaky(req):
+        rng = req.headers.get("Range")
+        start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+        seen.append(start)
+        return _Cut(data, start, len(data), 30000 if len(seen) < 3 else None, ranged=bool(rng))
+
+    s = UrlStore({"prefix": "s3://b/", "get": {"w.bin": "https://x/w"}}, opener=flaky, pause=0)
+    out = s.get_file("s3://b/w.bin", tmp_path / "w.bin")
+    assert out.read_bytes() == data and seen == [0, 30000, 60000]
+
+    def always_cut(req):
+        rng = req.headers.get("Range")
+        start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+        return _Cut(data, start, len(data), 0 if start else 10, ranged=bool(rng))
+
+    s = UrlStore({"prefix": "s3://b/", "get": {"w.bin": "https://x/w"}}, opener=always_cut, pause=0, resumes=2)
+    with pytest.raises(RuntimeError) as e:
+        s.get_file("s3://b/w.bin", tmp_path / "w2.bin")
+    assert "download incomplete" in str(e.value) and not (tmp_path / "w2.bin").exists()
+    assert runner.is_worker_fault(e.value)                          # the job goes back, no attempt lost
+    assert runner.is_worker_fault(RuntimeError("text_encoder/model.safetensors: got 5 bytes, expected 9"))

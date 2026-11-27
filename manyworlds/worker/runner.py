@@ -129,7 +129,10 @@ class WorkerUnhealthy(RuntimeError):
 WORKER_FAULT_MARKERS = ("CUDA error", "out of memory", "CUDA out of memory", "cuDNN error",
                         "CUBLAS_STATUS", "NCCL error", "device-side assert", "no CUDA GPUs",
                         "CUDA unknown error", "CUDA driver", "NVML", "no NVIDIA driver",
-                        "CUDA-capable device", "Disk quota exceeded", "No space left on device")
+                        "CUDA-capable device", "Disk quota exceeded", "No space left on device",
+                        # a weights or input download the machine's network could not finish (2026-11-27: Salad and
+                        # Vast nodes cut 4-10 GB files short and failed 8 jobs that any other machine would run)
+                        "bytes, expected", "download incomplete")
 
 # Errors that mean the code (or the image) is wrong, not the machine or luck: a retry fails the same way on any
 # machine, so the job fails at once instead of paying for two more attempts (2026-11-22: 24 package/signature
