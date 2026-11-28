@@ -640,6 +640,36 @@ review:
 
 generation:
   image: {width: 896, height: 1152, steps: 9, guidance: 0.0}
+  # Structural control of photos (manyworlds.layout, image.zimage payload `control`; owner yes 2026-11-28 for the
+  # first measured run). A pose skeleton drawn in code from the shot's framing (size, angle) and blocking (pose,
+  # where she stands) conditions Z-Image Turbo through Alibaba PAI's Fun ControlNet Union (Apache-2.0); the lite
+  # 2602 file (2.0 GB) fits beside the model on 24 GB cards. Off in production until the measured run says it helps.
+  control:
+    enabled: false
+    repo: alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1
+    file: Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors
+    scale: 0.75                 # controlnet_conditioning_scale; the card's range is 0.65-1.00
+    poses: layout/poses-v1.yaml
+    default_pose: stand
+    # Shot sizes with a body to place (lowercase substring of framing.shot_size, first match): `scale` is the
+    # standing body's height as a fraction of the frame height, `top` where the head's top sits (fraction from the
+    # top). Close-ups, details, hands and overhead flat lays get no skeleton: there is no body to place.
+    sizes:
+      - [tiny, {scale: 0.12, top: 0.55}]
+      - [small in, {scale: 0.12, top: 0.55}]
+      - [extreme wide, {scale: 0.18, top: 0.5}]
+      - [wide, {scale: 0.32, top: 0.42}]
+      - [full, {scale: 0.80, top: 0.09}]
+      - [cowboy, {scale: 1.3, top: 0.06}]
+      - [medium close, {scale: 2.9, top: 0.06}]
+      - [medium, {scale: 1.85, top: 0.06}]
+    # Camera height as perspective: a low camera stretches the body near its feet and shrinks the head, a high one
+    # the reverse (framing.angle, lowercase substring, first match; 0 = eye level).
+    angles: [[worm, 0.5], [low, 0.35], [overhead, -0.5], [high, -0.35], [above, -0.35]]
+    # Where her body's centre sits across the frame (blocking action or shot text, first match; else centre).
+    placements: [["right third|on the right|right of (the )?frame", 0.67], ["left third|on the left|left of (the )?frame", 0.33]]
+    max_width: 0.95             # a figure wider than this share of the frame is shrunk to fit
+    stick_width: 0.012          # limb thickness, as a share of the drawn body height (min 2 px)
   # A story clip of several scenes: one clip per scene photo, joined with each shot's transition in (production
   # clip_edit). Each clip costs a GPU job: tiers cap how many video posts a creator makes.
   clip_edit: {enabled: true, max_clips: 4}

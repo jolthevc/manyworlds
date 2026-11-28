@@ -1,0 +1,54 @@
+# Pose templates for structural control of photos (manyworlds.layout; policy generation.control).
+# Synthetic skeletons only: no one's photo or footage is analysed. Each pose is the 18 OpenPose (COCO) keypoints in
+# body units: x to the image right, y up, feet on y = 0, a standing body 1.0 tall, x = 0 the body's centre.
+# OpenPose "R" is the subject's right: image left when she faces the camera, image right when her back is turned.
+# A null keypoint is not drawn (her back: no nose or eyes, which tells the model the face is turned away).
+# Order: nose, neck, r_shoulder, r_elbow, r_wrist, l_shoulder, l_elbow, l_wrist, r_hip, r_knee, r_ankle,
+#        l_hip, l_knee, l_ankle, r_eye, l_eye, r_ear, l_ear
+version: 1
+poses:
+  stand:
+    [[0, .93], [0, .82], [-.11, .81], [-.14, .64], [-.15, .48], [.11, .81], [.14, .64], [.15, .48],
+     [-.06, .52], [-.06, .28], [-.06, .03], [.06, .52], [.06, .28], [.06, .03], [-.02, .95], [.02, .95], [-.045, .94], [.045, .94]]
+  contrapposto:
+    [[.01, .93], [0, .82], [-.11, .80], [-.15, .63], [-.15, .47], [.11, .82], [.20, .67], [.10, .55],
+     [-.04, .53], [-.02, .28], [-.03, .03], [.08, .51], [.10, .28], [.13, .04], [-.01, .95], [.03, .95], [-.035, .94], [.055, .94]]
+  walk:
+    [[0, .93], [0, .82], [-.11, .81], [-.17, .65], [-.13, .49], [.11, .81], [.10, .64], [.16, .50],
+     [-.06, .52], [-.04, .29], [-.09, .03], [.06, .52], [.08, .27], [.11, .06], [-.02, .95], [.02, .95], [-.045, .94], [.045, .94]]
+  back_walk:
+    [null, [0, .82], [.11, .81], [.17, .65], [.13, .49], [-.11, .81], [-.10, .64], [-.16, .50],
+     [.06, .52], [.04, .29], [.09, .03], [-.06, .52], [-.08, .27], [-.11, .06], null, null, [.045, .93], [-.045, .93]]
+  over_shoulder:
+    [[.05, .92], [0, .82], [.11, .81], [.15, .64], [.14, .48], [-.11, .81], [-.13, .64], [-.13, .48],
+     [.06, .52], [.05, .28], [.07, .03], [-.06, .52], [-.07, .28], [-.09, .04], null, [.035, .945], null, [-.03, .94]]
+  sit:
+    [[0, .73], [0, .62], [-.11, .61], [-.15, .45], [-.08, .34], [.11, .61], [.15, .45], [.08, .34],
+     [-.07, .33], [-.09, .31], [-.09, .04], [.07, .33], [.09, .31], [.09, .04], [-.02, .75], [.02, .75], [-.045, .74], [.045, .74]]
+  sit_floor:
+    [[0, .50], [0, .39], [-.11, .38], [-.17, .24], [-.12, .20], [.11, .38], [.17, .24], [.12, .20],
+     [-.07, .06], [-.13, .22], [-.13, .02], [.07, .06], [.13, .22], [.13, .02], [-.02, .52], [.02, .52], [-.045, .51], [.045, .51]]
+  lie_stomach:
+    [[-.47, .19], [-.38, .14], [-.38, .14], [-.43, .03], [-.51, .04], [-.36, .12], [-.41, .02], [-.49, .02],
+     [-.02, .09], [.24, .07], [.40, .20], [0, .07], [.24, .05], [.44, .14], [-.49, .21], [-.47, .21], [-.45, .20], [-.43, .20]]
+  crouch:
+    [[0, .60], [0, .50], [-.11, .49], [-.13, .33], [-.07, .18], [.11, .49], [.13, .33], [.07, .18],
+     [-.07, .26], [-.13, .32], [-.08, .02], [.07, .26], [.13, .32], [.08, .02], [-.02, .62], [.02, .62], [-.045, .61], [.045, .61]]
+  lean:
+    [[.04, .92], [.03, .81], [-.08, .80], [-.16, .66], [-.20, .52], [.14, .81], [.19, .65], [.13, .53],
+     [-.05, .52], [-.02, .28], [.04, .03], [.07, .52], [.03, .28], [-.04, .04], [.02, .94], [.06, .94], [-.015, .93], [.075, .93]]
+  dance:
+    [[.03, .92], [0, .82], [-.11, .82], [-.19, .92], [-.21, 1.04], [.11, .81], [.21, .74], [.27, .82],
+     [-.06, .52], [-.07, .28], [-.08, .03], [.06, .52], [.14, .36], [.09, .19], [.01, .94], [.05, .94], [-.02, .93], [.07, .93]]
+# First match wins, on the shot's blocking action (lowercase): [pattern (a regular expression), pose]
+words:
+  - ["over (her|the) shoulder|looks? back|glanc(e|es|ing) back", over_shoulder]
+  - ["walk(s|ing)? away|back to (the )?camera|from behind", back_walk]
+  - ["lying|lies|lie on|on her (stomach|front|back)", lie_stomach]
+  - ["sitting on the (floor|ground)|on the floor|cross-legged|on the sand", sit_floor]
+  - ["crouch|squat|kneel", crouch]
+  - ["sit|seated|perched", sit]
+  - ["lean", lean]
+  - ["danc|spin|twirl|jump", dance]
+  - ["walk|stroll|strid", walk]
+  - ["weight on one hip|hand on (her )?hip|contrapposto", contrapposto]

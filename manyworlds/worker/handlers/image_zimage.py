@@ -29,11 +29,35 @@ MODEL_ID = os.environ.get("MW_IMAGE_MODEL", "Tongyi-MAI/Z-Image-Turbo")
 # raises out-of-memory instead, and the handler falls back to offload (see _fall_back).
 # The default only applies to workers started by hand; it is the safe setting.
 OFFLOAD_BELOW_GB = float(os.environ.get("MW_OFFLOAD_BELOW_GB", "26"))
-_state: dict[str, Any] = {"pipe": None, "lora_uri": None, "offload": None, "fallback": False}
+_state: dict[str, Any] = {"pipe": None, "lora_uri": None, "offload": None, "fallback": False, "control": None}
 log = logging.getLogger("manyworlds.image")
 
 
-def _pipe(ctx: JobContext):
+def control_spec(payload: dict) -> dict | None:
+    """The payload's structural control (manyworlds.layout.control_payload), checked; None for a plain photo."""
+    c = payload.get("control")
+    if not c:
+        return None
+    if not isinstance(c, dict) or c.get("kind") != "pose" or not c.get("uri") or not c.get("repo") or not c.get("file"):
+        raise NonRetryable(f"control needs kind 'pose', uri, repo and file: {c!r}")
+    return {"uri": str(c["uri"]), "repo": str(c["repo"]), "file": str(c["file"]), "scale": float(c.get("scale", 0.75))}
+
+
+def _controlnet_file(repo: str, filename: str) -> str:
+    """One file of the ControlNet repo, kept with the machine's models (the repo is 53 GB of variants; only the
+    file named is fetched)."""
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo, filename, local_dir=str(models.local_dir(repo)),
+                           token=os.environ.get("HF_TOKEN") or None)
+
+
+def _pipe(ctx: JobContext, control: dict | None = None):
+    """The pipeline for this job: plain Z-Image, or Z-Image with the ControlNet named by `control`. Switching
+    between the two reloads (from the machine's disk): a test batch is all one or the other."""
+    want = (control["repo"], control["file"]) if control else None
+    if _state["pipe"] is not None and _state["control"] != want:
+        release()
     if _state["pipe"] is None:
         import torch
         from diffusers import DiffusionPipeline
@@ -44,12 +68,18 @@ def _pipe(ctx: JobContext):
                  torch.cuda.get_device_name(0), free / 1e9, total / 1e9, offload)
         # Our bucket's copy when it exists (manyworlds.worker.models), else Hugging Face.
         source = models.ensure(MODEL_ID, ctx.store, ctx.workdir)
-        pipe = DiffusionPipeline.from_pretrained(source, torch_dtype=torch.bfloat16)
+        if want:
+            from diffusers import ZImageControlNetModel, ZImageControlNetPipeline
+
+            net = ZImageControlNetModel.from_single_file(_controlnet_file(*want), torch_dtype=torch.bfloat16)
+            pipe = ZImageControlNetPipeline.from_pretrained(source, controlnet=net, torch_dtype=torch.bfloat16)
+        else:
+            pipe = DiffusionPipeline.from_pretrained(source, torch_dtype=torch.bfloat16)
         if offload:
             pipe.enable_model_cpu_offload()
         else:
             pipe.to("cuda")
-        _state.update(pipe=pipe, offload=offload, free_gb=round(free / 1e9, 1),
+        _state.update(pipe=pipe, offload=offload, free_gb=round(free / 1e9, 1), control=want,
                       gpu=torch.cuda.get_device_name(0))
     return _state["pipe"]
 
@@ -105,8 +135,16 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else random.randrange(1 << 31)
 
-    pipe = _pipe(ctx)
+    control = control_spec(payload)
+    pipe = _pipe(ctx, control)
     _set_lora(pipe, ctx, payload.get("lora_uri"), float(payload.get("lora_scale", 1.0)))
+    extra: dict[str, Any] = {}
+    if control:
+        from PIL import Image
+
+        with Image.open(ctx.fetch(control["uri"], "control.png")) as im:
+            extra = {"control_image": im.convert("RGB").resize((width, height)),
+                     "controlnet_conditioning_scale": control["scale"]}
     # One image at a time: batching multiplies activation memory, which is exactly what
     # 24 GB consumer cards don't have to spare. Seeds stay seed+i, so outputs are unchanged.
     outs, timings = [], []
@@ -115,7 +153,7 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
         def render():
             return pipe(prompt=prompt, height=height, width=width, num_inference_steps=steps,
                         guidance_scale=guidance, generator=torch.Generator("cuda").manual_seed(seed + i),
-                        **negative).images[0]
+                        **negative, **extra).images[0]
         try:
             img = render()
         except torch.cuda.OutOfMemoryError:
@@ -131,7 +169,9 @@ def generate(payload: dict, ctx: JobContext) -> HandlerResult:
     recipe = {"model": MODEL_ID, "prompt": prompt, "seed": seed, "steps": steps, "guidance": guidance,
               "width": width, "height": height, "lora_uri": payload.get("lora_uri"),
               "negative_prompt": negative.get("negative_prompt"),
-              "lora_scale": payload.get("lora_scale", 1.0)}
+              "lora_scale": payload.get("lora_scale", 1.0),
+              "control": ({"file": control["file"], "scale": control["scale"], "uri": control["uri"]}
+                          if control else None)}
     return HandlerResult(outs, recipe=recipe, meta={
         "images": len(outs), "sec_per_image": timings, "cpu_offload": _state["offload"],
         "offload_fallback": _state["fallback"],
@@ -151,7 +191,7 @@ def release() -> None:
     """Give the GPU back before another family's job (manyworlds.worker.runner._switch_to)."""
     if _state.get("pipe") is None:
         return
-    _state["pipe"], _state["lora_uri"] = None, None   # a reload starts without the LoRA
+    _state["pipe"], _state["lora_uri"], _state["control"] = None, None, None   # a reload starts without the LoRA
     import gc
     gc.collect()
     try:

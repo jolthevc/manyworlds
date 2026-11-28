@@ -47,6 +47,17 @@ def check_image() -> list[str]:
     edit.settings({"prompt": "p", "images": ["s3://b/a.png"], "n": 1, "width": 896, "height": 1152})
     done.append("Qwen image edit pipeline and Lightning sampler")
 
+    # Structural control (generation.control): the ControlNet classes, its single-file loader, and the payload check.
+    from diffusers import ZImageControlNetModel, ZImageControlNetPipeline  # noqa: F401
+    from huggingface_hub import hf_hub_download  # noqa: F401
+    from .handlers import image_zimage as zimage
+    if not hasattr(ZImageControlNetModel, "from_single_file"):
+        raise RuntimeError("this diffusers' ZImageControlNetModel has no single-file loader")
+    c = zimage.control_spec({"control": {"kind": "pose", "uri": "s3://b/c.png", "repo": "r", "file": "f"}})
+    if c["scale"] != 0.75:
+        raise RuntimeError(f"control payload read wrong: {c}")
+    done.append("Z-Image ControlNet pipeline")
+
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg missing (narrated edits need it)")
     from diffusers.pipelines.wan.pipeline_wan import prompt_clean   # uses ftfy, as the Wan pipeline does
